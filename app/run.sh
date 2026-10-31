@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# 启动平台：静态前端和 /api 由同一个 uvicorn 进程托管。
+#
+#   ./run.sh                本机打开 http://127.0.0.1:8000
+#   ./run.sh --reload       改代码自动重启（开发时用）
+#   ./run.sh stop           停掉正在跑的实例
+#   FASTVIDEO_HOST=0.0.0.0 ./run.sh   对局域网开放（一期还没做登录，先别开）
+#   FASTVIDEO_PORT=8080 ./run.sh      换端口
+set -euo pipefail
+
+# 后端在 app/backend，必须先切过去：main.py 的 import 是顶层的，
+# 在别的目录跑 uvicorn main:app 会直接 ModuleNotFoundError
+cd "$(dirname "$0")/backend"
+
+HOST="${FASTVIDEO_HOST:-127.0.0.1}"
+PORT="${FASTVIDEO_PORT:-8000}"
+
+if [ "${1:-}" = "stop" ]; then
+  if pkill -f "uvicorn main:app"; then echo "已停止"; else echo "没有在跑的实例"; fi
+  exit 0
+fi
+
+# 首次运行自动建环境和装依赖；之后这一步直接跳过
+if [ ! -x .venv/bin/python ]; then
+  echo "首次运行：创建 .venv 并安装依赖 ..."
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --python 3.12 .venv
+    uv pip install --python .venv/bin/python -r requirements.txt
+  else
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -q -r requirements.txt
+  fi
+fi
+
+echo "→ http://${HOST}:${PORT}"
+# exec 让 uvicorn 顶替当前进程，Ctrl+C 能干净退出，不留孤儿进程
+exec .venv/bin/python -m uvicorn main:app --host "$HOST" --port "$PORT" "$@"
