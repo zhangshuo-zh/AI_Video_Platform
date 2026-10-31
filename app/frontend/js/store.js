@@ -50,9 +50,12 @@ export const store = {
   /** 拉一次列表和类型字典；首次加载/新建项目后调用 */
   async load() {
     this.projects = await api.projects();
-    // 当前项目被删或还没选过时，退到第一个
+    // 当前项目被删或还没选过时挑一个：列表按"最后打开"排，projects[0] 完全可能是
+    // 个归档项目——把"当前"换成不做了的项目，人还能接着去创作中心编它。
+    // 只剩归档的就宁可不选（顶栏照旧提示"未选择项目"），归档不进当前项目这套逻辑
     if (!this.projects.some((p) => p.id === this.currentId)) {
-      this.currentId = this.projects.length ? this.projects[0].id : null;
+      const first = this.activeProjects[0] || null;
+      this.currentId = first ? first.id : null;
     }
     return this;
   },

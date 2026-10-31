@@ -347,6 +347,9 @@ body{
   outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint);
 }
 .form-grid .pf-actions{grid-column:2;display:flex;justify-content:flex-end}
+/* 勾选组里的空态／读取中是一句提示，不是内容：跟表单提示同款，
+   不然 12.5px 的灰字压在 11.5px 的提示上面，一行里两种字号 */
+.role-pick .t-dim{font-size:11.5px;color:var(--ink-3)}
 .empty .hint{font-size:11.5px;color:var(--ink-3);margin-top:12px;margin-bottom:0}
 .side-foot{border-top:1px solid var(--line);padding:14px 16px;font-size:11.5px;color:var(--ink-2);display:grid;gap:9px;flex:none}
 .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px}
@@ -507,7 +510,27 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .batch-bar .right{display:flex;gap:6px;align-items:center;flex:none}
 /* 批量结果（含被跳过的原因）说一句话，留在批量条下面，不弹 alert */
 .batch-msg{padding:9px 14px;border-bottom:1px solid var(--line)}
-.row-pick{width:14px;height:14px;accent-color:var(--accent);cursor:pointer;vertical-align:middle}
+/* 复选框一律做成圆的（行框点名要的样式）：appearance 干掉原生方块，圈和点自己画。
+   input 上画不了伪元素，勾选点用径向渐变、半选用短横线，底色都走令牌换主题不漏。
+   选择器覆盖所有 checkbox：只圈 .row-pick 的话，「用户与角色」的权限矩阵是方的、
+   同一个页脚的协作人勾选是圆的，两套长相比"全是圆的"扎眼得多 */
+.row-pick,input[type="checkbox"]{
+  appearance:none;-webkit-appearance:none;
+  width:15px;height:15px;margin:0;padding:0;border-radius:50%;
+  border:1.5px solid var(--ink-3);background:var(--field);
+  cursor:pointer;vertical-align:middle;flex:none;
+  transition:border-color var(--fast),background-color var(--fast),box-shadow var(--fast);
+}
+.row-pick:hover,input[type="checkbox"]:hover{border-color:var(--accent)}
+.row-pick:checked,input[type="checkbox"]:checked{
+  border-color:var(--accent);
+  background:radial-gradient(circle,var(--accent-fg) 0 2.5px,transparent 3px) var(--accent);
+}
+.row-pick:indeterminate,input[type="checkbox"]:indeterminate{
+  border-color:var(--accent);
+  background:linear-gradient(var(--accent-fg),var(--accent-fg)) center/7px 1.5px no-repeat var(--accent);
+}
+.row-pick:focus-visible,input[type="checkbox"]:focus-visible{box-shadow:0 0 0 3px var(--ring)}
 /* 归档行整行压暗一档。不用删除线——归档是"收起来"，不是"没了" */
 #proj-rows tr.arch td{color:var(--ink-3)}
 #proj-rows tr.arch .t-strong{color:var(--ink-2);font-weight:500}
@@ -522,7 +545,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 /* flex:none + nowrap：中文每个字之间都能断行，不锁住的话勾选框会被压成一字宽 */
 .chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);
   cursor:pointer;flex:none;white-space:nowrap}
-.chk input{accent-color:var(--accent);cursor:pointer}
+/* 框本身的样式在 .row-pick 那一组里，两处共用 */
 .role-pick{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .t-bad{color:var(--bad);font-weight:600}
 /* 矩阵：第一列是权限点，其余每列一个角色，勾选框居中 */
@@ -548,6 +571,11 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .chip.amber{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
 .chip.red{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
 .chip.plain{background:var(--field);color:var(--ink-2);border-color:var(--line-strong)}
+/* 筛选 chip 换成真 button 后要把 UA 默认样式按回去：字体跟页面、手型光标、
+   颜色仍交给 .chip.xxx 变体（两条类选择器权重更高，不会被这条顶掉） */
+button.chip{cursor:pointer;font-family:inherit;line-height:1.5}
+button.chip:hover{border-color:var(--accent-line)}
+button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 
 /* ---------- 按钮：胶囊 + 按压反馈 ---------- */
 .btn{
@@ -701,6 +729,10 @@ td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);curs
   margin:14px 0 0;font-size:11.5px;line-height:1.7;
   color:var(--ink-3);font-variant-numeric:tabular-nums;
 }
+/* 表单里的提示挪进控件列，跟上面的字段内容同一条左边界。
+   选择器多带一层，为的是压过上面那条 .modal-body p.modal-meta 自带的 14px 顶距
+   ——行距交给网格 gap 管，两处各管一半就会上下都不齐 */
+.form-grid > p.modal-meta.pf-hint{grid-column:2;justify-self:start;margin:0}
 .modal-actions{
   display:flex;justify-content:flex-end;gap:8px;padding:13px 18px;
   border-top:1px solid var(--line);background:var(--panel-2);

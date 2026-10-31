@@ -11,6 +11,8 @@ import { escapeHtml, run } from '../util.js';
 let activeTag = '';
 // 状态筛选默认"在产"——归档的意思就是不挡在眼前。三档：active / archived / all
 let activeStatus = 'active';
+// 搜索词放模块级：批量操作完、切项目后视图都会重画，词丢了人只会以为"筛坏了"
+let keyword = '';
 // 勾选的项目 id。批量操作完要留着，所以放模块级；每次 render 按现存项目剪掉一次
 const picked = new Set();
 
@@ -22,16 +24,28 @@ const stamp = (t) => t.slice(0, 16);
 const STATUS_LABELS = { active: '在产', archived: '已归档', all: '全部' };
 const BATCH_DELETE_WORD = '批量删除';
 
+// 筛选 chip 用真 button：span 挂个手型光标 Tab 停不住、Enter 也没反应，
+// 行框都能键盘操作了，chip 不能说不通。外观还是 .chip 那套胶囊（见 CSS）
 function tagChips(tags, active) {
   return tags.map((t) => `
-    <span class="chip ${t === active ? 'blue' : 'plain'}" data-tag="${escapeHtml(t)}"
-          style="cursor:pointer">${escapeHtml(t)}</span>`).join('');
+    <button type="button" class="chip ${t === active ? 'blue' : 'plain'}"
+            data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('');
 }
 
 function statusChips(current) {
   return Object.entries(STATUS_LABELS).map(([key, label]) => `
-    <span class="chip ${key === current ? 'blue' : 'plain'}" data-status="${key}"
-          style="cursor:pointer">${label}</span>`).join('');
+    <button type="button" class="chip ${key === current ? 'blue' : 'plain'}"
+            data-status="${key}">${label}</button>`).join('');
+}
+
+/** 筛选条整段。点 chip 后只重画这一段——不重建表格，搜索框里的词也就不会被洗掉 */
+function filtersHtml(allTags) {
+  return `
+    <span class="note" style="margin-right:4px">状态</span>${statusChips(activeStatus)}
+    <span class="note" style="margin-left:14px;margin-right:4px">标签</span>
+    ${allTags.length ? tagChips(allTags, activeTag)
+      : '<span class="t-dim">还没有标签 —— 用「修改」给项目加，加完这里就能点着筛</span>'}
+    ${activeTag ? '<button type="button" class="chip gray" data-tag="">清除</button>' : ''}`;
 }
 
 function rowsFor(projects) {
@@ -113,15 +127,11 @@ export default {
         <div class="card-head">
           <h2>项目</h2><span class="sub">${projects.length} 个 · 点一行切换当前项目</span>
           <div class="right"><input id="proj-search" class="ctl sm" placeholder="搜项目名或标签"
-                                    style="width:200px" value=""></div>
+                                    style="width:200px" value="${escapeHtml(keyword)}"></div>
         </div>
         <div class="card-body" style="padding:10px 14px;border-bottom:1px solid var(--line)">
-          <div class="row" style="gap:6px;flex-wrap:wrap">
-            <span class="note" style="margin-right:4px">状态</span>${statusChips(activeStatus)}
-            <span class="note" style="margin-left:14px;margin-right:4px">标签</span>
-            ${allTags.length ? tagChips(allTags, activeTag)
-              : '<span class="t-dim">还没有标签 —— 用「修改」给项目加，加完这里就能点着筛</span>'}
-            ${activeTag ? '<span class="chip gray" data-tag="" style="cursor:pointer">清除</span>' : ''}
+          <div class="row" id="proj-filters" style="gap:6px;flex-wrap:wrap">
+            ${filtersHtml(allTags)}
           </div>
         </div>
         ${pickable ? '<div class="batch-bar" id="batch-bar" hidden></div>' : ''}
@@ -157,10 +167,15 @@ export default {
               <textarea id="np-desc" maxlength="500" rows="3"
                         placeholder="一两句话说清做什么、给谁看（可留空）"></textarea>
 
-              <span class="pf-label top">协作人</span>
+              <!-- 协作人那行不给 .top：下面摆的是一行勾选框（或一句空态），不是文本域，
+                   贴顶的 9px 内边距会把字段名压得比自己的内容还低 -->
+              <span class="pf-label">协作人</span>
               <div id="np-members" class="role-pick" style="gap:12px 18px"></div>
+
+              <!-- 提示挪进控件列：原来它挂在表单外面，左边界跑到字段名那一栏，
+                   跟上面「协作人」的内容对不齐，看着像两列没对齐 -->
+              <p class="modal-meta pf-hint">标签用来检索，最多 10 个。协作人建完也能在「成员」里加减。</p>
             </div>
-            <p class="modal-meta">标签用来检索，最多 10 个。协作人建完也能在「成员」里加减。</p>
           </div>
           <div class="modal-actions">
             <button class="btn" id="np-cancel">取消</button>
@@ -262,19 +277,34 @@ export default {
 
     /* ---------- 列表：状态、搜索与标签筛选（纯前端） ---------- */
     const searchEl = root.querySelector('#proj-search');
+    const filters = root.querySelector('#proj-filters');
+    const allTags = [...new Set(store.projects.flatMap((p) => p.tags))].sort();
     const applyFilter = () => {
       const rows = [...root.querySelectorAll('#proj-rows tr')];
-      const keyword = (searchEl?.value || '').trim().toLowerCase();
+      const kw = (searchEl?.value || '').trim().toLowerCase();
       let shown = 0;
+      const visibleIds = new Set();
       rows.forEach((tr) => {
         const name = tr.dataset.name.toLowerCase();
         const tags = JSON.parse(tr.dataset.tags || '[]');
-        const hitKeyword = !keyword || name.includes(keyword)
-          || tags.some((t) => t.toLowerCase().includes(keyword));
+        const hitKeyword = !kw || name.includes(kw)
+          || tags.some((t) => t.toLowerCase().includes(kw));
         const hitTag = !activeTag || tags.includes(activeTag);
         const hitStatus = activeStatus === 'all' || tr.dataset.status === activeStatus;
         tr.hidden = !(hitKeyword && hitTag && hitStatus);
-        if (!tr.hidden) shown += 1;
+        if (!tr.hidden) {
+          shown += 1;
+          if (tr.dataset.id) visibleIds.add(Number(tr.dataset.id));
+        }
+      });
+      // 选中的必须是看得见的：筛完把不在可见行里的勾剪掉。不剪的话批量条数着
+      // 几十行外看不见的项目，点归档就打到你没看到的行为上。
+      // 集合和那一行的复选框要一起剪：只剪集合，切回原筛选时会出现"看着勾着、其实没选"
+      [...picked].forEach((id) => {
+        if (visibleIds.has(id)) return;
+        picked.delete(id);
+        const box = root.querySelector(`#proj-rows .row-pick[data-pick="${id}"]`);
+        if (box) box.checked = false;
       });
       const empty = root.querySelector('#no-match');
       if (empty) {
@@ -361,21 +391,28 @@ export default {
     }
 
     if (searchEl) {
-      searchEl.addEventListener('input', applyFilter);
+      searchEl.addEventListener('input', () => {
+        keyword = searchEl.value;
+        applyFilter();
+      });
       applyFilter();
     }
-    root.querySelectorAll('[data-tag]').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        activeTag = chip.dataset.tag;
-        refresh();
-      });
-    });
-    root.querySelectorAll('[data-status]').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        activeStatus = chip.dataset.status;
-        refresh();
-      });
-    });
+    if (filters) {
+      // 只重画筛选条这一小段 + 重新筛行。原来这里走的是整页 refresh，两个毛病：
+      // 搜索框会被重绘清空（词悄悄丢了），而且筛选本来就是纯前端的，不该为它重建表格
+      const bindChips = () => {
+        filters.querySelectorAll('[data-status],[data-tag]').forEach((chip) => {
+          chip.addEventListener('click', () => {
+            if (chip.dataset.status !== undefined) activeStatus = chip.dataset.status;
+            else activeTag = chip.dataset.tag;
+            filters.innerHTML = filtersHtml(allTags);
+            bindChips();
+            applyFilter();
+          });
+        });
+      };
+      bindChips();
+    }
 
     if (pickAll) {
       pickAll.addEventListener('change', () => {
@@ -383,6 +420,10 @@ export default {
         vis.forEach((tr) => {
           const id = Number(tr.dataset.id);
           if (pickAll.checked) picked.add(id); else picked.delete(id);
+          // 行框的视觉状态必须跟着走：只改 picked 的话，行里看着没勾、
+          // 逻辑上已经选中，再点一下就"勾上但数字不变"，谁看都是坏的
+          const box = tr.querySelector('.row-pick');
+          if (box) box.checked = pickAll.checked;
         });
         renderBar();
       });
@@ -468,6 +509,8 @@ export default {
 
       root.querySelector('#np-cancel').addEventListener('click', closeNew);
       newModal.addEventListener('click', (e) => { if (e.target === newModal) closeNew(); });
+      // Escape：另外四个弹窗都能键盘关，新建这个原来只能点外面——补齐
+      newModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeNew(); });
       [npName, npTags].forEach((el) => {
         el.addEventListener('keydown', (e) => { if (e.key === 'Enter') npCreate.click(); });
       });
@@ -652,10 +695,9 @@ export default {
       okBtn.disabled = true;
       const ok = await run('删除', async () => {
         await api.deleteProject(pending.id, confirmEl.value.trim());
+        // 当前项目被删后的回退交给 store.load()：它现在优先退到在产的第一个，
+        // 这里再自己挑一次 projects[0] 等于绕过那条规则
         await store.load();
-        if (!store.projects.some((p) => p.id === store.currentId)) {
-          store.currentId = store.projects.length ? store.projects[0].id : null;
-        }
       });
       okBtn.disabled = false;
       if (!ok) return;
