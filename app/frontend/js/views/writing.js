@@ -239,7 +239,9 @@ export default {
     root.querySelectorAll('[data-del-shot]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('删掉这一镜？')) return;
-        await api.deleteShot(Number(btn.dataset.delShot));
+        // 同 assets.js：不包 run() 的话后端拒绝=静默，页面还照样刷新成"已删除"
+        const ok = await run('删镜头', () => api.deleteShot(Number(btn.dataset.delShot)));
+        if (!ok) return;
         refresh();
       });
     });

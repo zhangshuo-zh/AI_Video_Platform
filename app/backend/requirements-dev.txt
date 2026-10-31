@@ -1,0 +1,4 @@
+# 只在开发/测试时用；生产依赖仍是 requirements.txt 那三行。
+# 装法：uv pip install --python .venv/bin/python -r requirements-dev.txt
+pytest>=8.0
+httpx>=0.27        # starlette 的 TestClient 依赖它，测试用 ASGI 进程内调用，不起端口

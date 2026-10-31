@@ -31,6 +31,17 @@ def _has_tables(conn) -> bool:
     ).fetchone() is not None
 
 
+def _drop_backup(path: Path) -> None:
+    """删一份备份，连它的 -wal/-shm 一起删。
+
+    备份库也是 WAL 模式，close() 之后 sidecar 不一定消失（本机 data/ 里就留着
+    两份主文件已被删、sidecar 还在的孤儿）。孤儿不但占地方，还会被下一轮
+    清理的 glob 当成独立备份计数——于是"保留 5 份"实际只留了两三份。
+    """
+    for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        p.unlink(missing_ok=True)
+
+
 def _backup(conn, *, verbose: bool = True) -> Path | None:
     """有未应用的迁移时，先把整份库备份下来。
 
@@ -44,9 +55,11 @@ def _backup(conn, *, verbose: bool = True) -> Path | None:
     finally:
         dest.close()
 
-    stale = sorted(DB_PATH.parent.glob(f"{DB_PATH.name}.bak-*"))[:-MAX_BACKUPS]
-    for old in stale:
-        old.unlink()
+    # 只数主文件：sidecar 跟着主文件走，不算独立备份
+    keep = sorted(p for p in DB_PATH.parent.glob(f"{DB_PATH.name}.bak-*")
+                  if not p.name.endswith(("-wal", "-shm")))
+    for old in keep[:-MAX_BACKUPS]:
+        _drop_backup(old)
     if verbose:
         print(f"迁移前已备份：{target.name}")
     return target

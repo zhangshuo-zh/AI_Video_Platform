@@ -159,7 +159,10 @@ export default {
     root.querySelectorAll('[data-del-asset]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('删掉这个资产？已引用的镜头不会被改。')) return;
-        await api.deleteAsset(Number(btn.dataset.delAsset));
+        // 必须过 run()：api.deleteAsset 现在会真的抛，裸 await 的话
+        // 后端拒绝就变成一个没人看的 rejected promise，页面照样"看起来删掉了"
+        const ok = await run('删除资产', () => api.deleteAsset(Number(btn.dataset.delAsset)));
+        if (!ok) return;
         window.dispatchEvent(new CustomEvent('app:refresh'));
       });
     });

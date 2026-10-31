@@ -89,12 +89,12 @@ export const api = {
     body: JSON.stringify(body),
   }).then(toJson),
   projectSummary: (id) => fetch(`/api/projects/${id}/summary`).then(toJson),
+  // 原来这里自己写了一段 `if (!res.ok) throw new Error(status + ' ' + statusText)`，
+  // 把后端那句给人看的 detail 换成了 "409 Conflict"——同一个页面里其他 40 个函数
+  // 都走 toJson，只有它不听话。改回 toJson：错误照样抛，但说的是人话。
   deleteProject: (id, confirmName) => fetch(
     `/api/projects/${id}?confirm=${encodeURIComponent(confirmName)}`,
-    { method: 'DELETE' }).then((res) => {
-      if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
-      return true;
-    }),
+    { method: 'DELETE' }).then(toJson),
   createProject: (body) => fetch('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +115,10 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
   }).then(toJson),
-  deleteEpisode: (id) => fetch(`/api/episodes/${id}`, { method: 'DELETE' }),
+  // 这三个 DELETE 原来漏了 .then(toJson)，返回的是原始 Response：
+  // 后端 403/409/500 也照样"成功"，页面刷新一下就像真删掉了。
+  // 204 没响应体，toJson 会回 null，调用方本来也不看返回值。
+  deleteEpisode: (id) => fetch(`/api/episodes/${id}`, { method: 'DELETE' }).then(toJson),
   setEpisodeStatus: (id, status) => fetch(`/api/episodes/${id}/status`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
@@ -126,7 +129,7 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
-  deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }),
+  deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }).then(toJson),
 
   assets: (pid, kind) => fetch(
     `/api/projects/${pid}/assets${kind ? `?kind=${kind}` : ''}`).then(toJson),
@@ -134,7 +137,7 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
-  deleteAsset: (id) => fetch(`/api/assets/${id}`, { method: 'DELETE' }),
+  deleteAsset: (id) => fetch(`/api/assets/${id}`, { method: 'DELETE' }).then(toJson),
   uploadAssetImage: (id, file) => {
     const form = new FormData();
     form.append('file', file);
