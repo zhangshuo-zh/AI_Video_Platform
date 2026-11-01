@@ -320,7 +320,7 @@
 
 ## 18. W10 完成后回填（2026-11-01）
 
-`pytest tests -q` → **295 passed**（新增 `test_cloud.py` 14 项：清单价与枚举、DeepSeek 成功/401/429/缺密钥、Wan 创建轮询下载/缺 base URL、请求文件无密钥值、worker 端到端写请求 ID 与用量、401 失败仍保留预计成本、默认本地不选云端、本地失败重试仍本地、云端重试继承方式与计价）。路由不变：**72 条业务端点 / 77 条含 health 与四条 auth**。真浏览器 **15 项全过**＋补证 **1 项**（Wan 的 `ratio` 五档与 720P 0.6 元/秒）；真 DeepSeek 调用 2 次（作业 #36/#37），Wan 只跑本地 mock HTTP。图在 `app/截图/v70-cloud-form.png`、`v70-cloud-result.png`、`v70-local-default.png`、`v70-wan-form.png`；官方取数与调用记录在 `盘点/W10_CLOUD.md`。
+`pytest tests -q` → **296 passed**（新增 `test_cloud.py` 15 项：清单价与枚举、DeepSeek 成功/401/429/缺密钥、Wan 创建轮询下载/缺 base URL、请求文件无密钥值、worker 端到端写请求 ID 与用量、401 失败仍保留预计成本、默认本地不选云端、本地假适配器失败时云端零请求、本地失败重试仍本地、云端重试继承方式与计价）。路由不变：**72 条业务端点 / 77 条含 health 与四条 auth**。真浏览器 **15 项全过**＋补证 **1 项**（Wan 的 `ratio` 五档与 720P 0.6 元/秒）；真 DeepSeek 调用 2 次（作业 #36/#37），Wan 只跑本地 mock HTTP。图在 `app/截图/v70-cloud-form.png`、`v70-cloud-result.png`、`v70-local-default.png`、`v70-wan-form.png`；官方取数与调用记录在 `盘点/W10_CLOUD.md`。
 
 | 盘点条目 | 现在 |
 |---|---|

@@ -377,6 +377,24 @@ def test_默认本地作业不会走云端(provider_state, clean_queue, fresh_pr
     assert row["provider_code"] == "fastmetal"
 
 
+def test_本地失败一次云端请求都不发(clean_queue, fresh_project, mock_api):
+    """本地假适配器模拟失败：作业落 failed，但 mock 云端服务一次都没被访问。"""
+    pid = fresh_project("editor")
+    payload = JobSubmitIn(
+        project_id=pid, capability="text", prompt="本地失败样本",
+        provider_code="mock", model_code="mock-1", execution_mode="local",
+        params={"sleep": 0.05, "fail": True},
+    )
+    row = services.submit_job(payload, created_by=None)
+    assert worker.run_once("w10-local-fail-worker") == row["id"]
+
+    done = job_repo.get(row["id"])
+    assert done["status"] == "failed"
+    assert done["execution_mode"] == "local"
+    assert done["error_code"] == "mock_failed"
+    assert mock_api.calls == []
+
+
 def test_本地失败重试仍是本地(provider_state, clean_queue, fresh_project):
     pid = fresh_project("editor")
     row = job_repo.create({

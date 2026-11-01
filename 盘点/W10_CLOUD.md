@@ -82,7 +82,7 @@ W10 只新增这两家；火山方舟／MiniMax／可灵／Seedance 仍是“只
 两条都是 `pending_reconciliation`，预计 16,000 micros（¥0.016）；实际 token 用量已写进 `resources_json.provider.usage`，但**没有自动改金额**——结算要人工核对，这不在 W10。
 
 - 浏览器：无头 Chrome 真鼠标走完「选中云端 → 预填百万 Token/8 元/¥0.02 → 勾确认 → 提交 → 抽屉显示请求 ID/用量/产物」15 项全过；默认视频轨仍是本地 fastmetal 且不显示计价。补证 1 项：Wan 表单的 `ratio` 渲染成五档下拉（16:9/9:16/1:1/4:3/3:4），720P 预填 0.6 元/秒、5 秒、¥3.00（未提交，不花钱）。
-- 测试：`pytest tests -q` → **295 passed**；Wan 的创建→轮询→下载、401/429/缺密钥/缺 base URL 都是本地 `ThreadingHTTPServer` 模拟。
+- 测试：`pytest tests -q` → **296 passed**；Wan 的创建→轮询→下载、401/429/缺密钥/缺 base URL 都是本地 `ThreadingHTTPServer` 模拟；另有一条“本地假适配器失败→云端 mock 零请求”的断言。
 
 ### 模拟的
 
