@@ -16,7 +16,7 @@ app/
     tests/               pytest 全量测试（不跑模型、无需密钥）
     data/                运行数据（已被 .gitignore 排除，见下）
   frontend/              index.html + js/ + css/ + img/
-文档/                   三份 as-built 说明书：需求概要、系统设计、数据字典
+文档/                   三份 as-built 说明书：需求概要、系统设计、数据字典（截图在 assets/，目录可独立预览）
 设计稿.md               产品与架构设计稿（含逐版修订记录）
 盘点/                   SPEC_DIFF 回填与各包验收留档（W09—W18）
 AI视频生产平台_Qwen开发规格包/   外部规格包原文（历史输入，不再作为当前口径）
