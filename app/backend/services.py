@@ -134,13 +134,18 @@ def read_content(doc) -> dict:
 
 
 def _tend(content: str) -> str:
-    """正文一律以换行收尾。
+    """正文一律以换行收尾——**空正文除外**。
 
     不带结尾换行的文件，diff 末尾会挂一句 `\\ No newline at end of file`，
     版本面板里那行看着像稿子的一部分；更麻烦的是下一次在末尾追加一句时，
     diff 会把上一行也标成改动（其实只是补了个换行）。
     规范化放在写盘与算令牌之前，两边用的是同一份字节，令牌才不会自相矛盾。
+
+    空稿不补：刚建好的「第一章」本来就是一个字都没写，硬塞一个换行会让
+    界面上的字数显示成 1，读起来像"平台替我写了一个字"。空就是空。
     """
+    if not content:
+        return ""
     return content if content.endswith("\n") else content + "\n"
 
 

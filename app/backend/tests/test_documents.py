@@ -170,6 +170,25 @@ def test_正文补结尾换行且不会因此一直报冲突(as_role, fresh_proj
     assert r2.json()["changed"] is False
 
 
+def test_空正文建出来的就是空文件(as_role, fresh_project):
+    """刚建好的一章一个字都没写，不该被"补换行"这条规则塞进一个字符。
+
+    塞了以后编辑器上的字数显示成 1，读起来像平台替人写了一个字；
+    而且空稿连存两次也要稳定（令牌按空串算，两边一致）。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    doc = _create(c, pid, title="空章节", content="")
+    target = WORKSPACE_DIR / doc["rel_path"]
+    assert target.read_bytes() == b"", "空稿被塞了一个换行"
+    tok = _token(c, doc["id"])
+    assert tok == services.version_token("")
+    again = c.request("PUT", f"/api/documents/{doc['id']}/content",
+                      json={"content": "", "expected_version": tok})
+    assert again.status_code == 200, again.text
+    assert again.json()["changed"] is False
+
+
 def test_版本不对回_409_且盘上不动(as_role, fresh_project):
     c = as_role("editor")
     pid = fresh_project("editor")
