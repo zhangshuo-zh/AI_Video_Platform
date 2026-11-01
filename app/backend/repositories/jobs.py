@@ -168,23 +168,26 @@ class JobRepository:
 
     def succeed(self, job_id: int, worker_id: str, log_path: str,
                 result_paths: list[str], elapsed_ms: int, return_code: int = 0,
-                resources: dict | None = None) -> None:
+                resources: dict | None = None,
+                provider_request_id: str | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'succeeded', finished_at = datetime('now','localtime'),
                           elapsed_ms = ?, return_code = ?, log_path = ?,
                           result_paths_json = ?, error_code = NULL, error_message = NULL,
                           resources_json = ?, lease_until = NULL, worker_id = NULL,
+                          provider_request_id = COALESCE(?, provider_request_id),
                           updated_at = datetime('now','localtime')
                     WHERE id = ? AND worker_id = ?""",
                 (elapsed_ms, return_code, log_path,
                  json.dumps(result_paths, ensure_ascii=False),
-                 self._resources(resources), job_id, worker_id),
+                 self._resources(resources), provider_request_id, job_id, worker_id),
             )
 
     def fail(self, job_id: int, worker_id: str, error_code: str, message: str,
              log_path: str = "", return_code: int | None = None,
-             elapsed_ms: int | None = None, resources: dict | None = None) -> None:
+             elapsed_ms: int | None = None, resources: dict | None = None,
+             provider_request_id: str | None = None) -> None:
         """失败**不动成本列**：一条云端作业失败时，供应商可能已经计过费；
         这里替人把金额清零，账就再也对不上了（数据字典 §5.3「禁止」）。"""
         with get_conn() as conn:
@@ -192,24 +195,28 @@ class JobRepository:
                 """UPDATE job SET status = 'failed', finished_at = datetime('now','localtime'),
                           error_code = ?, error_message = ?, log_path = ?,
                           return_code = ?, elapsed_ms = ?, resources_json = ?,
+                          provider_request_id = COALESCE(?, provider_request_id),
                           lease_until = NULL, worker_id = NULL,
                           updated_at = datetime('now','localtime')
                     WHERE id = ? AND worker_id = ?""",
                 (error_code, message[:2000], log_path, return_code, elapsed_ms,
-                 self._resources(resources), job_id, worker_id),
+                 self._resources(resources), provider_request_id, job_id, worker_id),
             )
 
     def cancelled(self, job_id: int, worker_id: str | None, message: str = "",
                   log_path: str = "", elapsed_ms: int | None = None,
-                  resources: dict | None = None) -> None:
+                  resources: dict | None = None,
+                  provider_request_id: str | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = datetime('now','localtime'),
                           error_code = 'cancelled', error_message = ?, log_path = ?,
                           elapsed_ms = ?, resources_json = ?, lease_until = NULL, worker_id = NULL,
+                          provider_request_id = COALESCE(?, provider_request_id),
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
-                (message[:2000], log_path, elapsed_ms, self._resources(resources), job_id),
+                (message[:2000], log_path, elapsed_ms, self._resources(resources),
+                 provider_request_id, job_id),
             )
 
     def request_cancel(self, job_id: int) -> sqlite3.Row | None:

@@ -26,7 +26,7 @@ const CAPS = { text: '文本', image: '图像', video: '视频', tts: '配音', 
 const MODES = { local: '本地', cloud: '云端' };
 const UNITS = {
   second: '秒', minute: '分钟', request: '次', token: 'Token',
-  image: '张', character: '字符',
+  million_token: '百万 Token', image: '张', character: '字符',
 };
 const ACTIVE = ['queued', 'starting', 'running', 'cancel_requested'];
 const FINISHED_BAD = ['failed', 'cancelled', 'needs_attention'];
@@ -425,6 +425,32 @@ export default {
       drawerBody.innerHTML = '<p class="hint">正在读详情与日志……</p>';
     }
 
+    function providerHtml(job, res) {
+      const p = res.provider || null;
+      if (!p && !job.provider_request_id) return '';
+      const usage = p?.usage || {};
+      const parts = [];
+      if (usage.prompt_tokens != null || usage.completion_tokens != null) {
+        parts.push(`输入 ${usage.prompt_tokens ?? '—'} / 输出 ${usage.completion_tokens ?? '—'} / 合计 ${usage.total_tokens ?? '—'} token`);
+      }
+      if (usage.cached_tokens != null) parts.push(`缓存命中 ${usage.cached_tokens} token`);
+      if (usage.duration != null) {
+        parts.push(`${usage.duration} 秒${usage.resolution ? ` · ${usage.resolution}` : ''}`);
+      }
+      const err = p?.error
+        ? `<span class="chip red">${escapeHtml(p.error.code || 'error')}</span> ${escapeHtml(p.error.message || '')}`
+        : '';
+      return `<h3 class="drawer-h">供应商回执</h3>
+        <div class="kv-grid">
+          ${kv('请求 / 任务 ID', escapeHtml(job.provider_request_id || p?.request_id || '—'))}
+          ${kv('HTTP 状态', p?.http_status ?? '—')}
+          ${kv('任务状态', escapeHtml(p?.task_status || '—'))}
+          ${kv('实际用量', parts.length ? escapeHtml(parts.join('；')) : '—')}
+          ${kv('供应商延迟', p?.latency_ms == null ? '—' : duration(p.latency_ms))}
+        </div>
+        ${err ? `<p class="modal-meta">${err}</p>` : ''}`;
+    }
+
     function metricsHtml(res) {
       const m = res.adapter_metrics || {};
       const rows = [];
@@ -521,6 +547,7 @@ export default {
         </div>
         <h3 class="drawer-h">成本</h3>
         <div class="kv-grid">${cloudCost}</div>
+        ${providerHtml(job, res)}
         <h3 class="drawer-h">提示词</h3>
         <pre class="code-block">${escapeHtml(job.prompt_snapshot || '（无）')}</pre>
         <h3 class="drawer-h">参数快照</h3>
@@ -677,6 +704,15 @@ export default {
             <input type="checkbox" data-param="${escapeHtml(p.name)}" data-type="bool"
                    ${value ? 'checked' : ''}></label>`;
         }
+        if (p.choices?.length) {
+          // 枚举参数不给自由文本框：清单里写死的那几个值就是供应商接受的集合
+          return `<label class="param"><span>${escapeHtml(p.name)}</span>
+            <select class="ctl" data-param="${escapeHtml(p.name)}" data-type="${escapeHtml(p.type)}">
+              ${p.choices.map((c) => `<option value="${escapeHtml(c)}"
+                ${String(c) === String(value) ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+            </select>
+            ${p.note ? `<i>${escapeHtml(p.note)}</i>` : ''}</label>`;
+        }
         return `<label class="param"><span>${escapeHtml(p.name)}</span>
           <input class="ctl" data-param="${escapeHtml(p.name)}"
                  data-type="${escapeHtml(p.type)}"
@@ -695,6 +731,14 @@ export default {
       root.querySelector('#jm-params').innerHTML = paramFields(model, values || {}, option);
     }
 
+    /** 清单里登记的官方价；当分辨率/时长等条件命中时优先用那一条。 */
+    function priceFor(model, params) {
+      const list = model?.prices || [];
+      return list.find((p) => Object.entries(p.when || {})
+        .every(([key, value]) => String(params[key] ?? '') === String(value)))
+        || list[0] || null;
+    }
+
     function renderCostSection() {
       const cloud = isCloud();
       const costEl = root.querySelector('#jm-cost');
@@ -704,7 +748,8 @@ export default {
       if (!cloud) return;
       const cap = root.querySelector('#jm-capability').value;
       const defaultUnit = cap === 'video' || cap === 'music' ? 'second'
-        : cap === 'image' ? 'request' : cap === 'tts' ? 'character' : 'token';
+        : cap === 'image' ? 'request' : cap === 'tts' ? 'character'
+          : cap === 'text' ? 'million_token' : 'token';
       costEl.innerHTML = `
         <div class="cost-inputs">
           <label><span>数量</span><input id="jm-qty" class="ctl" type="number" min="0" step="0.001" value="1"></label>
@@ -717,6 +762,7 @@ export default {
             <input id="jm-source" class="ctl" maxlength="200" value="手工估算（提交人填写）"></label>
         </div>
         <div class="cost-preview"><span>预计</span><b id="jm-estimate">—</b></div>
+        <p class="hint cost-source" id="jm-price-note"></p>
         <label class="pf-check cost-confirm"><input type="checkbox" id="jm-confirm">
           我确认这次按供应商计费，预计金额以上方为准</label>
         <p class="hint">金额由服务端按 数量 × 单价 计算；失败不默认归零。重试会新建一行、继承这份计价，原行不动。</p>`;
@@ -727,10 +773,41 @@ export default {
         root.querySelector('#jm-estimate').textContent =
           q > 0 && p > 0 ? money(Math.round(q * p * 1_000_000), cur) : '—';
       };
+      applyPricing(update);
       ['#jm-qty', '#jm-price', '#jm-currency'].forEach((sel) => {
         root.querySelector(sel)?.addEventListener('input', update);
         root.querySelector(sel)?.addEventListener('change', update);
       });
+    }
+
+    /** 按清单预填计价，不替人勾确认；找不到官方价时说得清楚。 */
+    function applyPricing(update) {
+      const option = selectedOption();
+      const model = option?.models?.find((m) => m.code === option?.model)
+        || option?.models?.[0] || null;
+      const params = readParams();
+      const price = priceFor(model, params);
+      const noteEl = root.querySelector('#jm-price-note');
+      if (!price) {
+        if (noteEl) {
+          noteEl.textContent = option
+            ? '这个档位没有登记官方价格；数量与单价请手工填写。'
+            : '还没有选中可用槽位，无法预填价格。';
+        }
+        update?.();
+        return;
+      }
+      const qty = price.unit === 'second' && params.duration
+        ? Number(params.duration) : Number(price.default_quantity || 1);
+      root.querySelector('#jm-qty').value = String(qty);
+      root.querySelector('#jm-unit').value = price.unit;
+      root.querySelector('#jm-price').value = String(price.amount_micros / 1_000_000);
+      root.querySelector('#jm-currency').value = price.currency || 'CNY';
+      root.querySelector('#jm-source').value = price.source.slice(0, 200);
+      if (noteEl) {
+        noteEl.textContent = `官方价档：${price.label}｜${price.source}${price.note ? '。' + price.note : ''}`;
+      }
+      update?.();
     }
 
     function refreshTemplateSelect() {
@@ -1108,6 +1185,10 @@ export default {
     root.querySelector('#jm-route').addEventListener('change', () => {
       renderParams();
       renderCostSection();
+    });
+    // 改分辨率/时长时，官方价档跟着变（720P 与 1080P 是两条价）
+    root.querySelector('#jm-params').addEventListener('change', () => {
+      if (!jobModal.hidden && isCloud()) renderCostSection();
     });
     root.querySelector('#jm-template').addEventListener('change', (e) => {
       const p = state.profiles.find((x) => String(x.id) === e.target.value);

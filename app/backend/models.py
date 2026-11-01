@@ -26,6 +26,9 @@ UNITS: dict[str, str] = {
     "minute": "分钟",
     "request": "次",
     "token": "Token",
+    # 文本供应商按"百万 token"报价；单 token 单价会写成 0.000002 这种小数，
+    # 既难核对也容易在前端被四舍五入吃掉。单独留一档，预填就是官方口径。
+    "million_token": "百万 Token",
     "image": "张",
     "character": "字符",
 }
@@ -275,7 +278,8 @@ class JobEstimateIn(BaseModel):
     能回答"这个价是哪来的"——没有出处的数字不算数。
     """
     quantity: Decimal = Field(gt=0, le=Decimal("1000000"), max_digits=12, decimal_places=3)
-    unit: Literal["second", "minute", "request", "token", "image", "character"]
+    unit: Literal["second", "minute", "request", "token", "million_token",
+                  "image", "character"]
     unit_price_micros: int = Field(ge=0, le=1_000_000_000_000)
     currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     source: str = Field(min_length=1, max_length=200)
@@ -330,6 +334,9 @@ class JobOut(BaseModel):
     retry_of_job_id: int | None
     error_code: str | None
     error_message: str | None
+    # 云端供应商回执里的请求/任务 ID；本地作业恒为 None。
+    # 只回 ID，不回供应商原始响应——原始响应在 resources 的是白名单摘录。
+    provider_request_id: str | None = None
     has_log: bool
     has_artifacts: bool
     # 成本只回整数 micros 与币种，格式化交给界面；
@@ -360,6 +367,7 @@ class JobOut(BaseModel):
             finished_at=row["finished_at"], elapsed_ms=row["elapsed_ms"],
             retry_of_job_id=row["retry_of_job_id"],
             error_code=row["error_code"], error_message=row["error_message"],
+            provider_request_id=row["provider_request_id"],
             has_log=bool(row["log_path"]),
             has_artifacts=row["result_paths_json"] not in ("", "[]"),
             quantity=row["quantity"], unit=row["unit"],

@@ -38,6 +38,7 @@ def _job(**overrides):
         "id": 7,
         "prompt_snapshot": '烟花 $HOME; rm -rf / -- "引号" $(echo x)',
         "capability": "video",
+        "execution_mode": "local",
         "provider_code": "fastmetal",
         "model_code": "fastmetal-1.3b-qad",
     }

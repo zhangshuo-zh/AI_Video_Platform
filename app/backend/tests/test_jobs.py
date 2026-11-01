@@ -286,9 +286,9 @@ def test_参数白名单在提交时挡掉(as_role, provider_state, clean_queue,
 
 def test_云端视频必须显式确认(as_role, provider_state, clean_queue, seeded):
     admin = as_role("admin")
-    _put_video(admin, cloud={"provider": "wan", "model": "wan-1080p", "enabled": True})
+    _put_video(admin, cloud={"provider": "wan", "model": "wan2.7-t2v", "enabled": True})
     c = as_role("editor")
-    base = {"provider_code": "wan", "model_code": "wan-1080p",
+    base = {"provider_code": "wan", "model_code": "wan2.7-t2v",
             "execution_mode": "cloud", "params": {}}
 
     r = _submit(c, seeded["project_id"], **base)

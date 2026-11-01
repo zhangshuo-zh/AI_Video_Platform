@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import adapters
 import runtime
 from config import JOBS_DIR
+
+CLOUD_RUNNER = Path(__file__).resolve().parent / "cloud_run.py"
 
 class RunnerUnavailable(Exception):
     """运行时缺东西：解释器／入口／权重／模型目录。"""
@@ -169,11 +173,75 @@ def _mflux(job, params: dict, outputs: Path) -> RunSpec:
               "width": width, "height": height, "steps": steps})
 
 
+def _cloud(job, params: dict, outputs: Path, adapter) -> RunSpec:
+    """云端：把一次调用写成请求 JSON，交给 cloud_run.py 子进程。
+
+    argv 里只有请求文件路径；密钥值不进来，日志里也没有可泄露的东西。
+    base URL 一律从环境变量读，清单里只留变量名。
+    """
+    key_env = adapters.effective_key_env(adapter.code, "", adapter.capability, "cloud")
+    if not adapters.key_present(key_env):
+        raise RunnerUnavailable(f"环境变量 {key_env} 没有值；云端作业不能起")
+
+    capability = job["capability"]
+    if capability == "text":
+        ext, media = "md", "text"
+    elif capability == "video":
+        ext, media = "mp4", "video"
+    else:
+        raise RunnerUnavailable(f"{capability} 云端执行还没有接线")
+
+    request_path = outputs / f"{job['id']}-cloud-request.json"
+    result_path = outputs / f"{job['id']}-cloud-result.json"
+    out = outputs / f"{job['id']}-{adapter.code}.{ext}"
+    request = {
+        "provider": adapter.code,
+        "capability": capability,
+        "model": job["model_code"],
+        "prompt": job["prompt_snapshot"],
+        "params": params,
+        "key_env": key_env,
+        "output": str(out),
+        "result": str(result_path),
+    }
+    if adapter.code == "wan":
+        if not (os.environ.get("ALIYUN_WAN_BASE_URL") or "").strip():
+            raise RunnerUnavailable(
+                "没有配置 ALIYUN_WAN_BASE_URL（要带 Workspace 前缀的官方地址）")
+        request["poll_interval"] = 5
+        request["poll_timeout"] = 1800
+    else:
+        request["http_timeout"] = 120
+    # 请求文件里没有任何密钥值；key_env 只是变量名。
+    # 写完立刻落盘，子进程只认这一份快照，运行中被改环境也不影响这次调用。
+    request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+    argv = [sys.executable, str(CLOUD_RUNNER), str(request_path)]
+    return RunSpec(
+        runner=f"cloud:{adapter.code}", argv=argv, cwd=outputs,
+        expected=[out], media=media,
+        meta={"adapter": adapter.code, "model": job["model_code"],
+              "provider": adapter.code, "request_path": str(request_path),
+              "result_path": str(result_path)})
+
+
 def build(job, params: dict, outputs: Path) -> RunSpec:
-    """按能力与 provider 分发。没接线的组合明确拒绝，不找替代品。"""
+    """按能力与 provider 分发。没接线的组合明确拒绝，不找替代品。
+
+    `execution_mode` 是 Job 行冻结的：本地作业永远走本地分支，
+    云端作业才走 `_cloud`。这里没有"失败就换一条轨"的入口。
+    """
     capability = job["capability"]
     provider = job["provider_code"]
     model = job["model_code"]
+    mode = job["execution_mode"]
+    if mode == "cloud":
+        adapter = adapters.find(capability, "cloud", provider)
+        if adapter is None:
+            raise RunnerUnavailable(f"provider「{provider}」没有登记云端适配器")
+        if not adapter.models:
+            raise RunnerUnavailable(f"{provider} 的参数与模型尚未核验，不能执行")
+        return _cloud(job, params, outputs, adapter)
     if capability == "video" and provider == "fastmetal":
         return _fastmetal(job, params, outputs, model)
     if capability == "video" and provider == "mlx-video":
@@ -207,6 +275,30 @@ def verify(spec: RunSpec) -> list[Path]:
         if not _magic_ok(path, spec.media):
             raise RunnerUnavailable(f"产物不是可识别的 {spec.media} 文件：{path.name}")
     return spec.expected
+
+
+def provider_receipt(spec: RunSpec) -> dict:
+    """读 cloud_run.py 留下的回执，只留对账需要的字段。
+
+    回执里可能有完整错误响应；这里按白名单挑，既避免把供应商原文
+    整段塞进 /api/jobs 的响应，也保证 `request_id` 与 `usage` 一定在。
+    """
+    path = Path(spec.meta.get("result_path", ""))
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    keep = {}
+    for key in ("ok", "provider", "model", "capability", "request_id",
+                "task_request_id", "task_status", "http_status", "latency_ms",
+                "bytes", "usage", "response_meta", "error"):
+        if key in raw:
+            keep[key] = raw[key]
+    return keep
 
 
 def metrics_summary(path: Path) -> dict:

@@ -100,10 +100,10 @@
 | 01-4.8.2-1 | 五能力 × 本地/云端 = 10 槽 | **done** | `provider_config` 实读 10 行 |
 | 01-4.8.2-2 | 配置项含 provider/模型/默认/启用/密钥名/健康/备注 | **done（W06）** | 加 `key_env`／`notes` 两列（0014）；"允许参数"与"健康"不落库——前者由 `adapters.py` 清单按档位现给，后者每次打开现查（本地看运行时目录、云端看密钥变量），存下来只会变成"上次检查时是好的" |
 | 01-4.8.2-3 | 密钥只经 `FV_KEY_<PROVIDER>`、页面只显已配置 | **done（W06 扩了命名口径）** | 优先级：这一行填的 `key_env` > 清单建议名（deepseek→`DEEPSEEK_API_KEY`）> `FV_KEY_<PROVIDER>`。只存变量名；值只在进程环境里，测试用真串反证过响应/库/日志 |
-| 01-4.8.2-6 | 能力支持由 adapter manifest 驱动 | **done（W06）** | `backend/adapters.py` 登记 15 个 adapter（本地 5 个带模型档与参数出处；云端只登记名字，模型与参数留空）；未登记的 provider 明说"不猜" |
+| 01-4.8.2-6 | 能力支持由 adapter manifest 驱动 | **done（W06；W10 补两家云端）** | `backend/adapters.py` 登记 15 个 adapter：本地 5 个带模型档与参数出处；云端 W06 只登记名字，W10 补入 DeepSeek `deepseek-flash` 与 Wan `wan2.7-t2v` 的模型/参数/价格，其余仍空；未登记的 provider 明说"不猜" |
 | 01-4.8.2-4 | 普通模块只读"当前默认模型/状态" | **done（W06）** | `GET /api/providers/current`（`require_user`，五类固定五行，不带密钥名与备注） |
 | 01-4.8.2-5 | 云端视频必须逐镜头显式选择、不自动兜底 | **done（W06）** | 保存时云端视频不许设默认（422）；`services.resolve_provider()` 默认轨没配好直接 `NoRoute`，视频走云端还要"显式＋已确认计费" |
-| 01-D-08 | 所有价格视为待复核 | **verify** | 仍然没有价格数据：W06 只登记云端 provider 名字，模型档/计价/参数一律空着，等 W10/W17 核官方文档再填 |
+| 01-D-08 | 所有价格视为待复核 | **partial（W10）** | DeepSeek `deepseek-flash` 与阿里云 Wan 2.7 的价格、模型、参数已按 2026-11-01 官方文档核过并进清单（见 §18）；火山方舟／MiniMax／可灵／Seedance／图像与配音云端档**仍然没有价格数据**，继续按 verify 处理，W17 再复核 |
 | 现场坑 | — | **已解（W06）** | 名字对不上：`key_env` 可填 `DEEPSEEK_API_KEY`，清单对 deepseek 直接给这个建议名。**值仍只在交互式 shell 里**（`~/.zshrc`）⇒ 服务要从带变量的终端启动，否则健康显示"环境变量没有值"；这是运行时事实，不是代码能绕的 |
 
 ## 8. 冲突清单（需要人裁，盘点阶段一律不动代码）
@@ -211,7 +211,7 @@
 | CURRENT_SCHEMA 的 provider_config 只有四列 | 加 `key_env`／`notes`（0014）。**允许参数与健康不落库**：前者由清单按档位现给，后者现查 |
 | 01-4.8.2 默认策略（图像/视频/TTS/音乐本地、文本云端） | 0014 把四类默认轨从云端改回本地；文本保持云端 |
 | 01-4.8.2 云端视频逐镜头显式选择 | 两处挡：保存时云端视频不许设默认（422）；`resolve_provider()` 视频走云端要"显式＋confirmed_cloud" |
-| 01-4.8.2 adapter manifest | `backend/adapters.py`：15 个 adapter，本地五档带参数与出处，云端只登记名字 |
+| 01-4.8.2 adapter manifest | `backend/adapters.py`：15 个 adapter，本地五档带参数与出处；云端 W06 当时只登记名字，W10 另补 DeepSeek 与 Wan 2.7 两档 |
 | 现场坑 DEEPSEEK_API_KEY vs FV_KEY_DEEPSEEK | `key_env` 可填既有名；deepseek 在清单里直接建议 `DEEPSEEK_API_KEY`。值只在进程环境，服务须从带变量的终端启动 |
 | 01-4.8.2 普通模块只读默认 | `GET /api/providers/current`（require_user），不带密钥名与备注 |
 
@@ -317,3 +317,37 @@
 5. **无头 Chrome 的媒体时钟不推进**：`play()`/seek 都停在 0，但 `<video>` 元数据可读、首帧已画、`error=0`。不把“无头浏览器不播”当产品缺陷；可预览的凭据改为元数据+首帧截图，真机播放器仍用原生控件。
 
 **本轮改到的文件**：`backend/runtime.py`（新）、`backend/runners.py`（新）、`backend/adapters.py`、`backend/worker.py`、`backend/config.py`（未改常量，沿用 JOBS_DIR）、`run.sh`、`frontend/js/navstate.js`、`frontend/js/views/writing.js`、`frontend/js/views/generate.js`、`frontend/css/app.css`、`tests/test_jobs.py`、`tests/test_runners.py`（新）、`盘点/W09_BASELINE.md`（新）、`设计稿.md`、`app/截图/v69-*`。
+
+## 18. W10 完成后回填（2026-11-01）
+
+`pytest tests -q` → **295 passed**（新增 `test_cloud.py` 14 项：清单价与枚举、DeepSeek 成功/401/429/缺密钥、Wan 创建轮询下载/缺 base URL、请求文件无密钥值、worker 端到端写请求 ID 与用量、401 失败仍保留预计成本、默认本地不选云端、本地失败重试仍本地、云端重试继承方式与计价）。路由不变：**72 条业务端点 / 77 条含 health 与四条 auth**。真浏览器 **15 项全过**＋补证 **1 项**（Wan 的 `ratio` 五档与 720P 0.6 元/秒）；真 DeepSeek 调用 2 次（作业 #36/#37），Wan 只跑本地 mock HTTP。图在 `app/截图/v70-cloud-form.png`、`v70-cloud-result.png`、`v70-local-default.png`、`v70-wan-form.png`；官方取数与调用记录在 `盘点/W10_CLOUD.md`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| W10「接入经许可证、国内可用性、官方 API、价格和密钥方案核验的文本/视频 provider」 | 文本：DeepSeek 官方 API，模型 `deepseek-flash`，OpenAI 兼容 `/chat/completions`；视频：阿里云百炼 Wan 2.7 文生视频，模型 `wan2.7-t2v`，异步任务。两家的模型/参数/价格都按 2026-11-01 官方文档核过才登记 |
+| W10「使用配置的国内服务，不新增境外聚合」 | 清单里只有国内 provider；DeepSeek 直连官方域名，Wan 走百炼 Workspace 域名，没有 OpenRouter 等聚合层 |
+| W10「单镜头选择 cloud 后显示 provider/model/计价单位/预计成本 + 明确确认」 | 选中云端槽位自动预填：`deepseek-flash` → 百万 Token / 8 元 / 0.002 百万（¥0.02）；Wan 720P → 秒 / 0.6 元 / 5 秒（¥3.00），`ratio` 五档（16:9/9:16/1:1/4:3/3:4）由清单渲染成下拉。确认框默认不勾，服务端仍要求 `user_confirmed_cloud=true` 与一张完整 `estimate` |
+| W10「重试继承 original execution mode」 | `jobs.retry()` 复制 `execution_mode`、provider/模型、数量/单价/币种/定价快照；云端新行回到待核对，本地新行仍不计费；原行字段一个不动 |
+| W10「默认本地任务不会触发云端调用」 | 视频本地默认 fastmetal；不传执行方式时 `resolve_provider()` 只认 `is_default`。真浏览器里默认视频轨显示「本地 · fastmetal」且计价区隐藏；测试断言作业行 `execution_mode=local` |
+| W10「模拟本地失败也不会自动云端兜底」 | `runners.build()` 只按 Job 行冻结的 `execution_mode` 分派；本地失败只落本地失败，重试仍复制本地方式；测试 `test_本地失败重试仍是本地` |
+| W10「云端错误/请求 ID/实际用量有日志并脱敏」 | 回执 JSON 的 `request_id` 落 `job.provider_request_id`；实际用量与 HTTP 状态进 `resources_json.provider`；日志写一行「provider 回执」，无密钥值。401/429 错误消息先抹密钥再落库，测试用真串反证 |
+| W10「真实调用」 | 作业 #36：请求 ID `a38c360a-034f-4939-96cd-2406c84ad153`，HTTP 200，42 token，延迟 1051ms；作业 #37：`0c578bbc-b7d0-40b3-9972-d992ceac7963`，45 token，延迟 860ms。两次产物是中文正文，日志与结果文件里没有密钥串 |
+| W08 边界「实际用量与供应商回执在 W10」 | 已补：`provider_request_id` 列现在有值；实际用量在 `resources_json`。账单状态仍是 `pending_reconciliation`——**实际用量不等于自动结算**，known 仍要人工核对 |
+| 01-D-08 价格待复核 | DeepSeek 与 Wan 2.7 已填官方价；其余云端 provider 仍空着。详见 §18 边界 |
+
+**W10 的边界（别误读成“云端全部接通了”）**：
+- **Wan 没有真实付费调用**：本机没有 `DASHSCOPE_API_KEY`，也没有带 Workspace 的 base URL，健康状态如实回「缺东西」。Wan 的创建→轮询→下载是用本地 mock HTTP 全链测的，真实网关的字段差异要等有 key 时再做一次。
+- **DeepSeek 只接了文本正文**：没有接流式输出、工具调用、JSON mode、v4-pro；`thinking` 只映射到 `{"type": "enabled|disabled"}`。
+- **价格是预填上限，不是结算价**：DeepSeek 预填输出忙时 8 元/百万 token，真实输入/输出与缓存命中价不同；Wan 按秒计费但回执里的实际时长可能和提交值不同。两者都只做“预计成本确认单”，账单状态仍是待核对。
+- **取消云端作业不等于供应商停止计费**：worker 会 SIGTERM 子进程，但已经创建的任务可能继续跑；Wan 创建成功后会先落一份含 `task_id` 的部分回执，供人工去后台追。
+- **Wan 只接 T2V**：I2V、首尾帧、音频没接；T2V 的 `resolution`／`ratio`（16:9/9:16/1:1/4:3/3:4）／`duration`／`seed` 已按官方文档进清单。默认 720P 是成本取舍（官方默认 1080P）。
+- **没有自动对账**：实际用量只写进 `resources_json`，不会自动改 `cost_micros` 或把账单状态变 known；那属于后续对账/结算包。
+
+**这一轮真被踩到的问题（都修了/记下了）**：
+1. **旧模型名已下架**：DeepSeek 官方现在只有 `deepseek-flash`／`deepseek-v4-pro`，旧 `deepseek-chat`／`reasoner` 不再登记；v4-pro 价格没核到同口径，宁可不填。
+2. **云端视频旧测试写死了 `wan-1080p`**：清单换成 `wan2.7-t2v` 后旧模型档不再合法；测试同步改到新档位，并加枚举校验。
+3. **请求文件不能带密钥值**：`runners._cloud()` 只写 `key_env` 变量名；测试读请求 JSON 用真串反证。401 响应体里若回显密钥，`cloud_run._redact()` 也会抹掉。
+4. **失败也要带请求 ID**：`JobFailure` 加了 `provider_request_id` 字段；Wan 创建成功后立刻写一份部分回执，取消/崩溃时至少还能拿到 `task_id`。
+5. **`million_token` 不是自由文本**：单位白名单与前端 `UNITS` 同步加这一档；否则 8 元/百万 token 会写成 0.000008 元的单 token 单价，对账时容易看错。
+
+**本轮改到的文件**：`backend/adapters.py`、`backend/cloud_run.py`（新）、`backend/runners.py`、`backend/worker.py`、`backend/models.py`、`backend/repositories/jobs.py`、`frontend/js/views/generate.js`、`tests/test_cloud.py`（新）、`tests/test_providers.py`、`tests/test_jobs.py`、`tests/test_cost.py`、`tests/test_runners.py`、`盘点/W10_CLOUD.md`（新）、`设计稿.md`、`app/截图/v70-*`。

@@ -155,8 +155,16 @@ def test_清单接口只登记不猜测(as_role):
     assert "mlx_video" in by_code[("video", "local", "mlx-video")]["aliases"]
     assert adapters.find("video", "local", "mlx_video").code == "mlx-video"
 
-    # 云端视频只登记了名字，参数一栏必须是空的——核过之前不写死
-    for code in ("wan", "kling", "seedance"):
+    # W10：Wan 2.7 已按官方文档核过，有模型、参数与价格
+    wan = by_code[("video", "cloud", "wan")]
+    assert wan["params_known"] is True
+    model = next(m for m in wan["models"] if m["code"] == "wan2.7-t2v")
+    assert {p["name"] for p in model["params"]} >= {"resolution", "duration"}
+    assert any(p["unit"] == "second" and p["amount_micros"] == 600_000
+               for p in model["prices"])
+
+    # 其余云端视频仍只登记名字——核过之前不写死
+    for code in ("kling", "seedance"):
         a = by_code[("video", "cloud", code)]
         assert a["params_known"] is False
         assert a["models"] == []
@@ -179,7 +187,7 @@ def _video_ready(c):
     rows = _rows(c)
     body = _payload(rows, video_local={
         "provider": "fastmetal", "model": "fastmetal-5b-qad", "enabled": True},
-        video_cloud={"provider": "wan", "model": "wan-1080p", "enabled": True,
+        video_cloud={"provider": "wan", "model": "wan2.7-t2v", "enabled": True,
                      "is_default": False})
     r = c.put("/api/providers", json=body)
     assert r.status_code == 200, r.text

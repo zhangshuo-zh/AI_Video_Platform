@@ -31,7 +31,7 @@ def _put_video(c, local=None, cloud=None):
 def _cloud_video(c, project_id, **kw):
     body = {
         "project_id": project_id, "capability": "video", "prompt": "云端一镜",
-        "provider_code": "wan", "model_code": "wan-1080p",
+        "provider_code": "wan", "model_code": "wan2.7-t2v",
         "execution_mode": "cloud", "params": {},
         "user_confirmed_cloud": True,
         "estimate": {"quantity": 2.5, "unit": "second",
@@ -45,7 +45,7 @@ def _cloud_video(c, project_id, **kw):
 def _make_job(project_id, **over):
     data = {
         "project_id": project_id, "capability": "video", "kind": "video_cloud",
-        "execution_mode": "cloud", "provider_code": "wan", "model_code": "wan-1080p",
+        "execution_mode": "cloud", "provider_code": "wan", "model_code": "wan2.7-t2v",
         "adapter_version": "test", "prompt_snapshot": "成本测试",
         "params": {}, "input_refs": [], "created_by": None,
         "quantity": 4.0, "unit": "second", "unit_price_micros": 1_000_000,
@@ -59,7 +59,7 @@ def _make_job(project_id, **over):
 def test_云端必须先确认量价_金额由服务端算(as_role, provider_state, clean_queue, fresh_project):
     pid = fresh_project()
     admin = as_role("admin")
-    _put_video(admin, cloud={"provider": "wan", "model": "wan-1080p", "enabled": True})
+    _put_video(admin, cloud={"provider": "wan", "model": "wan2.7-t2v", "enabled": True})
     c = as_role("editor")
 
     # 只勾确认、不给量价：不落库

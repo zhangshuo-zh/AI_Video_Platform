@@ -48,11 +48,14 @@ class Cancelled(Exception):
 
 
 class JobFailure(Exception):
-    def __init__(self, code: str, message: str, return_code: int | None = None):
+    def __init__(self, code: str, message: str, return_code: int | None = None,
+                 provider_request_id: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.return_code = return_code
+        # 云端失败也要把请求 ID 带出去：账可以对不上，线索不能丢
+        self.provider_request_id = provider_request_id
 
 
 def _now() -> str:
@@ -250,8 +253,12 @@ def _terminate(proc, grace: float = 5.0) -> None:
 
 
 def _run_spec(job, spec: runners.RunSpec, log, wid: str,
-              extra: dict) -> tuple[list[str], int]:
-    """起真子进程。没有 shell，没有字符串拼接，argv 就是 argv。"""
+              extra: dict) -> tuple[list[str], int, str | None]:
+    """起真子进程。没有 shell，没有字符串拼接，argv 就是 argv。
+
+    返回 (产物, 耗时, provider 请求 ID)。云端请求 ID 来自 cloud_run.py 的
+    回执文件；本地作业没有这个东西，第三项就是 None。
+    """
     started = time.monotonic()
     child_rss_kb = 0
     _write(log, "命令：" + json.dumps(spec.argv, ensure_ascii=False))
@@ -290,14 +297,35 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     elapsed = int((time.monotonic() - started) * 1000)
     extra["command"] = spec.argv
     extra["runner"] = spec.runner
-    extra.update({k: v for k, v in spec.meta.items() if k not in ("command",)})
+    extra.update({k: v for k, v in spec.meta.items()
+                  if k not in ("command", "request_path", "result_path")})
     extra["adapter_metrics"] = runners.metrics_summary(
         Path(spec.meta.get("metrics_path", ""))) if spec.meta.get("metrics_path") else {}
     # metrics_path 只给父进程读文件用，不进公开的 resources：
     # 界面要的是耗时，不是磁盘目录长什么样。
     extra.pop("metrics_path", None)
     extra["child_max_rss_kb"] = child_rss_kb
+
+    # 云端回执：请求 ID 与实际用量。成功与失败都要读——失败时供应商也可能
+    # 已经建过任务、计过费，这两个字段正是事后对账的凭据。
+    receipt = runners.provider_receipt(spec) if spec.meta.get("result_path") else {}
+    request_id = (receipt.get("request_id") or None) if receipt else None
+    if receipt:
+        extra["provider"] = receipt
+        _write(log, "provider 回执：" + json.dumps({
+            "request_id": receipt.get("request_id"),
+            "http_status": receipt.get("http_status"),
+            "usage": receipt.get("usage"),
+            "ok": receipt.get("ok"),
+            "error": receipt.get("error"),
+        }, ensure_ascii=False))
+
     if return_code != 0:
+        err = (receipt.get("error") or {}) if receipt else {}
+        if err:
+            code = "provider_" + str(err.get("code") or "error")
+            raise JobFailure(code, str(err.get("message") or "供应商返回错误"),
+                             return_code, provider_request_id=request_id)
         tail = _tail(Path(jobfiles.job_dir(job["id"])) / "logs" / "run.log")
         raise JobFailure(
             "adapter_failed",
@@ -308,7 +336,7 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     except runners.RunnerUnavailable as exc:
         raise JobFailure("empty_output", exc.message, return_code) from exc
     _write(log, "产物：" + "、".join(jobfiles.relative(p) for p in paths))
-    return [jobfiles.relative(p) for p in paths], elapsed
+    return [jobfiles.relative(p) for p in paths], elapsed, request_id
 
 
 def process(job, wid: str) -> None:
@@ -330,23 +358,32 @@ def process(job, wid: str) -> None:
                 raise Cancelled("领取后立刻收到取消请求")
             params, spec = _validate(job, outputs)
             _write(log, f"参数通过白名单：{json.dumps(params, ensure_ascii=False)}")
+            request_id = None
             if spec is None:
                 paths, elapsed = _run_mock(job, params, log, wid)
             else:
                 child_cpu_start = _cpu_totals()[1]
-                paths, elapsed = _run_spec(job, spec, log, wid, extra)
+                paths, elapsed, request_id = _run_spec(job, spec, log, wid, extra)
             jobs.succeed(job["id"], wid, jobfiles.relative(log_path), paths,
                          elapsed, return_code=0,
                          resources=_resources(cpu_start, elapsed,
-                                              child_cpu_start, extra=extra))
+                                              child_cpu_start, extra=extra),
+                         provider_request_id=request_id)
             _write(log, "状态：succeeded")
         except Cancelled as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             _write(log, f"状态：cancelled（{exc}）")
+            # 云端任务可能在子进程被杀之前已经建好；回执文件若有一份，
+            # 把它带进 resources 与 Job 列，方便去供应商后台追这次调用。
+            receipt = runners.provider_receipt(spec) if (
+                spec is not None and spec.meta.get("result_path")) else {}
+            if receipt:
+                extra["provider"] = receipt
             jobs.cancelled(job["id"], wid, str(exc),
                            jobfiles.relative(log_path), elapsed,
                            resources=_resources(cpu_start, elapsed,
-                                                child_cpu_start, extra=extra))
+                                                child_cpu_start, extra=extra),
+                           provider_request_id=receipt.get("request_id"))
         except JobFailure as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             _write(log, f"状态：failed（{exc.code}）{exc.message}")
@@ -356,7 +393,8 @@ def process(job, wid: str) -> None:
             jobs.fail(job["id"], wid, exc.code, exc.message,
                       jobfiles.relative(log_path), exc.return_code, elapsed,
                       resources=_resources(cpu_start, elapsed,
-                                           child_cpu_start, extra=extra))
+                                           child_cpu_start, extra=extra),
+                      provider_request_id=exc.provider_request_id)
         except Exception:
             elapsed = int((time.monotonic() - started) * 1000)
             detail = traceback.format_exc(limit=6)

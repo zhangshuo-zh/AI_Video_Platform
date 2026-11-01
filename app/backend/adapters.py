@@ -36,6 +36,7 @@ class Param:
     minimum: float | None = None
     maximum: float | None = None
     multiple_of: int | None = None
+    choices: tuple[str, ...] = ()  # 字符串枚举；空＝自由文本
     note: str = ""
 
     def as_dict(self) -> dict:
@@ -46,8 +47,43 @@ class Param:
             out["max"] = self.maximum
         if self.multiple_of is not None:
             out["multiple_of"] = self.multiple_of
+        if self.choices:
+            out["choices"] = list(self.choices)
         if self.note:
             out["note"] = self.note
+        return out
+
+
+@dataclass(frozen=True)
+class Price:
+    """一条官方计价口径。只写核过的数字，不写"大概"。
+
+    金额同样是整数 micros，且**按计价单位**存：`unit=second` 时是每秒多少
+    micros，`unit=million_token` 时是每百万 token 多少 micros。界面拿它预填
+    "数量 × 单价"，服务端仍然按提交人确认的那一张单子记账。
+    """
+
+    label: str
+    unit: str
+    currency: str
+    amount_micros: int
+    source: str
+    default_quantity: float = 1.0
+    when: tuple[tuple[str, object], ...] = ()   # 与 params 的键值同时成立才适用
+    note: str = ""
+
+    def as_dict(self) -> dict:
+        out = {
+            "label": self.label,
+            "unit": self.unit,
+            "currency": self.currency,
+            "amount_micros": self.amount_micros,
+            "source": self.source,
+            "default_quantity": self.default_quantity,
+            "note": self.note,
+        }
+        if self.when:
+            out["when"] = {k: v for k, v in self.when}
         return out
 
 
@@ -56,11 +92,14 @@ class ModelSpec:
     code: str
     label: str
     params: tuple[Param, ...] = ()
+    prices: tuple[Price, ...] = ()
     note: str = ""
 
     def as_dict(self) -> dict:
         return {"code": self.code, "label": self.label,
-                "params": [p.as_dict() for p in self.params], "note": self.note}
+                "params": [p.as_dict() for p in self.params],
+                "prices": [p.as_dict() for p in self.prices],
+                "note": self.note}
 
 
 @dataclass(frozen=True)
@@ -255,31 +294,117 @@ _ACE_STEP = Adapter(
     ),
 )
 
-# ---------- 文本 / 云端：只登记，不下发参数 ----------
+# ---------- 文本 / 云端（W10 核验官方 schema 后登记） ----------
 # 文本是本机唯一没有可用路线的能力（规格 02 §8.2 原文："没有合格的本地文本路线"）。
-# 云端参数要到 W07 按官方 schema 核过才填，本轮 model 与 params 都留空让用户自己写 ID。
+# DeepSeek 是国内官方 API、OpenAI 兼容、密钥名现场已存在，因此只登记这一家；
+# 模型名与价格按 2026-11-01 官方文档核过，旧名 deepseek-chat/reasoner 已下架，
+# 不再出现在清单里。v4-pro 的价格这次没有核到同一口径，宁可不登记。
+_DEEPSEEK = Adapter(
+    code="deepseek",
+    label="DeepSeek（官方 API）",
+    capability="text",
+    backend="cloud",
+    aliases=("deepseek-api",),
+    key_env="DEEPSEEK_API_KEY",
+    source="DeepSeek 官方文档（2026-11-01 核验）：https://api-docs.deepseek.com/",
+    params_source="Chat Completions 官方参数表（max_tokens / temperature / thinking）",
+    note="OpenAI 兼容端点；密钥只从环境变量名读取，平台不存值。",
+    models=(
+        ModelSpec(
+            code="deepseek-flash",
+            label="DeepSeek Flash",
+            note="官方当前模型名。价格分忙闲时与输入/输出两段，界面只预填"
+                 "输出忙时单价作为上限；实际用量由回执写进 resources。",
+            params=(
+                Param("max_tokens", "int", 2048, 1, 393216,
+                      note="输出上限；文本作业按需调大"),
+                Param("temperature", "float", None, 0, 2,
+                      note="不填＝供应商默认"),
+                Param("thinking", "bool", False,
+                      note="开＝deepseek 的 thinking.type=enabled"),
+            ),
+            prices=(
+                Price(
+                    label="输出 token（忙时上限）",
+                    unit="million_token",
+                    currency="CNY",
+                    amount_micros=8_000_000,
+                    default_quantity=0.002,
+                    source="DeepSeek 官方定价（2026-11-01）：输出 4 元/百万 token（闲时）、"
+                           "8 元（忙时）；输入缓存命中 0.02/0.04、未命中 1/2",
+                    note="按 2,000 token 预填；这是上限估算，不是最终结算价。",
+                ),
+            ),
+        ),
+    ),
+)
+
+# 火山方舟与 MiniMax 仍只登记名字：没有拿到同一口径的模型名/价格，不猜。
 _TEXT_CLOUD = (
-    Adapter(code="deepseek", label="DeepSeek（国内 API）", capability="text",
-            backend="cloud", key_env="DEEPSEEK_API_KEY",
-            source="现场环境里已有的密钥名（DEEPSEEK_API_KEY）",
-            note="key_env 建议直接用 DEEPSEEK_API_KEY，避免再起一个 FV_KEY_ 名字。"),
+    _DEEPSEEK,
     Adapter(code="volc", label="火山方舟", capability="text", backend="cloud",
             aliases=("volces", "ark", "volcengine"),
             key_env="FV_KEY_VOLC", source="设计稿 §7.3（建议供应商）",
-            note="一个端点挂多家模型；模型 ID 与参数到 W07 核官方文档再填。"),
+            note="一个端点挂多家模型；模型 ID 与参数到核官方文档再填。"),
     Adapter(code="minimax", label="MiniMax", capability="text", backend="cloud",
             key_env="FV_KEY_MINIMAX", source="设计稿 §7.3（候选供应商）",
-            note="模型 ID 与参数到 W07 核官方文档再填。"),
+            note="模型 ID 与参数到核官方文档再填。"),
 )
 
-# 云端视频只登记 provider 名字：价格、模型档、参数都还没核，任何一项写死都会
-# 变成"界面说有这个能力"的假承诺。开启前必须先过 W17 的许可与计价复核。
-_VIDEO_CLOUD = tuple(
-    Adapter(code=code, label=label, capability="video", backend="cloud",
-            key_env="FV_KEY_" + code.upper().replace("-", "_"),
-            source="设计稿 §7.3 / §7.5 候选，未核验",
-            note="云端视频必须逐镜头显式选择；模型档/计价/参数待核验。")
-    for code, label in (("wan", "Wan 2.5+ API"), ("kling", "可灵"), ("seedance", "Seedance"))
+# 云端视频：阿里云百炼 Wan 2.7 文生视频（异步任务）。
+# 参数与价格按 2026-11-01 官方文档核验；base URL 随 Workspace 变，
+# 所以清单只存环境变量名 ALIYUN_WAN_BASE_URL，不写死任何地址。
+_WAN = Adapter(
+    code="wan",
+    label="阿里云百炼 Wan 2.7（视频）",
+    capability="video",
+    backend="cloud",
+    aliases=("aliyun-wan", "dashscope-wan"),
+    key_env="DASHSCOPE_API_KEY",
+    source="阿里云百炼官方文档（2026-11-01 核验）：Wan 文生视频 API 与计费",
+    params_source="Wan 2.7 文生视频 API 参数表（resolution / ratio / duration / seed）",
+    note="异步任务：创建后轮询 /api/v1/tasks/{task_id}。base URL 用 "
+         "ALIYUN_WAN_BASE_URL 给（带 Workspace 前缀），平台不猜地址。",
+    models=(
+        ModelSpec(
+            code="wan2.7-t2v",
+            label="Wan 2.7 文生视频",
+            note="只接文生视频；图生视频与首尾帧不在本轮。resolution 默认 720P"
+                 "是成本取舍（官方默认 1080P）。",
+            params=(
+                Param("resolution", "str", "720P", choices=("720P", "1080P")),
+                Param("ratio", "str", "16:9",
+                      choices=("16:9", "9:16", "1:1", "4:3", "3:4")),
+                Param("duration", "int", 5, 2, 15, note="秒；按秒计费"),
+                Param("seed", "int", None, 0, 2147483647),
+            ),
+            prices=(
+                Price(
+                    label="720P", unit="second", currency="CNY",
+                    amount_micros=600_000, default_quantity=5,
+                    when=(("resolution", "720P"),),
+                    source="阿里云百炼官方价格（2026-11-01）：Wan 2.7 720P 0.6 元/秒",
+                ),
+                Price(
+                    label="1080P", unit="second", currency="CNY",
+                    amount_micros=1_000_000, default_quantity=5,
+                    when=(("resolution", "1080P"),),
+                    source="阿里云百炼官方价格（2026-11-01）：Wan 2.7 1080P 1 元/秒",
+                ),
+            ),
+        ),
+    ),
+)
+
+_VIDEO_CLOUD = (
+    _WAN,
+    *tuple(
+        Adapter(code=code, label=label, capability="video", backend="cloud",
+                key_env="FV_KEY_" + code.upper().replace("-", "_"),
+                source="设计稿 §7.3 / §7.5 候选，未核验",
+                note="云端视频必须逐镜头显式选择；模型档/计价/参数待核验。")
+        for code, label in (("kling", "可灵"), ("seedance", "Seedance"))
+    ),
 )
 
 _CLOUD_OTHER = (
@@ -304,7 +429,7 @@ ADAPTERS: tuple[Adapter, ...] = (
 )
 
 # 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
-MANIFEST_VERSION = "2026-11-01"
+MANIFEST_VERSION = "2026-11-01.2"   # .2＝W10 补入 DeepSeek 与 Wan 2.7 的模型/参数/价格
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以
@@ -371,6 +496,8 @@ def _check_one(param: Param, value) -> list[str]:
     if not _type_ok(param.type, value):
         return [f"参数 {param.name} 的类型应为 {param.type}"]
     out: list[str] = []
+    if param.choices and value not in param.choices:
+        out.append(f"参数 {param.name} 只能是：{'、'.join(param.choices)}")
     if param.type in ("int", "float"):
         if param.minimum is not None and value < param.minimum:
             out.append(f"参数 {param.name} 不能小于 {param.minimum}")
