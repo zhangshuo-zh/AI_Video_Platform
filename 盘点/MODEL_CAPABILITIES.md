@@ -1,5 +1,7 @@
 # MODEL_CAPABILITIES.md — 本机模型能力实测（W00 盘点）
 
+> **2026-11-01 W09 更新**：FastMetal 1.3B T2V 已从浏览器分镜跑到真 mp4（640×352/81 帧/3 步/`--fast-spatial`，28.2 秒），见 `W09_BASELINE.md`。本页其余数字仍是 W00 当天快照（“零子进程调用”“未跑过”都不再是今天的事实）。
+
 纪律：**没有证据的一律写 UNKNOWN**，不根据模型名推断参数、许可、价格、耗时。取证方式：`$HOME` 下目录扫描（跳过 Library / node_modules / site-packages / .venv 内部）、`git log -1`、`sys.version`/`importlib` 探测、`stat` 权重文件（**只 stat 不打开不移动**）、后端源码 grep。本轮**没有执行任何生成命令**，所以"可运行"指的是原料齐备，不等于跑通过。
 
 ## 0. 一句话结论
