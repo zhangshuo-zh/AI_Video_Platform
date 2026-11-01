@@ -718,6 +718,54 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .tree .t.on{background:var(--field);color:var(--accent);font-weight:600;box-shadow:var(--sh-1)}
 .tree .grp{font-size:11.5px;color:var(--ink-3);padding:10px 9px 4px;letter-spacing:.04em}
 
+/* ---------- 文档编辑器（W05：正文在工作区，版本在 Git） ---------- */
+/* 正文字号比表单大一档：这是要读长文的地方，12.5px 看三屏就累 */
+.doc-area{
+  display:block;width:100%;min-height:min(56vh,520px);padding:14px 16px;
+  font-size:14px;line-height:1.9;letter-spacing:.01em;
+}
+.doc-area[readonly]{color:var(--ink-2);background:var(--hover-soft);cursor:default}
+/* 提示条：保存结果 / 别人持锁 / 版本冲突三种共用一个壳。
+   文字一律用 --ink，底色与边框才用色彩——红底红字在浅色主题下过不了 AA */
+.bar{
+  margin:0 0 10px;padding:9px 12px;border-radius:10px;font-size:12px;
+  border:1px solid var(--line);background:var(--hover-soft);color:var(--ink);
+}
+.bar p{margin:0 0 6px}
+.bar p:last-child{margin-bottom:0}
+.bar.ok{background:var(--ok-soft);border-color:var(--ok-line)}
+.bar.warn{background:var(--warn-soft);border-color:var(--warn-line)}
+.bar.bad{background:var(--bad-soft);border-color:var(--bad-line)}
+/* 冲突时的左右对照：左边是自己正在写的，右边是盘上现在这份 */
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0}
+.diff{
+  margin:8px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--field);color:var(--ink);font-family:var(--mono);
+  font-size:11.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;
+  max-height:300px;overflow:auto;
+}
+.diff.keep{max-height:150px}
+.mono{font-family:var(--mono)}
+/* 版本历史一行：flex 而不是 float——float 的右半截不参与兄弟行的高度计算，
+   行与行会叠在一起（第一版就是这么在截图里露出来的） */
+.ver{
+  display:flex;align-items:baseline;gap:10px;padding:5px 8px;border-radius:8px;
+  font-size:12px;color:var(--ink-2);cursor:pointer;
+  transition:background var(--fast);
+}
+.ver:hover{background:var(--hover-soft)}
+.ver .v-sha{color:var(--ink-3);font-size:11.5px;flex:none}
+.ver .v-subj{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ver .v-when{flex:none;color:var(--ink-3);font-size:11.5px}
+.ver .btn{flex:none}
+@media (max-width:860px){
+  .ver{flex-wrap:wrap}
+  .ver .v-when{order:3;width:100%}
+}
+@media (max-width:860px){
+  .cmp{grid-template-columns:1fr}
+}
+
 /* ---------- 表单控件 ---------- */
 input.ctl,select.ctl,textarea.ctl{
   font:inherit;font-size:12.5px;padding:6px 10px;border:1px solid var(--line-strong);

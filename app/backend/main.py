@@ -11,13 +11,22 @@ from fastapi.staticfiles import StaticFiles
 
 from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
+from gitrepo import GitError
 from migrate import migrate
-from routers import auth, content, projects, settings, system, users
+from routers import auth, content, documents, projects, settings, system, users
+from services import ensure_workspace
 
 
 def create_app() -> FastAPI:
     migrate(verbose=False)          # 启动时把库补到最新，重复执行是安全的
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
+    # 稿件工作区（Markdown + Git）准备好。这一步失败不拦启动：
+    # 没装 git、工作区指向了一个只读盘，坏的只是"文档"这一条腿，
+    # 项目/资产/分镜照常用；为了这一条让整个平台起不来，人反而不知道是哪坏了。
+    try:
+        ensure_workspace()
+    except GitError as err:
+        print(f"[启动] 文档工作区没准备好，创作中心的正文功能不可用：{err}")
     app = FastAPI(title="AI 视频生产平台 API", docs_url="/api/docs",
                   openapi_url="/api/openapi.json")
     # 同源部署（本进程托管静态文件）时不需要 CORS；前端搬去 nginx 再开
@@ -30,6 +39,7 @@ def create_app() -> FastAPI:
         )
     app.include_router(auth.router)
     app.include_router(content.router)
+    app.include_router(documents.router)
     app.include_router(projects.router)
     app.include_router(settings.router)
     app.include_router(system.router)

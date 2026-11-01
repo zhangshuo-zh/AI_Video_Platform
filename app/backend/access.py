@@ -14,12 +14,14 @@ from fastapi import HTTPException
 from db import get_conn
 from ranks import user_rank
 
-# 间接挂靠的实体要先绕回项目：分镜经分集，资产直接挂项目
+# 间接挂靠的实体要先绕回项目：分镜经分集，资产与文档直接挂项目
 _PROJECT_OF = {
     "episode": "SELECT project_id FROM episode WHERE id = ?",
     "shot": """SELECT e.project_id FROM shot s
                  JOIN episode e ON e.id = s.episode_id WHERE s.id = ?""",
     "asset": "SELECT project_id FROM asset WHERE id = ?",
+    # 文档一定挂项目（不像资产有全局池），所以它能走 ensure_by，不需要 ensure_asset 那种特判
+    "document": "SELECT project_id FROM document WHERE id = ?",
 }
 
 

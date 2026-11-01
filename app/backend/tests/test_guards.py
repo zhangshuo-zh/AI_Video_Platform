@@ -17,7 +17,7 @@ import pytest
 from db import get_conn
 
 # (方法, 路径, 需要的最小 body, outsider 期望状态码)
-# 路径里的 {p} {e} {s} {a} {u} {r} 由 fixture 填真实 id
+# 路径里的 {p} {e} {s} {a} {u} {r} {d} {c} 由 fixture 填真实 id
 ROUTES = [
     # ---------- 项目 ----------
     ("GET", "/api/projects", None, 200),
@@ -56,6 +56,22 @@ ROUTES = [
     ("DELETE", "/api/assets/{a}", None, 404),
     ("POST", "/api/assets/{a}/images", "FILE", 404),
     ("DELETE", "/api/assets/{a}/images?path=x", None, 404),
+    # ---------- 文档（W05：元数据在库、正文在工作区、历史在 Git） ----------
+    # 全部 404：文档一定挂项目，别人看不见这个项目时连"这份文档存在"都不该知道。
+    # 这里没有 403 的余地——资产才有全局池那档特例（见 access.ensure_asset）。
+    ("GET", "/api/projects/{p}/documents", None, 404),
+    ("POST", "/api/projects/{p}/documents", {"kind": "novel", "title": "越权稿"}, 404),
+    ("GET", "/api/documents/{d}", None, 404),
+    ("PUT", "/api/documents/{d}", {"title": "改名"}, 404),
+    ("PATCH", "/api/documents/{d}/status", {"status": "polishing"}, 404),
+    ("DELETE", "/api/documents/{d}", None, 404),
+    ("GET", "/api/documents/{d}/content", None, 404),
+    ("PUT", "/api/documents/{d}/content",
+     {"content": "抢写", "expected_version": "sha256:不存在的那个版本"}, 404),
+    ("POST", "/api/documents/{d}/lock", None, 404),
+    ("DELETE", "/api/documents/{d}/lock", None, 404),
+    ("GET", "/api/documents/{d}/versions", None, 404),
+    ("GET", "/api/documents/{d}/versions/{c}/diff", None, 404),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
     ("POST", "/api/users", {"username": "zz_probe", "display_name": "", "password": "123456"}, 403),
@@ -90,7 +106,8 @@ def ids(seeded, people):
     with get_conn() as conn:
         role_id = conn.execute("SELECT id FROM role WHERE code = 'viewer'").fetchone()["id"]
     return {"p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
-            "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id}
+            "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
+            "d": seeded["document_id"], "c": seeded["commit"]}
 
 
 def _sub(v, ids):

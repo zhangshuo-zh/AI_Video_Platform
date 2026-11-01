@@ -324,7 +324,9 @@ class ProjectRepository:
                           (SELECT COUNT(*) FROM episode e WHERE e.project_id = p.id) AS episodes,
                           (SELECT COUNT(*) FROM shot s JOIN episode e ON e.id = s.episode_id
                             WHERE e.project_id = p.id) AS shots,
-                          (SELECT COUNT(*) FROM asset a WHERE a.project_id = p.id) AS assets
+                          (SELECT COUNT(*) FROM asset a WHERE a.project_id = p.id) AS assets,
+                          -- 文档只数元数据：正文会跟着走，但历史还在 Git 里（services 注释）
+                          (SELECT COUNT(*) FROM document d WHERE d.project_id = p.id) AS documents
                      FROM project p WHERE p.id = ?""",
                 (project_id,),
             ).fetchone()

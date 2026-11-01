@@ -12,7 +12,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 
 from access import ensure, is_manager
-from deps import require_permission
+from deps import actor_name, require_permission
 from models import (ProjectBatchDeleteIn, ProjectBatchIn, ProjectBatchOut, ProjectIn,
                     ProjectMemberIn, ProjectMemberOut, ProjectMembersOut, ProjectOut,
                     ProjectSkip, ProjectStatusIn, ProjectSummary, ProjectTagsIn,
@@ -139,7 +139,7 @@ def batch_delete_projects(payload: ProjectBatchDeleteIn,
         except HTTPException as err:
             skipped.append(ProjectSkip(id=project_id, reason=str(err.detail)))
             continue
-        delete_project_cascade(project_id)
+        delete_project_cascade(project_id, actor=actor_name(user))
         done.append(project_id)
     return ProjectBatchOut(done=done, skipped=skipped)
 
@@ -198,7 +198,7 @@ def project_summary(project_id: int,
     images = project_repo.asset_images(project_id)
     return ProjectSummary(name=row["name"], episodes=row["episodes"],
                           shots=row["shots"], assets=row["assets"],
-                          image_files=len(images))
+                          image_files=len(images), documents=row["documents"])
 
 
 @router.delete("/projects/{project_id}", status_code=http_status.HTTP_204_NO_CONTENT)
@@ -213,7 +213,7 @@ def delete_project(project_id: int, confirm: str = "",
     if confirm.strip() != row["name"]:
         raise HTTPException(status_code=400, detail="项目名不匹配，未删除")
 
-    delete_project_cascade(project_id)
+    delete_project_cascade(project_id, actor=actor_name(user))
 
 
 # ---------- 协作人 ----------

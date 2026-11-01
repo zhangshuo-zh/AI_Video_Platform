@@ -122,6 +122,9 @@ class ProjectSummary(BaseModel):
     shots: int
     assets: int
     image_files: int
+    # 文档元数据会被删、正文会从工作区摘掉，但那一稿在 Git 历史里还在——
+    # 数量还是要报，人要知道的是"这个项目带走了什么"
+    documents: int = 0
 
 
 class ProviderOut(BaseModel):
@@ -280,6 +283,126 @@ class AssetShotOut(BaseModel):
     episode_title: str
     project_id: int
     project_name: str
+
+
+# ---------- 文档（正文在文件系统，库里只有元数据） ----------
+
+DOC_KINDS: dict[str, str] = {"novel": "小说", "script": "剧本", "storyboard": "分镜稿"}
+# storyboard 在枚举里但界面上不给建：分镜的真相是 shot 表（一镜一行、要挂生成作业），
+# 再存一份 Markdown 就是第二个事实来源。留这一档是为了将来真要出"人读的分镜稿"时不改表。
+DocKind = Literal["novel", "script", "storyboard"]
+DocStatus = Literal["draft", "polishing", "finalized"]
+
+
+class DocumentIn(BaseModel):
+    kind: DocKind
+    title: str = Field(min_length=1, max_length=80)
+    # 可空：全项目共用的一份（总纲、人物小传）不属于任何一集（数据字典 §6.1）
+    episode_id: int | None = None
+    # 首版正文可以为空——"先立个标题占位，晚上再写"是真实用法。
+    # 上限不在这里按字符数卡，统一由 config.DOC_MAX_BYTES 按字节判：
+    # 两处各写一个数，迟早分叉。
+    content: str = ""
+
+
+class DocumentUpdateIn(BaseModel):
+    """改元数据：标题与挂靠的分集。**不含路径**（改名不挪文件，见仓储层注释）。"""
+    title: str = Field(min_length=1, max_length=80)
+    episode_id: int | None = None
+
+
+class DocStatusIn(BaseModel):
+    status: DocStatus
+
+
+class DocContentIn(BaseModel):
+    """保存正文。`expected_version` 必填——
+
+    没有它就没法判断"你看到的和现在盘上的是不是同一份"，
+    而"第二个编辑者不会静默覆盖"是 W05 的验收项。
+    所以不提供"不传就当没冲突"这条便道。
+    """
+    content: str
+    expected_version: str = Field(min_length=1, max_length=120)
+
+
+class DocumentOut(BaseModel):
+    id: int
+    project_id: int
+    episode_id: int | None
+    episode_seq: int = 0
+    episode_title: str = ""
+    kind: str
+    kind_label: str
+    title: str
+    # 相对路径回给前端只为"看得懂"（编辑器标题栏、备份说明），
+    # 所有读写都按 id 走，前端传路径进来的接口一个都没有。
+    rel_path: str
+    status: str
+    git_commit: str | None
+    created_at: str
+    updated_at: str
+    # 锁的三列合起来回答界面上那一句"现在谁在改"。NULL＝没人在改（或已过期）
+    lock_holder_id: int | None = None
+    lock_holder_name: str = ""
+    lock_expires_at: str = ""
+
+    @classmethod
+    def from_row(cls, row) -> "DocumentOut":
+        keys = row.keys()
+        return cls(
+            id=row["id"], project_id=row["project_id"], episode_id=row["episode_id"],
+            episode_seq=row["episode_seq"] if "episode_seq" in keys else 0,
+            episode_title=row["episode_title"] if "episode_title" in keys else "",
+            kind=row["kind"], kind_label=DOC_KINDS.get(row["kind"], row["kind"]),
+            title=row["title"], rel_path=row["rel_path"], status=row["status"],
+            git_commit=row["git_commit"],
+            created_at=row["created_at"], updated_at=row["updated_at"],
+            lock_holder_id=row["holder_user_id"] if "holder_user_id" in keys else None,
+            lock_holder_name=(row["holder_name"] or "") if "holder_name" in keys else "",
+            lock_expires_at=(row["expires_at"] or "") if "expires_at" in keys else "",
+        )
+
+
+class DocContentOut(BaseModel):
+    """一次正文读取。`version` 就是下一次保存要带回去的 expected_version。"""
+    id: int
+    title: str
+    content: str
+    version: str
+    git_commit: str | None
+    lock_holder_id: int | None = None
+    lock_holder_name: str = ""
+    lock_expires_at: str = ""
+
+
+class DocSaveOut(BaseModel):
+    """保存结果。`changed=false` 表示写的和盘上那份一模一样，没有产生新提交。"""
+    id: int
+    version: str
+    git_commit: str | None
+    changed: bool
+
+
+class DocVersionOut(BaseModel):
+    commit: str
+    author: str
+    at: str
+    subject: str
+
+
+class DocDiffOut(BaseModel):
+    commit: str
+    diff: str
+
+
+class DocLockOut(BaseModel):
+    """拿锁/看锁的结果。`state`：acquired 抢到 / renewed 续期 / held 别人拿着。"""
+    doc_id: int
+    state: str
+    holder_user_id: int | None = None
+    holder_name: str = ""
+    expires_at: str = ""
 
 
 # ---------- 用户与角色（系统设置页） ----------

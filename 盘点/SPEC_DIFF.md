@@ -56,9 +56,9 @@
 
 | 键 | 要求 | 状态 | 依据与处理 |
 |---|---|---|---|
-| 01-4.3-L1 | 左树 项目→集→文档 | **partial** | 集树有（`writing.js:57-91`），**文档层不存在** |
-| 01-4.3-L4 | 分镜表列（景别/运镜/对白/图像提示词/视频提示词/生成状态/审核状态） | **missing** | `shot` 表只有 `summary/prompt/duration/status/asset_ids`；规格点名的 6 列**一列都没有**。规格 01-4.3-L4 自己要求"以当前库已有列兼容"→ 现状就是兼容基线，扩列走迁移 |
-| 01-4.3-D1~D7 | 文档落文件＋状态流＋Git＋锁＋diff 预览 | **missing** | 后端 `subprocess/git/lock/workspace` 零命中（verify：`grep` 只命中 `db.py` 里一句注释） |
+| 01-4.3-L1 | 左树 项目→集→文档 | **done（v0.63）** | 集树一直在；文档层 W05 补上：小说／剧本两页各是"左文档列表＋右编辑器＋版本历史"。分镜不给做成文档——`shot` 表才是它的真相（`storyboard` 留在 `kind` 枚举里但界面不开放） |
+| 01-4.3-L4 | 分镜表列（景别/运镜/对白/图像提示词/视频提示词/生成状态/审核状态） | **missing** | `shot` 表只有 `summary/prompt/duration/status/asset_ids`；规格点名的 6 列**一列都没有**。规格 01-4.3-L4 自己要求"以当前库已有列兼容"→ 现状就是兼容基线，扩列走迁移（W12） |
+| 01-4.3-D1~D7 | 文档落文件＋状态流＋Git＋锁＋diff 预览 | **done（v0.63）** | `0013_document.sql`（`document`＋`doc_lock`）／`workspace.py`（路径规范化＋原子写）／`gitrepo.py`（参数列表调 git、每次现给署名、路径级提交）／`services.save_content()`（令牌比对→锁→写→commit→更新元数据，失败回滚并另存未应用结果）／`routers/documents.py` 12 条端点／`writing.js` 编辑器与版本面板。状态流 `draft→polishing→finalized` 落 CHECK；diff 预览是 `git show <sha> -- <path>` 的 unified diff |
 | 01-4.3-D7 | 改分集状态枚举前先核白名单与已有数据 | **verify→已核** | `models.py:33` `Literal["draft","active","done"]`；库里 `episode=0` 行 ⇒ 改枚举无需回填 |
 | 01-4.3-R1~R3 | 引用不拷贝、只在创作中心改 `asset_ids`、删被引用资产先拦截 | **partial** | 前两条成立；**第三条没有**：`delete_asset` 不检查镜头引用，会留下悬空 ID |
 | 01-4.3-AI1~AI10 | 12 种 AI 文档操作 | **missing** | 无任何 LLM 调用、无 Job、无 diff 预览 |
@@ -135,7 +135,7 @@
 7. **W02-d 窄屏两条硬伤**：表格加 `.table-wrap{overflow-x:auto}`（并把 `.card:has(table)` 的 hidden 改成不裁列）、`.nav-sub` 在 860px 以下改为可展开而不是 `display:none`。
 8. **W03 项目中心封版**：所有权转移（API＋成员弹窗按钮）、补"最后打开"列、修 `modules.js`/`assets.js` 的 subs 名称互换（这条其实是资产侧，一起收）。
 9. **W04 资产中心封版**：全局资产池迁移（C4，先要用户裁授权策略）、删资产前检查镜头引用并列清单（01-4.3-R3）。
-10. **W05 文档层**：`document` 表＋`data/workspace/` 目录＋`FASTVIDEO_WORKSPACE` 配置、正文读写路径规范化与根目录约束、Git 初始化与 commit、`expected_version` 冲突 409、编辑锁 holder/超时回收。**这块纯软件可验，是"第一条 mp4"之前最值钱的可交付**。
+10. **W05 文档层**：**已于 v0.63 完成**——`document`＋`doc_lock` 迁移、`FASTVIDEO_WORKSPACE` 配置、路径规范化与根目录约束、Git 初始化与提交、`expected_version` 冲突 409、编辑锁 holder/超时回收、创作中心两页做成真编辑器。当时写的"这块纯软件可验，是'第一条 mp4'之前最值钱的可交付"成立：188 项自动化＋21 项真浏览器全过，不依赖任何模型与密钥。
 11. **W06 Provider 封版**：`adapter manifest`（先只做能力清单，不接真模型）、补"允许参数/健康状态/备注"三列、密钥命名冲突（C7 之外的 `FV_KEY_*` vs `DEEPSEEK_API_KEY`）给出迁移说明。
 12. **W07 Job 表＋持久队列＋独立 worker**：按 01-4.4-J3 的 14 类字段建表、`idempotency_key` 唯一、状态机 8 值、`POST /api/jobs` 202 立即返回、worker 独立进程＋重启恢复＋原子领取。**用假 adapter（sleep 脚本）就能把整条队列语义测穿**，不需要真模型。
 13. **W08 生成中心 UI＋成本账**：队列表/筛选/详情抽屉/日志/重试取消、成本字段用整数最小货币单位、多币种分组、失败不归零。
@@ -177,3 +177,21 @@
 | CURRENT_UI §5「全站无焦点陷阱」 | **未做**，同上。`confirmDanger` 因为按钮自持焦点不受影响，其余弹窗 Tab 仍会跑到遮罩背后 |
 
 新增 5 条静态守门人测试（无原生 `confirm()`／每张 `<table>` 都有 `.table-wrap`／401 出口两端齐／有二级页的模块页内有切换器／`alert` 只在 `util.js`），并把原来写死 `util.js:20` 行号的那条改成只比文件名——行号会飘，那种断言只会制造无谓改动。
+
+## 13. W05 完成后回填（2026-11-01）
+
+计划第 10 条已落，`pytest tests -q` → **188 passed**（新增 `test_documents.py` 36 项，路由守卫表 48 → 60 条），CDP 真浏览器 **21 项全过**。逐条对账：
+
+| 盘点条目 | 现在 |
+|---|---|
+| CURRENT_ARCHITECTURE §「没有文档层」 | 已补：`workspace.py`／`gitrepo.py`／`services` 里那条"读—写—提交"链／`routers/documents.py` 12 条端点 |
+| CURRENT_SCHEMA「九实体里只缺 Doc」 | 已补 `document`＋`doc_lock`（0013）。**正文不进库**这条守住了：库里没有一列装全文 |
+| CURRENT_API「创作中心只有 episodes/shots」 | 60 条业务端点，文档一组齐：列表／新建／详情／改元数据／改状态／删／读正文／写正文／拿锁／放锁／版本／差异 |
+| CURRENT_PERMISSIONS C3（`doc:*` 被集镜占用） | 已结：**复用不新增**，文档读写继续挂 `doc:read`／`doc:write` |
+| CURRENT_UI §「小说／剧本两页是占位文案」 | 已换成真界面：文档列表＋编辑器＋版本历史＋冲突对照 |
+| 02 §6.1 五条（路径规范化／原子写／commit 失败可恢复／冲突 409／锁有 holder 与 expiry） | 五条都有实现与测试，其中"commit 失败"走的是**回滚＋另存未应用结果**两条一起（规格写的是"或"） |
+| 02 §14.1「文档路径规范化、Git 写回补偿、锁超时与版本冲突」四项单测 | 四项齐（越界路径九种拒收＋库里躺脏路径的读写拒绝、Git 失败回滚与留底、过期回收与续期、409/423/不带版本 422） |
+
+**还没做的两条，说清楚免得后一轮误以为已经成立**：① 01-4.3-L4 分镜表那 6 列（景别／运镜／对白／图像提示词／视频提示词／审核状态）仍然没有，那是 W12；② AI 文档操作（01-4.3-AI1~AI10）与文本抽取（E1~E3）要 Job 与 LLM provider，排在 W07/W11，`doc_lock` 与 `git_commit` 已经是它们需要的锚（候选入库要绑"证据出自哪一版正文"）。
+
+**这一轮踩到的三件事，记下来**：(a) 版本历史行用 `float:right` 排版会行行叠在一起——float 不参与兄弟行的高度计算，改 flex；(b) git 默认把非 ASCII 路径转成八进制串，diff 头完全没法读，`-c core.quotePath=false`；(c) 正文不补结尾换行，diff 末尾永远挂一句 `\ No newline at end of file`，而且下次在末尾追加会把上一行也标成改动——**但规范化必须同时参与令牌计算**，否则客户端拿着"没换行那份"的哈希去存，服务端按"有换行那份"算，每次保存都自己和自己冲突。

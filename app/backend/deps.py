@@ -53,3 +53,12 @@ def require_permission(code: str):
         return user
 
     return dependency
+
+
+def actor_name(user) -> str:
+    """这次动作的署名——用在文档正文的 Git 提交作者上。
+
+    单独一个函数是为了"显示名优先、没有才退到用户名"这条规则只有一个出处：
+    提交历史是要回头查"这版谁改的"，四处拼字符串会出现两种署名混在一条历史里。
+    """
+    return (user["display_name"] or user["username"]) if user is not None else "平台"

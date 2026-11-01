@@ -22,6 +22,9 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="fvtest-"))
 os.environ["FASTVIDEO_DB"] = str(_TMP / "test.db")
 os.environ["FASTVIDEO_FILES"] = str(_TMP / "files")
+# 稿件工作区也必须在临时目录里：不设在 import main 之前，测试就会在真正的
+# backend/data/workspace 里建 Git 仓库、把测试文档提交进去——那是污染用户的稿子目录。
+os.environ["FASTVIDEO_WORKSPACE"] = str(_TMP / "workspace")
 # 让 bootstrap 走"环境变量给了口令"这条分支，行为可预期；测试从不拿它登录
 os.environ["FASTVIDEO_ADMIN_PASSWORD"] = "pytest-only-not-a-real-secret"
 
@@ -29,6 +32,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
+import services  # noqa: E402
 from repositories.content import assets, episodes, shots  # noqa: E402
 from repositories.projects import projects as project_repo  # noqa: E402
 from repositories.users import sessions, users as user_repo  # noqa: E402
@@ -72,11 +76,16 @@ def people(app):
     outsider = user_repo.create(f"t_outsider_{uuid.uuid4().hex[:6]}", "外人",
                                 hash_password("x"), role_codes=["editor"])
     return {
-        "superadmin": {"id": superadmin["id"], "token": _mint(superadmin["id"])},
-        "admin": {"id": made["admin"]["id"], "token": _mint(made["admin"]["id"])},
-        "editor": {"id": made["editor"]["id"], "token": _mint(made["editor"]["id"])},
-        "viewer": {"id": made["viewer"]["id"], "token": _mint(made["viewer"]["id"])},
-        "outsider": {"id": outsider["id"], "token": _mint(outsider["id"])},
+        "superadmin": {"id": superadmin["id"], "token": _mint(superadmin["id"]),
+                       "name": superadmin["display_name"] or superadmin["username"]},
+        "admin": {"id": made["admin"]["id"], "token": _mint(made["admin"]["id"]),
+                  "name": made["admin"]["display_name"]},
+        "editor": {"id": made["editor"]["id"], "token": _mint(made["editor"]["id"]),
+                   "name": made["editor"]["display_name"]},
+        "viewer": {"id": made["viewer"]["id"], "token": _mint(made["viewer"]["id"]),
+                   "name": made["viewer"]["display_name"]},
+        "outsider": {"id": outsider["id"], "token": _mint(outsider["id"]),
+                     "name": outsider["display_name"]},
     }
 
 
@@ -97,16 +106,20 @@ def as_role(app, people):
 
 @pytest.fixture(scope="session")
 def seeded(app, people):
-    """一套真实对象：项目 → 集 → 镜 → 资产，所有人是 editor。
+    """一套真实对象：项目 → 集 → 镜 → 资产 → 文档，所有人是 editor。
 
     一律走仓储层建，不写裸 SQL——不然测试替代码兜了底，真接口坏了还不知道。
+    文档走 services.create_document：那是"文件 + Git + 元数据"三步一起的入口，
+    只 docs.create 的话会留下一条库里说有、盘上没有的假文档。
     """
     pid = project_repo.create(f"测试项目_{uuid.uuid4().hex[:6]}", "介绍", ["标签A"],
                               people["editor"]["id"])["id"]
     eid = episodes.create(pid, "第 1 集")["id"]
     sid = shots.create(eid, "开场", "", 5.0, [])["id"]
     aid = assets.create(pid, "character", f"角色_{uuid.uuid4().hex[:6]}", "", "", [])["id"]
-    return {"project_id": pid, "episode_id": eid, "shot_id": sid, "asset_id": aid}
+    doc = services.create_document(pid, eid, "novel", "测试稿", "燧人蹲在洞口。", "测试账号")
+    return {"project_id": pid, "episode_id": eid, "shot_id": sid, "asset_id": aid,
+            "document_id": doc["row"]["id"], "commit": doc["row"]["git_commit"]}
 
 
 @pytest.fixture

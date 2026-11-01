@@ -9,7 +9,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status as http_status
 
-from deps import require_permission
+from deps import actor_name, require_permission
 from models import (PasswordResetIn, PermissionOut, RoleOut, RolePermIn,
                     UserCreateIn, UserDeleteIn, UserOut, UserRolesIn, UserUpdateIn)
 from ranks import row_rank, user_rank
@@ -156,7 +156,7 @@ def delete_user(user_id: int, payload: UserDeleteIn,
             project_repo.set_owner(row["id"], payload.transfer_to)
     elif owned:
         for row in owned:
-            delete_project_cascade(row["id"])
+            delete_project_cascade(row["id"], actor=actor_name(user))
 
     users.delete(user_id)
 

@@ -1,19 +1,47 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
+import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
 import { getParam, getSub, setParam, setSub } from '../navstate.js';
+import { closeDetail, openDetail } from '../router.js';
 
 /**
  * 创作中心 = 集（Episode）+ 三级文档（小说／剧本／分镜）。
  * 按设计稿 §3.2，Episode 和 Shot 的东家在这里：建集、删集、加镜、删镜都只在这一页做，
- * 项目中心只显示计数。小说/剧本的正文本来就在文件系统里，平台先只管"一镜一行"这份可执行的数据。
- * 选中的集记在模块级变量里，切页回来还在。
+ * 项目中心只显示计数。
+ *
+ * W05 之后，小说与剧本两页不再是"正文仍在文件里"的占位：
+ * 平台读的是工作区里那份 Markdown（正文的事实来源仍然是文件＋Git，库里只有元数据），
+ * 保存会生成一次 Git 提交，版本与差异在这页能翻。三条硬约定：
+ * 1. 前端只传文档 id，永远不传路径（路径穿越这一类问题在界面上没有入口）。
+ * 2. 保存必须带 expected_version；后端 409 时不覆盖、给对照，423 时说明谁在编辑。
+ * 3. 分镜那一页的数据是 shot 表，不是文档——所以 kind 只有 novel／script 两档可建。
+ * 选中的集／文档记在模块级变量里，切页回来还在。
  */
 let pickedEpisodeId = null;
+let pickedDocId = null;
+
+// 编辑器状态。放在模块级而不是每次 render 重取：人正在写的东西不能被一次刷新抹掉。
+// draftFor 记着这份草稿属于哪一份文档——换文档（含换项目、深链跳走再回来）必须重取，
+// 否则会出现"打开的是新文档、编辑器里是旧文档那段话"，看着像数据串了。
+let draft = null;
+let draftFor = null;
+let draftVersion = null;      // 打开/上次保存时拿到的版本令牌
+let serverCopy = null;        // 409 之后拉下来的"盘上现在这份"，用来对照
+let notice = '';              // 上一次保存的结果，一句话
+let lockWarn = '';            // 别人持锁的提示
+let dirty = false;            // 有未保存改动
+let locking = false;          // 首次输入时抢锁只发一次
 
 // 集状态。这一列 0004 建表时就有，但一直没有写入口；项目中心的
 // "已定稿 N/M 集"就是它的聚合，所以入口放在这里——集的东家是创作中心
 const EP_STATUS = { draft: ['草稿', 'gray'], active: ['在产', 'blue'], done: ['定稿', 'green'] };
+
+// 文档三档。定稿不给冻住内容：那是 Review 闸口的事（W14），这里只是流程状态
+const DOC_STATUS = { draft: ['草稿', 'gray'], polishing: ['润色中', 'blue'], finalized: ['定稿', 'green'] };
+
+// 二级标签下标 → 文档类型。0 小说、1 剧本；2 是分镜（走 shot 表，不在这里）
+const TAB_KIND = { 0: 'novel', 1: 'script' };
+const KIND_LABEL = { novel: '小说', script: '剧本' };
 
 // 侧栏二级导航里分镜排第三（小说、剧本在前），渲染后高亮它
 
@@ -21,24 +49,494 @@ export default {
   subIndex: 2,
 
   async render() {
-    // 小说 / 剧本两页的正文按设计留在文件里，这里只声明现状
     const tab = getSub('writing') ?? 2;
     // 页内也摆一排切换器：窄屏侧栏的二级标签会收起，只靠它等于把功能藏了
     const subRow = subChipRow(['小说', '剧本', '分镜'], tab);
-    if (tab !== 2) {
-      const name = tab === 0 ? '小说' : '剧本';
-      return `<section class="view on">
-        <div class="page-head"><h1>创作中心</h1><p>${name}</p>
-          <div class="right">${subRow}</div></div>
-        <div class="card"><div class="empty">
-          <div class="empty-t">${name}正文仍在文件里</div>
-          <p>按设计稿的口径，小说与剧本正文留在文件系统并走 git，平台只做状态与版本索引。
-             文档索引这一版还没建，先在文件里写；分镜那一页已经可用。</p>
-        </div></div>
-      </section>`;
-    }
+    if (tab === 2) return renderShots(tab, subRow);
+    return await renderDocs(tab, subRow);
+  },
 
-    const project = store.current;
+  mount(root) {
+    const tab = getSub('writing') ?? 2;
+    if (tab === 2) return mountShots(root);
+    return mountDocs(root, tab);
+  },
+};
+
+/* =======================================================================
+   小说 / 剧本：文档列表 + 编辑器 + 版本历史
+   ======================================================================= */
+
+async function renderDocs(tab, subRow) {
+  const project = store.current;
+  if (!project) {
+    return `<section class="view on">
+      <div class="page-head"><h1>创作中心</h1><p>${KIND_LABEL[TAB_KIND[tab]]}</p>
+        <div class="right">${subRow}</div></div>
+      <div class="card"><div class="empty">
+        <div class="empty-t">先选一个项目</div>
+        <p>文档挂在项目下面，去项目中心建一个再回来。</p>
+      </div></div>
+    </section>`;
+  }
+
+  const kind = TAB_KIND[tab];
+  let docs = [];
+  let err = null;
+  try { docs = await api.documents(project.id, kind); } catch (e) { err = e; }
+  if (err) {
+    return `<section class="view on">
+      <div class="page-head"><h1>创作中心</h1><p>${KIND_LABEL[kind]}</p>
+        <div class="right">${subRow}</div></div>
+      <div class="card">${errorBox('这一页的文档', err)}</div>
+    </section>`;
+  }
+
+  // 深链带进来的文档 id（地址形如 #writing/0/a12）。列表里没有就说明那条已经删了，
+  // 退回列表而不是把编辑器停在一份不存在的稿子上
+  const focus = getParam('writing');
+  if (focus !== undefined && !Number.isNaN(Number(focus))) {
+    if (docs.some((d) => d.id === Number(focus))) pickedDocId = Number(focus);
+    setParam('writing', undefined);
+  }
+  if (!docs.some((d) => d.id === pickedDocId)) pickedDocId = docs.length ? docs[0].id : null;
+
+  const current = docs.find((d) => d.id === pickedDocId) || null;
+  const canWrite = store.can('doc:write');
+
+  let body = '';
+  let loadErr = null;
+  if (current) {
+    // 只有"这份文档还没读过"才拉正文：draft 里可能装着人正在写的东西，不能覆盖
+    if (draft === null || draftVersion === null || draftFor !== current.id) {
+      try {
+        const data = await api.docContent(current.id);
+        draft = data.content;
+        draftVersion = data.version;
+        draftFor = current.id;
+        serverCopy = null;
+        dirty = false;
+      } catch (e) { loadErr = e; }
+    }
+    body = loadErr ? `<div class="card">${errorBox('这份正文', loadErr)}</div>` : editorHtml(current);
+  } else {
+    body = `<div class="card"><div class="empty">
+      <div class="empty-t">${docs.length ? '选一份来写' : '还没有' + KIND_LABEL[kind] + '文档'}</div>
+      <p>${docs.length ? '左边点一份，或者新建一份。'
+                       : (canWrite ? '新建一份，正文会落到工作区里并生成第一次提交。'
+                                   : '等项目里有人建第一份——只读角色看不到新建钮。')}</p>
+    </div></div>`;
+  }
+
+  const list = docs.map((d) => {
+    const [label, tone] = DOC_STATUS[d.status] || [d.status, 'gray'];
+    return `
+      <div class="t ${d.id === pickedDocId ? 'on' : ''}" data-doc="${d.id}">
+        ${escapeHtml(d.title)}
+        <span class="chip ${tone}">${label}</span>
+        ${d.lock_holder_name
+          ? `<span class="chip amber" title="锁到 ${escapeHtml(d.lock_expires_at)}，超时自己松开">
+               ${escapeHtml(d.lock_holder_name)} 在改</span>` : ''}
+        <span class="t-dim" style="float:right">${d.episode_title ? `第 ${d.episode_seq} 集` : '全项目'}
+          <button class="btn sm danger" data-del-doc="${d.id}" data-title="${escapeHtml(d.title)}"
+                  ${canWrite ? '' : 'disabled'}>删</button>
+        </span>
+      </div>`;
+  }).join('');
+
+  return `
+  <section class="view on">
+    <div class="page-head">
+      <h1>创作中心</h1>
+      <p>${KIND_LABEL[kind]} · ${escapeHtml(project.name)}${current ? ' / ' + escapeHtml(current.title) : ''}</p>
+      <div class="right">${subRow}</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start">
+      <div class="card tree">
+        <div class="grp" style="display:flex;justify-content:space-between;align-items:center">
+          <span>${KIND_LABEL[kind]}文档 · ${docs.length} 份</span>
+          ${canWrite ? '<button class="btn sm primary" id="doc-new">新建</button>' : ''}
+        </div>
+        ${docs.length ? list : '<p class="hint" style="padding:8px 10px;text-align:left">这一类还没有稿子。</p>'}
+      </div>
+      ${body}
+    </div>
+
+    ${newDocModal(project.id)}
+  </section>`;
+}
+
+function editorHtml(doc) {
+  const canWrite = store.can('doc:write');
+  const heldByOther = doc.lock_holder_name && doc.lock_holder_id !== store.user?.id;
+  const [label] = DOC_STATUS[doc.status] || [doc.status];
+  return `
+  <div class="card">
+    <div class="card-head">
+      <h2>${escapeHtml(doc.title)}</h2>
+      <span class="sub">${escapeHtml(doc.rel_path)}</span>
+      <div class="right">
+        ${canWrite ? `
+          <select id="doc-status" class="ctl sm" style="width:auto"
+                  title="草稿 → 润色 → 定稿；定稿只改状态，不冻结内容">
+            ${Object.entries(DOC_STATUS).map(([key, [text]]) => `
+              <option value="${key}"${key === doc.status ? ' selected' : ''}>${text}</option>`).join('')}
+          </select>
+          <button class="btn sm primary" id="doc-save" ${canWrite ? '' : 'disabled'}>保存</button>`
+        : `<span class="chip gray" title="只读角色没有编辑文档的权限">${label}</span>`}
+        <button class="btn sm" id="doc-hist">版本</button>
+      </div>
+    </div>
+
+    ${lockWarn || (heldByOther && !lockWarn) ? `<div class="bar warn">
+        ${escapeHtml(lockWarn || `${doc.lock_holder_name} 正在编辑这一份（锁到 ${doc.lock_expires_at} 自己松开）。
+        现在写不会覆盖对方——保存会被后端拦住，直到对方保存或锁过期。`)}
+      </div>` : ''}
+
+    ${serverCopy !== null ? `<div class="bar bad">
+        <p><b>版本冲突。</b>你手上的令牌对应的正文已经不是盘上这一份了（有人在你之后保存过，
+        或者在编辑器外面改过）。下面左边是你正在写的，右边是现在盘上的。</p>
+        <div class="cmp">
+          <div><span class="grp">我这边的草稿（还没存）</span>
+            <pre class="diff keep">${escapeHtml(draft ?? '')}</pre></div>
+          <div><span class="grp">工作区里现在这份</span>
+            <pre class="diff">${escapeHtml(serverCopy)}</pre></div>
+        </div>
+        <p class="row" style="gap:8px">
+          <button class="btn sm" id="doc-conflict-use">用盘上这份，丢掉我的草稿</button>
+          <button class="btn sm" id="doc-conflict-refresh">刷新版本令牌</button>
+        </p>
+        <p class="hint" style="text-align:left">「刷新版本令牌」＝ 对照过了，确认要用我这边这份覆盖盘上那份。</p>
+      </div>` : ''}
+
+    ${notice ? `<div class="bar ok">${escapeHtml(notice)}</div>` : ''}
+
+    <textarea id="doc-text" class="ctl doc-area" spellcheck="false"
+              ${canWrite ? '' : 'readonly'} placeholder="在这里写正文……">${escapeHtml(draft ?? '')}</textarea>
+
+    <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px;
+         display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <span class="sub" id="doc-count">${(draft ?? '').length} 字</span>
+      <span class="chip ${dirty ? 'amber' : 'green'}" id="doc-dirty">${dirty ? '未保存' : '与盘上一致'}</span>
+      <span class="sub">${doc.git_commit ? '当前提交 ' + doc.git_commit.slice(0, 8) : '还没有提交记录'}</span>
+      <span class="sub" style="margin-left:auto">创建 ${escapeHtml(doc.created_at)}
+        · 改动 ${escapeHtml(doc.updated_at)}</span>
+    </div>
+
+    <div id="doc-hist-panel" hidden class="card-body" style="border-top:1px solid var(--line)">
+      <p class="hint" style="text-align:left">版本历史来自工作区的 Git 仓库，最多列最近 30 次。</p>
+      <div id="doc-hist-list"><span class="sub">载入中…</span></div>
+      <pre id="doc-diff" class="diff" hidden></pre>
+    </div>
+  </div>`;
+}
+
+function newDocModal(projectId) {
+  if (!store.can('doc:write')) return '';
+  return `
+      <div class="modal" id="nd-modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head neutral">新建文档</div>
+          <div class="modal-body">
+            <div class="form-grid">
+              <label for="nd-title">标题</label>
+              <input id="nd-title" class="ctl" maxlength="80" autocomplete="off"
+                     placeholder="例如 第一章 取火">
+
+              <label for="nd-ep">挂在哪个创作单元下</label>
+              <select id="nd-ep" class="ctl">
+                <option value="">全项目共用（总纲、人物小传这一类）</option>
+              </select>
+
+              <label for="nd-body" class="top">首版正文</label>
+              <textarea id="nd-body" class="ctl" rows="5" placeholder="可以先空着，建好再写"></textarea>
+            </div>
+            <p class="modal-meta pf-hint">正文会写进工作区的 Markdown 文件并提交一次 Git；
+              标题只影响给人看的名字，不改文件路径的规则。</p>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" id="nd-cancel">取消</button>
+            <button class="btn primary" id="nd-save">建这份文档</button>
+          </div>
+        </div>
+      </div>`;
+}
+
+function resetEditor() {
+  draft = null; draftFor = null; draftVersion = null; serverCopy = null;
+  notice = ''; lockWarn = ''; dirty = false; locking = false;
+}
+
+function mountDocs(root, tab) {
+  const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  bindSubChips(root, (i) => {
+    if (i !== tab) resetEditor();          // 换的是另一类文档，草稿不能跟着带过去
+    setSub('writing', i);
+    refresh();
+  });
+  root.querySelector('[data-retry]')?.addEventListener('click', refresh);
+
+  /* ---------- 列表：选一份、删一份 ---------- */
+  root.querySelectorAll('[data-doc]').forEach((el) => {
+    el.addEventListener('click', async (e) => {
+      if (e.target.closest('button')) return;
+      const id = Number(el.dataset.doc);
+      if (id === pickedDocId) return;
+      if (dirty && !(await confirmDanger({
+        title: '切换文档',
+        body: '这一份还有<b>没保存的改动</b>，切过去就丢了（后端没有它，工作区里也没有）。',
+        okText: '丢掉并切换',
+      }))) return;
+      resetEditor();
+      pickedDocId = id;
+      openDetail('writing', id);           // 地址带上文档 id，刷新/粘贴回得来
+    });
+  });
+
+  root.querySelectorAll('[data-del-doc]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.delDoc);
+      if (!(await confirmDanger({
+        title: '删除文档',
+        body: `确定删除 <b>${escapeHtml(btn.dataset.title)}</b>？正文会从工作区里摘掉，`
+            + '但那一稿还留在 Git 历史里，说一声就能找回。',
+        okText: '删除',
+      }))) return;
+      const ok = await run('删除', () => api.deleteDocument(id));
+      if (!ok) return;
+      if (id === pickedDocId) { resetEditor(); pickedDocId = null; closeDetail('writing'); }
+      refresh();
+    });
+  });
+
+  /* ---------- 新建（弹窗）：低频动作不占主页面 ---------- */
+  const modal = root.querySelector('#nd-modal');
+  if (modal) {
+    const titleEl = root.querySelector('#nd-title');
+    const bodyEl = root.querySelector('#nd-body');
+    const epEl = root.querySelector('#nd-ep');
+    const saveBtn = root.querySelector('#nd-save');
+    const close = () => { modal.hidden = true; saveBtn.disabled = false; };
+
+    root.querySelector('#doc-new')?.addEventListener('click', async () => {
+      titleEl.value = ''; bodyEl.value = '';
+      epEl.innerHTML = '<option value="">全项目共用（总纲、人物小传这一类）</option>';
+      // 集名单现取：这一页是集的东家，选项必须和分镜那一栏看到的是同一份名单
+      try {
+        const eps = await api.episodes(store.currentId);
+        eps.forEach((ep) => {
+          const opt = document.createElement('option');
+          opt.value = ep.id;
+          opt.textContent = `第 ${ep.seq} 集 · ${ep.title}`;
+          epEl.appendChild(opt);
+        });
+      } catch { /* 拉不到就只给"全项目共用"，不挡新建 */ }
+      modal.hidden = false;
+      titleEl.focus();
+    });
+
+    const create = async () => {
+      const title = titleEl.value.trim();
+      if (!title) { titleEl.focus(); return; }
+      saveBtn.disabled = true;
+      let created = null;
+      const ok = await run('新建', async () => {
+        created = await api.createDocument(store.currentId, {
+          kind: TAB_KIND[tab],
+          title,
+          episode_id: epEl.value ? Number(epEl.value) : null,
+          content: bodyEl.value,
+        });
+      });
+      saveBtn.disabled = false;
+      if (!ok || !created) return;           // 失败时弹窗留着，填的字还在
+      close();
+      resetEditor();
+      pickedDocId = created.id;
+      refresh();
+    };
+    saveBtn?.addEventListener('click', create);
+    root.querySelector('#nd-cancel')?.addEventListener('click', close);
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    bindModalDismiss(modal, close);
+  }
+
+  /* ---------- 编辑器 ---------- */
+  const ta = root.querySelector('#doc-text');
+  if (!ta) return;
+  const docId = pickedDocId;
+  const countEl = root.querySelector('#doc-count');
+  const saveBtn = root.querySelector('#doc-save');
+
+  const setDirty = (v) => {
+    dirty = v;
+    const chip = root.querySelector('#doc-dirty');
+    if (chip) {
+      chip.className = 'chip ' + (v ? 'amber' : 'green');
+      chip.textContent = v ? '未保存' : '与盘上一致';
+    }
+  };
+
+  ta.addEventListener('input', () => {
+    draft = ta.value;
+    countEl.textContent = `${ta.value.length} 字`;
+    setDirty(true);
+    // 一开始打字就顺手拿锁：界面能在别人那边显示"谁在改"，
+    // 而不是等到保存被 423 挡回来才发现有人在写同一份
+    if (!locking && draftVersion !== null) {
+      locking = true;
+      api.lockDocument(docId)
+        .then((r) => {
+          if (r.state === 'held') {
+            lockWarn = `${r.holder_name} 正在编辑这一份（锁到 ${r.expires_at} 自己松开）。`
+                     + '现在保存会被后端拦住，不会被覆盖。';
+            paintBars(root);
+          }
+        })
+        .catch(() => { locking = false; });   // 拿锁失败不挡住打字：保存那一关还有后端把关
+    }
+  });
+
+  root.querySelector('#doc-status')?.addEventListener('change', async (e) => {
+    const ok = await run('改状态', async () => {
+      await api.setDocumentStatus(docId, e.target.value);
+      await store.load();                 // 项目中心的"已定稿"计数跟着走
+    });
+    if (ok) refresh();
+  });
+
+  const save = async () => {
+    if (saveBtn) saveBtn.disabled = true;
+    notice = '';
+    try {
+      const out = await api.saveDocContent(docId, ta.value, draftVersion);
+      draft = ta.value;
+      draftVersion = out.version;
+      serverCopy = null;
+      setDirty(false);
+      notice = out.changed
+        ? `已保存并提交（${(out.git_commit || '').slice(0, 8)}）`
+        : '内容和上一版一样，没有产生新提交';
+      lockWarn = '';
+      await store.load();
+    } catch (err) {
+      if (err.status === 409) {
+        // 不覆盖、也不自动合并：把人正在写的东西留着，另把盘上那份取下来对照
+        notice = '';
+        lockWarn = '';
+        try { serverCopy = (await api.docContent(docId)).content; } catch { serverCopy = '（取不到）'; }
+      } else if (err.status === 423) {
+        lockWarn = err.message;
+      } else {
+        notice = '';
+        lockWarn = `${err.message}`;
+      }
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+      paintBars(root);
+    }
+  };
+  saveBtn?.addEventListener('click', save);
+  ta.addEventListener('keydown', (e) => {
+    // Cmd/Ctrl+S：写稿的人一定会按它。浏览器自己的"保存网页"不能放出来
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (saveBtn && !saveBtn.disabled) save();
+    }
+  });
+
+  root.querySelector('#doc-conflict-use')?.addEventListener('click', () => {
+    // 这一步会丢自己的草稿，所以二次确认
+    confirmDanger({
+      title: '用盘上这份',
+      body: '你这边<b>没保存的草稿会被丢掉</b>，编辑器换成工作区里现在这份。',
+      okText: '丢掉我的草稿',
+    }).then((sure) => {
+      if (!sure) return;
+      draft = serverCopy;
+      api.docContent(docId).then((d) => { draftVersion = d.version; }).catch(() => {});
+      serverCopy = null;
+      setDirty(false);
+      refresh();
+    });
+  });
+  root.querySelector('#doc-conflict-refresh')?.addEventListener('click', async () => {
+    // 只换令牌，不换文本：等于"我对照过了，确认用我这份覆盖"
+    const d = await api.docContent(docId).catch(() => null);
+    if (!d) return;
+    draftVersion = d.version;
+    serverCopy = null;
+    notice = '版本令牌已更新。再点「保存」会用你这边这份覆盖盘上那份。';
+    refresh();
+  });
+
+  /* ---------- 版本历史 ---------- */
+  const histBtn = root.querySelector('#doc-hist');
+  const panel = root.querySelector('#doc-hist-panel');
+  histBtn?.addEventListener('click', async () => {
+    panel.hidden = !panel.hidden;
+    if (panel.hidden) return;
+    const listEl = root.querySelector('#doc-hist-list');
+    try {
+      const vs = await api.docVersions(docId);
+      listEl.innerHTML = vs.length ? vs.map((v) => `
+        <div class="ver" data-ver="${escapeHtml(v.commit)}">
+          <span class="mono v-sha">${escapeHtml(v.commit.slice(0, 8))}</span>
+          <span class="v-subj" title="${escapeHtml(v.subject)}">${escapeHtml(v.subject)}</span>
+          <span class="v-when">${escapeHtml(v.at)} · ${escapeHtml(v.author)}</span>
+          <button class="btn sm" data-diff>看差异</button>
+        </div>`).join('') : '<p class="hint" style="text-align:left">还没有提交记录。</p>';
+      listEl.querySelectorAll('[data-ver]').forEach((row) => {
+        row.addEventListener('click', async () => {
+          const pre = root.querySelector('#doc-diff');
+          pre.hidden = false;
+          pre.textContent = '载入中…';
+          try {
+            pre.textContent = (await api.docDiff(docId, row.dataset.ver)).diff;
+          } catch (err) { pre.textContent = `读不到这一版：${err.message}`; }
+        });
+      });
+    } catch (err) {
+      listEl.innerHTML = `<p class="t-bad">${escapeHtml(err.message)}</p>`;
+    }
+  });
+}
+
+/**
+ * 编辑器上方那三条提示（保存结果 / 别人持锁 / 版本冲突）的唯一画法。
+ *
+ * 为什么不用整页 refresh()：打字途中重绘会把光标位置和输入法未上屏的合成串一起弄丢，
+ * 写稿的人对这两件事极其敏感。所以只动这一小块 DOM。
+ * 唯一的例外是冲突对照（serverCopy）——那要摆两个 <pre>，结构变了，只能重绘整块；
+ * 那时候人刚点了保存、不在输入状态，丢不了东西。
+ */
+function paintBars(root) {
+  root.querySelectorAll('.bar').forEach((b) => b.remove());
+  if (lockWarn) upsertBar(root, 'warn', lockWarn);
+  if (notice && serverCopy === null) upsertBar(root, 'ok', notice);
+  if (serverCopy !== null) {
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+  }
+}
+
+function upsertBar(root, kind, text) {
+  const bar = document.createElement('div');
+  bar.className = `bar ${kind}`;
+  bar.textContent = text;
+  const ta = root.querySelector('#doc-text');
+  (ta ? ta.parentElement : root.querySelector('.card')).insertBefore(
+    bar, ta || root.querySelector('.card > *'));
+  return bar;
+}
+
+/* =======================================================================
+   分镜：一集一套（原有那页，一字不动地搬在下面）
+   ======================================================================= */
+
+async function renderShots(tab, subRow) {
+  const project = store.current;
     if (!project) {
       return `<section class="view on"><div class="card"><div class="empty">
         <div class="empty-t">先选一个项目</div>
@@ -106,7 +604,7 @@ export default {
         第 ${e.seq} 集 · ${escapeHtml(e.title)}
         <span class="chip ${tone}" title="本集状态，改它用右侧的下拉">${label}</span>
         <span class="t-dim" style="float:right">${e.shot_count} 镜
-          <button class="btn sm danger" style="margin-left:6px" data-del-ep="${e.id}"
+          <button class="btn sm danger" data-del-ep="${e.id}"
                   data-label="第 ${e.seq} 集「${escapeHtml(e.title)}」"
                   data-shots="${e.shot_count}">删</button>
         </span>
@@ -182,10 +680,10 @@ export default {
         </div>
       </div>
     </section>`;
-  },
+}
 
-  mount(root) {
-    const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+function mountShots(root) {
+  const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
 
     // 页内切换器与侧栏二级标签写同一个下标，两处永远同步
     bindSubChips(root, (i) => { setSub('writing', i); refresh(); });
@@ -288,5 +786,4 @@ export default {
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'assets' }));
       });
     });
-  },
-};
+}

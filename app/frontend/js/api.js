@@ -143,6 +143,38 @@ export const api = {
   }).then(toJson),
   deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }).then(toJson),
 
+  // 文档（W05）：元数据在库里、正文在工作区里、版本在 Git 里。
+  // 前端只传文档 id，一个接口都不接受路径 —— 路径由服务端生成并钉在库里，
+  // "非法路径不可读写"这件事才有落脚的地方。
+  documents: (pid, kind) => fetch(
+    `/api/projects/${pid}/documents${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`).then(toJson),
+  createDocument: (pid, body) => fetch(`/api/projects/${pid}/documents`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  document: (id) => fetch(`/api/documents/${id}`).then(toJson),
+  // 改标题与挂靠的分集。**不含路径**：改名不挪文件，历史是按路径记的
+  updateDocument: (id, body) => fetch(`/api/documents/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  setDocumentStatus: (id, status) => fetch(`/api/documents/${id}/status`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  }).then(toJson),
+  deleteDocument: (id) => fetch(`/api/documents/${id}`, { method: 'DELETE' }).then(toJson),
+  docContent: (id) => fetch(`/api/documents/${id}/content`).then(toJson),
+  // expected_version 必填：不带版本后端直接 422，前端也不给"最后一次保存覆盖前一次"的便道
+  saveDocContent: (id, content, expectedVersion) => fetch(`/api/documents/${id}/content`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, expected_version: expectedVersion }),
+  }).then(toJson),
+  // 拿锁不报错也拿不到就是 held：那是界面要显示的状态，不是要弹的失败
+  lockDocument: (id) => fetch(`/api/documents/${id}/lock`, { method: 'POST' }).then(toJson),
+  unlockDocument: (id) => fetch(`/api/documents/${id}/lock`, { method: 'DELETE' }).then(toJson),
+  docVersions: (id) => fetch(`/api/documents/${id}/versions`).then(toJson),
+  docDiff: (id, commit) => fetch(`/api/documents/${id}/versions/${encodeURIComponent(commit)}/diff`).then(toJson),
+
   // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
   // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点
   assets: (pid, kind, scope) => fetch(
