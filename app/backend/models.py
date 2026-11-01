@@ -39,6 +39,48 @@ BILLABLE_LABELS: dict[str, str] = {
     "not_billable": "不计费",
 }
 
+# 一条"能用"的结论凭什么成立。四类互不升级——外部评审点名的就是这一刀：
+# mock 跑通不等于真实供应商可用，环境齐备不等于真产出过文件。
+VALIDATION_KINDS: dict[str, str] = {
+    "env_check": "环境检查",
+    "mock": "假适配器",
+    "real_call": "真实调用",
+    "target_machine": "目标机基准",
+}
+
+# 错误码 → 人话分类。不追求穷尽：没登记的原样显示，至少不会把未知伪装成已知。
+# 这一位的用途很窄：让非开发用户知道"下一步该找配置、找参数、找机器，还是去核对账单"。
+ERROR_LABELS: dict[str, str] = {
+    "bad_params": "参数不合法",
+    "adapter_not_ready": "适配器尚未接线",
+    "adapter_missing": "缺少运行时",
+    "adapter_unavailable": "运行时条件不足",
+    "adapter_start_failed": "模型进程起不来",
+    "adapter_failed": "模型进程异常退出",
+    "empty_output": "返回成功但没有有效产物",
+    "run_timeout": "执行超过时间上限",
+    "worker_lost": "执行进程中断",
+    "worker_stopped": "worker 被停止",
+    "cancelled": "已取消",
+    "cancelled_unconfirmed": "取消时供应商任务可能已建立",
+    "internal_error": "平台内部错误",
+    "mock_failed": "假适配器模拟失败",
+    "provider_missing_key": "缺少密钥",
+    "provider_missing_base_url": "缺少供应商地址",
+    "provider_unsupported_provider": "供应商未登记",
+    "provider_auth": "供应商拒绝鉴权（密钥不对或过期）",
+    "provider_insufficient_balance": "供应商余额不足",
+    "provider_rate_limit": "供应商限流",
+    "provider_invalid_request": "供应商拒绝请求参数",
+    "provider_unavailable": "供应商暂时不可用",
+    "provider_error": "供应商返回错误",
+    "provider_empty_response": "供应商返回空响应",
+    "provider_timeout": "供应商轮询超时",
+    "provider_empty_output": "供应商任务成功但没有产物",
+    "provider_network": "与供应商的网络中断",
+    "provider_cloud_run_error": "云端调用进程异常",
+}
+
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
@@ -186,9 +228,13 @@ class ProviderOut(BaseModel):
     notes: str
     # 健康是每次现查的：state 四档 + 一句人话 + 命中的 adapter（没登记就是 null）
     health: dict
+    # P0：把"凭什么认为能用"单独摆出来。health 只回答环境齐不齐，
+    # validation 回答"最近一次真调用／假适配器／目标机基准是什么时候、结果如何"。
+    validation: dict = {}
 
     @classmethod
-    def from_row(cls, row, has_key: bool, key_env: str, health: dict) -> "ProviderOut":
+    def from_row(cls, row, has_key: bool, key_env: str, health: dict,
+                 validation: dict | None = None) -> "ProviderOut":
         return cls(
             id=row["id"],
             capability=row["capability"],
@@ -204,6 +250,7 @@ class ProviderOut(BaseModel):
             key_env_custom=row["key_env"],
             notes=row["notes"],
             health=health,
+            validation=validation or {},
         )
 
 
@@ -232,6 +279,9 @@ class ProviderOptionOut(BaseModel):
     adapter_label: str
     health_state: str
     health_detail: str
+    # 提交表单也要能看出"这一槽位从没真跑过"。不带 detail，避免把内部路径泄露给普通编辑者。
+    validation_state: str = "never"
+    validation_at: str = ""
     models: list[dict] = []
 
 
@@ -250,6 +300,8 @@ class CurrentProviderOut(BaseModel):
     adapter: str
     health_state: str
     health_detail: str
+    validation_state: str = "never"
+    validation_at: str = ""
 
 
 # ---------- 生成作业（W07） ----------
@@ -334,6 +386,7 @@ class JobOut(BaseModel):
     retry_of_job_id: int | None
     error_code: str | None
     error_message: str | None
+    error_label: str = ""
     # 云端供应商回执里的请求/任务 ID；本地作业恒为 None。
     # 只回 ID，不回供应商原始响应——原始响应在 resources 的是白名单摘录。
     provider_request_id: str | None = None
@@ -347,10 +400,24 @@ class JobOut(BaseModel):
     currency: str | None = None
     billable_status: str = "not_billable"
     billable_status_label: str = "不计费"
+    # P0：重试链与账单核对要能在列表里看出来，不然一串重试就是几笔互不相干的待核对。
+    # actual/delta 只有人核对过才有值；没核对一律 None，不拿 0 冒充"没花钱"。
+    attempt: int = 1
+    superseded_by_job_id: int | None = None
+    retry_count: int = 0
+    actual_cost_micros: int | None = None
+    delta_micros: int | None = None
+    attention_reason: str = ""
+    reconciled_at: str | None = None
+    reconciled_by_name: str = ""
+    reconcile_note: str = ""
 
     @classmethod
     def from_row(cls, row) -> "JobOut":
         prompt = row["prompt_snapshot"] or ""
+        keys = row.keys()
+        cost = row["cost_micros"]
+        actual = row["actual_cost_micros"] if "actual_cost_micros" in keys else None
         return cls(
             id=row["id"], project_id=row["project_id"],
             episode_id=row["episode_id"], shot_id=row["shot_id"],
@@ -367,14 +434,26 @@ class JobOut(BaseModel):
             finished_at=row["finished_at"], elapsed_ms=row["elapsed_ms"],
             retry_of_job_id=row["retry_of_job_id"],
             error_code=row["error_code"], error_message=row["error_message"],
+            error_label=ERROR_LABELS.get(row["error_code"] or "", row["error_code"] or ""),
             provider_request_id=row["provider_request_id"],
             has_log=bool(row["log_path"]),
             has_artifacts=row["result_paths_json"] not in ("", "[]"),
             quantity=row["quantity"], unit=row["unit"],
-            cost_micros=row["cost_micros"], currency=row["currency"],
+            cost_micros=cost, currency=row["currency"],
             billable_status=row["billable_status"],
             billable_status_label=BILLABLE_LABELS.get(row["billable_status"],
                                                       row["billable_status"]),
+            attempt=int(row["attempt"] or 1) if "attempt" in keys else 1,
+            superseded_by_job_id=(row["superseded_by_job_id"]
+                                  if "superseded_by_job_id" in keys else None),
+            retry_count=int(row.get("retry_count") or 0) if hasattr(row, "get") else 0,
+            actual_cost_micros=actual,
+            delta_micros=(None if actual is None or cost is None else int(actual) - int(cost)),
+            attention_reason=(row["attention_reason"] or "") if "attention_reason" in keys else "",
+            reconciled_at=row["reconciled_at"] if "reconciled_at" in keys else None,
+            reconciled_by_name=(row["reconciled_by_name"] or "")
+            if "reconciled_by_name" in keys else "",
+            reconcile_note=(row["reconcile_note"] or "") if "reconcile_note" in keys else "",
         )
 
 
@@ -389,6 +468,13 @@ class JobDetailOut(JobOut):
     unit_price_micros: int | None
     pricing_snapshot: dict
     resources: dict
+    # P0 可观测性：租约与日志静默。它们只回答"这条现在到底动没动"，
+    # 不改状态——把"卡住"直接写成 failed 会替 worker 做它还没做的判断。
+    lease_until: str | None = None
+    lease_expired: bool = False
+    log_silent_seconds: int | None = None
+    log_size: int = 0
+    running_seconds: int | None = None
 
     @classmethod
     def from_row(cls, row) -> "JobDetailOut":
@@ -501,10 +587,17 @@ class GenerationProfileOut(BaseModel):
 
 
 class JobLogOut(BaseModel):
-    """日志尾部。`path` 是相对 Job 目录的路径，不是绝对磁盘路径。"""
+    """日志尾部。`path` 是相对 Job 目录的路径，不是绝对磁盘路径。
+
+    size/silent_seconds 是给"这条是不是卡住了"用的：只有文本，界面分不清
+    慢慢写和早就没动。
+    """
 
     path: str | None
     text: str
+    size: int = 0
+    mtime: str | None = None
+    silent_seconds: int | None = None
 
 
 class JobArtifactOut(BaseModel):
@@ -519,6 +612,119 @@ class WorkerStatusOut(BaseModel):
     age_seconds: int | None
     current_job_id: int | None
     queue: dict
+    # P0：光有"在线/离线"两态不够。队列里有活却没人领、跑着的作业早该超时、
+    # 租约过期但还挂着 running——这三种都要在界面上说清，而不是让人猜。
+    alerts: list[dict] = []
+    by_status: dict = {}
+    oldest_queued_seconds: int | None = None
+    running_jobs: list[dict] = []
+    expired_leases: int = 0
+    needs_attention: int = 0
+
+
+class JobReconcileIn(BaseModel):
+    """人工核对一条 `needs_attention` 的云端作业。
+
+    `succeeded`/`failed` 必须带实际金额：不给金额就等于替人断定"这次没花钱"，
+    而那正是账本上最不该出现的一种猜测。`pending` 只留备注，状态与账单都不动。
+    """
+    decision: Literal["succeeded", "failed", "pending"]
+    actual_cost_micros: int | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    note: str = Field(default="", max_length=500)
+
+
+class JobAttentionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class JobRetryPreviewOut(BaseModel):
+    """重试前给人看清"这一枪会继承什么、可能再花多少"。
+
+    不弹这一屏，重试按钮就只是一个"再点一次"；而云端重试是真会多一笔预计计费的。
+    """
+    job_id: int
+    execution_mode: str
+    provider_code: str
+    model_code: str
+    prompt_preview: str
+    params: dict
+    quantity: float | None
+    unit: str | None
+    currency: str | None
+    cost_micros: int | None
+    chain: list[dict] = []
+    chain_total_micros: int = 0
+    chain_pending: int = 0
+    may_charge_again: bool = False
+    warning: str = ""
+
+
+class ValidationIn(BaseModel):
+    """主动记一次验证。`real_call` 必须带 job_id——真调用的凭据就是那条作业。"""
+    capability: Literal["text", "image", "video", "tts", "music"]
+    backend: Literal["local", "cloud"]
+    provider: str = Field(default="", max_length=40)
+    model: str = Field(default="", max_length=120)
+    kind: Literal["env_check", "mock", "real_call", "target_machine"]
+    job_id: int | None = None
+    paid_confirmed: bool = False
+    detail: str = Field(default="", max_length=500)
+
+
+class ValidationOut(BaseModel):
+    id: int
+    capability: str
+    capability_label: str
+    backend: str
+    provider: str
+    model: str
+    adapter_code: str
+    manifest_version: str
+    kind: str
+    kind_label: str
+    state: str
+    detail: str
+    checks: dict
+    params: dict
+    job_id: int | None
+    provider_request_id: str | None
+    http_status: int | None
+    latency_ms: int | None
+    artifact_path: str | None
+    artifact_sha256: str | None
+    cost_micros: int | None
+    currency: str | None
+    paid_confirmed: bool
+    created_by_name: str = ""
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row) -> "ValidationOut":
+        keys = row.keys()
+
+        def load(text, fallback):
+            try:
+                value = json.loads(text or "")
+            except ValueError:
+                return fallback
+            return value if isinstance(value, type(fallback)) else fallback
+
+        return cls(
+            id=row["id"], capability=row["capability"],
+            capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
+            backend=row["backend"], provider=row["provider"], model=row["model"],
+            adapter_code=row["adapter_code"], manifest_version=row["manifest_version"],
+            kind=row["kind"], kind_label=VALIDATION_KINDS.get(row["kind"], row["kind"]),
+            state=row["state"], detail=row["detail"],
+            checks=load(row["checks_json"], {}), params=load(row["params_json"], {}),
+            job_id=row["job_id"], provider_request_id=row["provider_request_id"],
+            http_status=row["http_status"], latency_ms=row["latency_ms"],
+            artifact_path=row["artifact_path"], artifact_sha256=row["artifact_sha256"],
+            cost_micros=row["cost_micros"], currency=row["currency"],
+            paid_confirmed=bool(row["paid_confirmed"]),
+            created_by_name=(row["created_by_name"] or "") if "created_by_name" in keys else "",
+            created_at=row["created_at"],
+        )
 
 
 # ---------- 内容三件套 ----------

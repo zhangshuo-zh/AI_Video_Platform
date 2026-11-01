@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from config import JOBS_DIR
@@ -66,6 +67,28 @@ def read_log(rel_path: str | None, limit: int = 32768) -> str:
             body = fh.read().decode("utf-8", errors="replace")
             return f"…（只显示最后 {limit // 1024}KB，共 {size} 字节）\n" + body
         return fh.read().decode("utf-8", errors="replace")
+
+
+def stat_log(rel_path: str | None) -> dict:
+    """日志文件的存在性、字节数与静默秒数。
+
+    为什么单独要这一位：`read_log()` 只回文本，界面看不出"这条作业是正在慢慢写，
+    还是早就卡住了"。模型加载权重时可以静默几分钟，所以这里只报事实，
+    是不是异常由调用方拿阈值去判。
+    """
+    if not rel_path:
+        return {"exists": False, "size": 0, "mtime": None, "silent_seconds": None}
+    try:
+        target = _resolve(rel_path)
+    except JobPathError:
+        return {"exists": False, "size": 0, "mtime": None, "silent_seconds": None}
+    if not target.is_file():
+        return {"exists": False, "size": 0, "mtime": None, "silent_seconds": None}
+    st = target.stat()
+    mtime = datetime.fromtimestamp(st.st_mtime)
+    return {"exists": True, "size": st.st_size,
+            "mtime": mtime.strftime("%Y-%m-%d %H:%M:%S"),
+            "silent_seconds": max(0, int((datetime.now() - mtime).total_seconds()))}
 
 
 def artifacts(result_paths_json: str) -> list[dict]:

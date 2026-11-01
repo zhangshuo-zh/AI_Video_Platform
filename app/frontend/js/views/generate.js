@@ -36,6 +36,11 @@ const HEALTH = {
   ok: '就绪', missing: '缺东西', unknown: '未检查',
   unconfigured: '未配置', unregistered: '未登记',
 };
+// 队列告警的中文短标签。英文 code 只用于样式分档，不往界面上端。
+const ALERT_CODE = {
+  worker_offline: 'worker 离线', queue_stalled: '队列停滞', lease_expired: '租约过期',
+  run_timeout: '运行超时', log_silent: '日志静默', needs_attention: '待核对',
+};
 
 // 筛选条件和模块级状态放在外面：轮询重画、切走再回来都还在
 const state = {
@@ -67,6 +72,21 @@ function machineTime(ms) {
   return value >= 3_600_000 ? `${(value / 3_600_000).toFixed(2)} 小时` : duration(value);
 }
 
+// 日志"现在动没动"的事实：只有正文分不清慢慢写和早就卡住。
+// 静默时长、字节数、更新时间都来自服务端 stat，界面不自己推算。
+function logMetaHtml(job, logs) {
+  const bits = [];
+  const silent = logs?.silent_seconds ?? job.log_silent_seconds;
+  if (silent != null) bits.push(`距上次写入 ${duration(silent * 1000)}`);
+  const size = logs?.size ?? job.log_size;
+  if (size) bits.push(`${(size / 1024).toFixed(1)} KB`);
+  if (logs?.mtime) bits.push(`更新于 ${String(logs.mtime).slice(5, 16)}`);
+  if (job.running_seconds != null) bits.push(`已运行 ${duration(job.running_seconds * 1000)}`);
+  const lease = job.lease_expired ? '<span class="chip red">租约已过期</span>' : '';
+  if (!bits.length && !lease) return '';
+  return `<p class="modal-meta log-meta">${bits.map(escapeHtml).join(' · ')} ${lease}</p>`;
+}
+
 function timeText(value) {
   return value ? String(value).slice(5, 16) : '—';
 }
@@ -84,6 +104,9 @@ function rowHtml(job) {
     ? `<button class="btn xs" data-cancel="${job.id}">取消</button>` : '';
   const actionRetry = FINISHED_BAD.includes(job.status)
     ? `<button class="btn xs" data-retry="${job.id}">重试</button>` : '';
+  // 待核对的云端作业先核对再谈重试：那笔钱可能已经花了，默认重试是最坏的建议
+  const actionReconcile = job.status === 'needs_attention'
+    ? `<button class="btn xs" data-reconcile="${job.id}">核对</button>` : '';
   return `
     <tr data-job="${job.id}">
       <td>
@@ -97,13 +120,14 @@ function rowHtml(job) {
       <td>${escapeHtml(job.execution_mode_label || MODES[job.execution_mode] || job.execution_mode)}
         <span class="t-desc" title="${escapeHtml(job.provider_code + '/' + job.model_code)}">${escapeHtml(job.provider_code)} / ${escapeHtml(job.model_code)}</span></td>
       <td>${statusChip(job.status, job.status_label)}
-        ${job.retry_of_job_id ? `<span class="t-desc">重试 #${job.retry_of_job_id}</span>` : ''}</td>
+        ${job.retry_of_job_id ? `<span class="t-desc">重试 #${job.retry_of_job_id}</span>` : ''}
+        ${job.retry_count ? `<span class="t-desc">已被重试 ${job.retry_count} 次</span>` : ''}</td>
       <td class="r">${jobCostCell(job)}</td>
       <td class="r">${duration(job.elapsed_ms)}</td>
       <td class="t-dim">${timeText(job.queued_at)}</td>
       <td class="r job-actions">
         <button class="btn xs" data-open="${job.id}">详情</button>
-        ${actionCancel}${actionRetry}
+        ${actionReconcile}${actionCancel}${actionRetry}
       </td>
     </tr>`;
 }
@@ -112,8 +136,16 @@ function jobCostCell(job) {
   if (job.execution_mode === 'local') {
     return '<span class="t-dim">¥0 · 本地</span>';
   }
-  if (job.cost_micros == null) {
+  if (job.cost_micros == null && job.actual_cost_micros == null) {
     return '<span class="chip amber">待补价</span>';
+  }
+  // 人核对过就以实际金额为准；预计与实际差额单独标出来，不让两笔混成一个数
+  if (job.actual_cost_micros != null) {
+    const actual = money(job.actual_cost_micros, job.currency);
+    const delta = job.delta_micros;
+    const deltaText = delta == null || delta === 0 ? ''
+      : ` · 较预计 ${delta > 0 ? '+' : ''}${money(delta, job.currency)}`;
+    return `<b>${actual}</b><span class="t-desc">已核对${escapeHtml(deltaText)}</span>`;
   }
   const amount = money(job.cost_micros, job.currency);
   if (job.billable_status === 'not_billable') {
@@ -150,6 +182,18 @@ function statsHtml() {
     <span class="gen-stat"><b>${pending}</b> 笔待核对</span>
     <span class="gen-stat"><b>${machineTime(costs?.local?.elapsed_ms)}</b> 本地机时</span>
     ${unpriced ? `<span class="chip amber">${unpriced} 笔云端作业没记价</span>` : ''}`;
+}
+
+// 队列告警条。这些是"现在可能卡住了"的事实，不是新状态——
+// 处置仍然是人取消或 worker 自己的 deadline 生效，界面不替它落 failed。
+function alertsHtml() {
+  const alerts = state.worker?.alerts || [];
+  if (!alerts.length) return '';
+  return `<div class="gen-alerts">${alerts.map((a) => `
+    <div class="gen-alert ${a.level === 'bad' ? 'bad' : 'warn'}">
+      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(ALERT_CODE[a.code] || a.code)}</span>
+      <span>${escapeHtml(a.text)}</span>
+    </div>`).join('')}</div>`;
 }
 
 function costHtml() {
@@ -227,6 +271,8 @@ export default {
       </div>
 
       <div class="asset-stats gen-stats" id="gen-stats"></div>
+
+      <div id="gen-alerts"></div>
 
       <div class="card">
         <div class="gen-filters">${filtersHtml()}</div>
@@ -326,6 +372,37 @@ export default {
           </div>
         </div>
       </div>
+
+      <div class="modal" id="reconcile-modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head neutral" id="rc-title">核对云端作业</div>
+          <div class="modal-body">
+            <p class="modal-meta" id="rc-meta" style="margin-top:0"></p>
+            <div class="form-grid">
+              <label for="rc-decision">核对结果</label>
+              <select id="rc-decision" class="ctl">
+                <option value="pending">继续待核对（只留备注）</option>
+                <option value="succeeded">确认可用</option>
+                <option value="failed">确认不可用</option>
+              </select>
+              <label for="rc-amount">实际金额（元）</label>
+              <input id="rc-amount" class="ctl" type="number" min="0" step="0.000001"
+                     placeholder="确认结果时必填；不确定就选继续待核对">
+              <label for="rc-note">备注</label>
+              <input id="rc-note" class="ctl" maxlength="500"
+                     placeholder="供应商后台核对到的用量、请求 ID、为什么是这个金额">
+            </div>
+            <p class="modal-meta">核对只改账单与状态，<b>不重新提交</b>、不改提示词与参数快照。
+              确认「可用／不可用」必须填实际金额——不给金额就等于替人断定这次没花钱。
+              重投是另一个决定，请用重试。</p>
+            <p class="modal-err" id="rc-error"></p>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" id="rc-cancel">取消</button>
+            <button class="btn primary" id="rc-submit">保存核对</button>
+          </div>
+        </div>
+      </div>
     </section>`;
   },
 
@@ -333,12 +410,14 @@ export default {
     const rows = root.querySelector('#gen-rows');
     const empty = root.querySelector('#gen-empty');
     const stats = root.querySelector('#gen-stats');
+    const alerts = root.querySelector('#gen-alerts');
     const cost = root.querySelector('#gen-cost');
     const errorHost = root.querySelector('#gen-error');
     const drawer = root.querySelector('#gen-drawer');
     const drawerBody = root.querySelector('#gen-drawer-body');
     const jobModal = root.querySelector('#job-modal');
     const profileModal = root.querySelector('#profile-modal');
+    const reconcileModal = root.querySelector('#reconcile-modal');
     let openJobId = null;
     let editingProfile = null;
     let drawerBusy = false;
@@ -366,6 +445,7 @@ export default {
     function paint() {
       paintWorker();
       stats.innerHTML = statsHtml();
+      alerts.innerHTML = alertsHtml();
       paintError();
       if (state.error) {
         rows.innerHTML = '';
@@ -399,7 +479,8 @@ export default {
         state.worker = worker;
         state.error = null;
         paint();
-        if (openJobId && !drawer.hidden && jobModal.hidden && profileModal.hidden) {
+        if (openJobId && !drawer.hidden && jobModal.hidden && profileModal.hidden
+            && reconcileModal.hidden) {
           // 抽屉开着时跟着队列一起刷新：作业从排队→失败/成功，正文里的
           // 错误、日志、产物必须自己长出来，不能等人关掉再开一次。
           loadDrawer(openJobId, true);
@@ -484,9 +565,15 @@ export default {
       const price = job.unit_price_micros == null ? '—'
         : `${money(job.unit_price_micros, job.currency)} / ${UNITS[job.unit] || job.unit || '单位'}`;
       const cloudCost = job.execution_mode === 'cloud' ? `
-        ${kv('记账金额', job.cost_micros == null ? '待补价' : money(job.cost_micros, job.currency))}
+        ${kv('预计记账', job.cost_micros == null ? '待补价' : money(job.cost_micros, job.currency))}
         ${kv('账单状态', `<span class="chip ${job.billable_status === 'pending_reconciliation'
           ? 'amber' : job.billable_status === 'known' ? 'green' : 'gray'}">${escapeHtml(job.billable_status_label)}</span>`)}
+        ${job.actual_cost_micros != null ? kv('实际金额（已核对）',
+          `<b>${money(job.actual_cost_micros, job.currency)}</b>`
+          + (job.delta_micros ? ` <span class="t-desc">较预计 ${job.delta_micros > 0 ? '+' : ''}${money(job.delta_micros, job.currency)}</span>` : '')) : ''}
+        ${job.reconciled_at ? kv('核对人 / 时间',
+          `${escapeHtml(job.reconciled_by_name || '—')} · ${escapeHtml(String(job.reconciled_at).slice(0, 16))}`) : ''}
+        ${job.reconcile_note ? kv('核对备注', escapeHtml(job.reconcile_note)) : ''}
         ${kv('数量', `${job.quantity ?? '—'} ${UNITS[job.unit] || job.unit || ''}`)}
         ${kv('提交时单价', price)}
         ${kv('币种', escapeHtml(job.currency || '—'))}
@@ -500,11 +587,19 @@ export default {
         ${kv('子进程峰值内存', res.child_max_rss_kb == null ? '—' : `${Math.round(res.child_max_rss_kb / 1024)} MB`)}`;
 
       const err = job.error_code ? `<div class="drawer-err">
-        <b>${escapeHtml(job.error_code)}</b>
+        <b>${escapeHtml(job.error_label || job.error_code)}</b>
+        <span class="t-dim">${escapeHtml(job.error_code)}</span>
         <p>${escapeHtml(job.error_message || '没有更多说明')}</p></div>` : '';
+      const attention = job.attention_reason ? `<div class="drawer-err warn">
+        <b>待核对原因</b><p>${escapeHtml(job.attention_reason)}</p></div>` : '';
+      const canMarkAttention = job.execution_mode === 'cloud'
+        && ['succeeded', 'failed'].includes(job.status);
       const actions = [
         ACTIVE.includes(job.status) ? `<button class="btn" data-cancel="${job.id}">取消作业</button>` : '',
-        FINISHED_BAD.includes(job.status) ? `<button class="btn primary" data-retry="${job.id}">重试（新建一行）</button>` : '',
+        job.status === 'needs_attention'
+          ? `<button class="btn primary" data-reconcile="${job.id}">核对账单</button>` : '',
+        FINISHED_BAD.includes(job.status) ? `<button class="btn" data-retry="${job.id}">重试（新建一行）</button>` : '',
+        canMarkAttention ? `<button class="btn" data-attention="${job.id}">标记待核对</button>` : '',
       ].filter(Boolean).join('');
 
       const artifacts = (arts || []).length ? arts.map((a, i) => {
@@ -531,6 +626,7 @@ export default {
       return `
         <div class="drawer-actions">${actions || '<span class="hint">已结束，可关闭。</span>'}</div>
         ${err}
+        ${attention}
         <div class="kv-grid">
           ${kv('状态', statusChip(job.status, job.status_label))}
           ${kv('项目', escapeHtml(projectName(job.project_id)))}
@@ -542,7 +638,9 @@ export default {
           ${kv('开始', timeText(job.started_at))}
           ${kv('结束', timeText(job.finished_at))}
           ${kv('耗时 / 返回码', `${duration(job.elapsed_ms)} · ${job.return_code ?? '—'}`)}
+          ${kv('第几次尝试', `第 ${job.attempt || 1} 次`)}
           ${kv('重试自', job.retry_of_job_id ? `#${job.retry_of_job_id}` : '—')}
+          ${kv('已被重试', job.retry_count ? `${job.retry_count} 次${job.superseded_by_job_id ? `（最新 #${job.superseded_by_job_id}）` : ''}` : '—')}
           ${kv('adapter 版本', escapeHtml(job.adapter_version || '—'))}
         </div>
         <h3 class="drawer-h">成本</h3>
@@ -555,6 +653,7 @@ export default {
         ${metricsHtml(res)}
         ${commandHtml(res)}
         <h3 class="drawer-h">日志</h3>
+        ${logMetaHtml(job, logs)}
         <pre class="code-block log-block">${escapeHtml(logs?.text || '还没有日志。')}</pre>
         <h3 class="drawer-h">产物</h3>
         <div class="artifact-list">${artifacts}</div>`;
@@ -612,10 +711,111 @@ export default {
     }
 
     async function askRetry(id) {
+      // 先取预览：云端重试会多一笔预计计费，不弹这一屏，重试就只是"再点一次"
+      let preview;
+      try { preview = await api.retryPreview(id); } catch (err) {
+        // 读不到预览就走页内错误条，不弹 alert：统一错误出口只在 util.js 一处
+        if (err.status !== 401) { state.error = `重试预览读不到：${err.message}`; paint(); }
+        return;
+      }
+      const chainRows = (preview.chain || []).map((c) =>
+        `<tr><td>#${c.id}</td><td>${escapeHtml(c.status_label)}</td>
+         <td>第 ${c.attempt} 次</td>
+         <td>${c.cost_micros ? money(c.cost_micros, preview.currency) : '—'}</td></tr>`).join('');
+      const body = `
+        <p>${escapeHtml(preview.warning || '')}</p>
+        <p class="t-dim">${escapeHtml(preview.provider_code)} / ${escapeHtml(preview.model_code)}
+          · ${escapeHtml(preview.prompt_preview || '（无提示词）')}</p>
+        ${chainRows ? `<div class="table-wrap"><table class="retry-chain"><thead><tr>
+          <th>作业</th><th>状态</th><th>尝试</th><th>记账</th></tr></thead>
+          <tbody>${chainRows}</tbody></table></div>
+          <p class="t-dim">这一串合计 ${money(preview.chain_total_micros, preview.currency)}，
+          其中 ${preview.chain_pending} 笔待核对。</p>` : ''}
+        <p>重试会<b>新建一行</b>并继承参数快照，原行的日志、耗时、错误一个字段都不动。</p>`;
+      const ok = await confirmDanger({
+        title: preview.may_charge_again ? '重试会再走一次云端调用' : '重试这条作业？',
+        body, okText: preview.may_charge_again ? '仍要重试（可能再计费）' : '重试',
+        danger: !!preview.may_charge_again,
+      });
+      if (!ok) return;
       if (!(await run('重试', () => api.retryJob(id)))) return;
       await refresh();
       const latest = state.jobs.find((j) => j.retry_of_job_id === id);
       if (latest) openDrawer(latest.id);
+    }
+
+    /* ---------- 云端账单核对 ---------- */
+    let reconcileId = null;
+
+    function openReconcile(job) {
+      reconcileId = job.id;
+      reconcileModal.hidden = false;
+      root.querySelector('#rc-title').textContent = `核对云端作业 #${job.id}`;
+      root.querySelector('#rc-meta').innerHTML =
+        `${escapeHtml(job.provider_code)} / ${escapeHtml(job.model_code)}
+         · 预计 ${job.cost_micros == null ? '待补价' : money(job.cost_micros, job.currency)}
+         · 请求 ID ${escapeHtml(job.provider_request_id || '—')}`;
+      root.querySelector('#rc-decision').value = 'pending';
+      // 实际金额默认填预计值方便核对，但人必须自己确认或改；不替人断定
+      root.querySelector('#rc-amount').value =
+        job.cost_micros == null ? '' : String(job.cost_micros / 1_000_000);
+      root.querySelector('#rc-note').value = '';
+      root.querySelector('#rc-error').textContent = '';
+      root.querySelector('#rc-decision').focus();
+    }
+
+    function closeReconcile() { reconcileModal.hidden = true; reconcileId = null; }
+
+    async function submitReconcile() {
+      const errEl = root.querySelector('#rc-error');
+      errEl.textContent = '';
+      if (reconcileId == null) return;
+      const decision = root.querySelector('#rc-decision').value;
+      const rawAmount = root.querySelector('#rc-amount').value.trim();
+      const body = { decision, note: root.querySelector('#rc-note').value.trim() };
+      if (decision !== 'pending') {
+        if (rawAmount === '' || !(Number(rawAmount) >= 0)) {
+          errEl.textContent = '确认结果前必须填实际金额；不确定就选「继续待核对」。';
+          return;
+        }
+        body.actual_cost_micros = Math.round(Number(rawAmount) * 1_000_000);
+      }
+      const btn = root.querySelector('#rc-submit');
+      btn.disabled = true;
+      try {
+        await api.reconcileJob(reconcileId, body);
+        const id = reconcileId;
+        closeReconcile();
+        await refresh();
+        if (openJobId === id) openDrawer(id);
+      } catch (err) {
+        errEl.textContent = err.message || '核对失败';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function askAttention(id) {
+      // 用一个轻量输入收原因：原生 prompt 与两套主题脱节，这里复用确认弹窗，
+      // 原因走一个内联输入框（confirmDanger 的 body 支持 HTML）。
+      const ok = await confirmDanger({
+        title: '把这条云端作业标记为待核对？',
+        body: `<p>供应商说成功、产物却打不开，或用量与预计差很多时用。
+          标记后账单挂起，<b>核对前不要重试</b>，可能重复计费。</p>
+          <p><input id="att-reason" class="ctl" maxlength="500" style="width:100%"
+            placeholder="为什么待核对，例如 产物打不开 / 用量与预计不符"></p>`,
+        okText: '标记待核对', danger: false,
+      });
+      if (!ok) return;
+      const reason = (document.querySelector('#att-reason')?.value || '').trim();
+      // 原因为空时抛一句中文给 run()：统一错误出口只在 util.js，视图里不直接 alert
+      if (await run('标记待核对', () => {
+        if (!reason) throw new Error('请填一句待核对的原因。');
+        return api.markAttention(id, reason);
+      })) {
+        await refresh();
+        if (openJobId === id) openDrawer(id);
+      }
     }
 
     /* ---------- 提交表单 ---------- */
@@ -1147,6 +1347,13 @@ export default {
     rows.addEventListener('click', (e) => {
       const cancel = e.target.closest('[data-cancel]');
       if (cancel) { e.stopPropagation(); askCancel(Number(cancel.dataset.cancel)); return; }
+      const reconcile = e.target.closest('[data-reconcile]');
+      if (reconcile) {
+        e.stopPropagation();
+        const j = state.jobs.find((x) => x.id === Number(reconcile.dataset.reconcile));
+        if (j) openReconcile(j);
+        return;
+      }
       const retry = e.target.closest('[data-retry]');
       if (retry) { e.stopPropagation(); askRetry(Number(retry.dataset.retry)); return; }
       const open = e.target.closest('[data-open]');
@@ -1170,11 +1377,20 @@ export default {
     drawerBody.addEventListener('click', (e) => {
       const cancel = e.target.closest('[data-cancel]');
       if (cancel) { askCancel(Number(cancel.dataset.cancel)); return; }
+      const reconcile = e.target.closest('[data-reconcile]');
+      if (reconcile) {
+        const j = state.jobs.find((x) => x.id === Number(reconcile.dataset.reconcile));
+        if (j) openReconcile(j);
+        return;
+      }
+      const attention = e.target.closest('[data-attention]');
+      if (attention) { askAttention(Number(attention.dataset.attention)); return; }
       const retry = e.target.closest('[data-retry]');
       if (retry) askRetry(Number(retry.dataset.retry));
     });
     drawer.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && jobModal.hidden && profileModal.hidden) closeDrawer();
+      if (e.key === 'Escape' && jobModal.hidden && profileModal.hidden
+          && reconcileModal.hidden) closeDrawer();
     });
 
     root.querySelector('#gen-new')?.addEventListener('click', () => openJobModal());
@@ -1239,6 +1455,10 @@ export default {
 
     bindModalDismiss(jobModal, closeJobModal);
     bindModalDismiss(profileModal, closeProfiles);
+    root.querySelector('#rc-cancel').addEventListener('click', closeReconcile);
+    root.querySelector('#rc-submit').addEventListener('click', submitReconcile);
+    reconcileModal.addEventListener('click', (e) => { if (e.target === reconcileModal) closeReconcile(); });
+    bindModalDismiss(reconcileModal, closeReconcile);
 
     /* ---------- 首次加载与轮询 ---------- */
     (async () => {
@@ -1261,7 +1481,7 @@ export default {
     pollTimer = setInterval(() => {
       if (!document.body.contains(root)) { clearInterval(pollTimer); pollTimer = null; return; }
       // 弹窗开着时用户正在填，不重画列表；抽屉开着时只更新抬头
-      if (!jobModal.hidden || !profileModal.hidden) return;
+      if (!jobModal.hidden || !profileModal.hidden || !reconcileModal.hidden) return;
       refresh({ quiet: true });
     }, 3000);
   },

@@ -1259,3 +1259,33 @@ td.shot-jobs .t-desc{max-width:180px}
 .dash-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
 @media (max-width:1080px){.dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:760px){.dash-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* ---------- P0：队列告警 / 模型验证 / 账单核对 ---------- */
+/* 告警条：bad 用红、warn 用琥珀。它是"现在可能卡住了"的事实，不是新状态，
+   所以摆在列表上方常驻可见，而不是弹一个会被人关掉就再也看不到的窗。 */
+.gen-alerts{display:grid;gap:8px;margin:0 0 12px}
+.gen-alert{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;
+  border:1px solid var(--line);border-radius:11px;font-size:12.5px;line-height:1.6;
+  background:var(--hover-soft);color:var(--ink)}
+.gen-alert .chip{flex:none;margin-top:1px}
+.gen-alert.bad{background:var(--bad-soft);border-color:var(--bad-line)}
+.gen-alert.warn{background:var(--warn-soft);border-color:var(--warn-line)}
+
+/* 验证列：标签 + 生产可用判定 + 两个常驻入口。按钮竖排，窄列里也不挤。 */
+.validation-cell{min-width:132px}
+.val-actions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.val-actions .btn.xs{white-space:nowrap}
+
+/* 重试预览里的链路小表：只读，让人看清这一串已经计了多少。 */
+.retry-chain{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
+.retry-chain th,.retry-chain td{padding:5px 8px;border-bottom:1px solid var(--line);
+  text-align:left;font-variant-numeric:tabular-nums}
+.retry-chain th{color:var(--ink-3);font-size:11px;font-weight:600}
+
+/* 待核对原因用琥珀而不是红：它不是失败，是"等人来判断"。 */
+.drawer-err.warn{background:var(--warn-soft);border-color:var(--warn-line)}
+.drawer-err.warn b{color:var(--warn);font-family:inherit;font-size:12.5px}
+.drawer-err .t-dim{font-family:var(--mono);font-size:11px;margin-left:6px}
+
+/* 日志活性那一行：静默时长 / 字节数 / 更新时间，字号小但过 AA。 */
+.log-meta{margin:0 0 8px;font-size:11.5px;color:var(--ink-2)}

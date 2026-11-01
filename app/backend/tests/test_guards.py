@@ -143,6 +143,10 @@ ROUTES = [
     ("GET", "/api/jobs/{j}/logs", None, 404),
     ("GET", "/api/jobs/{j}/artifacts", None, 404),
     ("GET", "/api/jobs/{j}/artifacts/{i}", None, 404),
+    # P0：重试预览只读、人工核对与待核对都是写，但都先撞 _load 的归属 ⇒ 404
+    ("GET", "/api/jobs/{j}/retry-preview", None, 404),
+    ("POST", "/api/jobs/{j}/reconcile", {"decision": "pending"}, 404),
+    ("POST", "/api/jobs/{j}/attention", {"reason": "x"}, 404),
     # 成本账按可见项目汇总：看不见那个项目时就是空账，不是 404
     ("GET", "/api/jobs/costs", None, 200),
     ("GET", "/api/worker/status", None, 200),
@@ -164,6 +168,13 @@ ROUTES = [
     ("GET", "/api/providers/available", None, 200),
     ("PUT", "/api/providers", [{"id": 1, "provider": "x", "model": "",
                                 "enabled": False, "is_default": True}], 403),
+    # P0：验证历史与两条验证写入都要 system:config，editor 一律 403。
+    # validate 只收 env_check；validate-job 反过来不收 env_check（要带 job_id）。
+    ("GET", "/api/providers/validations", None, 403),
+    ("POST", "/api/providers/validate",
+     {"capability": "text", "backend": "local", "kind": "env_check"}, 403),
+    ("POST", "/api/providers/validate-job/{j}",
+     {"capability": "text", "backend": "local", "kind": "real_call", "job_id": "{j}"}, 403),
 ]
 
 # auth 四条与 health 不参与"匿名 401"这张表，单独测

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from datetime import datetime
 
 from db import get_conn
 
@@ -58,7 +59,13 @@ class JobRepository:
 
     def get(self, job_id: int) -> sqlite3.Row | None:
         with get_conn() as conn:
-            return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+            return conn.execute(
+                """SELECT j.*,
+                          (SELECT COUNT(*) FROM job r
+                            WHERE r.retry_of_job_id = j.id) AS retry_count,
+                          (SELECT u.display_name FROM app_user u
+                            WHERE u.id = j.reconciled_by) AS reconciled_by_name
+                     FROM job j WHERE j.id = ?""", (job_id,)).fetchone()
 
     def by_key(self, key: str) -> sqlite3.Row | None:
         with get_conn() as conn:
@@ -111,9 +118,16 @@ class JobRepository:
         # "WHERE  ORDER BY" 这种语法错误（W08 真浏览器第一轮就打出来了）
         where = " AND ".join(conds) or "1"
         with get_conn() as conn:
+            # retry_count / reconciled_by_name 是列表要直接显示的派生值。
+            # 用相关子查询一次带出，而不是前端拿到 200 行后再逐行问"你被重试过几次"。
             return conn.execute(
-                f"""SELECT * FROM job WHERE {where}
-                     ORDER BY id DESC LIMIT ?""", args).fetchall()
+                f"""SELECT j.*,
+                          (SELECT COUNT(*) FROM job r
+                            WHERE r.retry_of_job_id = j.id) AS retry_count,
+                          (SELECT u.display_name FROM app_user u
+                            WHERE u.id = j.reconciled_by) AS reconciled_by_name
+                     FROM job j WHERE {where}
+                     ORDER BY j.id DESC LIMIT ?""", args).fetchall()
 
     # ---------- 领取与执行 ----------
     def claim_next(self, worker_id: str, lease_seconds: int) -> sqlite3.Row | None:
@@ -125,10 +139,13 @@ class JobRepository:
         lease = f"+{int(lease_seconds)} seconds"
         with get_conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            # 这里**不看租约是否过期**：租约过期只说明"上一个 worker 大概没了"，
+            # 不等于这条作业已经收尾。先让 recover_stale 把它收成 failed(worker_lost)，
+            # 再领下一条；否则会出现"过期但还挂着 running"的窗口里领进第二条本地作业，
+            # 同一时刻两个任务抢同一份模型内存——这条硬约束不能靠时间窗口赌。
             active = conn.execute(
                 """SELECT 1 FROM job
-                    WHERE status IN ('starting','running')
-                      AND lease_until > datetime('now','localtime') LIMIT 1"""
+                    WHERE status IN ('starting','running') LIMIT 1"""
             ).fetchone()
             if active is not None:
                 return None
@@ -228,6 +245,66 @@ class JobRepository:
                  provider_request_id, job_id),
             )
 
+    def needs_attention(self, job_id: int, worker_id: str, error_code: str, message: str,
+                        reason: str, log_path: str = "", return_code: int | None = None,
+                        elapsed_ms: int | None = None, resources: dict | None = None,
+                        provider_request_id: str | None = None) -> None:
+        """云端结果可疑：供应商可能已经建了任务、也可能已经计了费。
+
+        这与 `fail()` 的区别只有一件事——**不能让人以为重试是免费的**。
+        所以成本列与 `billable_status` 一律不动，状态收成 `needs_attention`，
+        由人在详情里核对；核对动作在 `reconcile()`，不自动重投。
+        """
+        with get_conn() as conn:
+            conn.execute(
+                """UPDATE job SET status = 'needs_attention',
+                          finished_at = datetime('now','localtime'),
+                          error_code = ?, error_message = ?, attention_reason = ?,
+                          log_path = ?, return_code = ?, elapsed_ms = ?,
+                          resources_json = ?,
+                          provider_request_id = COALESCE(?, provider_request_id),
+                          lease_until = NULL, worker_id = NULL,
+                          updated_at = datetime('now','localtime')
+                    WHERE id = ? AND worker_id = ?""",
+                (error_code, message[:2000], reason[:500], log_path, return_code,
+                 elapsed_ms, self._resources(resources), provider_request_id,
+                 job_id, worker_id),
+            )
+
+    def reconcile(self, job_id: int, decision: str, actual_cost_micros: int | None,
+                  note: str, user_id: int | None) -> sqlite3.Row | None:
+        """人工核对一条 `needs_attention` 的云端作业。
+
+        三种决定：
+        - `succeeded`：结果确认可用 → 状态 succeeded、账单 known。
+        - `failed`：结果确认不可用 → 状态 failed，但账单仍 known（这笔钱已经算清了）。
+        - `pending`：还没核清 → 只更新备注，状态与账单都不动。
+
+        `succeeded`/`failed` 必须给实际金额：不给就等于替人猜"这次没花钱"，
+        而那正是账本上最不该出现的一种猜测。
+        """
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+            if row is None or row["status"] != "needs_attention":
+                return row
+            if decision == "pending":
+                conn.execute(
+                    """UPDATE job SET attention_reason = ?, reconcile_note = ?,
+                              updated_at = datetime('now','localtime')
+                        WHERE id = ?""",
+                    (row["attention_reason"], (note or "")[:2000], job_id))
+            elif decision in ("succeeded", "failed"):
+                conn.execute(
+                    """UPDATE job SET status = ?, actual_cost_micros = ?,
+                              billable_status = 'known', reconciled_by = ?,
+                              reconciled_at = datetime('now','localtime'),
+                              reconcile_note = ?, updated_at = datetime('now','localtime')
+                        WHERE id = ?""",
+                    (decision, actual_cost_micros, user_id, (note or "")[:2000], job_id))
+            else:
+                return row
+            return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+
     def request_cancel(self, job_id: int) -> sqlite3.Row | None:
         """取消是"请求式"：排队中的当场取消，跑着的只记下意愿。"""
         with get_conn() as conn:
@@ -257,10 +334,13 @@ class JobRepository:
             return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
 
     def retry(self, original: sqlite3.Row, created_by: int | None) -> sqlite3.Row:
-        """重试＝新建一行，原行一个字段都不动（日志、成本、错误全保留）。
+        """重试＝新建一行，原行的日志／成本／错误一个字段都不动。
 
-        新行继承原行的**计价快照与预计金额**，但账单状态重新回到待核对：
-        上一次是 known 不代表这次也已知，得等供应商回执。本地重试仍然不计费。
+        两件事顺手补上（P0）：
+        - `attempt` 终于写起来了。它不是执行次数计数器，而是"这一串里的第几枪"，
+          界面上要能说出"这已经是第 4 次预计计费"，而不是摆 4 条互不相干的待核对。
+        - 原行记下 `superseded_by_job_id`。没有这一位，重试链只能从新行往回找，
+          人看成本账时看不出"哪几笔其实是同一件事"。
         """
         key = "retry-" + uuid.uuid4().hex
         cloud = original["execution_mode"] == "cloud"
@@ -272,30 +352,88 @@ class JobRepository:
                    (project_id, episode_id, shot_id, capability, kind, execution_mode,
                     provider_code, model_code, adapter_version, prompt_snapshot,
                     params_json, input_refs_json, status, priority, idempotency_key,
-                    retry_of_job_id, user_confirmed_cloud, quantity, unit,
+                    retry_of_job_id, attempt, user_confirmed_cloud, quantity, unit,
                     unit_price_micros, cost_micros, currency, pricing_snapshot_json,
                     billable_status, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (original["project_id"], original["episode_id"], original["shot_id"],
                  original["capability"], original["kind"], original["execution_mode"],
                  original["provider_code"], original["model_code"],
                  original["adapter_version"], original["prompt_snapshot"],
                  original["params_json"], original["input_refs_json"],
                  original["priority"], key, original["id"],
+                 int(original["attempt"] or 1) + 1,
                  original["user_confirmed_cloud"], original["quantity"],
                  original["unit"], original["unit_price_micros"],
                  original["cost_micros"], original["currency"],
                  original["pricing_snapshot_json"], billable, created_by),
             )
+            conn.execute(
+                """UPDATE job SET superseded_by_job_id = ?,
+                          updated_at = datetime('now','localtime')
+                    WHERE id = ? AND superseded_by_job_id IS NULL""",
+                (cur.lastrowid, original["id"]))
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
+
+    def retry_chain(self, job_id: int) -> list[sqlite3.Row]:
+        """把一条作业所在的重试链整个取出来（含自己），按 id 升序。
+
+        先往上游走到链头（`retry_of_job_id` 只挂在新行上，所以要一路回溯），
+        再从链头往下收。链长是个位数到几十，用两次查询比递归 CTE 更好读，
+        也不会因为 SQLite 版本差异在 `WITH RECURSIVE` 的列推导上出意外。
+        """
+        with get_conn() as conn:
+            root_id = job_id
+            seen: set[int] = set()
+            while root_id not in seen:
+                seen.add(root_id)
+                row = conn.execute("SELECT retry_of_job_id FROM job WHERE id = ?",
+                                   (root_id,)).fetchone()
+                if row is None or row["retry_of_job_id"] is None:
+                    break
+                root_id = int(row["retry_of_job_id"])
+            rows = conn.execute(
+                """WITH RECURSIVE chain(id) AS (
+                       SELECT ? UNION ALL
+                       SELECT j.id FROM job j JOIN chain c ON j.retry_of_job_id = c.id
+                   )
+                   SELECT * FROM job WHERE id IN (SELECT id FROM chain) ORDER BY id""",
+                (root_id,)).fetchall()
+        return list(rows)
+
+    def retry_count(self, job_id: int) -> int:
+        """这条作业之后已经被重试过几枪（不含自己）。"""
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM job WHERE retry_of_job_id = ?",
+                (job_id,)).fetchone()
+        return int(row["n"] or 0)
 
     def recover_stale(self) -> dict:
         """启动时收拾"上一个 worker 没来得及收尾"的作业。
 
         判据是租约过期，不是进程号：PID 会被复用，租约时间不会。
+
+        云端那条多一个分支：**已经拿到供应商请求 ID 的作业不能直接算 failed**。
+        供应商那边可能已经建了任务、甚至已经计了费；failed 的默认建议是重试，
+        而那正好可能造成第二次调用。这里把它挂成 needs_attention，交给人核对。
         """
         with get_conn() as conn:
+            attention = conn.execute(
+                """UPDATE job SET status = 'needs_attention',
+                          error_code = 'worker_lost',
+                          error_message = 'worker 退出时这条云端作业还在执行，且供应商任务可能已建立；请先核对账单。',
+                          attention_reason = 'worker 中断，云端调用结果未知',
+                          finished_at = datetime('now','localtime'),
+                          lease_until = NULL, worker_id = NULL,
+                          updated_at = datetime('now','localtime')
+                    WHERE status IN ('starting','running')
+                      AND execution_mode = 'cloud'
+                      AND provider_request_id IS NOT NULL
+                      AND (lease_until IS NULL
+                           OR lease_until < datetime('now','localtime'))"""
+            ).rowcount
             failed = conn.execute(
                 """UPDATE job SET status = 'failed', error_code = 'worker_lost',
                           error_message = 'worker 退出时这条作业还在执行；可以重试。',
@@ -316,7 +454,7 @@ class JobRepository:
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount
-        return {"failed": failed, "cancelled": cancelled}
+        return {"failed": failed, "cancelled": cancelled, "needs_attention": attention}
 
     def ids_for_project(self, project_id: int) -> list[int]:
         with get_conn() as conn:
@@ -400,6 +538,75 @@ class JobRepository:
                    FROM job"""
             ).fetchone()
         return {"queued": int(row["queued"] or 0), "running": int(row["running"] or 0)}
+
+    def queue_health(self, max_runtime_seconds: int) -> dict:
+        """队列健康：把"没人干活"和"刚入队 0.5 秒"分开。
+
+        这些数字只用于提示，**不改任何 Job 状态**——状态真相仍然只在 `status` 一列。
+        运行超时只报"超过上限还在跑"，杀进程是 worker 的事（见 `worker.py` 的 deadline）。
+        """
+        with get_conn() as conn:
+            by_status = {r["status"]: int(r["n"]) for r in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM job GROUP BY status")}
+            oldest = conn.execute(
+                """SELECT MIN(queued_at) AS at FROM job WHERE status = 'queued'"""
+            ).fetchone()["at"]
+            running = conn.execute(
+                """SELECT id, status, started_at, updated_at, lease_until, log_path,
+                          capability, provider_code, model_code, execution_mode
+                     FROM job
+                    WHERE status IN ('starting','running','cancel_requested')
+                    ORDER BY id"""
+            ).fetchall()
+            attention = conn.execute(
+                """SELECT COUNT(*) AS n FROM job
+                    WHERE status = 'needs_attention'
+                       OR (execution_mode = 'cloud'
+                           AND billable_status = 'pending_reconciliation'
+                           AND status IN ('succeeded','failed','cancelled'))"""
+            ).fetchone()["n"]
+            expired = conn.execute(
+                """SELECT COUNT(*) AS n FROM job
+                    WHERE status IN ('starting','running','cancel_requested')
+                      AND (lease_until IS NULL
+                           OR lease_until < datetime('now','localtime'))"""
+            ).fetchone()["n"]
+        now = datetime.now()
+
+        def age(text: str | None) -> int | None:
+            if not text:
+                return None
+            try:
+                return max(0, int((now - datetime.strptime(text, "%Y-%m-%d %H:%M:%S"))
+                                  .total_seconds()))
+            except ValueError:
+                return None
+
+        running_rows = []
+        for r in running:
+            started = age(r["started_at"])
+            running_rows.append({
+                "id": r["id"], "status": r["status"],
+                "capability": r["capability"], "provider": r["provider_code"],
+                "model": r["model_code"], "execution_mode": r["execution_mode"],
+                "started_seconds": started,
+                "silent_seconds": age(r["updated_at"]),
+                "lease_expired": (r["lease_until"] is None
+                                  or age(r["lease_until"]) is None
+                                  or r["lease_until"] < now.strftime("%Y-%m-%d %H:%M:%S")),
+                "over_runtime": started is not None and started > max_runtime_seconds,
+                "log_path": r["log_path"] or "",
+            })
+        return {
+            "by_status": by_status,
+            "queued": by_status.get("queued", 0),
+            "running": sum(by_status.get(s, 0) for s in
+                           ("starting", "running", "cancel_requested")),
+            "oldest_queued_seconds": age(oldest),
+            "running_jobs": running_rows,
+            "expired_leases": int(expired or 0),
+            "needs_attention": int(attention or 0),
+        }
 
 
 jobs = JobRepository()

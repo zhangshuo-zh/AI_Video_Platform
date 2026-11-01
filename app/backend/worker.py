@@ -37,10 +37,22 @@ from pathlib import Path
 import adapters
 import jobfiles
 import runners
-from config import ALLOW_MOCK, WORKER_LEASE_SECONDS, WORKER_POLL
+import validations
+from config import (ALLOW_MOCK, WORKER_LEASE_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
+                    WORKER_POLL)
 from repositories.jobs import jobs
 
 STOP = False
+
+# 云端调用结果未知的那批错误码：供应商任务可能已经建立、甚至已经计费。
+# 这些不能落 failed——failed 的默认建议是"重试"，而对一笔可能已扣钱的调用，
+# 最坏的建议就是替人按下重试。
+CLOUD_UNCERTAIN_CODES = {
+    "adapter_failed", "empty_output", "run_timeout", "worker_stopped",
+    "provider_timeout", "provider_network", "provider_empty_response",
+    "provider_empty_output", "provider_error", "provider_unavailable",
+    "cancelled_unconfirmed",
+}
 
 
 class Cancelled(Exception):
@@ -202,11 +214,14 @@ def _tail(path: Path, limit: int = 800) -> str:
         return ""
 
 
-def _pump(proc, log, job, wid: str) -> None:
+def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
     """把子进程输出边跑边写进日志；每 0.2 秒续租并看一次取消。
 
     用 os.read + select 而不是 readline：模型输出里有 tqdm 的 \r 进度条，
     readline 会一直等换行，日志看起来像"卡住了"。
+
+    `deadline` 是这条作业的存活上限。**租约只证明 worker 还活着，不证明模型还在前进**；
+    没有这一位，子进程挂住时会每 0.2 秒成功续一次租，恢复逻辑永远不碰它。
     """
     fd = proc.stdout.fileno()
     last_beat = 0.0
@@ -214,6 +229,11 @@ def _pump(proc, log, job, wid: str) -> None:
         if STOP:
             _terminate(proc)
             raise JobFailure("worker_stopped", "worker 收到停止信号，作业未完成；可以重试")
+        if deadline is not None and time.monotonic() > deadline:
+            _terminate(proc)
+            raise JobFailure("run_timeout",
+                             f"执行超过上限 {WORKER_MAX_RUNTIME_SECONDS} 秒，已终止；"
+                             f"先看日志再决定是否重试")
         status = jobs.status_of(job["id"])
         if status == "cancel_requested":
             _terminate(proc)
@@ -277,8 +297,18 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
         raise JobFailure("adapter_start_failed",
                          f"起不了子进程：{exc.strerror or exc}") from exc
     try:
-        _pump(proc, log, job, wid)
+        _pump(proc, log, job, wid, deadline=started + WORKER_MAX_RUNTIME_SECONDS)
         return_code = proc.wait()
+    except JobFailure as exc:
+        # 超时/停止时云端可能已经把任务建起来了。`cloud_run.py` 在创建成功后
+        # 会立刻落一份部分回执，这里把它读出来挂到异常上——
+        # 账可以暂时对不上，追这笔钱的线索不能丢。
+        if spec.meta.get("result_path"):
+            early = runners.provider_receipt(spec)
+            if early:
+                extra["provider"] = early
+                exc.provider_request_id = exc.provider_request_id or early.get("request_id")
+        raise
     finally:
         if proc.poll() is None:
             _terminate(proc)
@@ -330,17 +360,26 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
         raise JobFailure(
             "adapter_failed",
             f"{spec.runner} 退出码 {return_code}；日志尾部：{tail[-400:] or '（空）'}",
-            return_code)
+            return_code, provider_request_id=request_id)
     try:
         paths = runners.verify(spec)
     except runners.RunnerUnavailable as exc:
-        raise JobFailure("empty_output", exc.message, return_code) from exc
+        # 云端"退出码 0 却没有有效产物"是最需要人看的一种：
+        # 供应商侧任务可能已经计过费。把请求 ID 一起带出去。
+        raise JobFailure("empty_output", exc.message, return_code,
+                         provider_request_id=request_id) from exc
     _write(log, "产物：" + "、".join(jobfiles.relative(p) for p in paths))
     return [jobfiles.relative(p) for p in paths], elapsed, request_id
 
 
+def _cloud_uncertain(job, code: str, request_id: str | None) -> bool:
+    """云端调用结果未知：供应商任务可能已建立，不能按普通失败建议重试。"""
+    return bool(job["execution_mode"] == "cloud" and request_id
+                and code in CLOUD_UNCERTAIN_CODES)
+
+
 def process(job, wid: str) -> None:
-    """跑一条已领取的作业：校验 → 执行 → 落状态。异常全部归一成失败。"""
+    """跑一条已领取的作业：校验 → 执行 → 落状态。异常全部归一成失败或待核对。"""
     logs, outputs = jobfiles.ensure_dirs(job["id"])
     log_path = logs / "run.log"
     started = time.monotonic()
@@ -370,31 +409,61 @@ def process(job, wid: str) -> None:
                                               child_cpu_start, extra=extra),
                          provider_request_id=request_id)
             _write(log, "状态：succeeded")
+            # 成功的真实作业顺手成为该槽位的"真实调用"凭据。mock 会被 from_job 拒掉，
+            # 记录失败也绝不能把已经成功的作业改回失败——所以整段吞掉只写日志。
+            if job["execution_mode"] != "mock" and job["provider_code"] != "mock":
+                try:
+                    validations.from_job(job["id"], "real_call", job["created_by"],
+                                         f"作业 #{job['id']} 跑通，产物校验通过。")
+                    _write(log, "验证记录：真实调用已登记")
+                except Exception as exc:
+                    _write(log, f"验证记录未写入：{exc}")
         except Cancelled as exc:
             elapsed = int((time.monotonic() - started) * 1000)
-            _write(log, f"状态：cancelled（{exc}）")
             # 云端任务可能在子进程被杀之前已经建好；回执文件若有一份，
             # 把它带进 resources 与 Job 列，方便去供应商后台追这次调用。
             receipt = runners.provider_receipt(spec) if (
                 spec is not None and spec.meta.get("result_path")) else {}
             if receipt:
                 extra["provider"] = receipt
-            jobs.cancelled(job["id"], wid, str(exc),
-                           jobfiles.relative(log_path), elapsed,
-                           resources=_resources(cpu_start, elapsed,
-                                                child_cpu_start, extra=extra),
-                           provider_request_id=receipt.get("request_id"))
+            cancel_request_id = receipt.get("request_id")
+            if _cloud_uncertain(job, "cancelled_unconfirmed", cancel_request_id):
+                _write(log, f"状态：needs_attention（取消，但供应商任务可能已建立）")
+                jobs.needs_attention(
+                    job["id"], wid, "cancelled_unconfirmed",
+                    f"{exc}；供应商任务可能已建立，请先核对账单再决定是否重试。",
+                    "用户在云端调用已建立后取消",
+                    jobfiles.relative(log_path), None, elapsed,
+                    resources=_resources(cpu_start, elapsed, child_cpu_start, extra=extra),
+                    provider_request_id=cancel_request_id)
+            else:
+                _write(log, f"状态：cancelled（{exc}）")
+                jobs.cancelled(job["id"], wid, str(exc),
+                               jobfiles.relative(log_path), elapsed,
+                               resources=_resources(cpu_start, elapsed,
+                                                    child_cpu_start, extra=extra),
+                               provider_request_id=cancel_request_id)
         except JobFailure as exc:
             elapsed = int((time.monotonic() - started) * 1000)
-            _write(log, f"状态：failed（{exc.code}）{exc.message}")
             if spec is not None and exc.code in ("adapter_start_failed",
                                                  "adapter_failed", "empty_output"):
                 runners.cleanup_partial(spec)
-            jobs.fail(job["id"], wid, exc.code, exc.message,
-                      jobfiles.relative(log_path), exc.return_code, elapsed,
-                      resources=_resources(cpu_start, elapsed,
-                                           child_cpu_start, extra=extra),
-                      provider_request_id=exc.provider_request_id)
+            if _cloud_uncertain(job, exc.code, exc.provider_request_id):
+                _write(log, f"状态：needs_attention（{exc.code}）{exc.message}")
+                jobs.needs_attention(
+                    job["id"], wid, exc.code, exc.message,
+                    "云端调用结果未知：供应商可能已建立任务或已计费",
+                    jobfiles.relative(log_path), exc.return_code, elapsed,
+                    resources=_resources(cpu_start, elapsed,
+                                         child_cpu_start, extra=extra),
+                    provider_request_id=exc.provider_request_id)
+            else:
+                _write(log, f"状态：failed（{exc.code}）{exc.message}")
+                jobs.fail(job["id"], wid, exc.code, exc.message,
+                          jobfiles.relative(log_path), exc.return_code, elapsed,
+                          resources=_resources(cpu_start, elapsed,
+                                               child_cpu_start, extra=extra),
+                          provider_request_id=exc.provider_request_id)
         except Exception:
             elapsed = int((time.monotonic() - started) * 1000)
             detail = traceback.format_exc(limit=6)

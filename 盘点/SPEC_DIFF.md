@@ -462,3 +462,28 @@
 5. **CSV 的 BOM 让验收脚本 `json.loads` 失败**：BOM 是给 Excel 的，脚本改成按字节读并校验首行。
 6. **音频提交弹原生 alert 把无头浏览器挂住**：改成页内提示条 + try/catch，既让真浏览器继续跑，也让人看得到别的素材状态。
 7. **资产类型的中文名两处不一致**：前端与侧栏早已统一成「道具」，后端 `ASSET_KINDS` 还把 `prop` 写成「物品」，卡片与详情显示的是后端的值——截图里当场露出来，已改成「道具」，首页模块图的文案一并改掉。
+
+## 22. P0 完成后回填（2026-11-01）
+
+外部评审《AI视频生产平台_功能优化评审与具体修改方案》的 P0 部分，只做代码可完成的：模型验证出处分离、产物校验、worker 异常告警、云端 `needs_attention` 人工核对。**真付费调用与目标机基准仍标未验证**，不填推算值。`pytest -q` → **444 passed**（新增 `test_validation.py` 13 项、`test_attention.py` 16 项，守卫表 +6）。路由 **84 paths / 109 operations**（+6：validations／validate／validate-job／attention／reconcile／retry-preview）。真浏览器 CDP **12 项全过**；图在 `app/截图/v75-*`。设计稿同步到 v0.75。
+
+| 评审条目 | 现在 |
+|---|---|
+| P0「配置就绪 ≠ 真的能产出」 | 迁移 `0021` 建 `model_validation`，只 INSERT；四类出处 `env_check／mock／real_call／target_machine` 互不升级。`env_check` 复用 `adapters.health()`，不发请求不加载权重；`real_call／target_machine` 读一条已成功 Job 盖章，不自己执行模型 |
+| P0「mock 不能冒充真实调用」 | `from_job` 对 `execution_mode='mock'` 或 provider 是 `mock` 的作业拒记 `real_call`（422）；反过来真作业也不能记成 `mock`。测试环境跑绿一次，生产界面不会显示"真实调用已验证" |
+| P0「产物要校验」 | `real_call／target_machine` 取第一个产物算 sha256 与字节数，文件不可读直接拒记；摘要里 `artifact_sha256_present／artifact_bytes` 随记录冻结 |
+| P0「生产可用由服务端判定」 | `summary_for` 的 `production_ready`＝`env_check` ok **且** `real_call` ok；`target_machine_ready` 单列。徽章按 `target_machine＞real_call＞mock＞env_check` 取最高，环境检查永远不能冒充真实调用 |
+| P0「云端结果不确定不自动重试」 | `recover_stale` 对"云端＋有 `provider_request_id`＋租约过期"判 `needs_attention(worker_lost)`，其余才 failed。自动重试会重复计费，所以停在这个状态等人核对 |
+| P0「人工核对结清」 | `POST /api/jobs/{id}/reconcile`：判 succeeded／failed 须填实际金额→`billable_status=known`＋`actual_cost_micros`＋`reconciled_by／at`；判 pending 只留备注。预计成本 `cost_micros` 是提交快照，核对不改它，两个数都留着对账 |
+| P0「重试链可见」 | 迁移 `0020` 加 `superseded_by_job_id`；重试新建一行 `attempt+1` 并写链，`retry-preview` 先只读预览（本地不计费／云端 `may_charge_again`）。一串重试在界面是一条链，不是 N 条互不相干的待核对 |
+| P0「worker 异常告警」 | `worker_status.alerts` 六码：`worker_offline／queue_stalled／lease_expired／run_timeout／log_silent／needs_attention`，只报事实不改 Job 状态；生成中心与首页各摆一份 |
+| P0「密钥不外泄」 | 验证记录与接口都不回传密钥值；`env_check` 的 `checks.key_env` 只留变量名。测试种了一个假密钥断言它不出现在响应里 |
+
+**P0 的边界（别误读）**：
+- **真付费调用没跑**：`real_call` 的云端分支要有计费确认才肯记，本轮验收用的是本地 mock 与一条 W10 遗留的云端成功作业（#36）做核对闭环，没有新发起付费调用。
+- **目标机基准仍是 UNKNOWN**：`target_machine` 一条记录都没有，`production_ready` 不会因此亮起；M5 Ultra 的速度数字仍空，等上机跑 §7.6 清单再回填。
+- **告警不改状态**：`run_timeout／log_silent` 只提示，作业仍停在 running，由 `recover_stale` 按租约规则处置，告警不越权写 Job。
+
+**这一轮真被踩到的问题**：
+1. **`stateChip` 局部变量盖掉同名函数**：`system-config.js` 保存提示的 `const stateChip`（DOM 元素）与徽章函数 `stateChip()` 同作用域同名，验证弹窗一开就抛 "not a function"；局部改名 `saveStateChip`，真浏览器复验零异常。
+2. **CDP `returnByValue` 把 DOM 元素序列化成 `{}`**：等待表达式若返回元素本身（如 `querySelector('table')`）会被当成 falsy，明明渲染好了也超时；一律用 `.length` 或 `!!` 收成布尔/数字。

@@ -5,16 +5,22 @@ PUT 是整批覆盖而不是逐行改：配置页一次保存十行，
 
 W06 起这一页还负责两件规格里点名的事：密钥变量名（只存名字）与备注；
 允许参数和健康状态不落库，前者来自 adapter 清单、后者是打开页面时现查的。
+
+P0 又加了一件事：**把"环境齐"和"真跑过"分开显示**。健康状态每次现查，
+但"这一槽位最近一次真实调用是什么时候、结果如何"是历史事实，落在
+`model_validation` 表里——它不能跟着配置一起被整批覆盖掉。
 """
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
 import adapters
+import validations
 from deps import require_permission, require_user
 from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
-                    ProviderOut, ProviderUpdate)
+                    ProviderOut, ProviderUpdate, ValidationIn, ValidationOut)
 from repositories.providers import has_key, providers
+from repositories.validation import validations as validation_repo
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
@@ -27,7 +33,8 @@ PROVIDER_RE = re.compile(r"^[A-Za-z0-9._-]*$")
 def _row_out(row) -> ProviderOut:
     health = adapters.health(row)
     env = health["key_env"] if row["backend"] == "cloud" else ""
-    return ProviderOut.from_row(row, has_key(row, env), env, health)
+    summary = validations.summary_for(row)
+    return ProviderOut.from_row(row, has_key(row, env), env, health, summary)
 
 
 @router.get("/providers", response_model=list[ProviderOut])
@@ -58,6 +65,7 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
         health = adapters.health(row)
+        badge, at = validations.badge(validations.summary_for(row))
         out.append(ProviderOptionOut(
             capability=row["capability"],
             capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
@@ -66,6 +74,7 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             provider=row["provider"], model=row["model"],
             adapter_label=adapter.label if adapter else "",
             health_state=health["state"], health_detail=health["detail"],
+            validation_state=badge, validation_at=at,
             models=[m.as_dict() for m in adapter.models] if adapter else [],
         ))
     return out
@@ -90,13 +99,60 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
                 health_detail="没有默认后端"))
             continue
         health = adapters.health(row)
+        badge, at = validations.badge(validations.summary_for(row))
         out.append(CurrentProviderOut(
             capability=capability, capability_label=label,
             backend=row["backend"], backend_label=BACKENDS.get(row["backend"], ""),
             provider=row["provider"], model=row["model"],
             adapter=(health["adapter"] or {}).get("label", ""),
-            health_state=health["state"], health_detail=health["detail"]))
+            health_state=health["state"], health_detail=health["detail"],
+            validation_state=badge, validation_at=at))
     return out
+
+
+@router.get("/providers/validations", response_model=list[ValidationOut])
+def list_validations(limit: int = 50,
+                     _=Depends(require_permission("system:config"))) -> list[ValidationOut]:
+    """验证历史。只有管理员能看整份——detail 里会有本机路径与缺失项。"""
+    return [ValidationOut.from_row(r) for r in validation_repo.list_recent(limit)]
+
+
+@router.post("/providers/validate", response_model=ValidationOut)
+def run_env_validation(payload: ValidationIn,
+                       user=Depends(require_permission("system:config"))) -> ValidationOut:
+    """跑一次环境检查并留痕。
+
+    这一枪**不发网络请求、不加载权重**，所以它永远不能替代真实调用验证；
+    `kind` 也被限死成 env_check——想从这里写出一条 real_call，接口直接拒。
+    """
+    if payload.kind != "env_check":
+        raise HTTPException(status_code=422,
+                            detail="这个入口只做环境检查；真实调用要从一条已成功的作业登记")
+    row = providers.slot(payload.capability, payload.backend)
+    if row is None:
+        raise HTTPException(status_code=422, detail="这一轨不存在")
+    if payload.provider and row["provider"] != payload.provider:
+        raise HTTPException(status_code=422,
+                            detail=f"这一轨现在配的是 {row['provider']}，不是 {payload.provider}")
+    result = validations.env_check(row, user["id"])
+    return ValidationOut.from_row(result["validation"])
+
+
+@router.post("/providers/validate-job/{job_id}", response_model=ValidationOut)
+def record_job_validation(job_id: int, payload: ValidationIn,
+                          user=Depends(require_permission("system:config"))) -> ValidationOut:
+    """把一条已经跑完的作业登记成该槽位的验证凭据。
+
+    为什么只让管理员做：这条记录会让界面上那一格从"环境检查通过"升级成
+    "真实调用已验证"，是个有后果的判断，不该由提交作业的人顺手点。
+    """
+    if payload.kind == "env_check":
+        raise HTTPException(status_code=422, detail="环境检查不走作业，请用「环境检查」按钮")
+    try:
+        result = validations.from_job(job_id, payload.kind, user["id"], payload.detail)
+    except validations.ValidationInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ValidationOut.from_row(result["validation"])
 
 
 @router.put("/providers", response_model=list[ProviderOut])

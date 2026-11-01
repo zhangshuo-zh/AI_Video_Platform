@@ -37,6 +37,15 @@ WORKER_POLL = float(os.environ.get("FASTVIDEO_WORKER_POLL", "1.0"))
 WORKER_LEASE_SECONDS = int(os.environ.get("FASTVIDEO_WORKER_LEASE", "60"))
 # 心跳超过这个年龄就算离线（顶栏那个小圆点按它亮/灭）
 WORKER_ONLINE_SECONDS = int(os.environ.get("FASTVIDEO_WORKER_ONLINE", "20"))
+# 一条作业最长允许占着 worker。租约只证明"worker 还活着"，不证明"模型还在前进"；
+# 没有这条上限，子进程挂住时会每 0.2 秒续一次租约，永远停在运行中。
+WORKER_MAX_RUNTIME_SECONDS = int(os.environ.get("FASTVIDEO_WORKER_MAX_RUNTIME", "7200"))
+# 队列里有排队项、worker 在线却连续这么久没领到新作业，界面按"停滞"提示。
+# 这不改变 Job 状态，只是把"没人干活"和"刚入队"区分开。
+QUEUE_STALL_SECONDS = int(os.environ.get("FASTVIDEO_QUEUE_STALL_SECONDS", "120"))
+# 日志文件多久没有字节增长就提示可能卡住。本地模型加载权重时可以静默一阵，
+# 默认给 10 分钟；它只是观测阈值，不会自动杀进程（杀进程仍由运行超时负责）。
+LOG_SILENCE_SECONDS = int(os.environ.get("FASTVIDEO_LOG_SILENCE_SECONDS", "600"))
 
 # 测试/演示用的假适配器（只 sleep、写一个文本结果）。默认关；
 # 打开后 API 与 worker 才认识 provider=mock，生产环境不该出现它。

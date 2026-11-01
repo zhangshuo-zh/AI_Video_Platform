@@ -128,6 +128,21 @@ export const api = {
   }).then(toJson),
   cancelJob: (id) => fetch(`/api/jobs/${id}/cancel`, { method: 'POST' }).then(toJson),
   retryJob: (id) => fetch(`/api/jobs/${id}/retry`, { method: 'POST' }).then(toJson),
+  // 重试前那一屏：只读，不创建任何东西。云端重试会多一笔预计计费，
+  // 所以界面先拿这份预览弹确认，人看清"会继承什么、可能再花多少"再点。
+  retryPreview: (id) => fetch(`/api/jobs/${id}/retry-preview`).then(toJson),
+  // 人工核对一条待核对的云端作业。decision：succeeded／failed 必须带实际金额，
+  // pending 只留备注。不重新提交、不改提示词与参数快照。
+  reconcileJob: (id, body) => fetch(`/api/jobs/${id}/reconcile`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 把一条云端作业显式送进"待核对"。供应商说成功、产物却打不开时用——
+  // 那笔钱可能已经花了，先挂起来核对，比让系统替人决定重试更安全。
+  markAttention: (id, reason) => fetch(`/api/jobs/${id}/attention`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  }).then(toJson),
   jobLogs: (id) => fetch(`/api/jobs/${id}/logs`).then(toJson),
   jobArtifacts: (id) => fetch(`/api/jobs/${id}/artifacts`).then(toJson),
   // 产物走浏览器直连（图片/视频能直接预览）；它不是 JSON，不能过 toJson
@@ -157,6 +172,20 @@ export const api = {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(rows),
+  }).then(toJson),
+  // 模型验证（P0）：四种出处（环境检查／模拟／真实调用／目标机）各记各的，
+  // 谁也不能替谁升级。历史单独一张表，只追加不改。
+  providerValidations: (limit = 50) => fetch(
+    `/api/providers/validations?limit=${limit}`).then(toJson),
+  // 环境检查：不发网络、不加载权重，所以永远不能替代真实调用验证。
+  validateProvider: (body) => fetch('/api/providers/validate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 从一条已成功的作业登记真实调用凭据。只有管理员能点——这一格升级是有后果的判断。
+  validateJob: (jobId, body) => fetch(`/api/providers/validate-job/${jobId}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   }).then(toJson),
 
   // 创作单元 / 分镜 / 资产

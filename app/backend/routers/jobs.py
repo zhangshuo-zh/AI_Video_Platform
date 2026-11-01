@@ -17,8 +17,9 @@ from config import WORKER_ONLINE_SECONDS
 from db import get_conn
 from deps import require_permission, require_user
 from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, CostBucket,
-                    CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobDetailOut,
-                    JobLogOut, JobOut, JobSubmitIn, LocalCostOut, WorkerStatusOut)
+                    CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
+                    JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
+                    JobSubmitIn, LocalCostOut, WorkerStatusOut)
 from repositories.jobs import jobs
 from repositories.projects import projects as project_repo
 
@@ -198,7 +199,50 @@ def job_costs(project_id: int | None = None,
 
 @router.get("/jobs/{job_id}", response_model=JobDetailOut)
 def job_detail(job_id: int, user=Depends(require_permission("job:read"))) -> JobDetailOut:
-    return JobDetailOut.from_row(_load(job_id, user))
+    return JobDetailOut(**services.job_detail_view(_load(job_id, user)))
+
+
+@router.get("/jobs/{job_id}/retry-preview", response_model=JobRetryPreviewOut)
+def retry_preview(job_id: int,
+                  user=Depends(require_permission("job:submit"))) -> JobRetryPreviewOut:
+    """重试前那一屏。它不创建任何东西，只回答"会继承什么、可能再花多少"。"""
+    _load(job_id, user)
+    try:
+        return JobRetryPreviewOut(**services.retry_preview(job_id))
+    except services.JobMissing as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/reconcile", response_model=JobDetailOut)
+def reconcile_job(job_id: int, payload: JobReconcileIn,
+                  user=Depends(require_permission("job:submit"))) -> JobDetailOut:
+    """人工核对一条待核对的云端作业。不重新提交、不改提示词与参数快照。"""
+    _load(job_id, user, "write")
+    try:
+        result = services.reconcile_job(job_id, payload, user)
+    except services.JobMissing as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except services.JobStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JobDetailOut(**services.job_detail_view(result["job"]))
+
+
+@router.post("/jobs/{job_id}/attention", response_model=JobDetailOut)
+def mark_attention(job_id: int, payload: JobAttentionIn,
+                   user=Depends(require_permission("job:submit"))) -> JobDetailOut:
+    """把一条云端作业显式送进"待核对"。
+
+    为什么需要这个入口：供应商回执说成功、产物却打不开时，落 failed 的默认建议是重试，
+    而那笔钱可能已经花了。让人先把它挂起来核对，比让系统替人决定更安全。
+    """
+    _load(job_id, user, "write")
+    try:
+        result = services.mark_job_attention(job_id, payload.reason, user)
+    except services.JobMissing as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except services.JobStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JobDetailOut(**services.job_detail_view(result["job"]))
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)
@@ -224,7 +268,8 @@ def retry_job(job_id: int, user=Depends(require_permission("job:submit"))) -> Jo
 @router.get("/jobs/{job_id}/logs", response_model=JobLogOut)
 def job_logs(job_id: int, user=Depends(require_permission("job:read"))) -> JobLogOut:
     row = _load(job_id, user)
-    return JobLogOut(path=row["log_path"], text=jobfiles.read_log(row["log_path"]))
+    stat = jobfiles.stat_log(row["log_path"])
+    return JobLogOut(path=row["log_path"], text=jobfiles.read_log(row["log_path"]), **stat)
 
 
 @router.get("/jobs/{job_id}/artifacts", response_model=list[JobArtifactOut])
@@ -250,20 +295,9 @@ def job_artifact_file(job_id: int, index: int,
 @router.get("/worker/status", response_model=WorkerStatusOut)
 def worker_status(_=Depends(require_user)) -> WorkerStatusOut:
     """顶栏那个小圆点用的。任何登录者都能看在线状态与队列长度；
-    作业内容仍要 job:read + 项目归属。"""
-    state = jobs.worker_state()
-    heartbeat = (state["heartbeat_at"] if state else "") or ""
-    age = None
-    online = False
-    if heartbeat:
-        try:
-            then = datetime.strptime(heartbeat, "%Y-%m-%d %H:%M:%S")
-            age = max(0, int((datetime.now() - then).total_seconds()))
-            online = age <= WORKER_ONLINE_SECONDS
-        except ValueError:
-            age = None
-    return WorkerStatusOut(
-        online=online, heartbeat_at=heartbeat, age_seconds=age,
-        current_job_id=state["current_job_id"] if (state and online) else None,
-        queue=jobs.counts(),
-    )
+    作业内容仍要 job:read + 项目归属。
+
+    P0 起这里还回 alerts：队列停滞、租约过期、运行超时、待核对——
+    这些都不改任何作业状态，只是把"没人干活"和"刚入队"分开说。
+    """
+    return WorkerStatusOut(**services.worker_status())

@@ -3,6 +3,23 @@ import { MODULES } from '../modules.js';
 import { store } from '../store.js';
 import { escapeHtml, formatMoney } from '../util.js';
 
+// 队列告警的中文短标签，与生成中心同一套口径。首页也摆一份，
+// 让人不点进生成中心就能看到"现在可能卡住了"。
+const ALERT_LABEL = {
+  worker_offline: 'worker 离线', queue_stalled: '队列停滞', lease_expired: '租约过期',
+  run_timeout: '运行超时', log_silent: '日志静默', needs_attention: '待核对',
+};
+
+function alertsBlock(w) {
+  const alerts = w?.alerts || [];
+  if (!alerts.length) return '';
+  return `<div class="gen-alerts">${alerts.map((a) => `
+    <div class="gen-alert ${a.level === 'bad' ? 'bad' : 'warn'}">
+      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(ALERT_LABEL[a.code] || a.code)}</span>
+      <span>${escapeHtml(a.text)}</span>
+    </div>`).join('')}</div>`;
+}
+
 /**
  * 首页 = 模块地图 + 九实体说明 + 本机状态。
  * 本机状态里只放后端真报回来的数字；worker / 队列还没接，就老实写"未接入"。
@@ -79,6 +96,7 @@ export default {
         <div class="card">
           <div class="card-head"><h2>本机状态</h2><span class="sub">M5 Ultra 96GB · 1.2TB/s</span></div>
           <div class="card-body stack" style="gap:10px">
+            ${alertsBlock(w)}
             <div class="row" style="justify-content:space-between">
               <span class="note">在产项目</span>
               <span class="num" style="font-size:12px">${store.activeProjects.length}</span>

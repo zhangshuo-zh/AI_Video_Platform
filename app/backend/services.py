@@ -22,7 +22,11 @@ import extraction
 import gitrepo
 import jobfiles
 import reviewgate
-from config import ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES
+import validations
+from config import (ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES,
+                    LOG_SILENCE_SECONDS, QUEUE_STALL_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
+                    WORKER_ONLINE_SECONDS)
+from db import get_conn
 from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from repositories.audio import clips
 from repositories.content import assets
@@ -33,6 +37,7 @@ from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from repositories.providers import providers as provider_repo
+from repositories.validation import validations as validation_repo
 from workspace import PathError
 from workspace import atomic_write, path_of, plan_rel_path, read as read_file
 from workspace import unapplied_dir
@@ -1342,3 +1347,204 @@ def _cost_of(payload, mode: str, created_by: int | None) -> dict:
     return {"quantity": None, "unit": None, "unit_price_micros": None,
             "cost_micros": 0, "currency": None, "pricing_snapshot": None,
             "billable_status": "not_billable"}
+
+
+# ---------- P0：队列健康、人工核对与重试可见性 ----------
+
+class JobMissing(Exception):
+    """作业不存在或不属于可见项目。路由层转 404。"""
+
+
+class JobStateConflict(Exception):
+    """当前状态不允许这个动作（比如给一条 queued 做账单核对）。转 409。"""
+
+
+def _seconds_since(text: str | None) -> int | None:
+    if not text:
+        return None
+    try:
+        return max(0, int((datetime.now()
+                           - datetime.strptime(text, "%Y-%m-%d %H:%M:%S")).total_seconds()))
+    except ValueError:
+        return None
+
+
+def worker_status() -> dict:
+    """worker 状态 + 队列健康。
+
+    这里刻意**不**把"超时"写成 failed：判定与处置分开。
+    界面看到告警，处置仍然是人取消或 worker 自己的 deadline 生效。
+    """
+    state = job_repo.worker_state()
+    health = job_repo.queue_health(WORKER_MAX_RUNTIME_SECONDS)
+    age = None
+    online = False
+    heartbeat = ""
+    if state is not None:
+        heartbeat = state["heartbeat_at"] or ""
+        age = _seconds_since(heartbeat)
+        online = age is not None and age <= WORKER_ONLINE_SECONDS
+
+    alerts: list[dict] = []
+    if health["queued"] > 0 and not online:
+        alerts.append({"level": "bad", "code": "worker_offline",
+                       "text": f"worker 离线，队列里还有 {health['queued']} 条在等。"
+                               f"启动：./run.sh worker"})
+    if health["queued"] > 0 and online and (health["oldest_queued_seconds"] or 0) > QUEUE_STALL_SECONDS:
+        alerts.append({"level": "warn", "code": "queue_stalled",
+                       "text": f"worker 在线，但最长一条已排队 "
+                               f"{health['oldest_queued_seconds']} 秒还没被领取。"
+                               f"多半是上一条占着本地槽位。"})
+    if health["expired_leases"] > 0:
+        alerts.append({"level": "bad", "code": "lease_expired",
+                       "text": f"{health['expired_leases']} 条作业的租约已过期但还挂着执行中；"
+                               f"worker 下一轮恢复会把它们收掉。"})
+    for running in health["running_jobs"]:
+        if running["over_runtime"]:
+            alerts.append({"level": "bad", "code": "run_timeout",
+                           "text": f"作业 #{running['id']} 已跑 "
+                                   f"{running['started_seconds']} 秒，超过上限 "
+                                   f"{WORKER_MAX_RUNTIME_SECONDS} 秒。"})
+        if running["silent_seconds"] is not None and running["silent_seconds"] > LOG_SILENCE_SECONDS:
+            alerts.append({"level": "warn", "code": "log_silent",
+                           "text": f"作业 #{running['id']} 已经 "
+                                   f"{running['silent_seconds']} 秒没有新日志。"})
+    if health["needs_attention"] > 0:
+        alerts.append({"level": "warn", "code": "needs_attention",
+                       "text": f"{health['needs_attention']} 条云端作业待人工核对；"
+                               f"核对前不要重试，可能重复计费。"})
+
+    return {
+        "online": online, "heartbeat_at": heartbeat, "age_seconds": age,
+        "current_job_id": (state["current_job_id"] if online and state is not None else None),
+        "queue": {"queued": health["queued"], "running": health["running"]},
+        "alerts": alerts, "by_status": health["by_status"],
+        "oldest_queued_seconds": health["oldest_queued_seconds"],
+        "running_jobs": health["running_jobs"],
+        "expired_leases": health["expired_leases"],
+        "needs_attention": health["needs_attention"],
+    }
+
+
+def job_detail_view(job) -> dict:
+    """详情视图：在 JobDetailOut 之外补日志静默与租约状态。
+
+    这些是"现在动没动"的事实，不是新状态；所以不改 job 行，只随响应算一次。
+    """
+    from models import JobDetailOut
+
+    log = jobfiles.stat_log(job["log_path"])
+    out = JobDetailOut.from_row(job).model_dump()
+    now = datetime.now()
+    out.update({
+        "lease_until": job["lease_until"],
+        "lease_expired": bool(job["lease_until"]) and job["lease_until"] < now.strftime(
+            "%Y-%m-%d %H:%M:%S"),
+        "log_silent_seconds": log["silent_seconds"],
+        "log_size": log["size"],
+        "running_seconds": _seconds_since(job["started_at"])
+        if job["status"] in ("starting", "running", "cancel_requested") else None,
+    })
+    return out
+
+
+def retry_preview(job_id: int) -> dict:
+    """重试前那一屏：继承什么、这一串已经计了多少、会不会再花一次钱。"""
+    job = job_repo.get(job_id)
+    if job is None:
+        raise JobMissing("作业不存在")
+    chain = job_repo.retry_chain(job_id)
+    cloud = job["execution_mode"] == "cloud"
+    rows = []
+    total = 0
+    pending = 0
+    for row in chain:
+        cost = row["cost_micros"] or 0
+        total += int(cost)
+        if row["billable_status"] == "pending_reconciliation":
+            pending += 1
+        rows.append({"id": row["id"], "status": row["status"],
+                     "status_label": JOB_STATUSES.get(row["status"], row["status"]),
+                     "attempt": int(row["attempt"] or 1), "cost_micros": int(cost),
+                     "billable_status": row["billable_status"],
+                     "created_at": row["created_at"]})
+    may_charge = cloud and job["unit_price_micros"] is not None
+    warning = ""
+    if may_charge:
+        warning = ("云端重试会新建一条作业并重新走一次供应商调用；"
+                   f"这一串目前已有 {pending} 笔待核对、合计 "
+                   f"{total / 1_000_000:.2f} {job['currency'] or ''}。")
+    elif cloud:
+        warning = "这条云端作业没有计价快照；重试仍不会自动补价，请先核对。"
+    else:
+        warning = "本地重试不计费，但会再占一次本机队列。"
+    return {
+        "job_id": job["id"], "execution_mode": job["execution_mode"],
+        "provider_code": job["provider_code"], "model_code": job["model_code"],
+        "prompt_preview": (job["prompt_snapshot"] or "")[:120],
+        "params": json_loads_dict(job["params_json"]),
+        "quantity": job["quantity"], "unit": job["unit"], "currency": job["currency"],
+        "cost_micros": job["cost_micros"], "chain": rows,
+        "chain_total_micros": total, "chain_pending": pending,
+        "may_charge_again": bool(may_charge), "warning": warning,
+    }
+
+
+def json_loads_dict(text: str) -> dict:
+    try:
+        value = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def reconcile_job(job_id: int, payload, user) -> dict:
+    """人工核对一条待核对的云端作业。
+
+    三条硬规矩：
+    - 只有 `needs_attention` 能核；正常成功/失败不该被这条路径改写。
+    - `succeeded`/`failed` 必须给实际金额，且云端作业才允许核。
+    - 只动账单与核对列，**绝不重新提交**；重投是人的另一个决定。
+    """
+    job = job_repo.get(job_id)
+    if job is None:
+        raise JobMissing("作业不存在")
+    if job["execution_mode"] != "cloud":
+        raise JobStateConflict("只有云端作业需要账单核对；本地作业不计费")
+    if job["status"] != "needs_attention":
+        raise JobStateConflict("这条作业当前不是待核对状态")
+    if payload.decision in ("succeeded", "failed") and payload.actual_cost_micros is None:
+        raise JobStateConflict("确认结果前必须填实际金额；不确定就选「继续待核对」")
+    row = job_repo.reconcile(job_id, payload.decision, payload.actual_cost_micros,
+                             payload.note.strip(), user["id"])
+    if row is None:
+        raise JobMissing("作业不存在")
+    return {"job": row, "message": {
+        "succeeded": "已确认可用，账单记为已确认。",
+        "failed": "已确认不可用，这笔账按实际金额结清。",
+        "pending": "仍保持待核对。",
+    }[payload.decision]}
+
+
+def mark_job_attention(job_id: int, reason: str, user) -> dict:
+    """人工把一条云端作业送进"待核对"。
+
+    为什么允许从 succeeded/failed 进来：供应商回执说成功、产物却打不开，
+    或用量与预计差很多，这类情况现在只能落 failed，而 failed 的默认动作是重试——
+    对一笔可能已经计过费的调用，"默认重试"是最坏的建议。
+    """
+    job = job_repo.get(job_id)
+    if job is None:
+        raise JobMissing("作业不存在")
+    if job["execution_mode"] != "cloud":
+        raise JobStateConflict("本地作业没有供应商账单可核对")
+    if job["status"] not in ("succeeded", "failed"):
+        raise JobStateConflict("只有已结束的成功或失败作业能改成待核对")
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status = 'needs_attention', attention_reason = ?,
+                      error_message = COALESCE(error_message, ?),
+                      updated_at = datetime('now','localtime')
+                WHERE id = ?""",
+            (reason[:500], f"人工标记待核对：{reason[:500]}", job_id))
+    return {"job": job_repo.get(job_id), "message": "已标记为待核对。"}
