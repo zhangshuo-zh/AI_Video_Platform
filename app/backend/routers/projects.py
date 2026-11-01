@@ -16,6 +16,7 @@ from deps import require_permission
 from models import (ProjectBatchDeleteIn, ProjectBatchIn, ProjectBatchOut, ProjectIn,
                     ProjectMemberIn, ProjectMemberOut, ProjectMembersOut, ProjectOut,
                     ProjectSkip, ProjectStatusIn, ProjectSummary, ProjectTagsIn,
+                    ProjectTransferIn,
                     ProjectUpdateIn)
 from ranks import row_rank, user_rank
 from repositories.projects import projects as project_repo
@@ -259,4 +260,37 @@ def remove_member(project_id: int, member_id: int,
                   user=Depends(require_permission("project:write"))) -> ProjectMembersOut:
     ensure(user, project_id, "manage")
     project_repo.remove_member(project_id, member_id)
+    return _members_payload(project_id, user)
+
+
+@router.post("/projects/{project_id}/transfer", response_model=ProjectMembersOut)
+def transfer_ownership(project_id: int, payload: ProjectTransferIn,
+                       user=Depends(require_permission("project:write"))) -> ProjectMembersOut:
+    """把项目交给别人。四条口径，都是"交出去之后还会发生什么"决定的：
+
+    1. 谁能发起：`ensure(..., "manage")` —— 只有所有人与管理员，和删项目、管成员同一把锁。
+    2. 交给谁：**必须是当前协作人**。把一个跟项目毫无关系的人直接扶成所有人，
+       等于用一次转移绕过"先加进来再共事"这一步；要交给别人，先加为协作人。
+    3. 原所有人：**自动降为协作人**，不是消失。交完就看不见这个项目的话，
+       没人敢点这个按钮，历史进度也等于自己给自己锁在门外。
+       反过来，接手人原本在协作人名单里，交完就把他那行删掉——
+       不然名单上会出现"既是所有人又是协作人"，移除按钮还对他开放。
+    4. **不推 `updated_at`**：与 `set_status` 同一个理由——换个人挂名没动任何内容，
+       推了"最后修改"就不再表示"这部剧在推进"。两步写还要求原子，
+       见 `repositories/projects.py:transfer_owner`。
+    """
+    project = ensure(user, project_id, "manage")
+    old_owner = project["owner_id"]
+    target_id = payload.user_id
+    if target_id == old_owner:
+        raise HTTPException(status_code=422, detail="对方已经是这个项目的所有人")
+    target = user_repo.get_by_id(target_id)
+    if target is None or not target["is_active"]:
+        raise HTTPException(status_code=404, detail="接手人不存在或已停用")
+    member_ids = {r["user_id"] for r in project_repo.members(project_id)}
+    if target_id not in member_ids:
+        raise HTTPException(status_code=422,
+                            detail="只能交给当前协作人；先把对方加为协作人，再转所有权")
+
+    project_repo.transfer_owner(project_id, target_id, old_owner)
     return _members_payload(project_id, user)

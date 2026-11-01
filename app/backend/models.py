@@ -362,6 +362,11 @@ class ProjectMemberIn(BaseModel):
     user_id: int
 
 
+class ProjectTransferIn(BaseModel):
+    """转移所有权。只收一个人 id——交出去之后自己降为协作人，没有第二种选项。"""
+    user_id: int
+
+
 class ProjectMembersOut(BaseModel):
     """一页给齐：已受邀的人和可供挑选的人。
 

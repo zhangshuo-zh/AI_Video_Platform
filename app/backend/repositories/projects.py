@@ -286,6 +286,29 @@ class ProjectRepository:
             conn.execute("UPDATE project SET owner_id = ? WHERE id = ?", (owner_id, project_id))
             touch(conn, "project", project_id)
 
+    def transfer_owner(self, project_id: int, new_owner_id: int, old_owner_id: int) -> None:
+        """换所有人，并把原所有人留在协作人名单里——**一个事务做完**。
+
+        为什么不用 set_owner + add_member 拼：
+        1. 那两个各自 touch `updated_at`。归属换了不等于内容动过，
+           推了以后"最后修改"就不能用来看哪部剧在推进（和归档、打开同理）。
+        2. 分两个事务的话，中间崩一次就是"项目没有所有人能管"或者
+           "原所有人被踢出可见范围"——这种半截状态比报错难查得多。
+        删账号那条流程仍然用 set_owner（它是"人在消失"，语义不同）。
+        """
+        with get_conn() as conn:
+            conn.execute("UPDATE project SET owner_id = ? WHERE id = ?",
+                         (new_owner_id, project_id))
+            conn.execute(
+                """INSERT OR IGNORE INTO project_member (project_id, user_id, added_by)
+                   VALUES (?, ?, ?)""",
+                (project_id, old_owner_id, old_owner_id),
+            )
+            # 新所有人本来在协作人名单里，交完他就多余了：删掉，
+            # 不然名单上会出现"既是所有人又是协作人"，移除按钮还会对他开放
+            conn.execute("DELETE FROM project_member WHERE project_id = ? AND user_id = ?",
+                         (project_id, new_owner_id))
+
     def owned_by(self, user_id: int) -> list[sqlite3.Row]:
         """某人名下的项目，删账号时用来判断该转移还是一起删。"""
         with get_conn() as conn:

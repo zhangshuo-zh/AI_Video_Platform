@@ -34,6 +34,7 @@ ROUTES = [
     ("POST", "/api/projects/batch-delete", {"ids": ["{p}"], "confirm": "批量删除"}, 403),
     ("GET", "/api/projects/{p}/members", None, 404),
     ("POST", "/api/projects/{p}/members", {"user_id": 1}, 404),
+    ("POST", "/api/projects/{p}/transfer", {"user_id": 1}, 404),
     ("DELETE", "/api/projects/{p}/members/{u}", None, 404),
     ("GET", "/api/member-candidates", None, 200),
     ("GET", "/api/tags", None, 200),

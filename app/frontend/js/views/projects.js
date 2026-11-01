@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, escapeHtml, run } from '../util.js';
+import { bindModalDismiss, confirmDanger, escapeHtml, run } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -86,6 +86,9 @@ function rowsFor(projects) {
         <td class="t-dim">${p.episode_count} 集 · ${p.shot_count} 镜 · ${p.asset_count} 资产
           ${doneHtml}${descHtml}</td>
         <td class="t-dim mono">${stamp(p.created_at)}</td>
+        <!-- 排序本来就按它，界面却不摆出来：人看见"最新的在最前面"却找不到依据，
+             只会以为排序坏了。空＝从没打开过，摆一个破折号而不是藏掉这一列 -->
+        <td class="t-dim mono">${p.last_opened_at ? stamp(p.last_opened_at) : '—'}</td>
         <td class="t-dim mono">${stamp(p.updated_at)}</td>
         <td class="r">
           ${canWrite ? `<button class="btn sm" data-edit-project="${p.id}">修改</button>` : ''}
@@ -140,7 +143,7 @@ export default {
         <div class="table-wrap">
           <table>
           <thead><tr>${pickable ? `<th class="c"><input type="checkbox" class="row-pick" id="pick-all"
-          aria-label="全选当前筛选结果"></th>` : ''}<th>项目</th><th>标签</th><th>内容</th><th>创建</th><th>最后修改</th><th class="r"></th></tr></thead>
+          aria-label="全选当前筛选结果"></th>` : ''}<th>项目</th><th>标签</th><th>内容</th><th>创建</th><th title="列表就是按这一列排的：最近打开的在最前">最后打开</th><th>最后修改</th><th class="r"></th></tr></thead>
           <tbody id="proj-rows">${rowsFor(projects)}</tbody>
           </table>
         </div>
@@ -264,7 +267,17 @@ export default {
               <select id="mem-add" class="ctl" style="min-width:200px"></select>
               <button class="btn" id="mem-add-btn">加为协作人</button>
             </div>
-            <p class="modal-meta">协作人可以查看和修改这个项目；删项目和管协作人只有所有人能做。</p>
+            <!-- 转移所有权：只有所有人与管理员看得见（renderMembers 里判）。
+                 放在成员弹窗而不是行内按钮列，是因为它要先看到"能交给谁"这份名单 -->
+            <div class="row" id="mem-transfer-row" hidden
+                 style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
+              <span class="note">转移给</span>
+              <select id="mem-transfer" class="ctl" style="min-width:200px"></select>
+              <button class="btn danger-solid" id="mem-transfer-btn">转移所有权</button>
+            </div>
+            <p class="modal-meta">协作人可以查看和修改这个项目；删项目和管协作人只有所有人能做。
+              转移所有权只能交给已加入的协作人，交出去之后你会变成协作人——仍然看得见、改得动，
+              只是删项目和管人归对方了。</p>
           </div>
           <div class="modal-actions">
             <button class="btn" id="mem-close">关闭</button>
@@ -606,6 +619,19 @@ export default {
         : '<option value="">没有可加的人</option>';
       memAdd.disabled = !data.candidates.length;
       memAddBtn.disabled = !data.candidates.length;
+      // 转移这一行只对"所有人或管理员"出现。前端只是不摆按钮，
+      // 真拦在后面：ensure(..., "manage")
+      const canManage = store.isManager || data.owner_id === store.user?.id;
+      const transferRow = root.querySelector('#mem-transfer-row');
+      const transferSel = root.querySelector('#mem-transfer');
+      const transferBtn = root.querySelector('#mem-transfer-btn');
+      const transferrable = data.members.filter((m) => m.user_id !== data.owner_id);
+      transferRow.hidden = !(canManage && transferrable.length);
+      if (!transferRow.hidden) {
+        transferSel.innerHTML = transferrable.map((m) => `<option value="${m.user_id}">${
+          escapeHtml(m.display_name || m.username)}（${escapeHtml(m.username)}）</option>`).join('');
+        transferBtn.disabled = false;
+      }
     };
 
     root.querySelectorAll('[data-members]').forEach((btn) => {
@@ -638,6 +664,37 @@ export default {
       await run('移除', async () => {
         renderMembers(await api.removeProjectMember(memId, Number(btn.dataset.rmMember)));
       });
+    });
+
+    /* ---------- 转移所有权 ----------
+       这一步会让人"从所有人变成协作人"，所以确认语要把后果说完：
+       仍然看得见、改得动，但删项目和管人归对方了。成功后关掉弹窗并刷新列表，
+       因为列表里的"所有人"三个字跟着变了，留着弹窗只会显示一份旧身份。 */
+    root.querySelector('#mem-transfer-btn')?.addEventListener('click', async () => {
+      const uid = Number(root.querySelector('#mem-transfer').value);
+      if (!uid || memId === null) return;
+      const who = root.querySelector('#mem-transfer')
+        .selectedOptions[0]?.textContent?.trim() || '对方';
+      const btn = root.querySelector('#mem-transfer-btn');
+      if (!(await confirmDanger({
+        title: '转移所有权', okText: '确认转移',
+        body: `把这个项目交给 <b>${escapeHtml(who)}</b>？<br>`
+            + '你会变成协作人：仍然能看和改，但删项目、管协作人归对方。',
+      }))) return;
+      btn.disabled = true;
+      const ok = await run('转移', async () => {
+        await api.transferProject(memId, uid);
+        await store.load();
+      });
+      btn.disabled = false;
+      if (!ok) {
+        // 失败要留在原地让人换个人：弹窗已经被 run() 的一句话说明白，
+        // 但名单可能刚变过，重取一次再让他挑
+        try { renderMembers(await api.projectMembers(memId)); } catch { /* 闸门会接手 */ }
+        return;
+      }
+      memModal.hidden = true;
+      refresh();
     });
 
     root.querySelector('#mem-close').addEventListener('click', () => { memModal.hidden = true; });

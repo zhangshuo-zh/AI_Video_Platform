@@ -66,9 +66,15 @@ export const store = {
 
   select(id) {
     this.currentId = id;
-    // 上报"打开过"只为让列表下次按最近使用排序。不 await、失败也不吭声：
-    // 切换项目这件事不该被一次写时间的请求卡住
-    if (id) api.openProject(id).catch(() => {});
+    // 先立刻重绘：切项目这件事不该等网络
     window.dispatchEvent(new CustomEvent('app:refresh'));
+    if (!id) return;
+    // 上报"打开过"只为让列表下次按最近使用排序，失败也不吭声。
+    // 但 v0.62 起"最后打开"成了界面上看得见的一列：只写库不回读，
+    // 人点完一行看到的还是破折号，等于界面在说谎 ⇒ 成功后静默回读一次再重绘。
+    // 项目几十个、2—5 个人用，多一个 GET 换界面自洽，值。
+    api.openProject(id).then(() => this.load())
+      .then(() => window.dispatchEvent(new CustomEvent('app:refresh')))
+      .catch(() => {});
   },
 };
