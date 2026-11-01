@@ -115,6 +115,8 @@ export const api = {
 
   // 模型双轨配置：读全部、整批写回
   providers: () => fetch('/api/providers').then(toJson),
+  providerManifest: () => fetch('/api/providers/manifest').then(toJson),
+  currentProviders: () => fetch('/api/providers/current').then(toJson),
   saveProviders: (rows) => fetch('/api/providers', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

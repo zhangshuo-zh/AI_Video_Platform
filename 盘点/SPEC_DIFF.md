@@ -98,11 +98,13 @@
 | 键 | 要求 | 状态 | 依据 |
 |---|---|---|---|
 | 01-4.8.2-1 | 五能力 × 本地/云端 = 10 槽 | **done** | `provider_config` 实读 10 行 |
-| 01-4.8.2-2 | 配置项含 provider/模型/默认/启用/密钥名/健康/备注 | **partial** | 有 provider/model/enabled/is_default；**没有"允许参数"白名单、没有健康状态、没有备注列** |
-| 01-4.8.2-3 | 密钥只经 `FV_KEY_<PROVIDER>`、页面只显已配置 | **done** | `providers.py:13/20`、`models.py:137` `has_key` |
-| 01-4.8.2-6 | 能力支持由 adapter manifest 驱动 | **missing** | 无 adapters/，`system-config.js` 表头是写死的 7 列 |
-| 01-D-08 | 所有价格视为待复核 | **verify** | 本轮**没有读到任何价格数据**（无表无列）⇒ 不存在"硬编码旧价格"的风险，但也意味着 W08 要从零建 |
-| 现场坑 | — | **conflict** | 本机唯一密钥变量名是 `DEEPSEEK_API_KEY`，后端约定读 `FV_KEY_DEEPSEEK`，**名字对不上**；且 `~/.zshrc` 只有交互式 shell 读得到，子进程继承不到 → W09 前必须解决（见 MODEL_CAPABILITIES §4） |
+| 01-4.8.2-2 | 配置项含 provider/模型/默认/启用/密钥名/健康/备注 | **done（W06）** | 加 `key_env`／`notes` 两列（0014）；"允许参数"与"健康"不落库——前者由 `adapters.py` 清单按档位现给，后者每次打开现查（本地看运行时目录、云端看密钥变量），存下来只会变成"上次检查时是好的" |
+| 01-4.8.2-3 | 密钥只经 `FV_KEY_<PROVIDER>`、页面只显已配置 | **done（W06 扩了命名口径）** | 优先级：这一行填的 `key_env` > 清单建议名（deepseek→`DEEPSEEK_API_KEY`）> `FV_KEY_<PROVIDER>`。只存变量名；值只在进程环境里，测试用真串反证过响应/库/日志 |
+| 01-4.8.2-6 | 能力支持由 adapter manifest 驱动 | **done（W06）** | `backend/adapters.py` 登记 15 个 adapter（本地 5 个带模型档与参数出处；云端只登记名字，模型与参数留空）；未登记的 provider 明说"不猜" |
+| 01-4.8.2-4 | 普通模块只读"当前默认模型/状态" | **done（W06）** | `GET /api/providers/current`（`require_user`，五类固定五行，不带密钥名与备注） |
+| 01-4.8.2-5 | 云端视频必须逐镜头显式选择、不自动兜底 | **done（W06）** | 保存时云端视频不许设默认（422）；`services.resolve_provider()` 默认轨没配好直接 `NoRoute`，视频走云端还要"显式＋已确认计费" |
+| 01-D-08 | 所有价格视为待复核 | **verify** | 仍然没有价格数据：W06 只登记云端 provider 名字，模型档/计价/参数一律空着，等 W10/W17 核官方文档再填 |
+| 现场坑 | — | **已解（W06）** | 名字对不上：`key_env` 可填 `DEEPSEEK_API_KEY`，清单对 deepseek 直接给这个建议名。**值仍只在交互式 shell 里**（`~/.zshrc`）⇒ 服务要从带变量的终端启动，否则健康显示"环境变量没有值"；这是运行时事实，不是代码能绕的 |
 
 ## 8. 冲突清单（需要人裁，盘点阶段一律不动代码）
 
@@ -136,7 +138,7 @@
 8. **W03 项目中心封版**：所有权转移（API＋成员弹窗按钮）、补"最后打开"列、修 `modules.js`/`assets.js` 的 subs 名称互换（这条其实是资产侧，一起收）。
 9. **W04 资产中心封版**：全局资产池迁移（C4，先要用户裁授权策略）、删资产前检查镜头引用并列清单（01-4.3-R3）。
 10. **W05 文档层**：**已于 v0.63 完成**——`document`＋`doc_lock` 迁移、`FASTVIDEO_WORKSPACE` 配置、路径规范化与根目录约束、Git 初始化与提交、`expected_version` 冲突 409、编辑锁 holder/超时回收、创作中心两页做成真编辑器。当时写的"这块纯软件可验，是'第一条 mp4'之前最值钱的可交付"成立：188 项自动化＋21 项真浏览器全过，不依赖任何模型与密钥。
-11. **W06 Provider 封版**：`adapter manifest`（先只做能力清单，不接真模型）、补"允许参数/健康状态/备注"三列、密钥命名冲突（C7 之外的 `FV_KEY_*` vs `DEEPSEEK_API_KEY`）给出迁移说明。
+11. **W06 Provider 封版**：`adapter manifest`（先只做能力清单，不接真模型）、补"允许参数/健康状态/备注"三列、密钥命名冲突（C7 之外的 `FV_KEY_*` vs `DEEPSEEK_API_KEY`）给出迁移说明。**已于 v0.66 完成**：清单 15 个 adapter、`key_env` 可填既有名、健康五档、云端视频不许默认、`resolve_provider()` 不兜底；209 项自动化＋16 项真浏览器。
 12. **W07 Job 表＋持久队列＋独立 worker**：按 01-4.4-J3 的 14 类字段建表、`idempotency_key` 唯一、状态机 8 值、`POST /api/jobs` 202 立即返回、worker 独立进程＋重启恢复＋原子领取。**用假 adapter（sleep 脚本）就能把整条队列语义测穿**，不需要真模型。
 13. **W08 生成中心 UI＋成本账**：队列表/筛选/详情抽屉/日志/重试取消、成本字段用整数最小货币单位、多币种分组、失败不归零。
 14. **W12 分镜表扩列**（依赖 W05/W11 的字段确定）＋ W14 审核中心（依赖 W05/W07）。
@@ -199,3 +201,22 @@
 **v0.64 补记（走真流程才发现的两处）**：① 编辑器只有一行高——`textarea.ctl{min-height:66px}` 是「元素＋类」的选择器，单一类 `.doc-area` 压不过它，正文框停在 44px；改成 `textarea.ctl.doc-area`（0,2,1）并排到 `textarea.ctl` 之后。② 删掉一篇再建同名的会占回同一个文件、版本面板混着上一篇的提交；"路径被占"改成"库里还有这行 **或** Git 历史里有过这个路径"（`gitrepo.path_has_history`），同名重建排号，新稿子只有 1 条提交。两条都补了断言。③ 另修一处：正文规范化会把空正文补成一个换行，刚建好、一个字没写的章节在编辑器上显示「1 字」，像平台替人写了一个字；空串直接返回空串，建好的空章节是 0 字节。`pytest` 190 passed。
 
 **v0.65 补记（在编辑器里真写一段才发现的三处）**：① 保存回执只有提交号没有时间，存完「改动」那行还停在上一版——`DocSaveOut` 补 `updated_at`，界面按回执只改两个标签，不整块重绘。② 列表行把**自己**持有的锁也显示成「×× 在改」（只判了名字非空），改成还要比对持有人是否本人。③ 字数把规范化补上的结尾换行一起数了（68 字显示 69），先剥尾再数。另钉死空保存口径：内容没变不写库、不推 `updated_at`（那列语义是"内容动过"）。`pytest` 192 passed；真浏览器两段正文分别提交 `eb602202`／`3f439d1b`，页面标签、文件字节、库里时间四处对齐。**与内置浏览器面板有关的一条工具事实**：面板隐藏时它的 CDP surface 会 detach，截图与派发鼠标事件都报 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`／点击不回执；这一轮的落点是改用无头 Chrome＋stdlib WebSocket 真鼠标，或直接用页面里的 `.click()` 验事件处理器本身——两者要分清楚，"点了没反应"未必是界面坏了。
+
+## 14. W06 完成后回填（2026-11-01）
+
+`pytest tests -q` → **209 passed**（新增 `test_providers.py` 17 项），路由守卫表 **57 条业务端点 / 62 条含 health 与四条 auth**（v0.63 写的"60 条业务端点"实际是总路由数，这一轮把口径改准：62 条总路由，去掉 `/api/health` 与四条 auth 才是 57 条业务端点），CDP 真浏览器 **16 项全过**。
+
+| 盘点条目 | 现在 |
+|---|---|
+| CURRENT_SCHEMA 的 provider_config 只有四列 | 加 `key_env`／`notes`（0014）。**允许参数与健康不落库**：前者由清单按档位现给，后者现查 |
+| 01-4.8.2 默认策略（图像/视频/TTS/音乐本地、文本云端） | 0014 把四类默认轨从云端改回本地；文本保持云端 |
+| 01-4.8.2 云端视频逐镜头显式选择 | 两处挡：保存时云端视频不许设默认（422）；`resolve_provider()` 视频走云端要"显式＋confirmed_cloud" |
+| 01-4.8.2 adapter manifest | `backend/adapters.py`：15 个 adapter，本地五档带参数与出处，云端只登记名字 |
+| 现场坑 DEEPSEEK_API_KEY vs FV_KEY_DEEPSEEK | `key_env` 可填既有名；deepseek 在清单里直接建议 `DEEPSEEK_API_KEY`。值只在进程环境，服务须从带变量的终端启动 |
+| 01-4.8.2 普通模块只读默认 | `GET /api/providers/current`（require_user），不带密钥名与备注 |
+
+**W06 的边界（别误读成"模型能跑了"）**：`adapters.py` 只是能力清单与健康检查，不执行任何模型；云端 provider 的模型档、参数、价格一律空着，等 W10（接入与授权）与 W17（许可与计价复核）填。`resolve_provider()` 是 W07 队列的入口约定，现在只有测试在调。
+
+**本轮改到的文件**：`migrations/0014_provider_manifest.sql`、`backend/adapters.py`（新）、`backend/repositories/providers.py`、`backend/services.py`、`backend/models.py`、`backend/routers/settings.py`、`frontend/js/api.js`、`frontend/js/views/system-config.js`、`frontend/css/app.css`、`tests/test_providers.py`（新）、`tests/test_guards.py`。
+
+**验收时抓到三处界面在说谎（已修，记下来）**：① 未登记的 provider 与空 provider 共用一个分支，参数列都显示"选 provider 后按清单显示"——现在分开说"未登记这个 provider；参数不猜"；② provider 还没填的行，备注带却写"没有登记这个 provider"——现在空行说"选 provider 后显示适配器与出处"；③ 保存成功后健康列还停在页面加载时的结论——现在编辑即标"待保存"，保存成功后按服务端回读只更新那一列（不重绘整页，免得丢焦点）。

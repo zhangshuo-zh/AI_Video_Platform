@@ -84,6 +84,9 @@ ROUTES = [
     ("PUT", "/api/roles/{r}/permissions", {"permissions": []}, 403),
     # ---------- Provider（editor 没有 system:config） ----------
     ("GET", "/api/providers", None, 403),
+    ("GET", "/api/providers/manifest", None, 403),
+    # 当前默认是给普通模块看的只读摘要：有会话就能读，不带密钥/备注
+    ("GET", "/api/providers/current", None, 200),
     ("PUT", "/api/providers", [{"id": 1, "provider": "x", "model": "",
                                 "enabled": False, "is_default": True}], 403),
 ]

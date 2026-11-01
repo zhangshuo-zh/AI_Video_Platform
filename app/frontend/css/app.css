@@ -489,6 +489,25 @@ tbody tr.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent
 td.r,th.r{text-align:right}
 td.c,th.c{text-align:center}
 td.mono{font-family:var(--mono);font-size:11.5px}
+
+/* 系统设置·模型与密钥（v0.66）：每个槽位下面跟一条备注带。
+   允许参数用一行小 chips，健康状态下面跟一句人话——两列都窄，
+   把长句塞进单元格会把整张表撑成两层楼。 */
+tr.slot-note td{
+  padding-top:2px;padding-bottom:10px;border-bottom:1px solid var(--line);
+  color:var(--ink-3);font-size:11.5px;
+}
+tr.slot-note:hover{background:transparent}
+tr.slot-note .src{margin-right:10px;white-space:nowrap}
+tr.slot-note input.ctl{max-width:560px}
+td.params-cell{min-width:190px}
+.param-chips{display:flex;flex-wrap:wrap;gap:4px;max-width:280px}
+.param-chips .chip{font-size:10.5px;padding:1px 6px}
+td.health-cell{min-width:170px}
+td.health-cell .hint{display:block;margin-top:3px;max-width:230px;white-space:normal}
+td.key-cell{min-width:180px}
+td.key-cell .hint{display:block;margin-top:3px;white-space:normal}
+td.key-cell code{font-family:var(--mono);font-size:11px}
 .t-dim{color:var(--ink-2)}
 /* 项目介绍跟在"N 集 · N 镜 · N 资产"下面一行，单行截断——
    项目中心那几列本来就窄，让介绍换行会把整表行高拉垮 */

@@ -10,10 +10,13 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 
+import adapters
 import gitrepo
 from config import DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES
+from models import CAPABILITIES
 from repositories.documents import documents as docs
 from repositories.projects import projects as project_repo
+from repositories.providers import providers as provider_repo
 from workspace import PathError
 from workspace import atomic_write, path_of, plan_rel_path, read as read_file
 from workspace import unapplied_dir
@@ -252,3 +255,59 @@ def ensure_workspace() -> str:
     gitrepo.ensure_repo()
     return gitrepo.status_line()
 
+
+
+# ---------- Provider 路由（W06） ----------
+class NoRoute(Exception):
+    """这一类能力现在没有可用的执行路线。
+
+    路由层把它转成 422/409 之类都行，关键是**绝不静默换一条轨**：
+    默认走本地而本地没配，就直接报"本地没配"，不能替人切到云端——
+    那会在账单上留下人没勾过的费用（规格 02 §8.3「不自动路由、不静默 fallback」）。
+    """
+
+
+def resolve_provider(capability: str, execution_mode: str | None = None,
+                     *, confirmed_cloud: bool = False) -> dict:
+    """按能力解析执行方案：默认轨，或调用方显式指定的那一轨。
+
+    三条不肯让步的规则：
+    1. 不传 execution_mode 时只认 is_default 那一条；它没配好就报错，不补位。
+    2. 视频的云端路线必须同时满足"显式指定 + 人已确认付费"，
+       默认轨永远走不到云端（保存配置时也不许把云端设成默认）。
+    3. provider 没有登记 adapter 也报错——没有参数白名单就生成命令，
+       等于让模型名去猜运行时，规格 01-4.8.2 明令禁止。
+    """
+    if capability not in CAPABILITIES:
+        raise NoRoute(f"不认识的能力：{capability}")
+
+    if execution_mode:
+        if execution_mode not in ("local", "cloud"):
+            raise NoRoute(f"执行方式只有本地/云端两种：{execution_mode}")
+        row = provider_repo.slot(capability, execution_mode)
+        explicit = True
+    else:
+        row = next((r for r in provider_repo.defaults()
+                    if r["capability"] == capability), None)
+        explicit = False
+
+    if row is None:
+        raise NoRoute(f"{CAPABILITIES[capability]}没有配置默认后端")
+    if not explicit and row["backend"] == "cloud" and capability == "video":
+        raise NoRoute("云端视频只能在镜头里逐条选择，不能作为默认")
+    if capability == "video" and row["backend"] == "cloud" and not confirmed_cloud:
+        raise NoRoute("云端视频要逐镜头勾选并确认按供应商计费")
+    if not row["provider"].strip() or not row["model"].strip():
+        raise NoRoute(f"{CAPABILITIES[capability]}的"
+                      f"{'本地' if row['backend'] == 'local' else '云端'}档还没填 provider/模型")
+    if not row["enabled"]:
+        raise NoRoute(f"{CAPABILITIES[capability]}的"
+                      f"{'本地' if row['backend'] == 'local' else '云端'}档没有启用")
+
+    adapter = adapters.find(capability, row["backend"], row["provider"])
+    if adapter is None:
+        raise NoRoute(f"provider「{row['provider']}」没有登记适配器，平台不会猜它的参数")
+
+    return {"row": row, "adapter": adapter, "capability": capability,
+            "backend": row["backend"], "provider": row["provider"],
+            "model": row["model"], "explicit": explicit}

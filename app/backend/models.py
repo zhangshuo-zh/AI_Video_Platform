@@ -138,9 +138,16 @@ class ProviderOut(BaseModel):
     enabled: bool
     is_default: bool
     has_key: bool          # 只看环境变量里有没有，永远不回传密钥本身
+    # key_env 是"实际去哪个变量找"（用户填的名字 > 清单建议 > FV_KEY_<PROVIDER>）；
+    # key_env_custom 是库里那一列的原值，界面要能把两者分开显示。
+    key_env: str
+    key_env_custom: str
+    notes: str
+    # 健康是每次现查的：state 四档 + 一句人话 + 命中的 adapter（没登记就是 null）
+    health: dict
 
     @classmethod
-    def from_row(cls, row, has_key: bool) -> "ProviderOut":
+    def from_row(cls, row, has_key: bool, key_env: str, health: dict) -> "ProviderOut":
         return cls(
             id=row["id"],
             capability=row["capability"],
@@ -152,6 +159,10 @@ class ProviderOut(BaseModel):
             enabled=bool(row["enabled"]),
             is_default=bool(row["is_default"]),
             has_key=has_key,
+            key_env=key_env,
+            key_env_custom=row["key_env"],
+            notes=row["notes"],
+            health=health,
         )
 
 
@@ -161,6 +172,25 @@ class ProviderUpdate(BaseModel):
     model: str = Field(default="", max_length=120)
     enabled: bool = False
     is_default: bool = False
+    key_env: str = Field(default="", max_length=64)
+    notes: str = Field(default="", max_length=500)
+
+
+class CurrentProviderOut(BaseModel):
+    """给其他模块只读的"当前默认"。
+
+    不带 notes、不带密钥名——别的页面只需要知道"这一类现在走谁、状态如何"。
+    """
+
+    capability: str
+    capability_label: str
+    backend: str
+    backend_label: str
+    provider: str
+    model: str
+    adapter: str
+    health_state: str
+    health_detail: str
 
 
 # ---------- 内容三件套 ----------
