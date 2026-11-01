@@ -2,7 +2,9 @@
 
 2–5 人局域网自部署的 AI 动漫／视频生产平台。后端 FastAPI + SQLite（WAL），前端是原生 ES Module 静态页面（无构建链、不依赖 node），生成作业由独立的 `worker.py` 进程串行执行。
 
-当前进度：**W12 完成（设计稿 v0.72）**，`pytest` **332 项全过**；本地与云端 adapter 已接线，文档 AI 改写走 Job、先看 diff 再写回；分镜表可整体编辑，引用资产只读并跳资产中心，每镜作业状态只读。下一个工作包是 W13。
+当前进度：**W00—W18 已走完（设计稿 v0.73）**，`pytest` **403 项全过**；业务端点 98 条，含 health 与四条 auth 共 103 条。队列、本地与云端 adapter、文档 AI、分镜编辑、文本抽取、审核 gate 与签字、音频台账、项目看板与导出、备份恢复都已接线。
+
+两处仍是**部分完成**，不假装封版：W15 音频只到台账、权限与同队列提交（本机没有 VoxCPM2／ACE-Step／Rhubarb 运行时，不会真的出声）；W17 只有 M4 Air 16GB 上 FastMetal 1.3B 的实测，目标机 M5 Ultra 的基准与部分模型许可／计价仍是 `UNKNOWN`。设定中心只有入口与文案，功能未实现。
 
 ## 目录
 
@@ -14,10 +16,10 @@ app/
     tests/               pytest 全量测试（不跑模型、无需密钥）
     data/                运行数据（已被 .gitignore 排除，见下）
   frontend/              index.html + js/ + css/ + img/
-AI视频生产平台_Qwen开发规格包/   外部规格包（W00–W18 工作包）
-盘点/                    CURRENT_* 快照、SPEC_DIFF 回填、验收留档
+文档/                   三份 as-built 说明书：需求概要、系统设计、数据字典
 设计稿.md               产品与架构设计稿（含逐版修订记录）
-接口草案-抽取.md         文本抽取的接口草案（W13）
+盘点/                   SPEC_DIFF 回填与各包验收留档（W09—W18）
+AI视频生产平台_Qwen开发规格包/   外部规格包原文（历史输入，不再作为当前口径）
 ```
 
 ## 快速开始
@@ -89,17 +91,29 @@ export ALIYUN_WAN_BASE_URL=https://your_workspace_id.cn-beijing.maas.aliyuncs.co
 
 - 小说／剧本正文的事实来源是工作区里的 Markdown 文件 + Git 提交；库里只有元数据。
 - 每保存一次、或应用一次 AI 改写，就生成一次提交，提交身份是操作的人。
-- 备份时整体拷走 `data/` 即可；不要只拷数据库，正文在 `data/workspace/`。
+- 备份用脚本，不要只手拷数据库：
+
+```bash
+cd app/backend
+.venv/bin/python backup.py create
+.venv/bin/python backup.py verify <备份目录>
+.venv/bin/python backup.py restore <备份目录> --yes
+```
+
+`create` 用 SQLite 自己的 `backup()`（WAL 下直接拷文件会漏已提交数据），把库、上传文件、文档工作区、作业产物打成一个目录；manifest 记 sha256、`integrity_check`、`foreign_key_check` 与逐表行数。恢复必须先验证，且会自动留一份 `restore-safety-<stamp>`。备份是整目录快照，不是增量。
 
 提交信息沿用「工作包 + 版本」的风格（例如 `v0.71：W11 文档 AI 操作——…`）。推送前先确认 `pytest` 全绿；需要代理的网络给 git 命令临时加环境变量即可，不要把代理或凭据写进仓库配置。
 
 ## 文档入口
 
+- [文档/需求概要说明书.md](文档/需求概要说明书.md)：产品定位、角色权限、逐页功能需求与截图
+- [文档/系统设计说明书.md](文档/系统设计说明书.md)：架构、分层、状态机、98 条端点目录、运维与测试
+- [文档/数据字典.md](文档/数据字典.md)：25 张表的字段、外键、索引、枚举与删除级联
 - [设计稿.md](设计稿.md)：产品边界、模块职责、关键决策与逐版修订记录
 - [盘点/SPEC_DIFF.md](盘点/SPEC_DIFF.md)：规格与实际实现的逐包差异回填
-- [盘点/CURRENT_ARCHITECTURE.md](盘点/CURRENT_ARCHITECTURE.md)：当前架构快照
-- [盘点/CURRENT_API.md](盘点/CURRENT_API.md)：当前接口清单
-- [AI视频生产平台_Qwen开发规格包/](AI视频生产平台_Qwen开发规格包/)：外部规格包原文
+- [盘点/W17_LICENSE_BENCHMARKS.md](盘点/W17_LICENSE_BENCHMARKS.md)：许可、价格与真机基准
+- [盘点/W18_RELEASE.md](盘点/W18_RELEASE.md)：发布清单、备份恢复与故障恢复
+- [AI视频生产平台_Qwen开发规格包/](AI视频生产平台_Qwen开发规格包/)：外部规格包原文（历史输入）
 
 ## 不做的事
 

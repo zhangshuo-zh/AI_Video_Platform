@@ -58,6 +58,10 @@ class EpisodeRepository:
 
 
 class ShotRepository:
+    def get(self, shot_id: int) -> sqlite3.Row | None:
+        with get_conn() as conn:
+            return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
+
     def list_by_episode(self, episode_id: int) -> list[sqlite3.Row]:
         with get_conn() as conn:
             return conn.execute(

@@ -6,22 +6,32 @@
 要落盘，那时候的调用方是 worker 而不是路由，实现必须已经在路由之外。
 写在某个 router 里让另一个 router 去 import 是反的（规格 02 §4.1）。
 """
+import csv
 import hashlib
+import io
 import json
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import access
 import adapters
 import docai
+import extraction
 import gitrepo
 import jobfiles
+import reviewgate
 from config import ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES
 from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
+from repositories.audio import clips
+from repositories.content import assets
+from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
+from repositories.extraction import runs as extraction_runs
 from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
+from repositories.reviews import reviews
 from repositories.providers import providers as provider_repo
 from workspace import PathError
 from workspace import atomic_write, path_of, plan_rel_path, read as read_file
@@ -518,6 +528,618 @@ def apply_doc_ai(doc, job_id: int, actor: str, user_id: int) -> dict:
         doc, applied, base["version"], actor, user_id, LOCK_MINUTES,
         commit_message=f"AI {label}：{doc['title']}（作业 #{job['id']}）")
     return {"job": job, "ref": ref, "saved": saved}
+
+
+# ---------- 文本抽取候选（W13） ----------
+class ExtractMissing(Exception):
+    """抽取运行或候选不存在，或不属于这份文档／这个项目。路由回 404。"""
+
+
+class ExtractConflict(Exception):
+    """原文版本已变、候选已被别人处理，或同名资产已存在。路由回 409。"""
+
+
+def _extract_run_materialize(run) -> None:
+    """Job 成功后把模型输出落成候选。只在第一次调用时写。
+
+    为什么不放到 worker 里：worker 只认识"跑命令、落文件"，抽取的 JSON 形状
+    与字段白名单是业务知识；把它塞进执行壳会让两个进程互相依赖。
+    这里做也没关系——GET 是幂等的，materialized_at 一写就不会重复。
+    """
+    if run["status"] != "pending":
+        return
+    if run["job_status"] != "succeeded":
+        if run["job_status"] in ("failed", "cancelled"):
+            extraction_runs.set_status(run["id"], "failed",
+                                       run["error_message"] or "作业没有成功结束")
+        return
+    job = job_repo.get(run["job_id"])
+    if job is None:
+        extraction_runs.set_status(run["id"], "failed", "找不到对应的作业")
+        return
+    try:
+        path = jobfiles.artifact_at(job["result_paths_json"], 0)
+        if path is None:
+            raise extraction.ExtractInvalid("作业成功了，但没有可读的结果文件")
+        raw = path.read_text(encoding="utf-8")
+        items, note = extraction.parse_output(_extraction_content(run), raw)
+    except (OSError, UnicodeError, extraction.ExtractInvalid) as exc:
+        extraction_runs.set_status(run["id"], "parse_failed", str(exc)[:500])
+        return
+    extraction_runs.insert_items(run["id"], items)
+    extraction_runs.set_status(run["id"], "done", note, materialized=True)
+
+
+def _extraction_content(run) -> str:
+    """物化解析要做原文证据校验，所以必须把抽的那一版正文读回来。
+
+    文档删了就无法校验证据，按 parse_failed 处理；不拿"标题相同"的别份正文顶替。
+    """
+    if run["doc_id"] is None:
+        raise extraction.ExtractInvalid("原文档已删除，无法校验候选证据")
+    doc = docs.get(run["doc_id"])
+    if doc is None:
+        raise extraction.ExtractInvalid("原文档已删除，无法校验候选证据")
+    data = read_content(doc)
+    if data["version"] != run["base_version"]:
+        raise extraction.ExtractInvalid(
+            "文档在抽取之后被改过，旧证据无法逐字核对；请重新抽取")
+    return data["content"]
+
+
+def extraction_submit(doc, payload, created_by: int | None) -> dict:
+    """把一次抽取落成 text Job，25 小时内同文同模型同提示词版本直接复用。"""
+    data = read_content(doc)
+    prompt, params = extraction.build_prompt(doc["title"], data["content"],
+                                             payload.instruction)
+    route = text_ai_route()
+    if route["health_state"] != "ok":
+        raise extraction.ExtractInvalid(f"文本 provider 现在不可用：{route['health_detail']}")
+    price = route["price"]
+    estimate = payload.estimate
+    if not payload.user_confirmed_cloud:
+        raise extraction.ExtractInvalid("云端文本作业要先确认按供应商计费")
+    if estimate.unit != price.unit:
+        raise extraction.ExtractInvalid(f"计价单位应为 {price.unit}，请刷新计价后重试")
+    if estimate.currency != price.currency:
+        raise extraction.ExtractInvalid(f"币种应为 {price.currency}，请刷新计价后重试")
+    if estimate.unit_price_micros != price.amount_micros:
+        raise extraction.ExtractInvalid("单价与清单里的官方价不一致，请刷新计价后重试")
+    errors = adapters.validate_params(route["adapter"], route["model"].code, params)
+    if errors:
+        raise extraction.ExtractInvalid("；".join(errors))
+
+    existing = extraction_runs.find_recent(
+        doc["id"], data["version"], route["model"].code, extraction.PROMPT_VERSION)
+    if existing is not None:
+        return {"run": existing, "deduped": True}
+
+    confirmed = JobEstimateIn(
+        quantity=estimate.quantity, unit=price.unit,
+        unit_price_micros=price.amount_micros, currency=price.currency,
+        source=price.source[:200])
+    cost = _cost_of(SimpleNamespace(estimate=confirmed, user_confirmed_cloud=True),
+                    "cloud", created_by)
+    job = job_repo.create({
+        "project_id": doc["project_id"],
+        "episode_id": doc["episode_id"],
+        "shot_id": None,
+        "capability": "text",
+        "kind": "text",
+        "execution_mode": "cloud",
+        "provider_code": route["provider"],
+        "model_code": route["model"].code,
+        "adapter_version": adapters.MANIFEST_VERSION,
+        "prompt_snapshot": prompt,
+        "params": params,
+        "input_refs": [{
+            "operation": "extract",
+            "doc_id": doc["id"],
+            "doc_title": doc["title"],
+            "base_version": data["version"],
+            "prompt_version": extraction.PROMPT_VERSION,
+        }],
+        "priority": 0,
+        "user_confirmed_cloud": True,
+        "created_by": created_by,
+        **cost,
+    })
+    run = extraction_runs.create_run(
+        project_id=doc["project_id"], doc_id=doc["id"], job_id=job["id"],
+        doc_title=doc["title"], base_version=data["version"],
+        content_hash=data["version"], model_code=route["model"].code,
+        prompt_version=extraction.PROMPT_VERSION, created_by=created_by)
+    return {"run": run, "deduped": False}
+
+
+_STATUS_LABELS = {
+    "pending": "抽取中", "done": "候选已生成",
+    "failed": "抽取失败", "parse_failed": "输出无法解析",
+}
+_ITEM_LABELS = {"pending": "待处理", "accepted": "已入库",
+                "merged": "已合并", "rejected": "已驳回"}
+
+
+def extraction_view(run, doc=None) -> dict:
+    """运行摘要。`stale` 让界面一眼看出证据对的是旧正文。"""
+    _extract_run_materialize(run)
+    run = extraction_runs.get_run(run["id"]) or run
+    current = ""
+    if doc is not None:
+        try:
+            current = read_content(doc)["version"]
+        except Exception:
+            current = ""
+    elif run["doc_id"] is not None:
+        d = docs.get(run["doc_id"])
+        if d is not None:
+            try:
+                current = read_content(d)["version"]
+            except Exception:
+                current = ""
+    return {
+        "id": run["id"], "project_id": run["project_id"], "doc_id": run["doc_id"],
+        "doc_title": run["doc_title"], "job_id": run["job_id"],
+        "status": run["status"], "status_label": _STATUS_LABELS.get(run["status"], run["status"]),
+        "model_code": run["model_code"], "prompt_version": run["prompt_version"],
+        "base_version": run["base_version"], "current_version": current,
+        "stale": bool(current and current != run["base_version"]),
+        "note": run["note"],
+        "counts": extraction_runs.counts(run["id"]),
+        "cost_micros": run["cost_micros"], "currency": run["currency"],
+        "billable_status": run["billable_status"] or "",
+        "error_code": run["error_code"], "error_message": run["error_message"],
+        "created_at": run["created_at"],
+    }
+
+
+def extraction_item_view(row) -> dict:
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except ValueError:
+        payload = {}
+    try:
+        evidence = json.loads(row["evidence"] or "{}")
+    except ValueError:
+        evidence = {}
+    return {
+        "id": row["id"], "run_id": row["run_id"], "kind": row["kind"],
+        "kind_label": extraction.KIND_LABELS.get(row["kind"], row["kind"]),
+        "payload": payload, "confidence": row["confidence"], "evidence": evidence,
+        "status": row["status"],
+        "status_label": _ITEM_LABELS.get(row["status"], row["status"]),
+        "asset_id": row["asset_id"], "decided_by_name": row["decided_by_name"] or "",
+        "decided_at": row["decided_at"],
+    }
+
+
+def extraction_items(run, kind: str | None = None, status: str | None = None) -> list[dict]:
+    _extract_run_materialize(run)
+    run_id = run["id"]
+    return [extraction_item_view(row)
+            for row in extraction_runs.items(run_id, kind, status)]
+
+
+def _load_extract_item(item_id: int, user, need: str = "write"):
+    row = extraction_runs.get_item(item_id)
+    if row is None:
+        raise ExtractMissing("候选不存在")
+    run = extraction_runs.get_run(row["run_id"])
+    if run is None:
+        raise ExtractMissing("候选不存在")
+    access.ensure(user, run["project_id"], need)
+    return row, run
+
+
+def _candidate_fields(item, overrides) -> tuple[str, str, str, list[str], list[str]]:
+    try:
+        payload = json.loads(item["payload"] or "{}")
+    except ValueError:
+        payload = {}
+    if item["kind"] == "character":
+        summary = "；".join(x for x in (payload.get("role"), payload.get("appearance"),
+                                       payload.get("personality")) if x)
+        prompt = payload.get("suggested_prompt", "")
+    elif item["kind"] == "scene":
+        summary = "；".join(x for x in (payload.get("time_of_day"), payload.get("weather"),
+                                       payload.get("description")) if x)
+        prompt = payload.get("suggested_prompt", "")
+    else:
+        summary = payload.get("description", "")
+        prompt = payload.get("suggested_prompt", "")
+    aliases = payload.get("aliases") or []
+    name = (overrides.name or payload.get("name") or "").strip()
+    if overrides.name is not None:
+        name = overrides.name.strip()
+    if overrides.summary is not None:
+        summary = overrides.summary.strip()
+    if overrides.consistency_prompt is not None:
+        prompt = overrides.consistency_prompt.strip()
+    if overrides.aliases is not None:
+        aliases = overrides.aliases
+    return name, summary, prompt, list(aliases), list(overrides.tags or [])
+
+
+def extraction_accept(item_id: int, overrides, user) -> dict:
+    """确认一条候选：从暂存表落成 asset。镜头候选走导出，不在这里入库。"""
+    row, run = _load_extract_item(item_id, user, "write")
+    if row["kind"] == "shot":
+        raise extraction.ExtractInvalid("镜头候选只导出 Markdown，不入资产库")
+    if row["status"] != "pending":
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    doc = docs.get(run["doc_id"]) if run["doc_id"] else None
+    if doc is None:
+        raise ExtractConflict("原文档已删除，不能再按这条证据入库")
+    if read_content(doc)["version"] != run["base_version"]:
+        raise ExtractConflict("文档在抽取之后被改过，旧证据不能再用；请重新抽取")
+    name, summary, prompt, aliases, tags = _candidate_fields(row, overrides)
+    if not name:
+        raise extraction.ExtractInvalid("资产名不能为空")
+    if len(name) > 60:
+        raise extraction.ExtractInvalid("资产名最多 60 字")
+    if assets.exists_name(run["project_id"], row["kind"], name):
+        raise ExtractConflict("同一范围、同一类型里已经有这个名字；请用合并")
+    asset = assets.create(run["project_id"], row["kind"], name, summary, prompt,
+                          aliases, tags)
+    if not extraction_runs.decide(row["id"], "accepted", user["id"], asset["id"]):
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    return {"item": extraction_runs.get_item(row["id"]), "asset": asset}
+
+
+def extraction_merge(item_id: int, asset_id: int, user) -> dict:
+    """把候选并进已有资产：别名、简介与提示词只补空，不覆盖人已经写的。"""
+    row, run = _load_extract_item(item_id, user, "write")
+    if row["kind"] == "shot":
+        raise extraction.ExtractInvalid("镜头候选只导出 Markdown，不入资产库")
+    if row["status"] != "pending":
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    target = assets.get(asset_id)
+    if target is None or (target["project_id"] not in (None, run["project_id"])):
+        raise ExtractMissing("目标资产不存在")
+    if target["kind"] != row["kind"]:
+        raise extraction.ExtractInvalid("候选类型与目标资产类型不一致")
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except ValueError:
+        payload = {}
+    aliases = json.loads(target["aliases"] or "[]")
+    for name in [payload.get("name"), *(payload.get("aliases") or [])]:
+        if name and name != target["name"] and name not in aliases:
+            aliases.append(name)
+    if row["kind"] == "character":
+        extra = "；".join(x for x in (payload.get("appearance"),
+                                     payload.get("personality")) if x)
+    else:
+        extra = payload.get("description", "")
+    summary = target["summary"] or extra
+    prompt = target["consistency_prompt"] or payload.get("suggested_prompt", "")
+    tags = json.loads(target["tags"] or "[]") if "tags" in target.keys() else []
+    assets.update(target["id"], kind=target["kind"], name=target["name"],
+                  summary=summary, consistency_prompt=prompt, aliases=aliases,
+                  tags=tags, project_id=target["project_id"])
+    if not extraction_runs.decide(row["id"], "merged", user["id"], target["id"]):
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    return {"item": extraction_runs.get_item(row["id"]), "asset": assets.get(target["id"])}
+
+
+def extraction_reject(item_id: int, reason: str, user) -> dict:
+    row, _run = _load_extract_item(item_id, user, "write")
+    if row["status"] != "pending":
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    if not extraction_runs.decide(row["id"], "rejected", user["id"]):
+        raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+    return {"item": extraction_runs.get_item(row["id"]), "reason": reason}
+
+
+# ---------- 审核中心（W14） ----------
+class ReviewMissing(Exception):
+    """还没有校验报告，或报告不属于这份文档。路由回 404／409。"""
+
+
+class ReviewStale(Exception):
+    """正文版本变了，旧报告不能当作新版本已通过。路由回 409。"""
+
+
+_REVIEW_STATUS = {"passed": "通过", "failed": "未通过"}
+_DECISION_LABELS = {"approved": "通过", "rejected": "驳回", "returned": "退回"}
+
+
+def _review_signature_view(row) -> dict:
+    return {
+        "id": row["id"], "anchor": row["anchor"], "decision": row["decision"],
+        "decision_label": _DECISION_LABELS.get(row["decision"], row["decision"]),
+        "note": row["note"], "signed_by_name": row["signed_by_name"] or "",
+        "signed_at": row["signed_at"],
+    }
+
+
+def review_gate(doc, user_id: int | None) -> dict:
+    """跑一遍确定性校验并落报告。不写正文、不建 Job（规则检查不花钱）。"""
+    data = read_content(doc)
+    status, findings, summary = reviewgate.run(data["content"])
+    gate = reviews.create_gate(
+        project_id=doc["project_id"], doc_id=doc["id"],
+        base_version=data["version"], status=status, findings=findings,
+        summary=summary, created_by=user_id)
+    return review_state(doc, can_sign=True, gate=gate)
+
+
+def review_state(doc, can_sign: bool = False, gate=None) -> dict:
+    """当前文档的审核面：最新报告 + 同版本签字 + 是否失配。"""
+    data = read_content(doc)
+    gate = gate or reviews.latest_gate(doc["id"])
+    if gate is None:
+        return {
+            "id": None, "project_id": doc["project_id"], "doc_id": doc["id"],
+            "doc_title": doc["title"], "base_version": "",
+            "current_version": data["version"], "stale": False,
+            "status": "none", "status_label": "未校验",
+            "findings": [], "summary": {}, "counts": {}, "signatures": [],
+            "can_sign": False, "created_by_name": "", "created_at": "",
+        }
+    try:
+        findings = json.loads(gate["findings_json"] or "[]")
+    except ValueError:
+        findings = []
+    try:
+        summary = json.loads(gate["summary_json"] or "{}")
+    except ValueError:
+        summary = {}
+    stale = data["version"] != gate["base_version"]
+    signs = reviews.signs(doc["id"], gate["base_version"])
+    return {
+        "id": gate["id"], "project_id": doc["project_id"], "doc_id": doc["id"],
+        "doc_title": doc["title"], "base_version": gate["base_version"],
+        "current_version": data["version"], "stale": stale,
+        "status": gate["status"],
+        "status_label": _REVIEW_STATUS.get(gate["status"], gate["status"]),
+        "findings": findings, "summary": summary,
+        "counts": reviews.counts(doc["id"], gate["base_version"]),
+        "signatures": [_review_signature_view(row) for row in signs],
+        "can_sign": bool(can_sign and not stale),
+        "created_by_name": "", "created_at": gate["created_at"],
+    }
+
+
+def review_sign(doc, payload, user) -> dict:
+    """按锚点签字。报告必须存在、必须对应当前正文版本、锚点必须在报告里。"""
+    data = read_content(doc)
+    gate = reviews.latest_gate(doc["id"])
+    if gate is None:
+        raise ReviewMissing("这份文档还没有校验报告；先跑一次校验")
+    if gate["base_version"] != data["version"]:
+        raise ReviewStale("正文在报告之后被改过；旧报告的签字不能算到新版本上，先重新校验")
+    try:
+        findings = json.loads(gate["findings_json"] or "[]")
+    except ValueError:
+        findings = []
+    anchors = {f.get("anchor") for f in findings}
+    if payload.anchor not in anchors and payload.anchor != "document":
+        raise reviewgate.ReviewInvalid("这个锚点不在本次报告里")
+    reviews.upsert_sign(
+        project_id=doc["project_id"], doc_id=doc["id"], gate_id=gate["id"],
+        base_version=gate["base_version"], anchor=payload.anchor,
+        decision=payload.decision, note=payload.note, user_id=user["id"])
+    return review_state(doc, can_sign=True, gate=gate)
+
+
+def review_queue(project_id: int) -> list[dict]:
+    """项目里的文档审核队列。只读聚合：最新报告 + 当前版本是否失配。"""
+    from models import DOC_KINDS
+
+    out = []
+    for doc in docs.list_by_project(project_id):
+        try:
+            data = read_content(doc)
+        except Exception:
+            continue
+        gate = reviews.latest_gate(doc["id"])
+        counts = reviews.counts(doc["id"], data["version"])
+        if gate is None:
+            out.append({
+                "doc_id": doc["id"], "doc_title": doc["title"],
+                "doc_kind": doc["kind"], "kind_label": DOC_KINDS.get(doc["kind"], doc["kind"]),
+                "episode_id": doc["episode_id"], "episode_title": doc["episode_title"],
+                "doc_status": doc["status"], "current_version": data["version"],
+                "gate_status": "none", "gate_status_label": "未校验",
+                "gate_at": "", "findings": 0, "errors": 0, "warnings": 0,
+                "signed": sum(counts.values()), "approved": counts["approved"],
+                "rejected": counts["rejected"], "returned": counts["returned"],
+                "stale": False,
+            })
+            continue
+        try:
+            summary = json.loads(gate["summary_json"] or "{}")
+        except ValueError:
+            summary = {}
+        stale = data["version"] != gate["base_version"]
+        out.append({
+            "doc_id": doc["id"], "doc_title": doc["title"],
+            "doc_kind": doc["kind"], "kind_label": DOC_KINDS.get(doc["kind"], doc["kind"]),
+            "episode_id": doc["episode_id"], "episode_title": doc["episode_title"],
+            "doc_status": doc["status"], "current_version": data["version"],
+            "gate_status": gate["status"] if not stale else "stale",
+            "gate_status_label": ("已失配" if stale else
+                                  _REVIEW_STATUS.get(gate["status"], gate["status"])),
+            "gate_at": gate["created_at"],
+            "findings": int(summary.get("errors", 0)) + int(summary.get("warnings", 0)),
+            "errors": summary.get("errors", 0),
+            "warnings": summary.get("warnings", 0),
+            "signed": sum(counts.values()), "approved": counts["approved"],
+            "rejected": counts["rejected"], "returned": counts["returned"],
+            "stale": stale,
+        })
+    return out
+
+
+# ---------- 音频中心（W15） ----------
+class AudioInvalid(Exception):
+    """音频素材输入不成立，或当前没有可用的本地音频路线。路由回 422。"""
+
+
+AUDIO_KINDS = {"dialogue": "台词", "narration": "旁白",
+               "music": "音乐", "sfx": "音效"}
+AUDIO_STATUS = {"draft": "草稿", "queued": "排队中",
+                "ready": "已就绪", "failed": "失败"}
+
+
+def audio_clip_view(row) -> dict:
+    try:
+        timestamps = json.loads(row["timestamps_json"] or "[]")
+    except ValueError:
+        timestamps = []
+    try:
+        visemes = json.loads(row["viseme_json"] or "[]")
+    except ValueError:
+        visemes = []
+    return {
+        "id": row["id"], "project_id": row["project_id"],
+        "episode_id": row["episode_id"], "episode_seq": row["episode_seq"],
+        "episode_title": row["episode_title"], "shot_id": row["shot_id"],
+        "shot_seq": row["shot_seq"], "kind": row["kind"],
+        "kind_label": AUDIO_KINDS.get(row["kind"], row["kind"]),
+        "speaker": row["speaker"], "text": row["text"],
+        "status": row["status"],
+        "status_label": AUDIO_STATUS.get(row["status"], row["status"]),
+        "path": row["path"], "duration_ms": row["duration_ms"],
+        "timestamps": timestamps, "visemes": visemes,
+        "job_id": row["job_id"], "job_status": row["job_status"],
+        "job_error": row["job_error"], "notes": row["notes"],
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+    }
+
+
+def audio_sync(clip):
+    """作业终态后把产物路径抄回素材。
+
+    只在 queued 时同步一次；失败保留原因，成功就 ready。
+    时长与字级时间戳只有真适配器能写，这一包不伪造。
+    """
+    if clip["status"] != "queued" or clip["job_id"] is None:
+        return clip
+    if clip["job_status"] == "succeeded":
+        job = job_repo.get(clip["job_id"])
+        path = None
+        if job is not None:
+            try:
+                paths = json.loads(job["result_paths_json"] or "[]")
+            except ValueError:
+                paths = []
+            path = paths[0] if paths else None
+        clips.finish(clip["id"], status="ready", path=path,
+                     duration_ms=clip["duration_ms"])
+    elif clip["job_status"] in ("failed", "cancelled"):
+        clips.finish(clip["id"], status="failed", path=None,
+                     duration_ms=None)
+    return clips.get(clip["id"]) or clip
+
+
+def audio_submit(clip, user) -> dict:
+    """把一条素材送进唯一队列。音频中心不另建队列，这里只建 Job。"""
+    kind = clip["kind"]
+    if kind == "sfx":
+        raise AudioInvalid("环境音还没有可核对的自托管适配器，这一版标为实验态，不能提交")
+    capability = "music" if kind == "music" else "tts"
+    try:
+        route = resolve_provider(capability)
+    except NoRoute as exc:
+        raise AudioInvalid(str(exc)) from exc
+    if route["backend"] != "local":
+        raise AudioInvalid("音频这一期只走本地轨；云端配音/音乐还没有接确认单")
+    health = adapters.health(route["row"])
+    if health["state"] != "ok":
+        raise AudioInvalid(f"{route['adapter'].label} 现在不可用：{health['detail']}")
+    # 时长与字级时间戳由适配器自己写；这里只冻结文本与关联
+    payload = SimpleNamespace(
+        project_id=clip["project_id"], episode_id=clip["episode_id"],
+        shot_id=clip["shot_id"], capability=capability,
+        execution_mode="local", provider_code=route["provider"],
+        model_code=route["model"], prompt=clip["text"], params={},
+        input_refs=[{"clip_id": clip["id"], "kind": kind,
+                     "shot_id": clip["shot_id"]}],
+        estimate=None, user_confirmed_cloud=False, priority=0,
+        idempotency_key=None)
+    try:
+        job = submit_job(payload, user["id"])
+    except JobInvalid as exc:
+        raise AudioInvalid(str(exc)) from exc
+    return audio_clip_view(clips.set_job(clip["id"], job["id"]))
+
+
+# ---------- 项目看板与导出（W16） ----------
+_DASH_STATUS = {
+    "draft": "草稿", "active": "在产", "done": "定稿",
+    "queued": "排队中", "starting": "启动中", "running": "运行中",
+    "succeeded": "成功", "failed": "失败", "cancel_requested": "取消中",
+    "cancelled": "已取消", "needs_attention": "待核对",
+}
+
+
+def project_dashboard(project_id: int) -> dict:
+    data = dashboard.summary(project_id)
+    return {
+        "episodes": [{"status": k, "label": _DASH_STATUS.get(k, k), "count": v}
+                     for k, v in sorted(data["episodes"].items())],
+        "episode_total": data["episode_total"],
+        "shots": data["shots"], "assets": data["assets"], "documents": data["documents"],
+        "jobs": [{"status": k, "label": _DASH_STATUS.get(k, k), "count": v}
+                 for k, v in sorted(data["jobs"].items())],
+        "job_total": data["job_total"],
+        "costs": data["costs"],
+        "gates": [{"status": k, "label": {"passed": "通过", "failed": "未通过"}.get(k, k),
+                   "count": v} for k, v in sorted(data["gates"].items())],
+        "signs": [{"decision": k, "label": {"approved": "通过", "rejected": "驳回",
+                                            "returned": "退回"}.get(k, k), "count": v}
+                  for k, v in sorted(data["signs"].items())],
+        "audio": [{"status": k, "label": {"draft": "草稿", "queued": "排队中",
+                                          "ready": "已就绪", "failed": "失败"}.get(k, k),
+                   "count": v} for k, v in sorted(data["audio"].items())],
+    }
+
+
+def _export_rows(project_id: int) -> list[dict]:
+    rows = []
+    for row in dashboard.shot_export(project_id):
+        try:
+            paths = json.loads(row["job_paths"] or "[]")
+        except ValueError:
+            paths = []
+        rows.append({
+            "episode_seq": row["episode_seq"], "episode_title": row["episode_title"],
+            "seq": row["seq"], "summary": row["summary"], "prompt": row["prompt"],
+            "duration": row["duration"], "assets": row["asset_names"] or "",
+            "job_id": row["job_id"] or "", "job_status": row["job_status"] or "",
+            "paths": "；".join(str(p) for p in paths),
+        })
+    return rows
+
+
+def shots_csv(project_id: int) -> str:
+    """镜头清单 CSV。带 BOM，Excel 打开中文才不是乱码。"""
+    out = io.StringIO()
+    out.write("\ufeff")
+    writer = csv.writer(out)
+    writer.writerow(["集序", "集标题", "镜号", "内容", "提示词", "时长(秒)",
+                     "引用资产", "最新作业", "作业状态", "产物路径"])
+    for r in _export_rows(project_id):
+        writer.writerow([r["episode_seq"], r["episode_title"], r["seq"],
+                         r["summary"], r["prompt"], r["duration"], r["assets"],
+                         r["job_id"], r["job_status"], r["paths"]])
+    return out.getvalue()
+
+
+def shots_markdown(project_id: int, project_name: str) -> str:
+    lines = [f"# {project_name} · 镜头清单", "",
+             "| 集 | 镜 | 内容 | 提示词 | 时长 | 引用资产 | 最新作业 | 产物 |",
+             "|---|---|---|---|---|---|---|---|"]
+    for r in _export_rows(project_id):
+        cell = lambda v: str(v or "").replace("|", "\\|").replace("\n", " ")
+        lines.append("| {e} | {s} | {m} | {p} | {d}s | {a} | {j} {st} | {path} |".format(
+            e=cell(r["episode_title"]), s=r["seq"], m=cell(r["summary"]),
+            p=cell(r["prompt"]), d=r["duration"], a=cell(r["assets"]),
+            j=r["job_id"] and f"#{r['job_id']}" or "—", st=cell(r["job_status"]),
+            path=cell(r["paths"])))
+    return "\n".join(lines) + "\n"
 
 
 def ensure_workspace() -> str:

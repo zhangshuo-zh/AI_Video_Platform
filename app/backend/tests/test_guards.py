@@ -87,6 +87,40 @@ ROUTES = [
       "user_confirmed_cloud": True}, 404),
     ("GET", "/api/documents/{d}/ai-jobs/{j}", None, 404),
     ("POST", "/api/documents/{d}/ai-jobs/{j}/apply", None, 404),
+    # ---------- 文本抽取候选（W13） ----------
+    # 文档挂项目：看不见项目就连"这份稿能抽"也不该知道。运行与候选用不存在的 id。
+    ("GET", "/api/projects/{p}/extract/options?doc_id={d}", None, 404),
+    ("POST", "/api/projects/{p}/extract/runs",
+     {"project_id": "{p}", "doc_id": "{d}",
+      "estimate": {"quantity": 0.011, "unit": "million_token",
+                   "unit_price_micros": 8000000, "currency": "CNY",
+                   "source": "越权探测"},
+      "user_confirmed_cloud": True}, 404),
+    ("GET", "/api/projects/{p}/extract/runs", None, 404),
+    ("GET", "/api/extract/runs/{x}", None, 404),
+    ("GET", "/api/extract/runs/{x}/items", None, 404),
+    ("POST", "/api/extract/items/{t}/accept", {}, 404),
+    ("POST", "/api/extract/items/{t}/merge", {"asset_id": "{a}"}, 404),
+    ("POST", "/api/extract/items/{t}/reject", {"reason": "x"}, 404),
+    ("GET", "/api/extract/runs/{x}/shots.md", None, 404),
+    # ---------- 审核中心（W14） ----------
+    ("GET", "/api/projects/{p}/reviews", None, 404),
+    ("GET", "/api/documents/{d}/review-gate", None, 404),
+    ("POST", "/api/documents/{d}/review-gate", None, 404),
+    ("POST", "/api/documents/{d}/review-sign",
+     {"anchor": "document", "decision": "approved"}, 404),
+    # ---------- 音频中心（W15） ----------
+    ("GET", "/api/projects/{p}/audio-clips", None, 404),
+    ("POST", "/api/projects/{p}/audio-clips",
+     {"episode_id": "{e}", "shot_id": "{s}", "kind": "dialogue", "text": "越权台词"}, 404),
+    ("PATCH", "/api/audio-clips/{q}",
+     {"kind": "dialogue", "speaker": "", "text": "改", "notes": ""}, 404),
+    ("POST", "/api/audio-clips/{q}/submit", None, 404),
+    ("DELETE", "/api/audio-clips/{q}", None, 404),
+    # ---------- 项目看板与导出（W16） ----------
+    ("GET", "/api/projects/{p}/dashboard", None, 404),
+    ("GET", "/api/projects/{p}/export/shots.csv", None, 404),
+    ("GET", "/api/projects/{p}/export/shots.md", None, 404),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
     ("POST", "/api/users", {"username": "zz_probe", "display_name": "", "password": "123456"}, 403),
@@ -152,7 +186,8 @@ def ids(seeded, people):
     return {"p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
             "d": seeded["document_id"], "c": seeded["commit"],
-            "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0}
+            "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0,
+            "x": 0, "t": 0, "q": 0}
 
 
 def _sub(v, ids):

@@ -523,7 +523,7 @@ class WorkerStatusOut(BaseModel):
 
 # ---------- 内容三件套 ----------
 
-ASSET_KINDS: dict[str, str] = {"character": "角色", "scene": "场景", "prop": "物品"}
+ASSET_KINDS: dict[str, str] = {"character": "角色", "scene": "场景", "prop": "道具"}
 AssetKind = Literal["character", "scene", "prop"]
 
 
@@ -958,3 +958,174 @@ class UserDeleteIn(BaseModel):
     """
     transfer_to: int | None = None
     delete_projects: bool = False
+
+
+# ---------- 文本抽取候选（W13） ----------
+
+ExtractItemKind = Literal["character", "scene", "prop", "shot"]
+
+
+class ExtractSubmitIn(BaseModel):
+    """提交一次抽取。正文永远从文档 id 读，前端不传路径、也不传全文。
+
+    和 W11 的文档 AI 同一条纪律：单价来自清单，数量按“正文 + 输出上限”估算；
+    必须带确认单并勾云端确认，否则不落 Job、不花钱。
+    """
+    project_id: int
+    doc_id: int
+    instruction: str = Field(default="", max_length=2000)
+    estimate: JobEstimateIn
+    user_confirmed_cloud: bool = False
+
+
+class ExtractRunOut(BaseModel):
+    id: int
+    project_id: int
+    doc_id: int | None
+    doc_title: str
+    job_id: int
+    status: str
+    status_label: str
+    model_code: str
+    prompt_version: str
+    base_version: str
+    current_version: str = ""
+    stale: bool = False
+    note: str = ""
+    counts: dict = {}
+    cost_micros: int | None = None
+    currency: str | None = None
+    billable_status: str = ""
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str
+    deduped: bool = False
+
+
+class ExtractItemOut(BaseModel):
+    id: int
+    run_id: int
+    kind: str
+    kind_label: str
+    payload: dict
+    confidence: float | None
+    evidence: dict
+    status: str
+    status_label: str
+    asset_id: int | None = None
+    decided_by_name: str = ""
+    decided_at: str | None = None
+
+
+class ExtractAcceptIn(BaseModel):
+    """确认入库时的覆盖值。只开放资产编辑面上真有意义的几项。"""
+    name: str | None = Field(default=None, max_length=60)
+    summary: str | None = Field(default=None, max_length=500)
+    consistency_prompt: str | None = Field(default=None, max_length=1000)
+    aliases: list[str] | None = None
+    tags: list[str] | None = None
+
+
+class ExtractMergeIn(BaseModel):
+    asset_id: int
+
+
+class ExtractRejectIn(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+# ---------- 审核中心（W14） ----------
+
+class ReviewSignIn(BaseModel):
+    """按锚点签字。`anchor` 来自 gate 报告，同一版同一锚点改判会替换。"""
+    anchor: str = Field(min_length=1, max_length=40)
+    decision: Literal["approved", "rejected", "returned"]
+    note: str = Field(default="", max_length=500)
+
+
+class ReviewGateOut(BaseModel):
+    id: int | None = None
+    project_id: int
+    doc_id: int
+    doc_title: str
+    base_version: str
+    current_version: str = ""
+    stale: bool = False
+    status: str
+    status_label: str
+    findings: list[dict] = []
+    summary: dict = {}
+    counts: dict = {}
+    signatures: list[dict] = []
+    can_sign: bool = False
+    created_by_name: str = ""
+    created_at: str = ""
+
+
+class ReviewQueueItem(BaseModel):
+    doc_id: int
+    doc_title: str
+    doc_kind: str
+    kind_label: str
+    episode_id: int | None = None
+    episode_title: str = ""
+    doc_status: str
+    current_version: str
+    gate_status: str = "none"
+    gate_status_label: str = "未校验"
+    gate_at: str = ""
+    findings: int = 0
+    errors: int = 0
+    warnings: int = 0
+    signed: int = 0
+    approved: int = 0
+    rejected: int = 0
+    returned: int = 0
+    stale: bool = False
+
+
+# ---------- 音频中心（W15） ----------
+
+AudioKind = Literal["dialogue", "narration", "music", "sfx"]
+
+
+class AudioClipIn(BaseModel):
+    episode_id: int | None = None
+    shot_id: int | None = None
+    kind: AudioKind = "dialogue"
+    speaker: str = Field(default="", max_length=80)
+    text: str = Field(min_length=1, max_length=4000)
+    notes: str = Field(default="", max_length=500)
+
+
+class AudioClipUpdateIn(BaseModel):
+    kind: AudioKind
+    speaker: str = Field(default="", max_length=80)
+    text: str = Field(min_length=1, max_length=4000)
+    notes: str = Field(default="", max_length=500)
+
+
+class AudioClipOut(BaseModel):
+    id: int
+    project_id: int
+    episode_id: int | None
+    episode_seq: int = 0
+    episode_title: str = ""
+    shot_id: int | None
+    shot_seq: int = 0
+    kind: str
+    kind_label: str
+    speaker: str
+    text: str
+    status: str
+    status_label: str
+    path: str | None = None
+    duration_ms: int | None = None
+    timestamps: list = []
+    visemes: list = []
+    job_id: int | None = None
+    job_status: str | None = None
+    job_error: str | None = None
+    notes: str = ""
+    created_at: str
+    updated_at: str

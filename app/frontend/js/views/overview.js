@@ -1,5 +1,7 @@
+import { api } from '../api.js';
 import { MODULES } from '../modules.js';
 import { store } from '../store.js';
+import { escapeHtml, formatMoney } from '../util.js';
 
 /**
  * 首页 = 模块地图 + 九实体说明 + 本机状态。
@@ -10,6 +12,11 @@ export default {
     // 首页每次都现拉一次 worker 状态：这一页本来就是"本机现在怎么样"，
     // 用 20 秒前的缓存会让刚启动 worker 的人以为没起来。
     await store.loadWorker();
+    let dash = null;
+    let dashErr = null;
+    if (store.current) {
+      try { dash = await api.dashboard(store.current.id); } catch (e) { dashErr = e; }
+    }
     const w = store.worker;
     const q = w?.queue || { queued: 0, running: 0 };
     const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility).map((m) => `
@@ -40,6 +47,8 @@ export default {
         </div>
       </div>
 
+      ${dashCard(dash, dashErr)}
+
       <div class="grid g-2" style="margin-top:14px">
         <div class="card">
           <div class="card-head"><h2>九实体怎么连</h2><span class="sub">主干管属于谁，支线管挂在哪</span></div>
@@ -59,7 +68,7 @@ export default {
 
             <div class="rels">
               <div class="lbl">支线 · 引用与挂载</div>
-              <div class="rel"><b>Shot</b><i>引用</i><b>Asset</b><span>角色／场景／物品</span></div>
+              <div class="rel"><b>Shot</b><i>引用</i><b>Asset</b><span>角色／场景／道具</span></div>
               <div class="rel"><b>Review</b><i>挂在</i><b>Doc 或 Job</b><span>校验与人签</span></div>
               <div class="rel"><b>Knowledge</b><i>属于</i><b>Project</b><span>设定与证据快照</span></div>
               <div class="rel"><b>Task</b><i>可挂</i><b>任意实体</b><span>指派与人签</span></div>
@@ -108,3 +117,49 @@ export default {
     });
   },
 };
+
+
+function dashCard(d, err) {
+  if (!store.current) {
+    return `<div class="card" style="margin-top:14px"><div class="empty">
+      <div class="empty-t">还没有当前项目</div>
+      <p>去项目中心选一个项目，这里会显示集、镜、作业、成本、审核与音频的实时汇总。</p>
+    </div></div>`;
+  }
+  if (err) {
+    return `<div class="card" style="margin-top:14px"><div class="bar bad">
+      读不到项目看板：${escapeHtml(err.message || String(err))}</div></div>`;
+  }
+  if (!d) return '';
+  const chips = (list, cls) => list.length
+    ? list.filter((x) => x.count).map((x) => `<span class="chip ${cls}">${x.label} ${x.count}</span>`).join(' ')
+    : '<span class="t-dim">—</span>';
+  const costs = d.costs.length
+    ? d.costs.map((c) => `<span class="chip green">${formatMoney(c.micros, c.currency)} · ${c.jobs} 条</span>`).join(' ')
+    : '<span class="t-dim">还没有计入成本的作业</span>';
+  return `<div class="card" style="margin-top:14px">
+    <div class="card-head"><h2>项目看板</h2>
+      <span class="sub">${escapeHtml(store.current.name)} · 全部数字从权威表只读聚合</span>
+      <div class="right">
+        <a class="btn sm" href="/api/projects/${store.current.id}/export/shots.csv" download>导出镜头 CSV</a>
+        <a class="btn sm" href="/api/projects/${store.current.id}/export/shots.md" download>导出 Markdown</a>
+      </div>
+    </div>
+    <div class="card-body dash-grid">
+      <div><span class="grp">集</span><b>${d.episode_total}</b>
+        <div class="dash-chips">${chips(d.episodes, 'gray')}</div></div>
+      <div><span class="grp">镜头</span><b>${d.shots}</b>
+        <div class="dash-chips"><span class="chip plain">文档 ${d.documents}</span>
+          <span class="chip plain">资产 ${d.assets}</span></div></div>
+      <div><span class="grp">作业</span><b>${d.job_total}</b>
+        <div class="dash-chips">${chips(d.jobs, 'blue')}</div></div>
+      <div><span class="grp">成本</span>
+        <div class="dash-chips">${costs}</div></div>
+      <div><span class="grp">审核</span>
+        <div class="dash-chips">${chips(d.gates, 'amber')}</div>
+        <div class="dash-chips">${d.signs.map((x) => `<span class="chip plain">${x.label} ${x.count}</span>`).join(' ') || '<span class="t-dim">还没有签字</span>'}</div></div>
+      <div><span class="grp">音频</span>
+        <div class="dash-chips">${chips(d.audio, 'green')}</div></div>
+    </div>
+  </div>`;
+}

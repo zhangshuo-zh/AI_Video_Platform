@@ -50,6 +50,12 @@ let locking = false;          // 首次输入时抢锁只发一次
 let ai = null;
 const AI_POLL_MS = 1500;
 
+// 文本抽取（W13）。和 AI 改写分开：抽取的产物是候选，不是一份新正文，
+// 因此它有自己的弹窗、自己的轮询与自己的"确认入库"动作。
+let ex = null;
+const EX_POLL_MS = 2000;
+
+
 // 前端的操作表只决定"弹窗怎么显示"：能不能做、怎么做，仍由后端
 // docai.OPERATIONS 说了算。scope=document 的两条（起草/续写）在界面上
 // 也不给"选中段落"这个选项，免得选了又被后端悄悄改回全文。
@@ -242,6 +248,7 @@ async function renderDocs(tab, subRow) {
 
     ${newDocModal(project.id)}
     ${aiModalHtml()}
+    ${extractModalHtml()}
   </section>`;
 }
 
@@ -263,6 +270,8 @@ function editorHtml(doc) {
           </select>
           <button class="btn sm" id="doc-ai"
                   title="起草／扩写／续写／润色／剧本化／提示词；结果先看 diff，确认后才写回">AI 改写</button>
+          <button class="btn sm" id="doc-extract"
+                  title="从正文抽取角色／场景／道具／镜头候选；证据要逐字对得上，人确认后才入资产">抽取</button>
           <button class="btn sm primary" id="doc-save" ${canWrite ? '' : 'disabled'}>保存</button>`
         : `<span class="chip gray" title="只读角色没有编辑文档的权限">${label}</span>`}
         <button class="btn sm" id="doc-hist">版本</button>
@@ -363,6 +372,18 @@ function aiModalHtml() {
         <div class="modal-head neutral" id="ai-head">AI 改写</div>
         <div class="modal-body" id="ai-body"></div>
         <div class="modal-actions" id="ai-actions"></div>
+      </div>
+    </div>`;
+}
+
+function extractModalHtml() {
+  if (!store.can('doc:write')) return '';
+  return `
+    <div class="modal" id="ex-modal" hidden>
+      <div class="modal-box wide">
+        <div class="modal-head neutral">抽取候选</div>
+        <div class="modal-body" id="ex-body"></div>
+        <div class="modal-actions" id="ex-actions"></div>
       </div>
     </div>`;
 }
@@ -648,6 +669,303 @@ function mountDocs(root, tab) {
     });
     bindModalDismiss(aiModal, closeAi);
   }
+
+  /* ---------- 抽取候选（W13） ---------- */
+  const exModal = root.querySelector('#ex-modal');
+  if (exModal) {
+    const openEx = async () => {
+      // 抽取读的是盘上正文；没保存的改动没进文件，抽出来会缺这一截
+      if (dirty && !(await confirmDanger({
+        title: '先保存再抽取',
+        body: '这一份还有<b>没保存的改动</b>。抽取读的是工作区里那一份，'
+            + '现在开始的话，编辑器里这些字不会进候选。',
+        okText: '丢掉改动，继续',
+      }))) return;
+      closeEx();
+      ex = {
+        docId, pid: store.currentId, options: null, run: null,
+        items: [], assets: [], kind: 'character', error: '', busy: false,
+        instruction: '', confirm: false, timer: null,
+      };
+      exModal.hidden = false;
+      paintEx(root);
+      await loadExOptions(root);
+    };
+    root.querySelector('#doc-extract')?.addEventListener('click', openEx);
+    exModal.addEventListener('click', (e) => { if (e.target === exModal) closeEx(); });
+    bindModalDismiss(exModal, closeEx);
+  }
+}
+
+function closeEx() {
+  if (ex?.timer) clearTimeout(ex.timer);
+  ex = null;
+  const modal = document.getElementById('ex-modal');
+  if (modal) modal.hidden = true;
+}
+
+const EX_FIELDS = {
+  character: [['role', '定位'], ['appearance', '外形'], ['personality', '性格'],
+              ['suggested_prompt', '建议提示词']],
+  scene: [['time_of_day', '时间'], ['weather', '天气'], ['description', '描述'],
+          ['suggested_prompt', '建议提示词']],
+  prop: [['description', '描述'], ['suggested_prompt', '建议提示词']],
+  shot: [['scene', '场景'], ['summary', '内容'], ['shot_size', '景别'],
+         ['camera_move', '运镜'], ['duration_hint', '秒'], ['asset_refs', '引用']],
+};
+
+async function loadExOptions(root) {
+  if (!ex) return;
+  try {
+    ex.options = await api.extractOptions(ex.pid, ex.docId);
+    ex.assets = await api.assets(ex.pid);
+  } catch (err) {
+    ex.error = err.message;
+  }
+  paintEx(root);
+}
+
+function paintEx(root) {
+  const body = root.querySelector('#ex-body');
+  const actions = root.querySelector('#ex-actions');
+  if (!body || !actions || !ex) return;
+  const err = ex.error ? `<p class="modal-err">${escapeHtml(ex.error)}</p>` : '';
+  if (!ex.options) {
+    body.innerHTML = `<p class="modal-meta">正在取计价与健康…</p>${err}`;
+    actions.innerHTML = '<button class="btn" id="ex-close">关闭</button>';
+    actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    return;
+  }
+  const o = ex.options;
+  const price = (o.unit_price_micros / 1_000_000).toFixed(2);
+  if (!ex.run) {
+    body.innerHTML = `
+      <p class="modal-meta">从《${escapeHtml(o.doc_title)}》里抽角色／场景／道具／镜头。
+        每条候选都必须带回原文逐字证据；<b>人点入库之前，资产库一行都不写</b>。</p>
+      <div class="ai-price">
+        <div><span class="grp">文档</span><b>${escapeHtml(o.doc_title)}</b></div>
+        <div><span class="grp">正文</span><b>${o.chars} 字</b></div>
+        <div><span class="grp">模型</span><b>${escapeHtml(o.provider)} / ${escapeHtml(o.model)}</b></div>
+        <div><span class="grp">单价</span><b>¥${price} / 百万 Token</b></div>
+        <div><span class="grp">预计用量</span><b>${o.estimated_quantity} 百万 Token</b></div>
+        <div><span class="grp">健康</span><b>${escapeHtml(o.health_detail)}</b></div>
+      </div>
+      <label class="modal-label" for="ex-instruction">额外要求（可不填，最多 2000 字）</label>
+      <textarea id="ex-instruction" class="ctl" rows="2" maxlength="2000"
+                placeholder="例如：只抽这一章出场的人物；镜头按段落切">${escapeHtml(ex.instruction)}</textarea>
+      <label class="ai-confirm">
+        <input type="checkbox" id="ex-confirm" ${ex.confirm ? 'checked' : ''}>
+        <span>我确认这次按供应商计费；同一份正文 24 小时内重复提交不会再花钱</span>
+      </label>
+      ${err}`;
+    actions.innerHTML = `
+      <button class="btn" id="ex-close">取消</button>
+      <button class="btn primary" id="ex-start"
+              ${o.health_state === 'ok' ? '' : 'disabled'}>开始抽取</button>`;
+    body.querySelector('#ex-instruction')?.addEventListener('input', (e) => {
+      ex.instruction = e.target.value;
+    });
+    body.querySelector('#ex-confirm')?.addEventListener('change', (e) => {
+      ex.confirm = e.target.checked;
+    });
+    actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    actions.querySelector('#ex-start')?.addEventListener('click', () => submitEx(root));
+    return;
+  }
+
+  const run = ex.run;
+  if (run.status === 'pending') {
+    body.innerHTML = `
+      <p class="modal-meta">作业 <b>#${run.job_id}</b> 已入队；模型跑完后候选才会出现。</p>
+      <div class="ai-status"><span class="chip blue">${escapeHtml(run.status_label)}</span>
+        <span class="t-dim">每 2 秒看一次状态</span></div>
+      ${err}`;
+    actions.innerHTML = '<button class="btn" id="ex-close">收起</button>';
+    actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    return;
+  }
+  if (run.status === 'failed' || run.status === 'parse_failed') {
+    body.innerHTML = `
+      <div class="bar bad">${escapeHtml(run.note || run.error_message || '这次抽取没有成功')}</div>
+      <p class="modal-meta">原文与资产都没有被改。可以调整要求后重跑一次。</p>${err}`;
+    actions.innerHTML = `
+      <button class="btn" id="ex-close">关闭</button>
+      <button class="btn primary" id="ex-again">重新抽取</button>`;
+    actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    actions.querySelector('#ex-again')?.addEventListener('click', () => {
+      ex.run = null; ex.items = []; ex.error = ''; paintEx(root);
+    });
+    return;
+  }
+
+  if (run.stale) {
+    // 原文在抽取之后改过：证据偏移对的是旧版，不能拿它入库
+    body.innerHTML = `<div class="bar bad">文档在抽取之后被改过，这批候选的证据已失配；
+      只能看，不能入库。需要就重新抽一次。</div>`;
+    actions.innerHTML = '<button class="btn" id="ex-close">关闭</button>';
+    actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    return;
+  }
+
+  const kinds = ['character', 'scene', 'prop', 'shot'];
+  const labels = { character: '角色', scene: '场景', prop: '道具', shot: '镜头' };
+  const list = ex.items.filter((i) => i.kind === ex.kind);
+  const tabs = kinds.map((k) => {
+    const n = ex.items.filter((i) => i.kind === k).length;
+    return `<button type="button" class="chip ${k === ex.kind ? 'blue' : 'plain'}"
+              data-ex-kind="${k}">${labels[k]} ${n}</button>`;
+  }).join('');
+  const cards = list.map((item) => exCard(item, root)).join('')
+    || '<p class="hint" style="text-align:left">这一类没有候选。</p>';
+  const exportBtn = ex.kind === 'shot' && list.length
+    ? `<a class="btn sm" target="_blank" rel="noopener"
+          href="/api/extract/runs/${run.id}/shots.md">导出 Markdown</a>` : '';
+  body.innerHTML = `
+    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div class="ai-ops" id="ex-kinds">${tabs}</div>
+      <span class="t-desc">共 ${ex.items.length} 条 · 待处理 ${run.counts.pending} ·
+        已入库 ${run.counts.accepted} · 已合并 ${run.counts.merged} · 已驳回 ${run.counts.rejected}</span>
+    </div>
+    <p class="modal-meta">${escapeHtml(run.note || '')}</p>
+    <div class="ex-list">${cards}</div>
+    ${err}`;
+  actions.innerHTML = `
+    <button class="btn" id="ex-close">关闭</button>${exportBtn}
+    <a class="btn" href="#assets/0" id="ex-goto-assets">去资产中心看结果</a>`;
+  body.querySelectorAll('[data-ex-kind]').forEach((btn) => {
+    btn.addEventListener('click', () => { ex.kind = btn.dataset.exKind; paintEx(root); });
+  });
+  actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+  actions.querySelector('#ex-goto-assets')?.addEventListener('click', () => {
+    closeEx();
+    window.dispatchEvent(new CustomEvent('app:go', { detail: 'assets' }));
+  });
+  bindExCards(root);
+}
+
+function exCard(item, root) {
+  const p = item.payload || {};
+  const title = p.name || p.summary || `候选 #${item.id}`;
+  const fields = (EX_FIELDS[item.kind] || []).filter(([key]) => p[key]).map(([key, label]) => {
+    const value = Array.isArray(p[key]) ? p[key].join('、') : p[key];
+    return `<div><span class="grp">${label}</span>${escapeHtml(String(value))}</div>`;
+  }).join('');
+  const evidence = item.evidence || {};
+  const targets = ex.kind === 'shot' ? '' : `
+      <select class="ctl sm" data-ex-target="${item.id}">
+        <option value="">并到已有资产…</option>
+        ${ex.assets.filter((a) => a.kind === item.kind).map((a) =>
+          `<option value="${a.id}">${escapeHtml(a.name)}${a.project_id === null ? ' · 全局' : ''}</option>`).join('')}
+      </select>
+      <button class="btn sm" data-ex-merge="${item.id}">合并</button>
+      <button class="btn sm" data-ex-accept="${item.id}">入库</button>`;
+  return `
+    <div class="ex-card">
+      <div class="row" style="justify-content:space-between;gap:8px">
+        <div><span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${item.kind_label}</span>
+          <b>${escapeHtml(title)}</b>
+          ${item.confidence != null ? `<span class="t-desc">把握 ${item.confidence}</span>` : ''}</div>
+        <span class="chip ${item.status === 'pending' ? 'gray' : 'green'}">${item.status_label}</span>
+      </div>
+      <div class="ex-fields">${fields}</div>
+      ${evidence.quote ? `<blockquote class="ex-quote">${escapeHtml(evidence.quote)}
+        <span class="t-desc">原文 ${evidence.start}–${evidence.end}</span></blockquote>` : ''}
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+        ${item.status === 'pending' ? targets : ''}
+        ${item.status === 'pending' && item.kind !== 'shot'
+          ? `<button class="btn sm danger" data-ex-reject="${item.id}">驳回</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function bindExCards(root) {
+  const refresh = async () => {
+    if (!ex) return;
+    try {
+      ex.run = await api.extractRun(ex.run.id);
+      ex.items = await api.extractItems(ex.run.id);
+      ex.error = '';
+    } catch (err) { ex.error = err.message; }
+    paintEx(root);
+  };
+  root.querySelectorAll('[data-ex-accept]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api.extractAccept(Number(btn.dataset.exAccept));
+      } catch (err) { ex.error = err.message; btn.disabled = false; paintEx(root); return; }
+      await refresh();
+    });
+  });
+  root.querySelectorAll('[data-ex-merge]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.exMerge);
+      const select = root.querySelector(`[data-ex-target="${id}"]`);
+      const target = Number(select?.value || 0);
+      if (!target) { ex.error = '先在右边选一个已有资产再合并'; paintEx(root); return; }
+      btn.disabled = true;
+      try {
+        await api.extractMerge(id, target);
+      } catch (err) { ex.error = err.message; btn.disabled = false; paintEx(root); return; }
+      await refresh();
+    });
+  });
+  root.querySelectorAll('[data-ex-reject]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api.extractReject(Number(btn.dataset.exReject), '人工驳回');
+      } catch (err) { ex.error = err.message; btn.disabled = false; paintEx(root); return; }
+      await refresh();
+    });
+  });
+}
+
+async function submitEx(root) {
+  if (!ex || ex.busy) return;
+  if (!ex.confirm) { ex.error = '先勾选“我确认这次按供应商计费”'; paintEx(root); return; }
+  if (!ex.options || ex.options.health_state !== 'ok') {
+    ex.error = '文本 provider 现在不可用'; paintEx(root); return;
+  }
+  const o = ex.options;
+  ex.busy = true;
+  ex.error = '';
+  try {
+    const run = await api.extractSubmit(ex.pid, {
+      project_id: ex.pid, doc_id: ex.docId, instruction: ex.instruction,
+      estimate: { quantity: o.estimated_quantity, unit: o.unit,
+                  unit_price_micros: o.unit_price_micros,
+                  currency: o.currency, source: o.source },
+      user_confirmed_cloud: true,
+    });
+    ex.run = run;
+    ex.items = [];
+    if (run.status === 'pending') {
+      paintEx(root);
+      pollEx(root);
+    } else {
+      ex.items = await api.extractItems(run.id);
+      paintEx(root);
+    }
+  } catch (err) {
+    ex.error = err.message;
+    paintEx(root);
+  } finally {
+    ex.busy = false;
+  }
+}
+
+function pollEx(root) {
+  if (!ex) return;
+  ex.timer = setTimeout(async () => {
+    if (!ex || !ex.run) return;
+    try {
+      ex.run = await api.extractRun(ex.run.id);
+      if (ex.run.status === 'pending') { paintEx(root); pollEx(root); return; }
+      ex.items = await api.extractItems(ex.run.id);
+    } catch (err) { ex.error = err.message; }
+    paintEx(root);
+  }, EX_POLL_MS);
 }
 
 function closeAi() {

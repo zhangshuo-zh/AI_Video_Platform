@@ -416,3 +416,49 @@
 3. **守卫表条数对不上**：新增 `PUT /api/shots/{s}` 后路由表 77 条，守卫表没加这一行，`test_路由表与本表条数对齐` 当场失败；补上即过。
 
 **本轮改到的文件**：`backend/repositories/content.py`、`backend/repositories/jobs.py`、`backend/routers/content.py`、`backend/routers/jobs.py`、`backend/tests/test_shots.py`（新）、`backend/tests/test_guards.py`、`frontend/js/api.js`、`frontend/js/views/writing.js`、`frontend/css/app.css`、`盘点/W12_SHOTS.md`（新）、`设计稿.md`、`app/截图/v72-*`。
+
+## 21. W13—W18 完成后回填（2026-11-01）
+
+`pytest tests -q` → **403 passed**（新增 `test_extraction.py` 11 项、`test_review.py` 6 项、`test_audio.py` 4 项、`test_dashboard.py` 5 项、`test_backup.py` 3 项）。路由 **98 条业务端点 / 103 条含 health 与四条 auth**（+21：抽取 9、审核 4、音频 5、看板与导出 3）。真浏览器 CDP **16 项全过**；图在 `app/截图/v73-dashboard.png`、`v73-extract.png`、`v73-review.png`、`v73-review-signed.png`、`v73-audio.png`。取数、许可矩阵与发布清分别在 `盘点/W17_LICENSE_BENCHMARKS.md`、`盘点/W18_RELEASE.md`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| W13「抽取走 Job、成本入账」 | 一次抽取＝一条 `kind=text` 作业，`extraction_run.job_id` 唯一；提示词全文、正文 `base_version`、`content_hash`、模型与提示词版本冻在 run 行。计价照 W10／W11：清单单价、预计用量、勾确认，**健康不过不建作业**。Job 的 `input_refs` 带 `doc_id/extraction_run_id`，成本只从 Job 记 |
+| W13「候选绑定 Doc 版本与原文偏移」 | `evidence` 是 `{quote,start,end}`，服务端拿盘上正文复核：偏移优先，偏移对不上且 quote 全文唯一才按文字找回；出现多次、空白、找不到直接丢这一条并写 `note`。`base_version` 存正文 sha256，正文在运行期间被改过时按版本不符处理 |
+| W13「重复提交不产生重复资产」 | 两层：24 小时内同 `doc_id + content_hash + model_code + prompt_version` 直接复用旧 run（标 `deduped`）；`accept` 建资产走正常唯一约束（同范围同名 409），`merge` 只补空字段并把别名去重后并进去 |
+| W13「角色/场景/道具接受后入 Asset，镜头只导出」 | `accept` 走 `asset:write`＋项目归属，建完把 `asset_id` 写回候选；`merge` 额外过 `access.ensure_asset`；`reject` 只改状态。**镜头候选没有 accept 路径**，只有 `GET /api/extract/runs/{id}/shots.md` |
+| W13「六个接口」 | 实际 **9 条**：options／提交 run／列 run／run 详情／列 items／accept／merge／reject／shots.md。提交返回 202；解析失败落 `parse_failed`，不假装成功 |
+| W14「包装现有校验器 CLI」 | `reviewgate.py` 既是纯函数也被 `__main__` 包成命令行：读文件 → 打印 JSON → 有 error 时退出码 1。三条规则：占位符、长句（>120 字）、未收尾（≥12 字且无标点）；报告统一 `{status, findings[], summary}` |
+| W14「审核队列、通过/驳回/退回、签字身份与时间」 | `GET /api/projects/{pid}/reviews` 只列"当前版本还没签"的文档；`POST /api/documents/{id}/review-sign` 三种结论，签名取当前登录人，时间由库写；同一锚点重复签是 upsert，不攒两行 |
+| W14「版本绑定，旧审核不能冒充新版本」 | `review_gate` 与 `review_item` 都存 `base_version`；正文 sha256 一变，旧 gate 不再算当前版本，审核页显示过期，预览接口按 409 拒绝签字。队列按当前版本过滤 |
+| W14「没有 reviewer 权限不能签」 | 签字端点要求 `review:sign`（现有 editor 角色含这一点；viewer 不含）；前端同时按 `store.can('review:sign')` 隐藏按钮，但后端才是判定处 |
+| W14「每句签字有稳定锚点」 | 每条 finding 给 `c<start>`（字符偏移）或 `document`（整篇）；签字唯一键是 `(doc_id, base_version, anchor)`，同一句不会因为重跑 gate 换锚点而丢签字 |
+| W15「音频中心组织台词/旁白/音乐/viseme」 | `audio_clip` 四类 `dialogue/narration/music/sfx`，可挂集与镜头；口型页读同类型台词并显示 viseme 段数（现为"未生成"占位），音效标实验态 |
+| W15「VoxCPM2／ACE-Step CLI adapter」 | **PARTIAL**：清单、能力解析与队列链路已接，`runners.py` 里两条命令尚未写死到本机不存在的运行时；本机健康回"缺条件"，提交会明确失败并把原因写回素材，不落假作业、不出假音频。真正出声要等运行时与权重到位后再补这一包 |
+| W15「不创建独立队列」 | 提交只调 `services.submit_job()`，落同一张 `job` 表；音频中心没有自己的 worker、状态机或队列表 |
+| W15「保存路径、时长、字级时间戳、说话人与镜头关联」 | 成功回执把产物相对路径、`duration_ms`、`timestamps_json`、`viseme_json` 同步回 `audio_clip`；字段先建好，运行时回来即可填 |
+| W15「成本只由 Job 记录」 | 音频素材行没有任何金额列；成本只在 Job 的 `*_micros` 与 `pricing_snapshot` 里 |
+| W16「看板只读聚合」 | `GET /api/projects/{pid}/dashboard` 现算集／镜／资产／文档／作业（按状态分桶）／成本（按币种）／审核（gate 与签字）／音频；没有进度表、没有可写的看板字段 |
+| W16「导出镜头清单/素材路径」 | `GET /export/shots.csv`（UTF-8 BOM，Excel 中文不乱码）与 `/export/shots.md`；列含集序、镜号、摘要、提示词、时长、资产名、最新作业状态与产物相对路径。**不做时间线编辑** |
+| W17「每个可见模型档都有许可/价格/实测记录，未知标 UNKNOWN」 | `盘点/W17_LICENSE_BENCHMARKS.md` 按模型登记可运行性、参数、许可、价格与实测；未核到的一律 `UNKNOWN`。FastMetal 1.3B 只有 M4 Air 16GB 的 28.2 秒／2.39GB 一组，目标机 M5 Ultra 的数字留空；H3／LTX 的标注与地域/营收条款单列；停用流程写成可执行步骤 |
+| W18「旧库升级不丢数据」 | 迁移 0017／0018／0019 都是纯新增表与索引，不改旧列；启动自动补到最新；迁移前 `migrate.py` 仍先做 SQLite `backup()` 快照，保留 5 份 |
+| W18「备份恢复后外键/文件/Git/Job 可用」 | `backup.py create` 打库＋上传文件＋文档工作区＋作业产物；manifest 记每文件 sha256、`integrity_check`、`foreign_key_check` 与逐表行数。`restore` 必须 `--yes`，先 `verify` 再恢复，恢复前自动留 `restore-safety-<stamp>`；测试覆盖"不给 --yes 拒绝"与"被篡改拒绝" |
+| W18「README、环境变量、run.sh、数据目录、故障恢复」 | `README.md` 重写为启动／停 worker／环境变量／数据目录／备份恢复；`盘点/W18_RELEASE.md` 记 W00—W18 状态与发布清单 |
+
+**W13—W18 的边界（别误读成"剩下全封版了"）**：
+- **W15 是 PARTIAL**：数据、权限、同队列与失败回写都真；**不出声**——VoxCPM2、ACE-Step、Rhubarb 三个运行时都不在本机，健康状态如实回"缺条件"。
+- **W17 是 PARTIAL**：只登记，不推测；目标机基准、真实 API 计价复核与某些模型的商用许可仍空。
+- **审核 gate 不是 LLM 评审**：三条确定性规则挡"没填/没写完/写太长"，事实与文风仍要人读。
+- **抽取只认文档，不认任意文本**：入参是 `doc_id`＋可选指令；正文来自工作区当前版本，避免"抽的和写的不是同一份"。
+- **镜头候选永远不自动落表**：导出 Markdown 后由人决定要不要拆成分镜。
+- **看板不做趋势与工时**：只有当前快照，没有历史曲线、没有人员产能。
+- **备份不是增量、也不是异地**：整目录快照，保留策略与异地存放由运维定。
+
+**这一轮真被踩到的问题（都修了/记下了）**：
+1. **抽取候选按字母序排**：SQL 原来 `ORDER BY kind`，界面顺序成角色／道具／场景；改成 `CASE kind` 显式顺序。
+2. **未收尾规则测试没触发**：测试句只有 7 字，低于 12 字门槛，是测试写错不是规则错；改成 13 字无标点句。
+3. **看板断言被共享项目污染**：会话级 `seeded` 项目里已有前面音频用例建的 Job，改成断言内部自洽并在新项目上测镜头数。
+4. **备份路径在 import 时算死**：`PARTS` 常量让 monkeypatch 不生效，改成每次调用现算。
+5. **CSV 的 BOM 让验收脚本 `json.loads` 失败**：BOM 是给 Excel 的，脚本改成按字节读并校验首行。
+6. **音频提交弹原生 alert 把无头浏览器挂住**：改成页内提示条 + try/catch，既让真浏览器继续跑，也让人看得到别的素材状态。
+7. **资产类型的中文名两处不一致**：前端与侧栏早已统一成「道具」，后端 `ASSET_KINDS` 还把 `prop` 写成「物品」，卡片与详情显示的是后端的值——截图里当场露出来，已改成「道具」，首页模块图的文案一并改掉。

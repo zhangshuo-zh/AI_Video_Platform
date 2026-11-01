@@ -233,6 +233,61 @@ export const api = {
   docAiApply: (id, jobId) => fetch(
     `/api/documents/${id}/ai-jobs/${jobId}/apply`, { method: 'POST' }).then(toJson),
 
+  // 文本抽取（W13）：计价是同一条文本默认轨；候选要人确认才入资产。
+  extractOptions: (pid, docId) => fetch(
+    `/api/projects/${pid}/extract/options?doc_id=${docId}`).then(toJson),
+  extractRuns: (pid) => fetch(`/api/projects/${pid}/extract/runs`).then(toJson),
+  extractSubmit: (pid, body) => fetch(`/api/projects/${pid}/extract/runs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  extractRun: (runId) => fetch(`/api/extract/runs/${runId}`).then(toJson),
+  extractItems: (runId, params = {}) => fetch(
+    `/api/extract/runs/${runId}/items?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
+  extractAccept: (itemId, body = {}) => fetch(`/api/extract/items/${itemId}/accept`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  extractMerge: (itemId, assetId) => fetch(`/api/extract/items/${itemId}/merge`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ asset_id: assetId }),
+  }).then(toJson),
+  extractReject: (itemId, reason = '') => fetch(`/api/extract/items/${itemId}/reject`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  }).then(toJson),
+
+  // 审核中心（W14）：校验报告按正文版本冻结，签字按锚点落
+  reviewQueue: (pid) => fetch(`/api/projects/${pid}/reviews`).then(toJson),
+  reviewGate: (docId) => fetch(`/api/documents/${docId}/review-gate`).then(toJson),
+  runReviewGate: (docId) => fetch(`/api/documents/${docId}/review-gate`, {
+    method: 'POST' }).then(toJson),
+  reviewSign: (docId, body) => fetch(`/api/documents/${docId}/review-sign`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+
+  // 音频中心（W15）：素材仍送生成中心的同一条队列
+  audioClips: (pid, params = {}) => fetch(
+    `/api/projects/${pid}/audio-clips?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
+  createAudioClip: (pid, body) => fetch(`/api/projects/${pid}/audio-clips`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  updateAudioClip: (id, body) => fetch(`/api/audio-clips/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  submitAudioClip: (id) => fetch(`/api/audio-clips/${id}/submit`,
+    { method: 'POST' }).then(toJson),
+  deleteAudioClip: (id) => fetch(`/api/audio-clips/${id}`,
+    { method: 'DELETE' }).then(toJson),
+
+  // 项目看板（W16）：只读聚合；导出是纯下载，不写状态
+  dashboard: (pid) => fetch(`/api/projects/${pid}/dashboard`).then(toJson),
+
   // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
   // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点
   assets: (pid, kind, scope) => fetch(

@@ -1223,3 +1223,39 @@ td.shot-jobs .t-desc{max-width:180px}
 .pick-picked{display:flex;flex-wrap:wrap;gap:5px;align-items:center;
   padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
 .pick-picked .grp{font-size:11.5px;color:var(--ink-3);margin-right:2px}
+
+/* ---------- W13：文本抽取候选 ---------- */
+.ex-list{display:grid;gap:10px;max-height:46vh;overflow-y:auto;padding:2px}
+.ex-card{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);
+  padding:12px 14px}
+.ex-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;
+  margin-top:8px;font-size:12.5px;line-height:1.6}
+.ex-fields .grp{display:block;font-size:11px;color:var(--ink-3);margin-bottom:1px}
+/* 证据是候选人能不能入库的凭据，用左侧色条摆出来，别缩成一行灰字 */
+.ex-quote{margin:9px 0 0;padding:7px 10px;border-left:3px solid var(--accent-line);
+  background:var(--field);border-radius:0 8px 8px 0;font-size:12px;line-height:1.65;
+  color:var(--ink-2)}
+.ex-quote .t-desc{margin-top:3px}
+@media (max-width:760px){
+  .ex-fields{grid-template-columns:minmax(0,1fr)}
+}
+
+/* ---------- W14：审核队列与按锚点签字 ---------- */
+.rev-list{display:grid;gap:10px;margin:12px 0}
+.rev-finding{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);
+  padding:11px 13px}
+.rev-finding .ex-quote{margin-top:6px}
+.rev-doc-sign{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}
+
+/* ---------- W15：音频素材台账 ---------- */
+.audio-new{border-bottom:1px solid var(--line)}
+.audio-text{max-width:430px;line-height:1.6}
+
+/* ---------- W16：项目看板 ---------- */
+.dash-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 22px}
+.dash-grid .grp{display:block;font-size:11px;color:var(--ink-3);letter-spacing:.04em}
+.dash-grid b{display:block;font-size:22px;font-weight:650;line-height:1.3;
+  font-variant-numeric:tabular-nums}
+.dash-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+@media (max-width:1080px){.dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.dash-grid{grid-template-columns:minmax(0,1fr)}}
