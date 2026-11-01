@@ -27,6 +27,21 @@ LOCK_MINUTES = int(os.environ.get("FASTVIDEO_LOCK_MINUTES", "15"))
 # 一集剧本十万字用不到 1MB，留足余量按 1MB 拦（超了让人分文档，而不是默默截断）。
 DOC_MAX_BYTES = int(os.environ.get("FASTVIDEO_DOC_MAX_BYTES", str(1024 * 1024)))
 
+# 生成作业的日志与产物目录：data/jobs/<job_id>/{logs,outputs}。
+# 与文件资产（FILES_DIR）分开，删项目时这两处都要清；路径换算统一走 jobs_store.py。
+JOBS_DIR = Path(os.environ.get("FASTVIDEO_JOBS", BASE_DIR / "data" / "jobs"))
+
+# 独立 worker 的节拍与租约。租约必须大于"最长一次无心跳的间隔"，
+# 否则正常跑着的长任务会被下一轮恢复逻辑误判成"worker 死了"。
+WORKER_POLL = float(os.environ.get("FASTVIDEO_WORKER_POLL", "1.0"))
+WORKER_LEASE_SECONDS = int(os.environ.get("FASTVIDEO_WORKER_LEASE", "60"))
+# 心跳超过这个年龄就算离线（顶栏那个小圆点按它亮/灭）
+WORKER_ONLINE_SECONDS = int(os.environ.get("FASTVIDEO_WORKER_ONLINE", "20"))
+
+# 测试/演示用的假适配器（只 sleep、写一个文本结果）。默认关；
+# 打开后 API 与 worker 才认识 provider=mock，生产环境不该出现它。
+ALLOW_MOCK = os.environ.get("FASTVIDEO_ALLOW_MOCK") == "1"
+
 # 默认只监听本机；平台要供局域网用时设 FASTVIDEO_HOST=0.0.0.0
 # （一期还没做登录，整个网段都能建项目，别提前暴露）
 HOST = os.environ.get("FASTVIDEO_HOST", "127.0.0.1")

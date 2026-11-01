@@ -22,6 +22,8 @@ _PROJECT_OF = {
     "asset": "SELECT project_id FROM asset WHERE id = ?",
     # 文档一定挂项目（不像资产有全局池），所以它能走 ensure_by，不需要 ensure_asset 那种特判
     "document": "SELECT project_id FROM document WHERE id = ?",
+    # 作业一定挂项目；删项目时 Job 行随外键 CASCADE 走
+    "job": "SELECT project_id FROM job WHERE id = ?",
 }
 
 

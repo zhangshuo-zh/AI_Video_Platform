@@ -193,6 +193,152 @@ class CurrentProviderOut(BaseModel):
     health_detail: str
 
 
+# ---------- 生成作业（W07） ----------
+
+JOB_STATUSES: dict[str, str] = {
+    "queued": "排队中",
+    "starting": "启动中",
+    "running": "运行中",
+    "succeeded": "成功",
+    "failed": "失败",
+    "cancel_requested": "取消中",
+    "cancelled": "已取消",
+    "needs_attention": "待核对",
+}
+
+JOB_RUNNING = ("starting", "running", "cancel_requested")
+JOB_FINISHED = ("succeeded", "failed", "cancelled", "needs_attention")
+
+
+class JobSubmitIn(BaseModel):
+    project_id: int
+    episode_id: int | None = None
+    shot_id: int | None = None
+    capability: Literal["text", "image", "video", "tts", "music"]
+    # 不传执行方式就走这一类的默认轨；传了就必须三件一起给（方式/供应商/模型），
+    # 不允许"给了 provider 却让平台自己猜后端"。
+    execution_mode: Literal["local", "cloud"] | None = None
+    provider_code: str = Field(default="", max_length=80)
+    model_code: str = Field(default="", max_length=120)
+    prompt: str = Field(min_length=1, max_length=8000)
+    params: dict = {}
+    input_refs: list[str] = Field(default_factory=list, max_length=20)
+    idempotency_key: str | None = Field(default=None, max_length=120,
+                                         pattern=r"^[A-Za-z0-9._:-]+$")
+    user_confirmed_cloud: bool = False
+    priority: int = Field(default=0, ge=0, le=100)
+
+
+class JobOut(BaseModel):
+    id: int
+    project_id: int
+    episode_id: int | None
+    shot_id: int | None
+    capability: str
+    capability_label: str
+    kind: str
+    execution_mode: str
+    execution_mode_label: str
+    provider_code: str
+    model_code: str
+    status: str
+    status_label: str
+    prompt_preview: str
+    queued_at: str
+    started_at: str | None
+    finished_at: str | None
+    elapsed_ms: int | None
+    retry_of_job_id: int | None
+    error_code: str | None
+    error_message: str | None
+    has_log: bool
+    has_artifacts: bool
+
+    @classmethod
+    def from_row(cls, row) -> "JobOut":
+        prompt = row["prompt_snapshot"] or ""
+        return cls(
+            id=row["id"], project_id=row["project_id"],
+            episode_id=row["episode_id"], shot_id=row["shot_id"],
+            capability=row["capability"],
+            capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
+            kind=row["kind"],
+            execution_mode=row["execution_mode"],
+            execution_mode_label=BACKENDS.get(row["execution_mode"], row["execution_mode"]),
+            provider_code=row["provider_code"], model_code=row["model_code"],
+            status=row["status"],
+            status_label=JOB_STATUSES.get(row["status"], row["status"]),
+            prompt_preview=prompt[:120],
+            queued_at=row["queued_at"], started_at=row["started_at"],
+            finished_at=row["finished_at"], elapsed_ms=row["elapsed_ms"],
+            retry_of_job_id=row["retry_of_job_id"],
+            error_code=row["error_code"], error_message=row["error_message"],
+            has_log=bool(row["log_path"]),
+            has_artifacts=row["result_paths_json"] not in ("", "[]"),
+        )
+
+
+class JobDetailOut(JobOut):
+    adapter_version: str
+    prompt_snapshot: str
+    params: dict
+    input_refs: list
+    log_path: str | None
+    result_paths: list
+    return_code: int | None
+    quantity: float | None
+    unit: str | None
+    unit_price_micros: int | None
+    cost_micros: int | None
+    currency: str | None
+    billable_status: str
+
+    @classmethod
+    def from_row(cls, row) -> "JobDetailOut":
+        base = JobOut.from_row(row).model_dump()
+
+        def load(text, fallback):
+            try:
+                value = json.loads(text or "")
+            except ValueError:
+                return fallback
+            return value if isinstance(value, type(fallback)) else fallback
+
+        return cls(**base,
+                   adapter_version=row["adapter_version"],
+                   prompt_snapshot=row["prompt_snapshot"],
+                   params=load(row["params_json"], {}),
+                   input_refs=load(row["input_refs_json"], []),
+                   log_path=row["log_path"],
+                   result_paths=load(row["result_paths_json"], []),
+                   return_code=row["return_code"],
+                   quantity=row["quantity"], unit=row["unit"],
+                   unit_price_micros=row["unit_price_micros"],
+                   cost_micros=row["cost_micros"], currency=row["currency"],
+                   billable_status=row["billable_status"])
+
+
+class JobLogOut(BaseModel):
+    """日志尾部。`path` 是相对 Job 目录的路径，不是绝对磁盘路径。"""
+
+    path: str | None
+    text: str
+
+
+class JobArtifactOut(BaseModel):
+    path: str
+    exists: bool
+    size: int
+
+
+class WorkerStatusOut(BaseModel):
+    online: bool
+    heartbeat_at: str
+    age_seconds: int | None
+    current_job_id: int | None
+    queue: dict
+
+
 # ---------- 内容三件套 ----------
 
 ASSET_KINDS: dict[str, str] = {"character": "角色", "scene": "场景", "prop": "物品"}

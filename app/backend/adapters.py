@@ -295,6 +295,19 @@ ADAPTERS: tuple[Adapter, ...] = (
     *_TEXT_CLOUD, *_VIDEO_CLOUD, *_CLOUD_OTHER,
 )
 
+# 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
+MANIFEST_VERSION = "2026-11-01"
+
+# 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
+# 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以
+# 在没有模型权重的机器上被测穿，而不会假装 FastMetal 已经接通。
+MOCK_PARAMS: tuple[Param, ...] = (
+    Param("sleep", "float", 0.6, 0.0, 30.0, note="秒"),
+    Param("fail", "bool", False, note="置 true 走失败分支"),
+    Param("text", "str", "mock output", note="写进结果文件的文本"),
+)
+MOCK_MODEL = "mock-1"
+
 # 同一 capability+backend 下 provider 允许用别名找（用户可能填 mlx_video）。
 _INDEX: dict[tuple[str, str, str], Adapter] = {}
 for _a in ADAPTERS:
@@ -331,6 +344,82 @@ def effective_key_env(provider: str, configured: str = "",
 def key_present(env_name: str) -> bool:
     """只看有没有，不看值；空名字自然算没有。"""
     return bool(env_name) and bool(os.environ.get(env_name))
+
+
+def _type_ok(kind: str, value) -> bool:
+    if kind == "bool":
+        return isinstance(value, bool)
+    if kind == "int":
+        # bool 是 int 的子类，不单独排除的话 true 会被当成 1 混过去
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "float":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if kind in ("str", "image"):
+        return isinstance(value, str) and value != ""
+    return False
+
+
+def _check_one(param: Param, value) -> list[str]:
+    if not _type_ok(param.type, value):
+        return [f"参数 {param.name} 的类型应为 {param.type}"]
+    out: list[str] = []
+    if param.type in ("int", "float"):
+        if param.minimum is not None and value < param.minimum:
+            out.append(f"参数 {param.name} 不能小于 {param.minimum}")
+        if param.maximum is not None and value > param.maximum:
+            out.append(f"参数 {param.name} 不能大于 {param.maximum}")
+        if param.multiple_of and param.multiple_of > 1 and value % param.multiple_of:
+            out.append(f"参数 {param.name} 必须是 {param.multiple_of} 的倍数")
+    return out
+
+
+def validate_params(adapter: Adapter | None, model_code: str, params) -> list[str]:
+    """按清单白名单校验参数；返回人话错误列表，空列表＝通过。
+
+    未核验的云端 provider（models 为空）**不许带参数**：没有白名单就等于
+    "模型名听着像"也能塞东西进去，规格 01-4.8.2 明令禁止。
+    """
+    if not isinstance(params, dict):
+        return ["params 必须是一个对象"]
+    if adapter is None:
+        return ["provider 没有登记适配器，无法校验参数"]
+    if not adapter.models:
+        if params:
+            return ["该 provider 的参数尚未核验，W07 不接受任何参数"]
+        return []
+
+    model = next((m for m in adapter.models if m.code == model_code), None)
+    if model is None:
+        known = "、".join(m.code for m in adapter.models)
+        return [f"模型 {model_code} 不在清单里；可选：{known}"]
+
+    spec = {p.name: p for p in model.params}
+    errors: list[str] = []
+    for name, value in params.items():
+        param = spec.get(name)
+        if param is None:
+            errors.append(f"参数 {name} 不在 {model.code} 的白名单里")
+        else:
+            errors.extend(_check_one(param, value))
+    for param in model.params:
+        if param.type == "image" and param.name not in params:
+            errors.append(f"缺少必填参数：{param.name}")
+    return errors
+
+
+def validate_mock_params(params) -> list[str]:
+    """假适配器自己的白名单；它不进清单，所以单独校验。"""
+    if not isinstance(params, dict):
+        return ["params 必须是一个对象"]
+    spec = {p.name: p for p in MOCK_PARAMS}
+    errors: list[str] = []
+    for name, value in params.items():
+        param = spec.get(name)
+        if param is None:
+            errors.append(f"参数 {name} 不在 mock 的白名单里")
+        else:
+            errors.extend(_check_one(param, value))
+    return errors
 
 
 def health(row) -> dict:

@@ -98,9 +98,9 @@
          而项目名顶栏面包屑本来就显示一遍，等于同一件事摆两处。 -->
     <nav class="nav" id="nav"></nav>
     <div class="side-foot">
-      <div><span class="dot idle"></span>本地 worker 未接入</div>
+      <div><span class="dot idle" id="worker-dot"></span><span id="worker-label">本地 worker 未接入</span></div>
       <div><span class="dot idle"></span>常驻模型 关</div>
-      <div class="t-dim">队列 未接入</div>
+      <div class="t-dim" id="queue-label">队列 未接入</div>
       <div class="t-dim"><span class="kbd">⌘K</span> 快速跳转</div>
     </div>
   </aside>
@@ -127,7 +127,7 @@
             <svg class="i-sun" aria-hidden="true"><use href="#ic-sun"/></svg>
             <svg class="i-moon" aria-hidden="true"><use href="#ic-moon"/></svg>
           </button>
-          <span class="pill accent">本地 worker 未接入</span>
+          <span class="pill" id="worker-pill">本地 worker 未接入</span>
           <span class="pill">云端额度 ¥0.00</span>
           <div class="avatar-wrap">
             <button class="avatar" id="user-btn" type="button"

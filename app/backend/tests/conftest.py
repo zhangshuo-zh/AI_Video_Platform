@@ -25,6 +25,10 @@ os.environ["FASTVIDEO_FILES"] = str(_TMP / "files")
 # 稿件工作区也必须在临时目录里：不设在 import main 之前，测试就会在真正的
 # backend/data/workspace 里建 Git 仓库、把测试文档提交进去——那是污染用户的稿子目录。
 os.environ["FASTVIDEO_WORKSPACE"] = str(_TMP / "workspace")
+# Job 的日志与产物也必须落在临时目录，别写进用户的 backend/data/jobs
+os.environ["FASTVIDEO_JOBS"] = str(_TMP / "jobs")
+# 队列语义的测试用假适配器（只 sleep/写字），不碰模型权重
+os.environ["FASTVIDEO_ALLOW_MOCK"] = "1"
 # 让 bootstrap 走"环境变量给了口令"这条分支，行为可预期；测试从不拿它登录
 os.environ["FASTVIDEO_ADMIN_PASSWORD"] = "pytest-only-not-a-real-secret"
 
@@ -35,7 +39,9 @@ import main  # noqa: E402
 import services  # noqa: E402
 from repositories.content import assets, episodes, shots  # noqa: E402
 from repositories.projects import projects as project_repo  # noqa: E402
+from repositories.jobs import jobs as job_repo
 from repositories.users import sessions, users as user_repo  # noqa: E402
+from db import get_conn  # noqa: E402
 from security import hash_password, new_session_token  # noqa: E402
 
 
@@ -118,8 +124,51 @@ def seeded(app, people):
     sid = shots.create(eid, "开场", "", 5.0, [])["id"]
     aid = assets.create(pid, "character", f"角色_{uuid.uuid4().hex[:6]}", "", "", [])["id"]
     doc = services.create_document(pid, eid, "novel", "测试稿", "燧人蹲在洞口。", "测试账号")
+    # 一条已经跑完的 Job：守卫表要测"看不见的作业回 404"，需要一个真实 id。
+    # 用 succeeded 而不是 queued，免得 worker 测试把它当活干。
+    job = job_repo.create({
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "video", "kind": "video_local", "execution_mode": "local",
+        "provider_code": "mock", "model_code": "mock-1", "adapter_version": "mock",
+        "prompt_snapshot": "守卫用", "params": {"sleep": 0.0}, "input_refs": [],
+        "created_by": people["editor"]["id"],
+    })
+    claimed = job_repo.claim_next("fixture-worker", 60)
+    assert claimed is not None and claimed["id"] == job["id"]
+    job_repo.succeed(job["id"], "fixture-worker", "", [], 1)
     return {"project_id": pid, "episode_id": eid, "shot_id": sid, "asset_id": aid,
-            "document_id": doc["row"]["id"], "commit": doc["row"]["git_commit"]}
+            "document_id": doc["row"]["id"], "commit": doc["row"]["git_commit"],
+            "job_id": job["id"]}
+
+
+@pytest.fixture
+def provider_state(app):
+    """provider_config 是全局单份的：动过就还原，免得后面的用例读到别人的配置。"""
+    with get_conn() as conn:
+        saved = [dict(r) for r in conn.execute("SELECT * FROM provider_config")]
+    yield
+    with get_conn() as conn:
+        for r in saved:
+            conn.execute(
+                """UPDATE provider_config
+                      SET provider = ?, model = ?, enabled = ?, is_default = ?,
+                          key_env = ?, notes = ?
+                    WHERE id = ?""",
+                (r["provider"], r["model"], r["enabled"], r["is_default"],
+                 r["key_env"], r["notes"], r["id"]),
+            )
+
+
+@pytest.fixture
+def clean_queue(app):
+    """worker 测试前把上一轮留下的活收掉，别让领取逻辑拿到别人的作业。"""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status = 'cancelled',
+                      finished_at = datetime('now','localtime'),
+                      error_code = 'test_cleanup'
+                WHERE status IN ('queued','starting','running','cancel_requested')""")
+    return None
 
 
 @pytest.fixture

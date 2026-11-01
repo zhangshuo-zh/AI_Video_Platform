@@ -15,24 +15,6 @@ from db import get_conn
 SECRET = "sk-test-not-a-real-key-7f3a9"
 
 
-@pytest.fixture
-def provider_state(app):
-    """provider_config 是全局单份的：动过就还原，免得后面的用例读到别人的配置。"""
-    with get_conn() as conn:
-        saved = [dict(r) for r in conn.execute("SELECT * FROM provider_config")]
-    yield
-    with get_conn() as conn:
-        for r in saved:
-            conn.execute(
-                """UPDATE provider_config
-                      SET provider = ?, model = ?, enabled = ?, is_default = ?,
-                          key_env = ?, notes = ?
-                    WHERE id = ?""",
-                (r["provider"], r["model"], r["enabled"], r["is_default"],
-                 r["key_env"], r["notes"], r["id"]),
-            )
-
-
 def _rows(c):
     out = c.get("/api/providers").json()
     assert len(out) == 10, out

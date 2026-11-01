@@ -113,6 +113,9 @@ export const api = {
     body: JSON.stringify(body),
   }).then(toJson),
 
+  // worker 在线状态与队列长度（顶栏/侧栏/首页共用）
+  workerStatus: () => fetch('/api/worker/status').then(toJson),
+
   // 模型双轨配置：读全部、整批写回
   providers: () => fetch('/api/providers').then(toJson),
   providerManifest: () => fetch('/api/providers/manifest').then(toJson),

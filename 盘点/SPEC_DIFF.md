@@ -139,7 +139,7 @@
 9. **W04 资产中心封版**：全局资产池迁移（C4，先要用户裁授权策略）、删资产前检查镜头引用并列清单（01-4.3-R3）。
 10. **W05 文档层**：**已于 v0.63 完成**——`document`＋`doc_lock` 迁移、`FASTVIDEO_WORKSPACE` 配置、路径规范化与根目录约束、Git 初始化与提交、`expected_version` 冲突 409、编辑锁 holder/超时回收、创作中心两页做成真编辑器。当时写的"这块纯软件可验，是'第一条 mp4'之前最值钱的可交付"成立：188 项自动化＋21 项真浏览器全过，不依赖任何模型与密钥。
 11. **W06 Provider 封版**：`adapter manifest`（先只做能力清单，不接真模型）、补"允许参数/健康状态/备注"三列、密钥命名冲突（C7 之外的 `FV_KEY_*` vs `DEEPSEEK_API_KEY`）给出迁移说明。**已于 v0.66 完成**：清单 15 个 adapter、`key_env` 可填既有名、健康五档、云端视频不许默认、`resolve_provider()` 不兜底；209 项自动化＋16 项真浏览器。
-12. **W07 Job 表＋持久队列＋独立 worker**：按 01-4.4-J3 的 14 类字段建表、`idempotency_key` 唯一、状态机 8 值、`POST /api/jobs` 202 立即返回、worker 独立进程＋重启恢复＋原子领取。**用假 adapter（sleep 脚本）就能把整条队列语义测穿**，不需要真模型。
+12. **W07 Job 表＋持久队列＋独立 worker**：按 01-4.4-J3 的 14 类字段建表、`idempotency_key` 唯一、状态机 8 值、`POST /api/jobs` 202 立即返回、worker 独立进程＋重启恢复＋原子领取。**用假 adapter（sleep 脚本）就能把整条队列语义测穿**，不需要真模型。**已于 v0.67 完成**：`job`＋`worker_state`（0015）、独立 `worker.py`、8 条接口；243 项自动化＋13 项真进程＋6 项真浏览器；真适配器仍留 W09。
 13. **W08 生成中心 UI＋成本账**：队列表/筛选/详情抽屉/日志/重试取消、成本字段用整数最小货币单位、多币种分组、失败不归零。
 14. **W12 分镜表扩列**（依赖 W05/W11 的字段确定）＋ W14 审核中心（依赖 W05/W07）。
 15. **BLOCKED 待外部条件**：W09/W10/W15/W17（要真模型与目标机）、W11/W13（要 W05＋真 LLM key）、W16/W18（要前面全部）。
@@ -220,3 +220,28 @@
 **本轮改到的文件**：`migrations/0014_provider_manifest.sql`、`backend/adapters.py`（新）、`backend/repositories/providers.py`、`backend/services.py`、`backend/models.py`、`backend/routers/settings.py`、`frontend/js/api.js`、`frontend/js/views/system-config.js`、`frontend/css/app.css`、`tests/test_providers.py`（新）、`tests/test_guards.py`。
 
 **验收时抓到三处界面在说谎（已修，记下来）**：① 未登记的 provider 与空 provider 共用一个分支，参数列都显示"选 provider 后按清单显示"——现在分开说"未登记这个 provider；参数不猜"；② provider 还没填的行，备注带却写"没有登记这个 provider"——现在空行说"选 provider 后显示适配器与出处"；③ 保存成功后健康列还停在页面加载时的结论——现在编辑即标"待保存"，保存成功后按服务端回读只更新那一列（不重绘整页，免得丢焦点）。
+
+## 15. W07 完成后回填（2026-11-01）
+
+`pytest tests -q` → **243 passed**（新增 `test_jobs.py` 18 项），路由守卫表 **65 条业务端点 / 70 条含 health 与四条 auth**。真进程：API＋独立 worker 起在同一份真库上，HTTP 13 项、崩溃/恢复两条路径、重试一条；真浏览器 6 项（`app/截图/v67-worker.png`）。
+
+| 盘点条目 | 现在 |
+|---|---|
+| CURRENT_SCHEMA「`job` 不存在，只有三个权限点」 | 已补 `job` 表（0015）＋ `worker_state` 心跳表；`job:*` 三个权限点全部有端点承接 |
+| CURRENT_API「`/api/jobs` 全部不存在」 | 8 条：创建／列表／详情／取消／重试／日志／产物／worker 状态 |
+| CURRENT_ARCHITECTURE「无 job 表、无 worker、无成本列」 | 队列与独立 worker 已建；成本列先建好（micros）等 W08 填 |
+| 01-4.4「Job 存 14 类快照字段」 | 14 类齐：能力/执行方式/provider/模型/adapter 版本/参数/提示词/输入引用/产物/日志/错误/时间/重试/成本（成本 W08 写入） |
+| 01-4.4「8 值状态机」 | 八值齐，CHECK 约束写死，不并存第二套 |
+| 01-4.4「单本地 worker 串行」 | 领取前检查租约未过期的 starting/running，第二条领不到 |
+| 01-4.4「API 快速返回，不停在请求里」 | `POST /api/jobs` 只落库，202；执行在 `worker.py` |
+| 01-4.4「worker 消失后不永挂」 | 启动恢复＋运行中周期恢复；kill -9 实测落 `failed(worker_lost)` |
+| 01-4.4「重试新建 Job，原记录保留」 | `retry_of_job_id` 新行复制快照，原行日志/耗时/错误不动 |
+| 01-4.4「幂等键不重复执行」 | 全局 UNIQUE；重复提交 200 返回原行，不重跑 |
+| 02 §7.2「Task 与 Job 分开」 | **Task 暂不建**：队列只由 Job 驱动，W14 从 Job/Review 派生；这是有意延后，不是漏做 |
+| 02 §7.3「参数白名单 / 云端二次确认」 | 提交时按 W06 清单校验；云端视频须 `user_confirmed_cloud=true`；真适配器执行仍 `adapter_not_ready` |
+
+**W07 的边界**：不跑任何模型。`worker.py` 对真适配器只做白名单校验然后失败，第一条真 mp4 还差 W08（提交/队列界面）与 W09（adapter 接线）。成本列已建但 W07 不写；`billable_status` 默认 `not_billable`，等 W08/W10 才有意义。
+
+**这一轮真被踩到的两个实现问题（都修了）**：
+1. **"崩溃后立刻重启"会漏收**：只在启动时 `recover_stale()`，重启时租约还没过期，job 会永远停在 running。改成主循环每轮再收一次；正常作业每 0.2 秒续租，所以不会被误杀。真进程用 `kill -9` 复现并验证。
+2. **仓储层在未提交事务里用另一个连接读回**：`create/claim/retry/request_cancel` 原先调 `self.get()`，第二个连接看不到未提交的 INSERT/UPDATE，会拿到 None 或旧状态。全部改成在同一个连接里 `SELECT` 读回。

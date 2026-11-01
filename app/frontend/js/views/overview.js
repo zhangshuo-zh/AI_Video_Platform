@@ -7,6 +7,11 @@ import { store } from '../store.js';
  */
 export default {
   async render() {
+    // 首页每次都现拉一次 worker 状态：这一页本来就是"本机现在怎么样"，
+    // 用 20 秒前的缓存会让刚启动 worker 的人以为没起来。
+    await store.loadWorker();
+    const w = store.worker;
+    const q = w?.queue || { queued: 0, running: 0 };
     const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility).map((m) => `
         <div class="mod" data-go="${m.id}">
           <h3>${m.label}</h3>
@@ -75,11 +80,12 @@ export default {
             </div>` : ''}
             <div class="row" style="justify-content:space-between">
               <span class="note">生成 worker</span>
-              <span class="chip gray">未接入</span>
+              <span class="chip ${w?.online ? 'green' : 'gray'}">${w?.online ? '在线' : '未接入'}</span>
             </div>
             <div class="row" style="justify-content:space-between">
               <span class="note">队列</span>
-              <span class="chip gray">未接入</span>
+              <span class="chip ${(q.queued + q.running) ? 'blue' : 'gray'}">${
+                (q.queued + q.running) ? `等待 ${q.queued} · 运行 ${q.running}` : '空闲'}</span>
             </div>
             <div class="row" style="justify-content:space-between">
               <span class="note">受限模型（H3 音画同生）</span>

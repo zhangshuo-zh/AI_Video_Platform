@@ -9,6 +9,31 @@ import { renderView, currentViewId } from './router.js';
 import { setParam, setSub } from './navstate.js';
 import { escapeHtml } from './util.js';
 
+/* ---------------- worker 状态条 ---------------- */
+
+/** 顶栏胶囊、侧栏小圆点、队列计数三处一起画；读不到状态就保持"未接入"。 */
+function paintWorker() {
+  const w = store.worker;
+  const dot = document.getElementById('worker-dot');
+  const label = document.getElementById('worker-label');
+  const pill = document.getElementById('worker-pill');
+  const queue = document.getElementById('queue-label');
+  if (!dot || !label || !pill) return;
+
+  const online = !!w?.online;
+  dot.className = 'dot ' + (online ? 'live' : 'idle');
+  label.textContent = online ? '本地 worker 在线' : '本地 worker 未接入';
+  pill.textContent = online ? '本地 worker 在线' : '本地 worker 未接入';
+  pill.classList.toggle('accent', online);
+
+  if (queue) {
+    const q = w?.queue || { queued: 0, running: 0 };
+    queue.textContent = (q.queued + q.running) > 0
+      ? `队列 等待 ${q.queued} · 运行 ${q.running}`
+      : '队列 空闲';
+  }
+}
+
 /* ---------------- 侧栏 ---------------- */
 
 function allowed(entry) {
@@ -453,6 +478,8 @@ async function startApp() {
   }
 
   appStarted = true;
+  await store.loadWorker();
+  paintWorker();
   buildNav();
   syncChrome();
   // 地址有三段：#projects（模块）、#assets/1（模块＋二级标签）、
@@ -508,6 +535,12 @@ async function boot() {
     return;
   }
   await startApp();
+  // 20 秒刷一次就够了：这不是实时看板，只是让人知道队列还有没有人在推
+  setInterval(async () => {
+    if (!appStarted) return;
+    await store.loadWorker();
+    paintWorker();
+  }, 20000);
 }
 
 boot();

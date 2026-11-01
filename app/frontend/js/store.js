@@ -12,6 +12,8 @@ export const store = {
   user: null,
   permissions: [],
   roles: [],
+  // worker 在线状态与队列长度：顶栏、侧栏脚、首页共用这一份，别各拉各的
+  worker: null,
 
   /** 拉当前用户。抛出的 error 带 status：401 表示没登录 */
   async loadMe() {
@@ -45,6 +47,16 @@ export const store = {
       项目中心那页要列已归档才能找回，它直接用 store.projects 自己筛。 */
   get activeProjects() {
     return this.projects.filter((p) => p.status !== 'archived');
+  },
+
+  /** 拉 worker 状态。读不到就当离线——状态条不该因为一次失败把主界面弄坏 */
+  async loadWorker() {
+    try {
+      this.worker = await api.workerStatus();
+    } catch {
+      this.worker = null;
+    }
+    return this.worker;
   },
 
   /** 拉一次列表和类型字典；首次加载/新建项目后调用 */

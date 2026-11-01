@@ -82,6 +82,18 @@ ROUTES = [
     ("GET", "/api/roles", None, 403),
     ("GET", "/api/permissions", None, 403),
     ("PUT", "/api/roles/{r}/permissions", {"permissions": []}, 403),
+    # ---------- 生成作业（W07） ----------
+    # 作业一定挂项目：看不见项目就一律 404（连"这条作业存在"都不透露）
+    ("POST", "/api/jobs", {"project_id": "{p}", "capability": "video",
+                           "prompt": "越权作业", "provider_code": "mock",
+                           "model_code": "mock-1", "params": {}}, 404),
+    ("GET", "/api/jobs", None, 200),
+    ("GET", "/api/jobs/{j}", None, 404),
+    ("POST", "/api/jobs/{j}/cancel", None, 404),
+    ("POST", "/api/jobs/{j}/retry", None, 404),
+    ("GET", "/api/jobs/{j}/logs", None, 404),
+    ("GET", "/api/jobs/{j}/artifacts", None, 404),
+    ("GET", "/api/worker/status", None, 200),
     # ---------- Provider（editor 没有 system:config） ----------
     ("GET", "/api/providers", None, 403),
     ("GET", "/api/providers/manifest", None, 403),
@@ -110,7 +122,8 @@ def ids(seeded, people):
         role_id = conn.execute("SELECT id FROM role WHERE code = 'viewer'").fetchone()["id"]
     return {"p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
-            "d": seeded["document_id"], "c": seeded["commit"]}
+            "d": seeded["document_id"], "c": seeded["commit"],
+            "j": seeded["job_id"]}
 
 
 def _sub(v, ids):

@@ -12,9 +12,11 @@ from pathlib import Path
 
 import adapters
 import gitrepo
-from config import DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES
+import jobfiles
+from config import ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES
 from models import CAPABILITIES
 from repositories.documents import documents as docs
+from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
 from repositories.providers import providers as provider_repo
 from workspace import PathError
@@ -78,6 +80,8 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     """
     images = project_repo.asset_images(project_id)
     doc_paths = docs.paths_by_project(project_id)
+    # Job 目录在删行之前记下来：行一删就查不到 id，日志与产物会变成孤儿
+    job_ids = job_repo.ids_for_project(project_id)
     project_repo.delete(project_id)
 
     # 上传的图落在 FILES_DIR/<资产id>/ 下（content.py 上传接口），文件清完
@@ -112,6 +116,9 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
                 folder.rmdir()
         except PathError:
             pass
+    # 作业日志与产物整目录摘掉；Job 行已随项目外键 CASCADE 消失
+    for job_id in job_ids:
+        jobfiles.remove_job(job_id)
 
 
 # ---------- 文档正文这条链（W05） ----------
@@ -311,3 +318,91 @@ def resolve_provider(capability: str, execution_mode: str | None = None,
     return {"row": row, "adapter": adapter, "capability": capability,
             "backend": row["backend"], "provider": row["provider"],
             "model": row["model"], "explicit": explicit}
+
+
+# ---------- Job 提交（W07） ----------
+class JobInvalid(Exception):
+    """提交参数不成立（路由回 422）。和 NoRoute 分开：NoRoute 是"现在没有路线"，
+    JobInvalid 是"这次请求本身不对"，前端能改的东西不一样。"""
+
+
+def job_kind(capability: str, execution_mode: str) -> str:
+    """adapter 请求类别。视频必须区分本地/云端——同样的 capability，
+    本地跑 FastMetal 与云端调 Wan API 是两条完全不同的执行路径。"""
+    return f"video_{execution_mode}" if capability == "video" else capability
+
+
+def submit_job(payload, created_by: int | None) -> dict:
+    """校验并写入 Job 行，返回 sqlite3.Row。**不触发执行**——执行是 worker 的事。
+
+    三条闸门在这里一次性过完：路线（默认轨或显式槽位）、参数白名单、
+    云端视频的人工确认。任何一条不过就抛 JobInvalid，绝不落一条"看起来能跑"的空作业。
+    """
+    capability = payload.capability
+    mode = payload.execution_mode
+    provider = (payload.provider_code or "").strip()
+    model = (payload.model_code or "").strip()
+    explicit = bool(mode or provider or model)
+    adapter_version = adapters.MANIFEST_VERSION
+
+    if provider == "mock":
+        # 测试/演示专用：不进清单、不执行命令，只在 ALLOW_MOCK 打开时可用
+        if not ALLOW_MOCK:
+            raise JobInvalid("假适配器没有启用（FASTVIDEO_ALLOW_MOCK=1 才可用）")
+        if mode not in (None, "local"):
+            raise JobInvalid("假适配器只能走本地")
+        if model != adapters.MOCK_MODEL:
+            raise JobInvalid(f"假适配器的模型档只有 {adapters.MOCK_MODEL}")
+        errors = adapters.validate_mock_params(payload.params)
+        if errors:
+            raise JobInvalid("；".join(errors))
+        mode = "local"
+        adapter_version = "mock"
+    elif explicit:
+        if not (mode and provider and model):
+            raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")
+        row = provider_repo.slot(capability, mode)
+        if row is None:
+            raise JobInvalid(f"{capability} 没有 {mode} 这一轨")
+        if (row["provider"], row["model"]) != (provider, model):
+            raise JobInvalid(f"这次指定的 {provider}/{model} 与配置槽位 "
+                             f"{row['provider']}/{row['model']} 不一致；请先改配置")
+        if not row["enabled"]:
+            raise JobInvalid("这个槽位没有启用")
+        if capability == "video" and mode == "cloud" and not payload.user_confirmed_cloud:
+            raise JobInvalid("云端视频要逐镜头确认按供应商计费")
+        adapter = adapters.find(capability, mode, provider)
+        if adapter is None:
+            raise JobInvalid(f"provider「{provider}」没有登记适配器，平台不会猜它的参数")
+        errors = adapters.validate_params(adapter, model, payload.params)
+        if errors:
+            raise JobInvalid("；".join(errors))
+    else:
+        try:
+            got = resolve_provider(capability, confirmed_cloud=payload.user_confirmed_cloud)
+        except NoRoute as exc:
+            raise JobInvalid(str(exc)) from exc
+        row = got["row"]
+        provider, model, mode = row["provider"], row["model"], row["backend"]
+        errors = adapters.validate_params(got["adapter"], model, payload.params)
+        if errors:
+            raise JobInvalid("；".join(errors))
+
+    return job_repo.create({
+        "project_id": payload.project_id,
+        "episode_id": payload.episode_id,
+        "shot_id": payload.shot_id,
+        "capability": capability,
+        "kind": job_kind(capability, mode),
+        "execution_mode": mode,
+        "provider_code": provider,
+        "model_code": model,
+        "adapter_version": adapter_version,
+        "prompt_snapshot": payload.prompt,
+        "params": payload.params,
+        "input_refs": payload.input_refs,
+        "priority": payload.priority,
+        "idempotency_key": payload.idempotency_key,
+        "user_confirmed_cloud": payload.user_confirmed_cloud,
+        "created_by": created_by,
+    })
