@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 只读仓库内容：测试不需要写权限，也不碰仓库里的密钥（测试自带假值）
+permissions:
+  contents: read
+
+# 同一条分支连续推送时，旧的那次没必要再跑完
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app/backend
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            app/backend/requirements.txt
+            app/backend/requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 全量测试
+        run: python -m pytest -q
