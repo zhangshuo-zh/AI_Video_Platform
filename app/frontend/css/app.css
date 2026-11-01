@@ -1161,3 +1161,39 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
     transition-duration:.001ms !important;scroll-behavior:auto !important}
   .mod:hover{transform:none}
 }
+
+/* ---------- W11：文档树分组与 AI 改写弹窗 ---------- */
+/* 分组头比普通 .grp 轻一档：它只是目录层级，不该抢走文档标题的注意力 */
+.tree .doc-group{display:flex;justify-content:space-between;align-items:center;
+  padding:12px 9px 4px;font-size:11px;color:var(--ink-3);letter-spacing:.04em}
+.tree .doc-group:first-child{padding-top:6px}
+
+.ai-ops{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
+.ai-ops .chip{padding:4px 12px;font-size:12.5px}
+.ai-ops .chip:disabled{opacity:.45;cursor:not-allowed}
+
+/* 计价区：一眼能对上"单价 × 用量 ≈ 费用"三行，别让人自己去乘 */
+.ai-price{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;
+  background:var(--field);border:1px solid var(--line);border-radius:10px;
+  padding:12px 14px;margin:4px 0 12px;font-size:12.5px;line-height:1.55}
+.ai-price > div{display:block;min-width:0;line-height:1.6}
+.ai-price .grp{display:block;font-size:11px;color:var(--ink-3);margin-bottom:1px}
+.ai-price b{color:var(--ink);font-weight:600}
+.ai-price .ai-source{grid-column:1 / -1}
+.ai-price .t-bad{color:var(--bad)}
+
+/* 勾选确认是提交的前提：做成整行可点的块，不做一个 13px 的小方框 */
+.ai-confirm{display:flex;gap:9px;align-items:flex-start;margin:2px 0 4px;
+  padding:10px 12px;border:1px solid var(--line);border-radius:9px;
+  background:var(--panel-2);font-size:12.5px;line-height:1.6;color:var(--ink-2);cursor:pointer}
+.ai-confirm input{margin-top:3px;flex:none}
+.ai-confirm:hover{border-color:var(--accent-line)}
+
+.ai-status{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 10px}
+
+/* AI 的 diff 比版本历史长：给一个独立滚动区，头尾都能看到 */
+pre.diff.ai{max-height:min(46vh,420px);overflow:auto;margin:6px 0 2px}
+
+@media (max-width:760px){
+  .ai-price{grid-template-columns:minmax(0,1fr)}
+}

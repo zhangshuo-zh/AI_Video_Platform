@@ -72,6 +72,19 @@ ROUTES = [
     ("DELETE", "/api/documents/{d}/lock", None, 404),
     ("GET", "/api/documents/{d}/versions", None, 404),
     ("GET", "/api/documents/{d}/versions/{c}/diff", None, 404),
+    # ---------- 文档 AI 操作（W11） ----------
+    # 同一口径：文档挂项目，看不见项目就连"这份文档能跑 AI"也不该知道。
+    # 计价那一条用 GET：只是数一遍选中多少字，不花钱、不写库。
+    ("GET", "/api/documents/{d}/ai-options?operation=polish", None, 404),
+    ("POST", "/api/documents/{d}/ai-jobs",
+     {"operation": "polish", "instruction": "", "scope": "document",
+      "start": 0, "end": 0, "selection_text": "",
+      "estimate": {"quantity": 0.01, "unit": "million_token",
+                   "unit_price_micros": 8000000, "currency": "CNY",
+                   "source": "越权探测"},
+      "user_confirmed_cloud": True}, 404),
+    ("GET", "/api/documents/{d}/ai-jobs/{j}", None, 404),
+    ("POST", "/api/documents/{d}/ai-jobs/{j}/apply", None, 404),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
     ("POST", "/api/users", {"username": "zz_probe", "display_name": "", "password": "123456"}, 403),

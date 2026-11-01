@@ -32,6 +32,31 @@ let lockWarn = '';            // 别人持锁的提示
 let dirty = false;            // 有未保存改动
 let locking = false;          // 首次输入时抢锁只发一次
 
+/**
+ * AI 操作（W11）。一次操作只活在一个 `ai` 对象里：
+ *
+ * - 打开弹窗时就把选区抄下来（`start/end/text`）。弹窗盖住正文之后，
+ *   人不能再改选区，偏移必须固定在这份快照上，否则预览与写回会错位。
+ * - `jobId` 一旦拿到就只认它：轮询、预览、应用都带着同一个号，
+ *   页面重绘不会把"正在跑的那一条"弄丢。
+ * - 关弹窗一定清定时器。留着的话，人已经走了，后台还在每 1.5 秒打一次接口。
+ */
+let ai = null;
+const AI_POLL_MS = 1500;
+
+// 前端的操作表只决定"弹窗怎么显示"：能不能做、怎么做，仍由后端
+// docai.OPERATIONS 说了算。scope=document 的两条（起草/续写）在界面上
+// 也不给"选中段落"这个选项，免得选了又被后端悄悄改回全文。
+const AI_OPS = {
+  draft: { label: '起草', scope: 'document', hint: '按标题与要求起一段新正文，应用后替换整篇。' },
+  expand: { label: '扩写', scope: 'any', hint: '把选中的段落写得更充分；没选中就处理全文。' },
+  continue: { label: '续写', scope: 'document', hint: '紧接正文最后一句往后写，应用时追加到文末。' },
+  polish: { label: '润色', scope: 'any', hint: '只改表达与节奏，不改事实和人物口吻。' },
+  scriptify: { label: '剧本化', scope: 'any', hint: '把小说段落改成场景／动作／对白的剧本格式。' },
+  prompt: { label: '提示词', scope: 'any', hint: '从正文提炼镜头提示词，每镜一行。' },
+};
+const AI_TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'needs_attention']);
+
 // 集状态。这一列 0004 建表时就有，但一直没有写入口；项目中心的
 // "已定稿 N/M 集"就是它的聚合，所以入口放在这里——集的东家是创作中心
 const EP_STATUS = { draft: ['草稿', 'gray'], active: ['在产', 'blue'], done: ['定稿', 'green'] };
@@ -138,7 +163,25 @@ async function renderDocs(tab, subRow) {
     </div></div>`;
   }
 
-  const list = docs.map((d) => {
+  // 文档树按"全项目共用 / 第 N 集"分组。列表接口已经按 kind → 集序 → 标题
+  // 排好，这里顺着顺序切组即可，不再自己排一遍（两处排序规则一分叉，
+  // 界面上就会出现"树里顺序和接口顺序不一样"这种没人解释得清的事）。
+  const groups = [];
+  docs.forEach((d) => {
+    const key = d.episode_id == null ? 'all' : String(d.episode_id);
+    let group = groups.find((g) => g.key === key);
+    if (!group) {
+      group = {
+        key,
+        title: d.episode_title ? `第 ${d.episode_seq} 集 · ${d.episode_title}` : '全项目共用',
+        rows: [],
+      };
+      groups.push(group);
+    }
+    group.rows.push(d);
+  });
+
+  const docRow = (d) => {
     const [label, tone] = DOC_STATUS[d.status] || [d.status, 'gray'];
     return `
       <div class="t ${d.id === pickedDocId ? 'on' : ''}" data-doc="${d.id}">
@@ -147,12 +190,17 @@ async function renderDocs(tab, subRow) {
         ${d.lock_holder_name && d.lock_holder_id !== store.user?.id
           ? `<span class="chip amber" title="锁到 ${escapeHtml(d.lock_expires_at)}，超时自己松开">
                ${escapeHtml(d.lock_holder_name)} 在改</span>` : ''}
-        <span class="t-dim" style="float:right">${d.episode_title ? `第 ${d.episode_seq} 集` : '全项目'}
+        <span class="t-dim" style="float:right">
           <button class="btn sm danger" data-del-doc="${d.id}" data-title="${escapeHtml(d.title)}"
                   ${canWrite ? '' : 'disabled'}>删</button>
         </span>
       </div>`;
-  }).join('');
+  };
+
+  const list = groups.map((g) => `
+    <div class="grp doc-group"><span>${escapeHtml(g.title)}</span>
+      <span class="t-dim">${g.rows.length} 份</span></div>
+    ${g.rows.map(docRow).join('')}`).join('');
 
   return `
   <section class="view on">
@@ -174,6 +222,7 @@ async function renderDocs(tab, subRow) {
     </div>
 
     ${newDocModal(project.id)}
+    ${aiModalHtml()}
   </section>`;
 }
 
@@ -193,6 +242,8 @@ function editorHtml(doc) {
             ${Object.entries(DOC_STATUS).map(([key, [text]]) => `
               <option value="${key}"${key === doc.status ? ' selected' : ''}>${text}</option>`).join('')}
           </select>
+          <button class="btn sm" id="doc-ai"
+                  title="起草／扩写／续写／润色／剧本化／提示词；结果先看 diff，确认后才写回">AI 改写</button>
           <button class="btn sm primary" id="doc-save" ${canWrite ? '' : 'disabled'}>保存</button>`
         : `<span class="chip gray" title="只读角色没有编辑文档的权限">${label}</span>`}
         <button class="btn sm" id="doc-hist">版本</button>
@@ -277,6 +328,24 @@ function newDocModal(projectId) {
 function resetEditor() {
   draft = null; draftFor = null; draftVersion = null; serverCopy = null;
   notice = ''; lockWarn = ''; dirty = false; locking = false;
+  closeAi();
+}
+
+/**
+ * AI 弹窗的外壳。里面的内容分两幕：先填要求与确认计价，提交后原地换成
+ * 预览（diff + 应用）。为什么不另开一个弹窗：换窗会让人以为"刚才那一步
+ * 已经写进去了"，而实际上正文此刻一个字都没动。
+ */
+function aiModalHtml() {
+  if (!store.can('doc:write')) return '';
+  return `
+    <div class="modal" id="ai-modal" hidden>
+      <div class="modal-box wide">
+        <div class="modal-head neutral" id="ai-head">AI 改写</div>
+        <div class="modal-body" id="ai-body"></div>
+        <div class="modal-actions" id="ai-actions"></div>
+      </div>
+    </div>`;
 }
 
 function mountDocs(root, tab) {
@@ -524,6 +593,327 @@ function mountDocs(root, tab) {
       listEl.innerHTML = `<p class="t-bad">${escapeHtml(err.message)}</p>`;
     }
   });
+
+  /* ---------- AI 改写（W11） ---------- */
+  const aiModal = root.querySelector('#ai-modal');
+  if (aiModal) {
+    const openAi = async () => {
+      // 有没保存的改动先问一句：AI 以**盘上**正文为基准，
+      // 直接提交再应用，编辑器里那些字会被覆盖，而后端从来没收到过它们。
+      if (dirty && !(await confirmDanger({
+        title: '先保存再做 AI',
+        body: '这一份还有<b>没保存的改动</b>。AI 读的是工作区里那一份；'
+            + '直接开始的话，应用结果时这些改动会被覆盖。',
+        okText: '丢掉改动，继续',
+      }))) return;
+      const start = ta.selectionStart ?? 0;
+      const end = ta.selectionEnd ?? 0;
+      const selected = ta.value.slice(start, end);
+      closeAi();
+      ai = {
+        docId,
+        operation: 'polish',
+        scope: selected.trim() ? 'selection' : 'document',
+        start, end, text: selected,
+        instruction: '',
+        options: null,
+        error: '',
+        jobId: null, preview: null, timer: null, busy: false,
+      };
+      aiModal.hidden = false;
+      paintAiForm(root);
+    };
+    root.querySelector('#doc-ai')?.addEventListener('click', openAi);
+    aiModal.addEventListener('click', (e) => {
+      if (e.target === aiModal) closeAi();
+    });
+    bindModalDismiss(aiModal, closeAi);
+  }
+}
+
+function closeAi() {
+  if (ai?.timer) clearTimeout(ai.timer);
+  ai = null;
+  const modal = document.getElementById('ai-modal');
+  if (modal) modal.hidden = true;
+}
+
+/** 弹窗第一幕：操作、范围、附加要求、计价与确认。 */
+function paintAiForm(root) {
+  const body = root.querySelector('#ai-body');
+  const actions = root.querySelector('#ai-actions');
+  if (!body || !actions || !ai) return;
+  const locked = AI_OPS[ai.operation]?.scope === 'document';
+  body.innerHTML = `
+    <p class="modal-meta">选一种操作，必要时写两句附加要求。提交后先看 diff，
+      <b>确认之前正文不会变</b>；应用时写回工作区并生成一次 Git 提交。</p>
+
+    <span class="modal-label">操作</span>
+    <div class="ai-ops" id="ai-ops">
+      ${Object.entries(AI_OPS).map(([key, info]) => `
+        <button type="button" class="chip ${key === ai.operation ? 'blue' : 'plain'}"
+                data-ai-op="${key}">${info.label}</button>`).join('')}
+    </div>
+
+    <span class="modal-label">处理范围</span>
+    <div class="ai-ops" id="ai-scopes">
+      <button type="button" class="chip plain" data-ai-scope="document">整篇</button>
+      <button type="button" class="chip plain" data-ai-scope="selection"
+              ${ai.text.trim() ? '' : 'disabled title="先在正文里选中一段"'}>选中段落</button>
+    </div>
+    <p class="modal-meta" id="ai-scope-note"></p>
+
+    <label class="modal-label" for="ai-instruction">附加要求（可不填，最多 2000 字）</label>
+    <textarea id="ai-instruction" class="ctl" rows="3" maxlength="2000"
+              placeholder="例如：保留第一人称；对白更口语；不要新增人物">${escapeHtml(ai.instruction)}</textarea>
+
+    <span class="modal-label">这次要花多少钱</span>
+    <div id="ai-price" class="ai-price"><span class="t-dim">正在取计价…</span></div>
+
+    <label class="ai-confirm">
+      <input type="checkbox" id="ai-confirm">
+      <span>我确认这次按供应商计费（文本同样是云端调用，价格以清单为准）</span>
+    </label>
+    <p class="modal-err" id="ai-error">${escapeHtml(ai.error)}</p>`;
+  actions.innerHTML = `
+    <button class="btn" id="ai-cancel">取消</button>
+    <button class="btn primary" id="ai-submit">提交并预览</button>`;
+
+  body.querySelectorAll('[data-ai-op]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      ai.operation = btn.dataset.aiOp;
+      if (AI_OPS[ai.operation].scope === 'document') ai.scope = 'document';
+      ai.options = null;
+      syncAiForm(root);
+      loadAiOptions(root);
+    });
+  });
+  body.querySelectorAll('[data-ai-scope]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      ai.scope = btn.dataset.aiScope;
+      ai.options = null;
+      syncAiForm(root);
+      loadAiOptions(root);
+    });
+  });
+  body.querySelector('#ai-instruction')?.addEventListener('input', (e) => {
+    ai.instruction = e.target.value;
+  });
+  actions.querySelector('#ai-cancel')?.addEventListener('click', closeAi);
+  actions.querySelector('#ai-submit')?.addEventListener('click', () => submitAi(root));
+  syncAiForm(root);
+  loadAiOptions(root);
+}
+
+/** 只改选中态与提示，不重画输入框——重画会把刚写的附加要求洗掉。 */
+function syncAiForm(root) {
+  if (!ai) return;
+  const info = AI_OPS[ai.operation];
+  const locked = info.scope === 'document';
+  root.querySelectorAll('[data-ai-op]').forEach((btn) => {
+    btn.className = `chip ${btn.dataset.aiOp === ai.operation ? 'blue' : 'plain'}`;
+  });
+  root.querySelectorAll('[data-ai-scope]').forEach((btn) => {
+    const on = btn.dataset.aiScope === ai.scope;
+    btn.className = `chip ${on ? 'blue' : 'plain'}`;
+    if (locked && btn.dataset.aiScope === 'selection') btn.disabled = true;
+  });
+  const note = root.querySelector('#ai-scope-note');
+  if (note) {
+    note.textContent = locked
+      ? `${info.label}固定处理整篇：${info.hint}`
+      : (ai.scope === 'selection'
+          ? `只处理选中的 ${charCount(ai.text)} 字：${info.hint}`
+          : `处理整篇 ${charCount(draft ?? '')} 字：${info.hint}`);
+  }
+}
+
+async function loadAiOptions(root) {
+  if (!ai) return;
+  const box = root.querySelector('#ai-price');
+  if (!box) return;
+  const wanted = `${ai.operation}/${ai.scope}/${ai.start}/${ai.end}`;
+  box.innerHTML = '<span class="t-dim">正在取计价…</span>';
+  try {
+    const data = await api.docAiOptions(ai.docId, {
+      operation: ai.operation, scope: ai.scope,
+      start: ai.start, end: ai.end, selection_text: ai.text,
+    });
+    // 期间人又换了操作：这次回来的旧报价不能盖掉新的
+    if (!ai || `${ai.operation}/${ai.scope}/${ai.start}/${ai.end}` !== wanted) return;
+    ai.options = data;
+    box.innerHTML = aiPriceHtml(data);
+    const btn = root.querySelector('#ai-submit');
+    if (btn) btn.disabled = data.health_state !== 'ok';
+  } catch (err) {
+    if (!ai) return;
+    ai.options = null;
+    box.innerHTML = `<span class="t-bad">${escapeHtml('取不到计价：' + err.message)}</span>`;
+    const btn = root.querySelector('#ai-submit');
+    if (btn) btn.disabled = true;
+  }
+}
+
+function aiPriceHtml(o) {
+  const unit = { million_token: '百万 Token', token: 'Token', character: '千字' }[o.unit] || o.unit;
+  const priceYuan = (o.unit_price_micros / 1_000_000).toFixed(2);
+  const costMicros = Math.round(o.estimated_quantity * o.unit_price_micros);
+  const costYuan = (costMicros / 1_000_000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  const tokens = Math.round(o.estimated_quantity * 1_000_000);
+  const health = o.health_state === 'ok'
+    ? '<span class="chip green">可用</span>'
+    : `<span class="chip amber">${escapeHtml(o.health_state)}</span>
+       <span class="t-dim">${escapeHtml(o.health_detail)}</span>`;
+  return `
+    <div><span class="grp">供应商 / 模型</span><b>${escapeHtml(o.provider)} · ${escapeHtml(o.model)}</b></div>
+    <div><span class="grp">健康</span>${health}</div>
+    <div><span class="grp">单价</span><b>¥${priceYuan}</b> / ${escapeHtml(unit)}
+      <span class="t-dim">（清单价）</span></div>
+    <div><span class="grp">本次输入</span><b>${o.chars}</b> 字，输出上限 ${o.max_tokens} token</div>
+    <div><span class="grp">预计用量</span><b>${o.estimated_quantity}</b> ${escapeHtml(unit)}
+      <span class="t-dim">≈ ${tokens.toLocaleString()} token</span></div>
+    <div><span class="grp">预计费用</span><b>¥${costYuan}</b>
+      <span class="t-dim">（${escapeHtml(o.currency)}，向上取整到 0.001）</span></div>
+    <div class="ai-source"><span class="grp">价格来源</span>
+      <span class="t-dim">${escapeHtml(o.source)}</span></div>`;
+}
+
+async function submitAi(root) {
+  if (!ai || ai.busy) return;
+  const errEl = root.querySelector('#ai-error');
+  const setErr = (text) => { if (errEl) errEl.textContent = text; };
+  if (!ai.options) { setErr('计价还没取到，稍等一下再提交'); return; }
+  if (ai.options.health_state !== 'ok') {
+    setErr(`文本 provider 现在不可用：${ai.options.health_detail}`);
+    return;
+  }
+  if (!root.querySelector('#ai-confirm')?.checked) {
+    setErr('先勾选"确认按供应商计费"，再提交');
+    return;
+  }
+  ai.busy = true;
+  const btn = root.querySelector('#ai-submit');
+  if (btn) btn.disabled = true;
+  setErr('');
+  const o = ai.options;
+  try {
+    const job = await api.docAiSubmit(ai.docId, {
+      operation: ai.operation,
+      instruction: ai.instruction,
+      scope: ai.scope,
+      start: ai.start,
+      end: ai.end,
+      selection_text: ai.text,
+      // 数量与单价来自服务端刚才那份报价，人只勾"确认"，不填总价
+      estimate: {
+        quantity: o.estimated_quantity, unit: o.unit,
+        unit_price_micros: o.unit_price_micros, currency: o.currency,
+        source: o.source,
+      },
+      user_confirmed_cloud: true,
+    });
+    ai.jobId = job.job_id;
+    ai.preview = { ...job, can_apply: false, conflict: false, diff: '', content: '',
+                   note: '作业已排队，原文现在一个字都没变。' };
+    paintAiPreview(root);
+    pollAi(root, ai.docId, job.job_id);
+  } catch (err) {
+    setErr(err.message);
+  } finally {
+    if (ai) ai.busy = false;
+    const again = root.querySelector('#ai-submit');
+    if (again) again.disabled = false;
+  }
+}
+
+/** 第二幕：作业状态与 diff。轮询期间每一拍都重画这一块。 */
+function paintAiPreview(root) {
+  const body = root.querySelector('#ai-body');
+  const actions = root.querySelector('#ai-actions');
+  const head = root.querySelector('#ai-head');
+  if (!body || !actions || !ai) return;
+  const p = ai.preview || {};
+  const done = p.status === 'succeeded';
+  const terminal = AI_TERMINAL.has(p.status);
+  if (head) head.textContent = `AI ${p.operation_label || AI_OPS[ai.operation]?.label || '改写'} · 作业 #${ai.jobId}`;
+
+  const tone = p.status === 'succeeded' ? 'green'
+    : p.status === 'failed' || p.status === 'cancelled' ? 'red' : 'blue';
+  body.innerHTML = `
+    <p class="modal-meta">结果先放在这里对照，<b>还没有写进正文</b>。
+      应用后写工作区并生成一次 Git 提交；失败时原文保持不动。</p>
+    <div class="ai-status">
+      <span class="chip ${tone}">${escapeHtml(p.status_label || p.status || '排队中')}</span>
+      ${p.base_version ? `<span class="t-dim">基线 ${escapeHtml(String(p.base_version).slice(0, 18))}…</span>` : ''}
+      ${!terminal ? '<span class="t-dim">worker 正在跑，界面每 1.5 秒问一次</span>' : ''}
+    </div>
+    ${p.note ? `<p class="modal-meta">${escapeHtml(p.note)}</p>` : ''}
+    ${p.error_message ? `<p class="modal-err">${escapeHtml(p.error_message)}</p>` : ''}
+    ${ai.error ? `<p class="modal-err">${escapeHtml(ai.error)}</p>` : ''}
+    ${p.diff ? `<pre class="diff ai" id="ai-diff">${escapeHtml(p.diff)}</pre>` : ''}
+    ${done && p.can_apply ? `<p class="modal-meta">应用后约 ${p.applied_chars} 字
+      （AI 结果 ${p.result_chars} 字，盘上原文 ${p.base_chars} 字）。</p>` : ''}`;
+
+  actions.innerHTML = `
+    <button class="btn" id="ai-close">关闭</button>
+    ${done && p.can_apply ? '<button class="btn primary" id="ai-apply">应用并提交</button>' : ''}
+    ${terminal && !p.can_apply ? '<button class="btn" id="ai-again">改一下再试</button>' : ''}`;
+  actions.querySelector('#ai-close')?.addEventListener('click', closeAi);
+  actions.querySelector('#ai-again')?.addEventListener('click', () => {
+    if (!ai) return;
+    ai.jobId = null; ai.preview = null; ai.error = '';
+    if (root.querySelector('#ai-head')) root.querySelector('#ai-head').textContent = 'AI 改写';
+    paintAiForm(root);
+  });
+  actions.querySelector('#ai-apply')?.addEventListener('click', () => applyAi(root));
+}
+
+async function pollAi(root, docId, jobId) {
+  if (!ai || ai.jobId !== jobId) return;
+  // 人已经切到别的页：这一块 DOM 不在文档里了，继续轮询只会白打接口
+  if (!document.body.contains(root)) { closeAi(); return; }
+  try {
+    const data = await api.docAiJob(docId, jobId);
+    if (!ai || ai.jobId !== jobId) return;
+    ai.preview = data;
+    paintAiPreview(root);
+    if (!AI_TERMINAL.has(data.status)) {
+      ai.timer = setTimeout(() => pollAi(root, docId, jobId), AI_POLL_MS);
+    }
+  } catch (err) {
+    if (!ai || ai.jobId !== jobId) return;
+    ai.error = `查不到作业状态：${err.message}`;
+    paintAiPreview(root);
+  }
+}
+
+async function applyAi(root) {
+  if (!ai || ai.busy || !ai.jobId) return;
+  ai.busy = true;
+  ai.error = '';
+  const btn = root.querySelector('#ai-apply');
+  if (btn) { btn.disabled = true; btn.textContent = '正在写回…'; }
+  try {
+    const out = await api.docAiApply(ai.docId, ai.jobId);
+    const label = out.operation_label || '改写';
+    // 不自己拼"应用后的正文"：让下一次 render 重新读盘。
+    // 把三件缓存清空就够了——服务端那份才是唯一的真相。
+    draft = null; draftFor = null; draftVersion = null;
+    serverCopy = null; dirty = false; lockWarn = '';
+    const short = (out.git_commit || '').slice(0, 8);
+    notice = `AI ${label}已应用并提交${short ? `（${short}）` : ''}`;
+    closeAi();
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+  } catch (err) {
+    ai.busy = false;
+    ai.error = err.status === 423
+      ? `${err.message}。等对方保存或锁过期，再点一次应用。`
+      : err.status === 409
+        ? `${err.message}。原文没有动，重新跑一次更稳。`
+        : err.message;
+    paintAiPreview(root);
+  }
 }
 
 /**

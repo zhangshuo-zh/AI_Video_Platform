@@ -212,6 +212,21 @@ export const api = {
   unlockDocument: (id) => fetch(`/api/documents/${id}/lock`, { method: 'DELETE' }).then(toJson),
   docVersions: (id) => fetch(`/api/documents/${id}/versions`).then(toJson),
   docDiff: (id, commit) => fetch(`/api/documents/${id}/versions/${encodeURIComponent(commit)}/diff`).then(toJson),
+  // 文档 AI（W11）：计价 → 提交 Job → 轮询预览 → 应用。
+  // 选择文字一起带上，服务端拿它做偏移的第二重校验（emoji 会让码点与 UTF-16 差一截）。
+  docAiOptions: (id, body) => fetch(
+    `/api/documents/${id}/ai-options?` + new URLSearchParams({
+      operation: body.operation, scope: body.scope,
+      start: String(body.start ?? 0), end: String(body.end ?? 0),
+      selection_text: body.selection_text || '',
+    })).then(toJson),
+  docAiSubmit: (id, body) => fetch(`/api/documents/${id}/ai-jobs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  docAiJob: (id, jobId) => fetch(`/api/documents/${id}/ai-jobs/${jobId}`).then(toJson),
+  docAiApply: (id, jobId) => fetch(
+    `/api/documents/${id}/ai-jobs/${jobId}/apply`, { method: 'POST' }).then(toJson),
 
   // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
   // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点

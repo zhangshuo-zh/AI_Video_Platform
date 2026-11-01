@@ -734,6 +734,85 @@ class DocContentOut(BaseModel):
     lock_expires_at: str = ""
 
 
+DocAiOperation = Literal["draft", "expand", "continue", "polish", "scriptify", "prompt"]
+
+
+class DocAiOptionsOut(BaseModel):
+    """AI 操作弹窗的计价与路由：provider/模型/计价单位/单价/预计量/健康。
+
+    单价来自 adapter 清单的官方价，不由前端决定；数量按选中字数 + 输出上限
+    估算，前端只负责显示与让用户勾确认。
+    """
+    operation: str
+    operation_label: str
+    provider: str
+    model: str
+    unit: str
+    unit_price_micros: int
+    currency: str
+    source: str
+    max_tokens: int
+    chars: int
+    estimated_quantity: float
+    health_state: str
+    health_detail: str
+    hint: str
+
+
+class DocAiSubmitIn(BaseModel):
+    """提交一次文档 AI 操作。
+
+    `start/end` 是前端选区偏移，`selection_text` 用来做第二重校验；
+    服务端仍以盘上正文为准重新切片。金额必须带确认单与勾选——文本也是云端。
+    """
+    operation: DocAiOperation
+    instruction: str = Field(default="", max_length=2000)
+    scope: Literal["document", "selection"] = "document"
+    start: int = Field(default=0, ge=0, le=2_000_000)
+    end: int = Field(default=0, ge=0, le=2_000_000)
+    selection_text: str = Field(default="", max_length=40000)
+    estimate: JobEstimateIn
+    user_confirmed_cloud: bool = False
+
+
+class DocAiJobOut(BaseModel):
+    job_id: int
+    status: str
+    status_label: str
+    operation: str
+    operation_label: str
+    apply_mode: str
+    base_version: str
+    selection_start: int
+    selection_end: int
+    provider_code: str
+    model_code: str
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class DocAiPreviewOut(BaseModel):
+    """AI 作业的预览。diff 是“盘上正文 → 应用后正文”的统一 diff。"""
+    job_id: int
+    status: str
+    status_label: str
+    operation: str
+    operation_label: str
+    apply_mode: str
+    base_version: str
+    current_version: str
+    can_apply: bool
+    conflict: bool
+    diff: str = ""
+    content: str = ""
+    base_chars: int = 0
+    result_chars: int = 0
+    applied_chars: int = 0
+    note: str = ""
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 class DocSaveOut(BaseModel):
     """保存结果。`changed=false` 表示写的和盘上那份一模一样，没有产生新提交。
 
@@ -745,6 +824,13 @@ class DocSaveOut(BaseModel):
     git_commit: str | None
     changed: bool
     updated_at: str
+
+
+class DocAiApplyOut(DocSaveOut):
+    """应用 AI 结果后回的和保存同一份字段，另带来源作业与操作。"""
+    job_id: int
+    operation: str
+    operation_label: str
 
 
 class DocVersionOut(BaseModel):

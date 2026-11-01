@@ -16,13 +16,16 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 
+import docai
 import gitrepo
 import services
 from access import ensure, ensure_by
 from config import LOCK_MINUTES
 from deps import actor_name, require_permission
-from models import (DocContentIn, DocContentOut, DocDiffOut, DocLockOut, DocStatusIn,
-                    DocumentIn, DocumentOut, DocSaveOut, DocVersionOut, DocumentUpdateIn)
+from models import (DocAiApplyOut, DocAiJobOut, DocAiOptionsOut, DocAiPreviewOut,
+                    DocAiSubmitIn, DocContentIn, DocContentOut, DocDiffOut, DocLockOut,
+                    DocStatusIn, DocumentIn, DocumentOut, DocSaveOut, DocVersionOut,
+                    DocumentUpdateIn)
 from repositories.content import episodes as episode_repo
 from repositories.documents import documents as docs
 from workspace import PathError, path_of
@@ -266,3 +269,102 @@ def version_diff(doc_id: int, commit: str,
         return DocDiffOut(commit=commit, diff=gitrepo.diff(commit, row["rel_path"]))
     except gitrepo.GitError as err:
         raise HTTPException(status_code=404, detail=f"看不到这一版的差异：{err}") from err
+
+
+# ---------- 文档 AI 操作（W11） ----------
+#
+# 四条端点围着同一条 Job 转：计价 → 提交 → 看结果/diff → 应用。
+# 它们都不自己写文件：应用那一步仍走 services.save_content()，
+# 所以版本冲突、编辑锁、Git 提交三道关与手工保存是同一套。
+def _ai_errors(call):
+    """把 AI 那一层的异常翻成 HTTP。六个入口口径一致，不各写一遍。
+
+    `FileNotFoundError` 与 `PathError` 回 409 而不是 404：
+    库里有记录、盘上找不到（或路径越界）是两套事实源对不上，
+    和"这份文档不属于你"不是一回事。
+    """
+    try:
+        return call()
+    except docai.DocAiInvalid as err:
+        raise HTTPException(status_code=422, detail=str(err)) from err
+    except services.DocAiJobMissing as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    except services.Conflict as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    except services.LockHeld as err:
+        raise HTTPException(status_code=423, detail=str(err)) from err
+    except services.DocTooLarge as err:
+        raise HTTPException(status_code=413, detail=str(err)) from err
+    except services.GitSaveFailed as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err
+    except FileNotFoundError as err:
+        raise HTTPException(status_code=409,
+                            detail="工作区里找不到这份正文，先对上文件再做 AI 操作") from err
+    except PathError as err:
+        raise HTTPException(status_code=409,
+                            detail=f"这条文档记录的路径不安全，平台不会碰它：{err}") from err
+
+
+@router.get("/documents/{doc_id}/ai-options", response_model=DocAiOptionsOut)
+def ai_options(doc_id: int, operation: str, scope: str = "document",
+               start: int = 0, end: int = 0, selection_text: str = "",
+               user=Depends(require_permission("doc:read"))) -> DocAiOptionsOut:
+    """弹窗先问这一条：模型、单价、预计用量、健康状态。
+
+    读权限就够：这一步不花钱、不写库，也不会把正文发出去——
+    它只数一遍选中多少字。
+    """
+    row = _load(doc_id, user, "read")
+    data = _ai_errors(lambda: services.doc_ai_options(
+        row, operation, scope, start, end, selection_text))
+    return DocAiOptionsOut(**data)
+
+
+@router.post("/documents/{doc_id}/ai-jobs", response_model=DocAiJobOut,
+             status_code=http_status.HTTP_202_ACCEPTED)
+def create_ai_job(doc_id: int, payload: DocAiSubmitIn,
+                  user=Depends(require_permission("doc:write"))) -> DocAiJobOut:
+    """提交一次 AI 改写。返回 202：作业排队，正文此刻一个字都没动。
+
+    提示词、base_version、选区偏移、apply_mode 全部冻进 Job；
+    模型跑完之后的写回（`/apply`）只认这份快照，不认客户端后来传的正文。
+    """
+    row = _load(doc_id, user, "write")
+    job = _ai_errors(lambda: services.submit_doc_ai_job(
+        row, payload, user["id"], actor_name(user)))
+    return DocAiJobOut(**services.doc_ai_job_view(job))
+
+
+@router.get("/documents/{doc_id}/ai-jobs/{job_id}", response_model=DocAiPreviewOut)
+def get_ai_job(doc_id: int, job_id: int,
+               user=Depends(require_permission("doc:read"))) -> DocAiPreviewOut:
+    """作业跑到哪一步 + 应用后的 diff（成功后才算）。
+
+    前端轮询这一条。文档在 AI 运行期间被改过时 `conflict=true`、
+    `can_apply=false`：偏移已经对不上，宁可让人重跑，也不按旧位置拼回去。
+    """
+    row = _load(doc_id, user, "read")
+    data = _ai_errors(lambda: services.doc_ai_preview(row, job_id))
+    return DocAiPreviewOut(**data)
+
+
+@router.post("/documents/{doc_id}/ai-jobs/{job_id}/apply", response_model=DocAiApplyOut)
+def apply_ai_job(doc_id: int, job_id: int,
+                 user=Depends(require_permission("doc:write"))) -> DocAiApplyOut:
+    """把成功的结果写回正文：写盘 + Git 提交 + 更新元数据，一次原子保存。
+
+    失败的任何一步都不会让正文半新半旧：`save_content` 先写临时文件再
+    `os.replace`，Git 失败会把上一版写回去。版本号只在文件真的落盘后前进。
+    """
+    row = _load(doc_id, user, "write")
+    result = _ai_errors(lambda: services.apply_doc_ai(
+        row, job_id, actor_name(user), user["id"]))
+    saved, ref, job = result["saved"], result["ref"], result["job"]
+    out_row = saved["row"]
+    return DocAiApplyOut(
+        id=out_row["id"], version=saved["version"],
+        git_commit=out_row["git_commit"], changed=saved["changed"],
+        updated_at=out_row["updated_at"], job_id=job["id"],
+        operation=ref["operation"],
+        operation_label=ref.get("operation_label")
+        or docai.operation_label(ref["operation"]))

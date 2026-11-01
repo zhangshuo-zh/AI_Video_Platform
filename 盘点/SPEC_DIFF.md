@@ -351,3 +351,37 @@
 5. **`million_token` 不是自由文本**：单位白名单与前端 `UNITS` 同步加这一档；否则 8 元/百万 token 会写成 0.000008 元的单 token 单价，对账时容易看错。
 
 **本轮改到的文件**：`backend/adapters.py`、`backend/cloud_run.py`（新）、`backend/runners.py`、`backend/worker.py`、`backend/models.py`、`backend/repositories/jobs.py`、`frontend/js/views/generate.js`、`tests/test_cloud.py`（新）、`tests/test_providers.py`、`tests/test_jobs.py`、`tests/test_cost.py`、`tests/test_runners.py`、`盘点/W10_CLOUD.md`（新）、`设计稿.md`、`app/截图/v70-*`。
+
+## 19. W11 完成后回填（2026-11-01）
+
+`pytest tests -q` → **323 passed**（新增 `test_doc_ai.py` 19 项）。路由 **76 条业务端点 / 81 条含 health 与四条 auth**（+4：AI 计价、提交、预览、应用）。真浏览器 CDP **22 项全过**，真 DeepSeek 作业 #38／#39 成功。图在 `app/截图/v71-tree.png`、`v71-ai-form.png`、`v71-ai-diff.png`、`v71-ai-applied.png`、`v71-ai-commit.png`；取数、提示词全文与边界在 `盘点/W11_DOC_AI.md`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| W11「实现/封版小说/剧本/分镜文档树」 | 小说／剧本两页左侧改成**按集分组的树**：全项目共用一组，每个 Episode 一组（组头写“第 N 集 · 标题”与份数），顺序沿用接口的 kind→集序→标题，不在前端另排一遍。**分镜不建 Markdown 文档**：它的真相仍是 `shot` 表，创作中心第三栏就是按集列镜头；再存一份 Markdown 会变成第二个事实来源 |
+| W11「AI 起草/扩写/续写/润色/剧本化/提示词等操作」 | 六种操作全部可用，落点写死在 `docai.OPERATIONS`：起草＝替换整篇、续写＝追加文末；扩写／润色／剧本化／提示词默认只处理选中段落，没选中则整篇。前端弹窗只负责显示，能不能做由后端表决定 |
+| W11「所有实际模型调用用 Job」 | 走 `job` 表，`kind=text`、`execution_mode=cloud`；提示词／`base_version`／选区偏移／`apply_mode` 冻在 Job 行。`kind` 仍是 text——不为一包重建带 CHECK 的整表，归属由 `input_refs` 里的 `doc_id/operation` 回答 |
+| W11「默认 diff 预览 + 用户确认应用」 | 提交回 202，正文不动；GET `/ai-jobs/{id}` 同时回答状态与“盘上正文 → 应用后正文”的统一 diff。作业没成功或版本已变时 `can_apply=false`、不给 diff；只有人点「应用并提交」才 POST `/apply` |
+| W11「写回后 Git commit」 | 应用复用 `services.save_content()`：锁检查→原子写→Git 提交→更新元数据；提交说明「AI 润色：标题（作业 #N）」。真浏览器在版本历史里读到这条，刷新后仍在 |
+| W11「版本状态不能早于实际写文件成功」 | 元数据 `git_commit/updated_at` 只在 commit 成功后写；Git 失败会把上一版写回并另存未应用结果（W05 的那条链原样复用）。作业成功但未应用时，文档版本一个字节都不动 |
+| W11「失败过程保留原文」 | 测试覆盖三条：模型 429 → 作业 failed、预览 `can_apply=false`、正文/版本不变；运行期间被另一个编辑者存过 → 预览 `conflict=true`、应用 409、盘上是他那份；锁在别人手里 → 应用 423、正文不变 |
+| W11「端到端执行‘润色 → 比较 diff → 应用 → Git commit → 校验报告’」 | 真浏览器 22 项：树分组 → 选中第二段 → 弹窗计价（¥8.00/百万 Token、0.005 百万、¥0.04、健康可用）→ 勾确认 → 真 DeepSeek 润色（#39，150 token，632ms）→ 预览 diff（第一段原样、第二段改写）→ 应用 → 版本历史「AI 润色：W11 验收 总纲（作业 #39）」→ 刷新正文仍在 → 同一作业再应用 409。校验报告＝预览 diff＋提交说明＋pytest 全量＋浏览器断言 |
+| 计价与授权 | 文本没有本地合格路线，必须云端；清单单价由服务端给，数量按“输入字数＋输出上限”向上取到 0.001 百万 token；必须勾 `user_confirmed_cloud`，单价/币种/单位与清单不符都 422。**健康不过不建作业**——缺密钥时一次请求都不会发，不该在账上留一行 `pending_reconciliation` |
+| 选区安全 | 前端传偏移加选中文字；服务端拿盘上正文复核。偏移对不上且文字全文唯一才按文字找回，出现多次、空白、找不到都 422；单次输入上限 30,000 字 |
+
+**W11 的边界（别误读成“整条创作流水线都能自动写”）**：
+- **只做文档级改写，不碰分镜表**：剧本化产出的是文本，不会自动拆成 `shot` 行；分镜仍由人维护。
+- **没有多轮对话**：一次操作就是一条独立作业，不保留上下文；想接着改就再跑一次。
+- **不做自动合并**：版本冲突只拒绝，不尝试三方合并。
+- **应用后不重算账单**：实际 token 用量在 `resources_json.provider`，成本仍是提交时那张确认单，账单状态 `pending_reconciliation`。
+- **模型选择固定走文本默认轨**：本机现为 `deepseek/deepseek-flash`；没有“在这份文档里临时换模型”的入口。
+- **文风与事实没法机器校验**：润色只靠提示词约束，平台只保证写回位置、版本与历史，不保证内容质量。
+
+**这一轮真被踩到的问题（都修了/记下了）**：
+1. **计价区用了 flex 列，健康标签被拉成整条**：`.ai-price > div` 从 `flex-direction:column` 改成块级，chip 与“单价／用量”都回到行内。
+2. **预览里同一句提示写了两遍**：通用说明与后端 `note` 撞车，把成功时的 `note` 改成“版本一致，可以应用；写回时仍然过锁与冲突检查”。
+3. **应用接口差点自己拼 `DocSaveOut`**：`save_content()` 返回的是 `{row, version, commit, changed}`，不是模型字段；改为从 `row` 取 `git_commit/updated_at`，否则每次应用 500。
+4. **守卫表的作业 id 写成字面量 1**：路由表那条“没有偷偷变多”的断言按占位符归一后对不上，改成 `{j}`。
+5. **文本默认轨原本没配**：生产库里 text/local 是默认但空着；W11 要求默认轨可用，已把 text/cloud 设为默认（文本无本地路线，这是配置而不是代码兜底）。
+
+**本轮改到的文件**：`backend/docai.py`（新）、`backend/services.py`、`backend/models.py`、`backend/routers/documents.py`、`frontend/js/views/writing.js`、`frontend/js/api.js`、`frontend/css/app.css`、`tests/test_doc_ai.py`（新）、`tests/test_guards.py`、`盘点/W11_DOC_AI.md`（新）、`设计稿.md`、`app/截图/v71-*`。
