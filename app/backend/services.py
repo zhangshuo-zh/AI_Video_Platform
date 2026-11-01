@@ -155,7 +155,10 @@ def create_document(project_id: int, episode_id: int | None, kind: str,
     content = _tend(content)
     if len(content.encode("utf-8")) > DOC_MAX_BYTES:
         raise DocTooLarge(f"正文超过 {DOC_MAX_BYTES // 1024} KB，先分文档再写")
-    rel_path = plan_rel_path(project_id, kind, title, docs.path_taken)
+    # 路径"被占"有两种：库里还有这行，或者这行删了但 Git 历史里还记着这个文件。
+    # 后者也要算占——否则同名重建会接上上一份稿的提交历史（见 gitrepo.path_has_history）
+    rel_path = plan_rel_path(project_id, kind, title,
+                             lambda p: docs.path_taken(p) or gitrepo.path_has_history(p))
     atomic_write(rel_path, content)
     try:
         commit = gitrepo.commit_file(rel_path, f"新建 {kind}：{title}", actor)

@@ -182,6 +182,22 @@ def diff(commit: str, rel_path: str) -> str:
                  "--date=format:%Y-%m-%d %H:%M:%S", commit, "--", rel_path], "平台")
 
 
+def path_has_history(rel_path: str) -> bool:
+    """这条路径在历史里有没有过东西。
+
+    建文档定路径时要用：删掉一篇《取火 第一章》之后再建同名的一篇，
+    DB 里那条行没了、路径也就"空"了，新文档会占回同一个文件——
+    于是它的版本面板里混着上一篇的"新建／删除"提交，读的人会以为
+    自己漏看了什么。宁可排号成 `取火-第一章-2.md`：新稿子就该有一条干净的历史。
+    """
+    if not is_repo():
+        return False
+    try:
+        return bool(_run(["log", "-1", "--format=%H", "--", rel_path], "平台").strip())
+    except GitError:
+        return False      # 仓库坏了不该挡住建文档；路径撞车由 rel_path 的 UNIQUE 兜底
+
+
 def status_line() -> str:
     """给健康检查用的一句话：仓库在不在、HEAD 是什么。只读，不改任何东西。"""
     if not is_repo():

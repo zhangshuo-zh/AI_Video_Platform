@@ -719,12 +719,14 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .tree .grp{font-size:11.5px;color:var(--ink-3);padding:10px 9px 4px;letter-spacing:.04em}
 
 /* ---------- 文档编辑器（W05：正文在工作区，版本在 Git） ---------- */
-/* 正文字号比表单大一档：这是要读长文的地方，12.5px 看三屏就累 */
-.doc-area{
+/* 正文字号比表单大一档：这是要读长文的地方，12.5px 看三屏就累。
+   选择器必须写成 textarea.ctl.doc-area：`textarea.ctl{min-height:66px}` 是
+   「元素+类」，单一 `.doc-area` 压不过它，编辑器会被压回一行高（第一版就是这样）。 */
+textarea.ctl.doc-area{
   display:block;width:100%;min-height:min(56vh,520px);padding:14px 16px;
   font-size:14px;line-height:1.9;letter-spacing:.01em;
 }
-.doc-area[readonly]{color:var(--ink-2);background:var(--hover-soft);cursor:default}
+textarea.ctl.doc-area[readonly]{color:var(--ink-2);background:var(--hover-soft);cursor:default}
 /* 提示条：保存结果 / 别人持锁 / 版本冲突三种共用一个壳。
    文字一律用 --ink，底色与边框才用色彩——红底红字在浅色主题下过不了 AA */
 .bar{

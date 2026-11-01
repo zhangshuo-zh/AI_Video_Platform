@@ -94,6 +94,23 @@ def test_标题重名会排号不报错(as_role, fresh_project):
     assert b["rel_path"].endswith("取火-2.md"), b["rel_path"]
 
 
+def test_删掉再同名重建会排号而不是接上旧历史(as_role, fresh_project):
+    """路径不只看"库里有没有行"，还要看"Git 历史上有没有过这个文件"。
+
+    只看库的话，删掉《取火》再建同名的一篇会占回同一个路径，
+    新文档的版本面板里就混着上一篇的"新建／删除"提交——读的人会以为自己漏看了什么。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    first = _create(c, pid, title="回头再写", content="第一版。")
+    assert c.request("DELETE", f"/api/documents/{first['id']}").status_code == 204
+    again = _create(c, pid, title="回头再写", content="重新开始。")
+    assert again["rel_path"] != first["rel_path"], "同名重建占了同一个文件，历史会串"
+    assert again["rel_path"].endswith("回头再写-2.md"), again["rel_path"]
+    hist = c.get(f"/api/documents/{again['id']}/versions").json()
+    assert len(hist) == 1, [h["subject"] for h in hist]
+
+
 # ---------- 保存与版本 ----------
 
 def test_保存正文会生成新提交(as_role, people, fresh_project):
