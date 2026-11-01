@@ -238,15 +238,19 @@ def test_假适配器只在允许时可用(as_role, clean_queue, seeded, monkeyp
     assert "ALLOW_MOCK" in r.json()["detail"]
 
 
-def test_真适配器只验队列不假装成功(as_role, provider_state, clean_queue, seeded):
+def test_真适配器缺运行时明确失败(as_role, provider_state, clean_queue, seeded,
+                                  monkeypatch):
     admin = as_role("admin")
     _put_video(admin, local={"provider": "fastmetal", "model": "fastmetal-5b-qad",
                              "enabled": True, "is_default": True})
+    # 测试环境不碰真实权重：把 home 指到一个空目录，worker 应该在起进程前
+    # 就以 adapter_unavailable 失败，并说清缺什么，而不是假装跑了模型。
+    monkeypatch.setenv("FASTVIDEO_FASTMETAL_HOME", "/nonexistent/fastvideo-w09-test")
     c = as_role("editor")
     # 不传执行方式/供应商/模型 ⇒ 走默认轨
     r = _submit(c, seeded["project_id"], provider_code="", model_code="",
                 execution_mode=None, params={"width": 704, "height": 1280,
-                                             "frames": 121, "steps": 3})
+                                             "frames": 121})
     assert r.status_code == 202, r.text
     job = r.json()
     assert job["provider_code"] == "fastmetal"
@@ -254,10 +258,10 @@ def test_真适配器只验队列不假装成功(as_role, provider_state, clean_
     worker.run_once("w-real")
     row = jobs.get(job["id"])
     assert row["status"] == "failed"
-    assert row["error_code"] == "adapter_not_ready"
-    assert "W09" in row["error_message"]
+    assert row["error_code"] == "adapter_unavailable"
+    assert "FASTVIDEO_FASTMETAL_HOME" in row["error_message"]
     logs = c.get(f"/api/jobs/{job['id']}/logs").json()
-    assert "adapter_not_ready" in logs["text"]
+    assert "adapter_unavailable" in logs["text"]
 
 
 def test_参数白名单在提交时挡掉(as_role, provider_state, clean_queue, seeded):

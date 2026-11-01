@@ -1038,7 +1038,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
   white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;
 }
 .log-block{max-height:340px}
-.artifact-list{display:grid;gap:6px}
+.artifact-list{display:grid;gap:12px}
 .artifact{
   display:flex;justify-content:space-between;align-items:center;gap:10px;
   padding:8px 11px;border:1px solid var(--line);border-radius:10px;
@@ -1046,6 +1046,16 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 }
 .artifact:hover{border-color:var(--accent-line);background:var(--accent-soft)}
 .artifact i{font-style:normal;font-size:11px;color:var(--ink-3);flex:none}
+.artifact-item{display:grid;gap:8px}
+.artifact-video{width:100%;max-height:420px;border-radius:12px;background:#000;
+  border:1px solid var(--line)}
+.artifact-image{width:100%;max-height:420px;object-fit:contain;border-radius:12px;
+  background:var(--field);border:1px solid var(--line)}
+.artifact-audio{width:100%}
+.cmd-details{margin-top:12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--field);padding:8px 11px}
+.cmd-details summary{cursor:pointer;font-size:12px;color:var(--ink-2)}
+.cmd-details pre{margin:8px 0 0;max-height:180px}
 
 /* ---------- 成本账 ---------- */
 .cost-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));

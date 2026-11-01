@@ -25,3 +25,18 @@ export function setParam(viewId, value) {
 export function getParam(viewId) {
   return params.get(viewId);
 }
+
+// 跨模块的"一次性草稿"：分镜点「生成」时把项目/集/镜/提示词交给生成中心。
+// 不走 params：params 会进地址栏（#generate/0/a[object Object]），
+// 而且刷新后不应该再弹一次提交框——它只是一次交棒。
+let jobPrefill = null;
+
+export function setJobPrefill(value) {
+  jobPrefill = value || null;
+}
+
+export function takeJobPrefill() {
+  const value = jobPrefill;
+  jobPrefill = null;
+  return value;
+}

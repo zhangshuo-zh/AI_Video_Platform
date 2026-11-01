@@ -10,6 +10,7 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
+import { takeJobPrefill } from '../navstate.js';
 
 const STATUS = {
   queued: { label: '排队中', cls: 'gray' },
@@ -30,8 +31,9 @@ const UNITS = {
 const ACTIVE = ['queued', 'starting', 'running', 'cancel_requested'];
 const FINISHED_BAD = ['failed', 'cancelled', 'needs_attention'];
 // 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词
+// 与系统设置页同一套中文，别让同一个 ok 在两页一个叫“可用”一个叫“就绪”
 const HEALTH = {
-  ok: '可用', missing: '缺条件', unknown: '待确认',
+  ok: '就绪', missing: '缺东西', unknown: '未检查',
   unconfigured: '未配置', unregistered: '未登记',
 };
 
@@ -281,6 +283,7 @@ export default {
               <span class="pf-label top" id="jm-cost-label" hidden>预计成本</span>
               <div id="jm-cost" class="gen-cost" hidden></div>
             </div>
+            <p class="modal-meta" id="jm-link"></p>
             <p class="modal-meta" id="jm-hint"></p>
             <p class="modal-err" id="jm-error"></p>
           </div>
@@ -341,6 +344,8 @@ export default {
     let drawerBusy = false;
     let profileProjectId = null;
     let refreshing = false;
+    // 分镜带过来的关联；只对这一次提交生效，关掉弹窗就清
+    let linked = null;
 
     if (pollTimer) clearInterval(pollTimer);
     if (searchTimer) clearTimeout(searchTimer);
@@ -420,6 +425,34 @@ export default {
       drawerBody.innerHTML = '<p class="hint">正在读详情与日志……</p>';
     }
 
+    function metricsHtml(res) {
+      const m = res.adapter_metrics || {};
+      const rows = [];
+      const labels = {
+        prompt_encode_s: '提示词编码', mlx_dit_load_s: '模型加载',
+        mlx_denoise_s: '去噪', vae_decode_export_s: '解码出片',
+        total_s: '模型总耗时', denoise_peak_gb: '去噪峰值显存',
+        load_peak_gb: '加载峰值显存',
+      };
+      Object.entries(labels).forEach(([key, label]) => {
+        const value = m[key];
+        if (value == null) return;
+        rows.push(kv(label, key.endsWith('_gb') ? `${value} GB` : `${Number(value).toFixed(2)} s`));
+      });
+      if (!rows.length) return '';
+      return `<h3 class="drawer-h">模型内部耗时</h3><div class="kv-grid">${rows.join('')}</div>`;
+    }
+
+    function commandHtml(res) {
+      const argv = Array.isArray(res.command) ? res.command : null;
+      if (!argv) return '';
+      const text = argv.map((part) => /\s/.test(part) ? JSON.stringify(part) : part).join(' ');
+      return `<details class="cmd-details">
+        <summary>实际命令（argv 数组，未经过 shell）</summary>
+        <pre class="code-block">${escapeHtml(text)}</pre>
+      </details>`;
+    }
+
     function drawerHtml(job, logs, arts) {
       const res = job.resources || {};
       const price = job.unit_price_micros == null ? '—'
@@ -435,8 +468,10 @@ export default {
         ${kv('确认时间', escapeHtml(job.pricing_snapshot?.confirmed_at || '—'))}` : `
         ${kv('计费', '本地作业不计费（记 0 元）')}
         ${kv('机时', duration(res.wall_ms ?? job.elapsed_ms))}
-        ${kv('CPU', res.cpu_ms == null ? '—' : duration(res.cpu_ms))}
-        ${kv('峰值内存', res.max_rss_kb == null ? '—' : `${Math.round(res.max_rss_kb / 1024)} MB`)}`;
+        ${kv('worker CPU', res.cpu_ms == null ? '—' : duration(res.cpu_ms))}
+        ${kv('模型子进程 CPU', res.child_cpu_ms == null ? '—' : duration(res.child_cpu_ms))}
+        ${kv('worker 峰值内存', res.max_rss_kb == null ? '—' : `${Math.round(res.max_rss_kb / 1024)} MB`)}
+        ${kv('子进程峰值内存', res.child_max_rss_kb == null ? '—' : `${Math.round(res.child_max_rss_kb / 1024)} MB`)}`;
 
       const err = job.error_code ? `<div class="drawer-err">
         <b>${escapeHtml(job.error_code)}</b>
@@ -446,11 +481,26 @@ export default {
         FINISHED_BAD.includes(job.status) ? `<button class="btn primary" data-retry="${job.id}">重试（新建一行）</button>` : '',
       ].filter(Boolean).join('');
 
-      const artifacts = (arts || []).length ? arts.map((a, i) => `
-        <a class="artifact" href="${api.jobArtifactUrl(job.id, i)}" target="_blank" rel="noopener">
-          <span>${escapeHtml(a.path.split('/').pop() || a.path)}</span>
-          <i>${a.exists ? `${(a.size / 1024).toFixed(1)} KB` : '文件已不在'}</i>
-        </a>`).join('') : '<p class="hint">还没有产物。</p>';
+      const artifacts = (arts || []).length ? arts.map((a, i) => {
+        const name = a.path.split('/').pop() || a.path;
+        const url = api.jobArtifactUrl(job.id, i);
+        const ext = name.split('.').pop().toLowerCase();
+        let preview = '';
+        if (a.exists && /^(mp4|webm|mov|m4v)$/.test(ext)) {
+          preview = `<video class="artifact-video" controls preload="metadata" src="${url}"></video>`;
+        } else if (a.exists && /^(png|jpg|jpeg|webp|gif)$/.test(ext)) {
+          preview = `<img class="artifact-image" src="${url}" alt="${escapeHtml(name)}" loading="lazy">`;
+        } else if (a.exists && /^(mp3|wav|m4a|flac|ogg)$/.test(ext)) {
+          preview = `<audio class="artifact-audio" controls preload="metadata" src="${url}"></audio>`;
+        }
+        return `<div class="artifact-item">
+          <a class="artifact" href="${url}" target="_blank" rel="noopener">
+            <span>${escapeHtml(name)}</span>
+            <i>${a.exists ? `${(a.size / 1024).toFixed(1)} KB` : '文件已不在'}</i>
+          </a>
+          ${preview}
+        </div>`;
+      }).join('') : '<p class="hint">还没有产物。</p>';
 
       return `
         <div class="drawer-actions">${actions || '<span class="hint">已结束，可关闭。</span>'}</div>
@@ -475,6 +525,8 @@ export default {
         <pre class="code-block">${escapeHtml(job.prompt_snapshot || '（无）')}</pre>
         <h3 class="drawer-h">参数快照</h3>
         <pre class="code-block">${escapeHtml(JSON.stringify(job.params || {}, null, 2))}</pre>
+        ${metricsHtml(res)}
+        ${commandHtml(res)}
         <h3 class="drawer-h">日志</h3>
         <pre class="code-block log-block">${escapeHtml(logs?.text || '还没有日志。')}</pre>
         <h3 class="drawer-h">产物</h3>
@@ -715,6 +767,12 @@ export default {
     async function openJobModal(prefill) {
       jobModal.hidden = false;
       root.querySelector('#jm-error').textContent = '';
+      linked = (prefill?.episodeId || prefill?.shotId)
+        ? { episodeId: prefill.episodeId || null, shotId: prefill.shotId || null } : null;
+      const linkEl = root.querySelector('#jm-link');
+      linkEl.textContent = linked
+        ? `关联：${linked.episodeId ? `集 ${linked.episodeId}` : ''}${linked.episodeId && linked.shotId ? ' · ' : ''}${linked.shotId ? `镜 ${linked.shotId}` : ''}（提交后不改镜头内容）`
+        : '';
       const projectSel = root.querySelector('#jm-project');
       const preferred = prefill?.projectId || state.projectId || store.currentId || '';
       projectSel.innerHTML = store.projects.map((p) =>
@@ -738,6 +796,8 @@ export default {
 
     function closeJobModal() {
       jobModal.hidden = true;
+      linked = null;
+      root.querySelector('#jm-link').textContent = '';
     }
 
     function readParams() {
@@ -769,6 +829,8 @@ export default {
         project_id: projectId, capability, prompt,
         params: readParams(), input_refs: [],
       };
+      if (linked?.episodeId) body.episode_id = linked.episodeId;
+      if (linked?.shotId) body.shot_id = linked.shotId;
       if (mode !== 'default') {
         const option = selectedOption();
         if (!option) { errEl.textContent = '这一轨没有可用槽位。'; return; }
@@ -1109,6 +1171,10 @@ export default {
         state.optionsError = err.message;
       }
       await refresh({ quiet: true });
+      // 从分镜点「生成」过来：打开提交框并预填。只消费一次，
+      // 刷新页面不会再弹；参数仍走服务端白名单与默认轨。
+      const prefill = takeJobPrefill();
+      if (prefill) await openJobModal(prefill);
     })();
 
     pollTimer = setInterval(() => {

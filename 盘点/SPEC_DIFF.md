@@ -280,3 +280,40 @@
 5. **刷新失败弹 alert 会堵死页面**：提交后一次 500 触发 `alert`，主线程阻塞，CDP 与“重试”都点不到；改成页内错误条。
 
 **本轮改到的文件**：`migrations/0016_cost_profile.sql`、`backend/models.py`、`backend/services.py`、`backend/repositories/jobs.py`、`backend/repositories/profiles.py`（新）、`backend/routers/jobs.py`、`backend/routers/profiles.py`（新）、`backend/routers/settings.py`、`backend/repositories/projects.py`、`backend/jobfiles.py`、`backend/worker.py`、`backend/main.py`、`frontend/js/api.js`、`frontend/js/util.js`、`frontend/js/modules.js`、`frontend/js/views/generate.js`、`frontend/js/views/projects.js`、`frontend/js/views/system-config.js`、`frontend/css/app.css`、`tests/conftest.py`、`tests/test_guards.py`、`tests/test_jobs.py`、`tests/test_cost.py`（新）、`tests/test_profiles.py`（新）。
+
+## 17. W09 完成后回填（2026-11-01）
+
+`pytest tests -q` → **281 passed**（新增 `test_runners.py` 9 项：argv 数组、提示词原样、缺权重、运行时探测与健康同口径、选了 provider 没填模型、mflux CLI、I2V 条件图边界、产物魔数、metrics 摘要）。路由不变：**72 条业务端点 / 77 条含 health 与四条 auth**。真浏览器 **22 项全过**（分镜 → 预填 → 入队 → 成功 → 产物可读 → 机时/内部耗时）＋补证 **5 项**（播放器首帧、系统设置健康、项目中心），图与视频在 `app/截图/v69-*.png`、`v69-baseline.mp4`；基准细节在 `盘点/W09_BASELINE.md`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| W09「按真实仓库与模型权重完成 FastMetal T2V」 | **已跑通**：`fastmetal-1.3b-qad`，640×352/81 帧/3 步 DMD/`--fast-spatial`/seed 1024，墙钟 28.2s、峰值 2.39GB、265KB H.264 |
+| W09「mlx-video I2V（符合实际支持能力的模型档）」 | 命令已按 README 接好（`python -m mlx_video.wan_2.generate --model-dir ... --image ...`），**本机没有仓库/转换权重**，健康回“缺条件”；不假装出图 |
+| W09「mflux image」 | 命令已按 CLI 接好（`mflux-generate --model schnell ... --output`），**本机没有 mflux-generate**，健康回“缺条件”；不假装出图 |
+| W09「适配器只起 CLI 子进程」 | `worker.py` 用 `subprocess.Popen(argv, shell=False)`；提示词是独立 argv 元素，不做字符串拼接 |
+| W09「返回规范化 Job 结果」 | 成功只登记经过魔数/非空校验的产物相对路径；失败归一为 `adapter_unavailable`／`adapter_start_failed`／`adapter_failed`／`empty_output` |
+| W09「浏览器分镜选择 → Job 入队」 | 分镜行「生成」→ navstate 一次性草稿 → 生成中心预填项目/集/镜/提示词 → 提交带 `episode_id`/`shot_id` |
+| W09「产物登记/可预览」 | 详情抽屉里 mp4 内联播放器（实测元数据 640×352、5.06s、无解码错误）、图片/音频各自预览 |
+| W09「成本/耗时记录」 | 本地 0 元/不计费；`resources_json` 记 worker CPU 307ms、子进程 CPU 8.6s、子进程峰值 2038MB、墙钟 28.2s；模型内部 提示词编码 0.01s / 去噪 19.09s / 解码 2.97s |
+| W09「至少一个可复现成功基准」 | ✅ 作业 #35；SHA-256 `b73eb88929d57499a3a48a2902e17dfa1ae08fe7190daefeac9c15b3376468b0` |
+| W06 健康检查「本地只看目录在不在」 | 升级为逐项探测：解释器、入口脚本、模型四件套；mlx-video 还查包与 `config.json`，mflux 查可执行文件。仍不加载权重 |
+| W06 清单“1.3B 入口只有 --fast” | **旧说法错误**：1.3B 入口同样有 `--fast-spatial`/`--fast`/`--refine`；v0.69 按 `--help` 复核并实测 `--fast-spatial` |
+| W06 清单 1.3B 默认 448×832/77 | 改为 640×352/81；832×480/81 在 16GB M4 Air 上解码 OOM（作业 #33） |
+| W08 边界「真适配器照旧 adapter_not_ready」 | 已结束：真适配器缺运行时回 `adapter_unavailable` 并说清缺哪件；有运行时则真跑 |
+
+**W09 的边界（别误读成“三档都能出片了”）**：
+- 只有 FastMetal 1.3B 在这台机器上有权重并跑通；5B 权重不在本机。
+- mlx-video 与 mflux 的命令构造、健康检查、失败归一都做了，但**本机没有运行时/权重**，所以没有它们的真实产物；装好后不需要改 worker。
+- `--fast-spatial` 是 320×176 去噪+解码再上采样，**属于预览档，不是交付画质**；成片档要等 M5 Ultra 96GB 或全分辨率解码。
+- `--fast`（RIFE）与 `--refine` 未实测；视频画质没有做主观评分。
+- 云端仍不接、不发起任何调用；W10 才做云端 adapter 与显式授权。
+- 分镜 `shot.status` 仍未由 Job 自动改写：W12 要把“多 Job 对一个镜头”的状态展示做对，不能现在先写一个单值状态机。
+
+**这一轮真被踩到的五个问题（都修了/记下了）**：
+1. **832×480/81 帧解码 OOM**：去噪三步都跑完，TAEHV 解码 `Insufficient Memory`；降到 640×352/81 仍 OOM。改成默认 `--fast-spatial`（半分辨率解码后上采样）后 28.2 秒完成。默认值与提示写进清单，避免下一个人再撞。
+2. **清单把 1.3B 的 `--fast-spatial` 写没了**：旧文案说“三个开关只在 5B 入口齐备”，1.3B 的 argparse 里明明有。按 `--help` 复核后纠正；这也是第一条成功基准能跑起来的前提。
+3. **`steps` 是假旋钮**：FastMetal 1.3B 走 DMD 固定 3 步，传 `--num-inference-steps 1` 仍打印 3 步；清单删掉 `steps`，不摆一个不生效的参数。
+4. **I2V 条件图的路径边界**：相对路径只允许落在本作业目录，`../` 与符号链接 resolve 后再比对；没有真实资产选择器之前，界面提交 I2V 会明确回“需要条件图”。
+5. **无头 Chrome 的媒体时钟不推进**：`play()`/seek 都停在 0，但 `<video>` 元数据可读、首帧已画、`error=0`。不把“无头浏览器不播”当产品缺陷；可预览的凭据改为元数据+首帧截图，真机播放器仍用原生控件。
+
+**本轮改到的文件**：`backend/runtime.py`（新）、`backend/runners.py`（新）、`backend/adapters.py`、`backend/worker.py`、`backend/config.py`（未改常量，沿用 JOBS_DIR）、`run.sh`、`frontend/js/navstate.js`、`frontend/js/views/writing.js`、`frontend/js/views/generate.js`、`frontend/css/app.css`、`tests/test_jobs.py`、`tests/test_runners.py`（新）、`盘点/W09_BASELINE.md`（新）、`设计稿.md`、`app/截图/v69-*`。

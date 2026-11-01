@@ -1,7 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
-import { getParam, getSub, setParam, setSub } from '../navstate.js';
+import { getParam, getSub, setJobPrefill, setParam, setSub } from '../navstate.js';
 import { closeDetail, openDetail } from '../router.js';
 
 /**
@@ -644,7 +644,12 @@ async function renderShots(tab, subRow) {
         <td class="num">${s.duration}s</td>
         <td><span class="chip ${s.status === 'done' ? 'green' : s.status === 'failed' ? 'red' : 'gray'}">${
           { todo: '待生成', queued: '排队中', done: '已出片', failed: '失败' }[s.status] || s.status}</span></td>
-        <td class="r"><button class="btn sm danger" data-del-shot="${s.id}">删除</button></td>
+        <td class="r">
+          <button class="btn sm" data-gen-shot="${s.id}"
+                  data-shot-summary="${escapeHtml(s.summary)}"
+                  data-shot-prompt="${escapeHtml(s.prompt || '')}">生成</button>
+          <button class="btn sm danger" data-del-shot="${s.id}">删除</button>
+        </td>
       </tr>`).join('');
 
     return `
@@ -789,6 +794,21 @@ function mountShots(root) {
       createBtn.addEventListener('click', addShot);
       summaryEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') addShot(); });
     }
+
+    // 分镜 → 生成中心：把项目/集/镜/提示词一次交棒，不在这一页开第二个提交框。
+    // 走 navstate 的一次性草稿而不是地址栏参数：刷新后不应该再弹一次。
+    root.querySelectorAll('[data-gen-shot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setJobPrefill({
+          projectId: store.currentId,
+          episodeId: pickedEpisodeId,
+          shotId: Number(btn.dataset.genShot),
+          capability: 'video',
+          prompt: (btn.dataset.shotPrompt || '').trim() || btn.dataset.shotSummary || '',
+        });
+        window.dispatchEvent(new CustomEvent('app:go', { detail: 'generate' }));
+      });
+    });
 
     root.querySelectorAll('[data-del-shot]').forEach((btn) => {
       btn.addEventListener('click', async () => {

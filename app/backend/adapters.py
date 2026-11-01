@@ -1,4 +1,4 @@
-"""Adapter 能力清单（W06）。
+"""Adapter 能力清单（W06 建立，W09 接执行）。
 
 这张表回答的是"平台**凭什么**认为某个 provider 能用哪些参数"。
 
@@ -9,8 +9,10 @@
 
 三条边界，改这张表之前先读：
 
-1. **这里不执行任何模型**。W06 只做能力清单，health_check 也只看"运行时
-   目录在不在、密钥变量有没有值"，不加载权重、不发网络请求。
+1. **这里不执行任何模型**。清单与健康只回答"凭什么认为它能用、缺什么"。
+   W09 起健康检查从"运行时目录在不在"升级为 `runtime.py` 的逐项探测
+   （解释器、入口脚本、权重、CLI），仍然不加载权重、不发网络请求；
+   真起子进程的是 `worker.py` + `runners.py`。
 2. **本地运行时路径必须由环境变量给**（`FASTVIDEO_<CODE>_HOME`）。写死
    /Users/... 会让部署到 Studio 后健康检查永远显示"坏"；给不出来就诚实地
    回 unknown，而不是假装 ok。
@@ -21,7 +23,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
+import runtime
 
 
 @dataclass(frozen=True)
@@ -105,31 +107,37 @@ _FASTMETAL = Adapter(
     aliases=("fast-video", "fastvideo"),
     home_env="FASTVIDEO_FASTMETAL_HOME",
     params_source="FastVideo 1.3B/5B 入口的脚本参数表",
-    note="只有 T2V；I2V/TI2V 不在这个运行时里。",
+    note="只有 T2V；I2V/TI2V 不在这个运行时里。DMD 固定 3 步，清单不摆假的步数旋钮。",
     models=(
         ModelSpec(
             code="fastmetal-1.3b-qad",
             label="1.3B QAD（迭代）",
-            note="入口 mlx_wan_prompt_to_video.py 只有 --fast 一个加速开关。",
+            note="入口 mlx_wan_prompt_to_video.py；默认 640×352、81 帧、3 步 DMD。"
+                 "16GB M4 Air 上 832×480/81 帧与 640×352/81 帧都会在 TAEHV 解码段 OOM"
+                 "（W09 实测），所以默认开 --fast-spatial：按 320×176 去噪+解码再上采样。",
             params=(
-                Param("width", "int", 448, 64, 1920, 16),
-                Param("height", "int", 832, 64, 1920, 16),
-                Param("frames", "int", 77, 1, 257),
-                Param("steps", "int", 3, 1, 50),
-                Param("seed", "int", None, 0, 2147483647),
+                Param("width", "int", 640, 64, 1920, 16,
+                      note="16GB 机器建议 640；832 会在解码段 OOM"),
+                Param("height", "int", 352, 64, 1920, 16,
+                      note="与 width 一起决定显存；352×640 已实测"),
+                Param("frames", "int", 81, 1, 257,
+                      note="81 帧 @16fps ≈ 5 秒；必须是 4n+1"),
+                Param("seed", "int", 1024, 0, 2147483647),
                 Param("fast", "bool", False),
+                Param("fast_spatial", "bool", True,
+                      note="默认开：半分辨率去噪+解码后上采样；16GB 机器关掉会在 81 帧 OOM"),
             ),
         ),
         ModelSpec(
             code="fastmetal-5b-qad",
             label="5B QAD（批量成片）",
-            note="--fast-spatial 与 --refine 互斥；--fast 可与之组合。",
+            note="入口 mlx_wan22_generate.py；默认 832×448、121 帧。"
+                 "--fast-spatial 与 --refine 互斥；--fast 可与之组合。",
             params=(
-                Param("width", "int", 704, 64, 1920, 16),
-                Param("height", "int", 1280, 64, 1920, 16),
+                Param("width", "int", 832, 64, 1920, 16),
+                Param("height", "int", 448, 64, 1920, 16),
                 Param("frames", "int", 121, 1, 257),
-                Param("steps", "int", 3, 1, 50),
-                Param("seed", "int", None, 0, 2147483647),
+                Param("seed", "int", 1234, 0, 2147483647),
                 Param("fast_spatial", "bool", False),
                 Param("fast", "bool", False),
                 Param("refine", "bool", False),
@@ -455,16 +463,14 @@ def health(row) -> dict:
         return {**base, "state": "missing",
                 "detail": f"环境变量 {env} 没有值；改完要重启服务"}
 
-    home_env = adapter.home_env
+    # 本地不再只看"目录在不在"：W09 真要起子进程，解释器、入口脚本、
+    # 权重四件套缺一件都得提前说清。runtime.py 只做文件系统检查，不加载权重。
     base["key_env"] = ""
-    home = (os.environ.get(home_env) or "").strip() if home_env else ""
-    if not home:
-        return {**base, "state": "unknown",
-                "detail": f"设 {home_env} 指向运行时目录后才会检查"}
-    if Path(home).exists():
-        return {**base, "state": "ok",
-                "detail": "运行时目录在；权重是否就绪要到第一条作业才验"}
-    return {**base, "state": "missing", "detail": f"{home_env} 指向的目录不存在"}
+    model = (row["model"] or "").strip()
+    if not model:
+        return {**base, "state": "missing", "detail": "选了 provider 但还没填模型档"}
+    checked = runtime.probe(adapter.code, model)
+    return {**base, "state": checked.state, "detail": checked.detail}
 
 
 def manifest_payload() -> dict:

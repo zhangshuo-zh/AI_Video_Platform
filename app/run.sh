@@ -16,6 +16,13 @@ cd "$(dirname "$0")/backend"
 HOST="${FASTVIDEO_HOST:-127.0.0.1}"
 PORT="${FASTVIDEO_PORT:-8000}"
 
+# 本机已有 FastVideo 仓库时给 W09 的 FastMetal adapter 一个默认运行时。
+# 这不是写死路径：只是 $HOME/FastVideo 存在才取，换机器/换目录用环境变量覆盖。
+# API 与 worker 都要带上，否则系统设置页和实际执行会看到两个答案。
+if [ -z "${FASTVIDEO_FASTMETAL_HOME:-}" ] && [ -d "$HOME/FastVideo" ]; then
+  export FASTVIDEO_FASTMETAL_HOME="$HOME/FastVideo"
+fi
+
 if [ "${1:-}" = "stop" ]; then
   # worker 是独立进程，stop 必须两样一起收：只停 API 会让队列不再前进，
   # 看起来像"作业卡住了"，其实是没人干活。
