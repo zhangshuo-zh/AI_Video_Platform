@@ -7,6 +7,8 @@
 看不见的项目一律回 404，不泄露它存在；看得见但级别不够的事（协作人想删项目）
 才回 403。
 """
+import sqlite3
+
 from fastapi import HTTPException
 
 from db import get_conn
@@ -56,8 +58,35 @@ def ensure(user, project_id: int, need: str = "read"):
 
 
 def ensure_by(kind: str, target_id: int, user, need: str = "read", label: str = "对象"):
-    """给用 episode／shot／asset 的 id 定位的端点用：先绕回项目再判。"""
+    """给用 episode／shot 的 id 定位的端点用：先绕回项目再判。
+
+    资产不走这里——全局资产的 project_id 是 NULL，绕不回任何项目，
+    用这个函数会把"改一条全局资产"错判成 404。资产用 `ensure_asset`。
+    """
     project_id = project_of(kind, target_id)
     if project_id is None:
         raise HTTPException(status_code=404, detail=f"{label}不存在")
     return ensure(user, project_id, need)
+
+
+def ensure_asset(asset_id: int, user, need: str = "read") -> sqlite3.Row:
+    """资产这一层单独判，因为资产现在可以不属于任何项目（全局资产池）。
+
+    规则照开发指令 §5.3：全局资产人人可读，**能看绝不等于能改**——
+    写与删只放管理员；项目资产仍走"权限点 × 项目归属"那一套。
+    全局资产回 403 而不是 404 是有意的：它本来就对所有人可见，
+    藏它反而会让界面上"看得见却报不存在"，说不清。
+    """
+    with get_conn() as conn:
+        row = conn.execute("SELECT id, project_id, name FROM asset WHERE id = ?",
+                           (asset_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    if row["project_id"] is None:
+        if need == "read":
+            return row
+        if not is_manager(user):
+            raise HTTPException(status_code=403, detail="全局资产只有管理员能修改或删除")
+        return row
+    ensure(user, row["project_id"], need)
+    return row

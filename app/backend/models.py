@@ -219,28 +219,67 @@ class AssetIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     summary: str = Field(default="", max_length=500)
     consistency_prompt: str = Field(default="", max_length=1000)
-    ref_images: list[str] = []
+    aliases: list[str] = []
+    tags: list[str] = []
+    # 归属范围：project = 当前项目，global = 全局资产池。
+    # 写全局要管理员（routers/content.py 里判），读不要——指令 §5.3「能查看不等于能修改」。
+    scope: Literal["project", "global"] = "project"
 
 
 class AssetOut(BaseModel):
     id: int
-    project_id: int
+    project_id: int | None
     kind: str
     kind_label: str
     name: str
     summary: str
     consistency_prompt: str
+    aliases: list[str] = []
+    tags: list[str] = []
     ref_images: list[str]
     status: str
+    # 详情页要摆"创建／最后修改"两个时间。第一次截图里它们是 undefined——
+    # 模板用了字段而 schema 没带出来，这类错只有真渲染才会露出来
+    created_at: str
+    updated_at: str
+    # 卡片那一格"关联 N 镜"与详情页的引用清单都靠它，列表 SQL 里一次带出，
+    # 不给每个资产再跑一趟反查（N+1）
+    ref_shot_count: int = 0
 
     @classmethod
     def from_row(cls, row) -> "AssetOut":
+        keys = row.keys()
         return cls(id=row["id"], project_id=row["project_id"], kind=row["kind"],
                    kind_label=ASSET_KINDS.get(row["kind"], row["kind"]),
                    name=row["name"], summary=row["summary"],
                    consistency_prompt=row["consistency_prompt"],
+                   aliases=json.loads(row["aliases"] or "[]") if "aliases" in keys else [],
+                   tags=json.loads(row["tags"] or "[]") if "tags" in keys else [],
                    ref_images=json.loads(row["ref_images"] or "[]"),
-                   status=row["status"])
+                   status=row["status"],
+                   created_at=row["created_at"], updated_at=row["updated_at"],
+                   ref_shot_count=(row["ref_shot_count"] or 0)
+                   if "ref_shot_count" in keys else 0)
+
+
+class AssetCoverIn(BaseModel):
+    """设封面：把这条路径挪到 ref_images 的第一位。
+
+    只收已登记在该资产下的路径，收不到别的——所以它不能用来把任意文件指成图片。
+    """
+    path: str = Field(min_length=1, max_length=300)
+
+
+class AssetShotOut(BaseModel):
+    """引用这个资产的镜头。详情页与删除保护共用这一份清单。"""
+    shot_id: int
+    seq: int
+    summary: str
+    episode_id: int
+    episode_seq: int
+    episode_title: str
+    project_id: int
+    project_name: str
 
 
 # ---------- 用户与角色（系统设置页） ----------

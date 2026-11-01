@@ -1,170 +1,339 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run } from '../util.js';
-import { getSub, setSub } from '../navstate.js';
+import { getParam, getSub, setSub } from '../navstate.js';
+import { openDetail } from '../router.js';
+import { renderDetail, mountDetail } from './asset-detail.js';
 
 /**
- * 资产中心：角色 / 场景 / 物品。
- * 定妆图现在只填路径，等文件上传做了再换成上传。
+ * 资产中心：角色／场景／道具的东家。
+ *
+ * 这一页同时是详情的入口：地址带 `a<id>` 时（#assets/1/a57）把渲染与绑事件
+ * 整个交给 asset-detail.js。分发放在这里而不是往路由注册表里再塞一个 id，
+ * 因为"资产这一层的路由归谁"应该只有一个答案——侧栏高亮、二级标签、
+ * 深链格式全都是它的私有细节，多一个注册 id 就多一处要和它们对齐的地方。
  */
 const KINDS = [
   { code: '', label: '全部' },
   { code: 'character', label: '角色' },
   { code: 'scene', label: '场景' },
-  { code: 'prop', label: '物品' },
+  { code: 'prop', label: '道具' },
 ];
 
-const kindIndex = () => getSub('assets') ?? 0;
+const SCOPE_LABELS = { all: '全部范围', project: '本项目', global: '全局池' };
+const COMPLETE_LABELS = { '': '全部状态', noimg: '缺参考图', noprompt: '缺一致性提示词' };
+
+// 筛选状态放模块级：切分类不清空搜索词（指令 §3.1-B 明写"保留搜索词与其他条件"），
+// 批量操作后整页重画也要还在。和项目中心 v0.57 同一条纪律。
+let keyword = '';
+let scope = 'all';
+let complete = '';
+let sortBy = 'updated';
+let lastError = '';
+
+const kindCode = () => (KINDS[getSub('assets') ?? 0] || KINDS[0]).code;
+
+/** 完善状态：缺图／缺提示词。口径只在这里算一次，卡片与统计共用。 */
+function gaps(a) {
+  return { noImg: !a.ref_images.length, noPrompt: !a.consistency_prompt.trim() };
+}
+
+function matches(a) {
+  const kw = keyword.trim().toLowerCase();
+  if (kw) {
+    const hay = [a.name, ...a.tags, ...a.aliases, a.summary, a.consistency_prompt]
+      .join(' ').toLowerCase();
+    if (!hay.includes(kw)) return false;
+  }
+  const g = gaps(a);
+  if (complete === 'noimg' && !g.noImg) return false;
+  if (complete === 'noprompt' && !g.noPrompt) return false;
+  return true;
+}
+
+function coverOf(a) {
+  return a.ref_images.length ? `/files/${a.ref_images[0]}` : '';
+}
+
+/** 类型占位图：没有参考图时卡片不能是一块死白。用线性图标而不是汉字（外观纪律）。 */
+function kindIcon(kind) {
+  const paths = {
+    character: '<circle cx="12" cy="8" r="3.4"/><path d="M5.5 20c.6-3.8 3.3-5.8 6.5-5.8s5.9 2 6.5 5.8"/>',
+    scene: '<path d="M3 17l5-6 3.5 4L15 11l6 6"/><rect x="3" y="4.5" width="18" height="15" rx="2"/>',
+    prop: '<path d="M12 3.5l7 4.2v8.6l-7 4.2-7-4.2V7.7z"/><path d="M12 12l7-4.3M12 12v8.5M12 12L5 7.7"/>',
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+    stroke-linecap="round" aria-hidden="true">${paths[kind] || paths.prop}</svg>`;
+}
+
+function cardHtml(a) {
+  const g = gaps(a);
+  const isGlobal = a.project_id === null;
+  const badge = g.noImg || g.noPrompt
+    ? `<span class="chip amber">${g.noImg && g.noPrompt ? '缺图与提示词'
+        : g.noImg ? '缺参考图' : '缺提示词'}</span>`
+    : '<span class="chip green">完整</span>';
+  return `
+    <div class="asset-card" data-open="${a.id}" title="打开 ${escapeHtml(a.name)}">
+      <div class="asset-cover">
+        ${coverOf(a)
+          ? `<img src="${coverOf(a)}" alt="${escapeHtml(a.name)} 的封面" loading="lazy"
+                 data-preview="${coverOf(a)}">`
+          : `<span class="asset-noimg">${kindIcon(a.kind)}</span>`}
+        ${isGlobal ? '<span class="asset-scope">全局</span>' : ''}
+      </div>
+      <div class="asset-body">
+        <button class="asset-title" data-open="${a.id}">${escapeHtml(a.name)}</button>
+        <div class="asset-tags">
+          <span class="chip plain">${a.kind_label}</span>
+          ${(a.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join('')}
+          ${(a.tags || []).length > 3 ? `<span class="chip gray">＋${a.tags.length - 3}</span>` : ''}
+        </div>
+        <p class="asset-sum">${escapeHtml(a.summary || (a.aliases.length
+          ? '别名 ' + a.aliases.join('、') : '还没有简介'))}</p>
+      </div>
+      <div class="asset-foot">
+        <span class="t-dim">${a.ref_images.length} 图 · 关联 ${a.ref_shot_count} 镜</span>
+        ${badge}
+      </div>
+    </div>`;
+}
 
 export default {
   async render() {
+    const detailId = getParam('assets');
+    if (detailId) return renderDetail(detailId);
+
     const project = store.current;
     if (!project) {
-      return `<section class="view on"><div class="card"><div class="empty">
-        <div class="empty-t">先选一个项目</div>
-        <p>资产属于项目，先去项目中心建项目。</p>
-      </div></div></section>`;
+      return `<section class="view on">
+        <div class="page-head"><h1>资产中心</h1><p>角色／场景／道具与它们的定妆图、一致性提示词</p></div>
+        <div class="card"><div class="empty">
+          <div class="empty-t">还没有选择项目</div>
+          <p>资产要么属于某个项目，要么在全局资产池里。先选一个项目再往下看。</p>
+          <p><button class="btn primary" id="assets-topick">去项目中心选</button></p>
+        </div></div></section>`;
     }
 
-    const picked = KINDS[kindIndex()];
     let list = [];
-    try { list = await api.assets(project.id, picked.code || undefined); } catch { list = []; }
+    lastError = '';
+    try {
+      list = await api.assets(project.id, kindCode() || undefined, scope);
+    } catch (err) {
+      // 不再 catch 成空列表：那会把"读不到"演成"还没有"，看着像数据丢了
+      lastError = err.message || '未知错误';
+      list = [];
+    }
+    const shown = list.filter(matches).sort((x, y) => (sortBy === 'name'
+      ? x.name.localeCompare(y.name, 'zh')
+      : (y.updated_at || '').localeCompare(x.updated_at || '')));
+    const stats = {
+      total: list.length,
+      character: list.filter((a) => a.kind === 'character').length,
+      scene: list.filter((a) => a.kind === 'scene').length,
+      prop: list.filter((a) => a.kind === 'prop').length,
+      incomplete: list.filter((a) => { const g = gaps(a); return g.noImg || g.noPrompt; }).length,
+      global: list.filter((a) => a.project_id === null).length,
+    };
+    const canWrite = store.can('asset:write');
+    // 空态要分清"这一页没有"和"这个 project 真的还没有"：类型与范围也是筛选条件，
+    // 只看关键词就把"场景里没有"说成"还没有资产"，人会以为数据丢了
+    const filtering = Boolean(keyword.trim() || complete || kindCode() || scope !== 'all');
 
     const chips = KINDS.map((k, i) => `
-      <span class="chip ${kindIndex() === i ? 'blue' : 'plain'}" data-kind="${i}"
-            style="cursor:pointer">${k.label}</span>`).join('');
-
-    const rows = list.map((a) => `
-      <tr data-aid="${a.id}">
-        <td class="t-strong">${escapeHtml(a.name)}</td>
-        <td><span class="chip plain">${a.kind_label}</span></td>
-        <td class="t-dim">${escapeHtml(a.consistency_prompt) || '—'}</td>
-        <td>
-          <div class="imgs">
-            ${a.ref_images.map((p) => `
-              <span class="img-wrap">
-                <img class="img-thumb" src="/files/${p}" alt="定妆图" data-preview="/files/${p}">
-                <button class="img-del" title="删除这张" data-del-img="${a.id}|${p}">×</button>
-              </span>`).join('')}
-            <label class="img-add ${a.ref_images.length ? '' : 'wide'}" title="上传定妆图">
-              ${a.ref_images.length ? '＋' : '上传定妆图'}
-              <input type="file" accept="image/png,image/jpeg,image/webp" data-upload="${a.id}" hidden>
-            </label>
-          </div>
-        </td>
-        <td class="r"><button class="btn sm danger" data-del-asset="${a.id}">删除</button></td>
-      </tr>`).join('');
-
-    const kindOptions = KINDS.filter((k) => k.code)
-      .map((k) => `<option value="${k.code}">${k.label}</option>`).join('');
+      <button type="button" class="chip ${((getSub('assets') ?? 0) === i) ? 'blue' : 'plain'}"
+              data-kind="${i}">${k.label}</button>`).join('');
+    const scopeChips = Object.entries(SCOPE_LABELS).map(([key, label]) => `
+      <button type="button" class="chip ${scope === key ? 'blue' : 'plain'}"
+              data-scope="${key}">${label}</button>`).join('');
+    const completeChips = Object.entries(COMPLETE_LABELS).map(([key, label]) => `
+      <button type="button" class="chip ${complete === key ? 'blue' : 'plain'}"
+              data-complete="${key}">${label}</button>`).join('');
 
     return `
     <section class="view on">
       <div class="page-head">
         <h1>资产中心</h1>
-        <p>${escapeHtml(project.name)} · 定妆图 + 一致性提示词，跨项目复用</p>
-        <div class="right">${chips}</div>
+        <p>${escapeHtml(project.name)} · 定妆图与一致性提示词只在这里改，镜头只引用</p>
+        <div class="right">
+          ${canWrite ? '<button class="btn primary" id="btn-new-asset">新建资产</button>' : ''}
+        </div>
+      </div>
+
+      <div class="asset-stats">
+        <span><b>${stats.total}</b> 条可见资产</span>
+        <span class="t-dim">角色 ${stats.character} · 场景 ${stats.scene} · 道具 ${stats.prop}</span>
+        <span class="t-dim">其中全局 ${stats.global}</span>
+        ${stats.incomplete ? `<span class="chip amber">${stats.incomplete} 条待完善</span>`
+                           : '<span class="chip green">都已完善</span>'}
       </div>
 
       <div class="card">
         <div class="card-head">
-          <h2>${picked.label === '全部' ? '全部资产' : picked.label}</h2>
-          <span class="sub">${list.length} 条</span>
+          <h2>资产</h2><span class="sub">${shown.length} / ${list.length} 条</span>
+          <div class="right"><input id="asset-search" class="ctl sm" placeholder="搜名称、标签、别名、提示词"
+                                    style="width:240px" value="${escapeHtml(keyword)}"></div>
         </div>
-        ${list.length ? `
-        <table>
-          <thead><tr><th>名称</th><th>类型</th><th>一致性提示词</th><th>定妆图</th><th class="r"></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>` : `
-        <div class="empty">
-          <div class="empty-t">还没有资产</div>
-          <p>先在下面登记一个角色或场景。之后生成镜头时按名字引用它。</p>
-        </div>`}
+        <div class="card-body asset-filters" id="asset-filters">
+          <span class="note">类型</span>${chips}
+          <span class="note">范围</span>${scopeChips}
+          <span class="note">状态</span>${completeChips}
+          <span class="note">排序</span>
+          <select id="asset-sort" class="ctl sm">
+            <option value="updated"${sortBy === 'updated' ? ' selected' : ''}>最近修改</option>
+            <option value="name"${sortBy === 'name' ? ' selected' : ''}>名称</option>
+          </select>
+        </div>
 
-        <div class="card-body" style="border-top:1px solid var(--line)">
-          <div class="empty-form" style="justify-content:flex-start">
-            <select id="asset-kind" class="ctl">${kindOptions}</select>
-            <input id="asset-name" placeholder="名称，例如 掌灯人" style="min-width:150px">
-            <input id="asset-prompt" placeholder="一致性提示词：外形、配色、禁忌" style="min-width:280px;flex:1">
-            <button class="btn primary" id="asset-create">登记</button>
+        ${lastError ? `<div class="empty" style="padding:26px 20px">
+          <div class="empty-t">读不到资产</div>
+          <p>${escapeHtml(lastError)}</p>
+          <p><button class="btn" data-retry>重试</button></p></div>`
+        : shown.length ? `<div class="asset-grid">${shown.map(cardHtml).join('')}</div>`
+        : `<div class="empty" style="padding:30px 20px">
+          <div class="empty-t">${filtering ? '没有符合筛选条件的资产' : '还没有资产'}</div>
+          <p>${filtering ? '换个关键词，或把类型／范围／状态调回全部。'
+              : (canWrite ? '点右上角「新建资产」登记第一个角色或场景；也可以从创作中心的正文里抽取候选再确认入库。'
+                          : '等项目里有人登记资产。')}</p>
+          ${filtering ? '<p><button class="btn ghost" data-clear>清除筛选</button></p>' : ''}
+        </div>`}
+      </div>
+
+      <div class="modal" id="na-modal" hidden>
+        <div class="modal-box">
+          <div class="modal-head neutral">新建资产</div>
+          <div class="modal-body">
+            <div class="form-grid">
+              <label for="na-kind">资产类型</label>
+              <select id="na-kind" class="ctl">
+                <option value="character">角色</option>
+                <option value="scene">场景</option>
+                <option value="prop">道具</option>
+              </select>
+
+              <label for="na-name">名称</label>
+              <input id="na-name" class="ctl" maxlength="60" autocomplete="off"
+                     placeholder="例如 掌灯人">
+
+              <label for="na-summary" class="top">简介</label>
+              <textarea id="na-summary" class="ctl" rows="2" maxlength="500"
+                        placeholder="一句话说清这是谁／什么地方／什么东西"></textarea>
+
+              <label for="na-prompt" class="top">一致性提示词</label>
+              <textarea id="na-prompt" class="ctl" rows="3" maxlength="1000"
+                        placeholder="跨镜头必须长一样的那些细节：外形、配色、材质、禁忌"></textarea>
+
+              <label for="na-tags">标签</label>
+              <input id="na-tags" class="ctl" placeholder="逗号分隔，最多 10 个">
+
+              <label for="na-aliases">别名</label>
+              <input id="na-aliases" class="ctl" placeholder="逗号分隔，抽取合并时靠它对上同一个">
+
+              ${store.isManager ? `
+              <span class="pf-label">归属</span>
+              <label class="chk"><input type="checkbox" id="na-global">
+                <span>放进全局资产池（各项目都能引用，不属于当前项目）</span></label>` : ''}
+            </div>
+            <p class="modal-meta pf-hint">同一范围、同一类型里名称唯一；重名说明该合并，不是新建。</p>
           </div>
-          <p class="hint" style="text-align:left;margin-top:8px">
-            同一类型里不能重名——重名说明该合并，不是新建。
-            定妆图支持 PNG / JPEG / WebP，单张不超过 20MB；iPhone 拍的 HEIC 要先转格式。
-          </p>
+          <div class="modal-actions">
+            <button class="btn" id="na-cancel">取消</button>
+            <button class="btn primary" id="na-save">登记</button>
+          </div>
         </div>
       </div>
     </section>`;
   },
 
   mount(root) {
-    root.querySelectorAll('[data-kind]').forEach((el) => {
-      el.addEventListener('click', () => {
-        setSub('assets', Number(el.dataset.kind));
-        window.dispatchEvent(new CustomEvent('app:refresh'));
+    const detailId = getParam('assets');
+    if (detailId) return mountDetail(root, detailId);
+
+    const toDetail = root.querySelector('#assets-topick');
+    toDetail?.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('app:go', { detail: 'projects' }));
+    });
+    if (detailId || !store.current) return;
+
+    const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+    const searchEl = root.querySelector('#asset-search');
+    const filters = root.querySelector('#asset-filters');
+
+    searchEl?.addEventListener('input', () => { keyword = searchEl.value; refresh(); });
+    root.querySelector('#asset-sort')?.addEventListener('change', (e) => {
+      sortBy = e.target.value;
+      refresh();
+    });
+    root.querySelector('[data-retry]')?.addEventListener('click', refresh);
+    root.querySelector('[data-clear]')?.addEventListener('click', () => {
+      // 清除的是"这一页所有筛选条件"，包括类型与范围——不然按钮名不副实
+      keyword = ''; complete = ''; scope = 'all'; setSub('assets', 0); refresh();
+    });
+
+    // 类型 chip 走 setSub：它同时是侧栏二级标签的状态，两处必须同一个值。
+    // 范围与状态只是本页的查询条件，不进侧栏，所以留在模块变量里。
+    filters?.querySelectorAll('[data-kind]').forEach((el) => {
+      el.addEventListener('click', () => { setSub('assets', Number(el.dataset.kind)); refresh(); });
+    });
+    filters?.querySelectorAll('[data-scope]').forEach((el) => {
+      el.addEventListener('click', () => { scope = el.dataset.scope; refresh(); });
+    });
+    filters?.querySelectorAll('[data-complete]').forEach((el) => {
+      el.addEventListener('click', () => { complete = el.dataset.complete; refresh(); });
+    });
+
+    // 卡片：整块可点，标题是真按钮（键盘停得住）。卡内若有别的控件要记得 stopPropagation
+    root.querySelectorAll('[data-open]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('button') && e.target !== el) return;
+        openDetail('assets', Number(el.dataset.open));
       });
     });
 
-    const kindEl = root.querySelector('#asset-kind');
-    const nameEl = root.querySelector('#asset-name');
-    const promptEl = root.querySelector('#asset-prompt');
-    const createBtn = root.querySelector('#asset-create');
+    /* ---------- 新建资产（弹窗，先选类型再填字段） ---------- */
+    const modal = root.querySelector('#na-modal');
+    const nameEl = root.querySelector('#na-name');
+    const saveBtn = root.querySelector('#na-save');
+    const close = () => { modal.hidden = true; saveBtn.disabled = false; };
 
-    const addAsset = async () => {
+    root.querySelector('#btn-new-asset')?.addEventListener('click', () => {
+      nameEl.value = '';
+      root.querySelector('#na-summary').value = '';
+      root.querySelector('#na-prompt').value = '';
+      root.querySelector('#na-tags').value = '';
+      root.querySelector('#na-aliases').value = '';
+      const g = root.querySelector('#na-global'); if (g) g.checked = false;
+      root.querySelector('#na-kind').value = kindCode() || 'character';
+      modal.hidden = false;
+      nameEl.focus();
+    });
+
+    const split = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    const create = async () => {
       const name = nameEl.value.trim();
       if (!name) { nameEl.focus(); return; }
-      createBtn.disabled = true;
-      // 409 是重名，后端把原因写在 detail 里，run 会原样透出来
+      saveBtn.disabled = true;
+      const globalEl = root.querySelector('#na-global');
       const ok = await run('登记', () => api.createAsset(store.currentId, {
-        kind: kindEl.value,
+        kind: root.querySelector('#na-kind').value,
         name,
-        consistency_prompt: promptEl.value.trim(),
+        summary: root.querySelector('#na-summary').value.trim(),
+        consistency_prompt: root.querySelector('#na-prompt').value.trim(),
+        tags: split(root.querySelector('#na-tags').value),
+        aliases: split(root.querySelector('#na-aliases').value),
+        scope: globalEl?.checked ? 'global' : 'project',
       }));
-      createBtn.disabled = false;
-      if (!ok) return;
-      window.dispatchEvent(new CustomEvent('app:refresh'));
+      saveBtn.disabled = false;
+      if (!ok) return;                       // 失败时弹窗留着，用户填的还在
+      close();
+      refresh();
     };
-    createBtn.addEventListener('click', addAsset);
-    nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') addAsset(); });
-
-    // 上传定妆图
-    root.querySelectorAll('[data-upload]').forEach((input) => {
-      input.addEventListener('change', async () => {
-        const file = input.files?.[0];
-        if (!file) return;
-        input.disabled = true;
-        const ok = await run('上传', () => api.uploadAssetImage(Number(input.dataset.upload), file));
-        input.disabled = false;
-        input.value = '';
-        if (!ok) return;
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-      });
-    });
-
-    // 点图看大图，点 × 删这张
-    root.querySelectorAll('[data-preview]').forEach((img) => {
-      img.addEventListener('click', () => window.open(img.dataset.preview, '_blank'));
-    });
-    root.querySelectorAll('[data-del-img]').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const [id, path] = btn.dataset.delImg.split('|');
-        if (!confirm('删掉这张定妆图？文件会一起删除。')) return;
-        const ok = await run('删除', () => api.deleteAssetImage(Number(id), path));
-        if (!ok) return;
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-      });
-    });
-
-    root.querySelectorAll('[data-del-asset]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('删掉这个资产？已引用的镜头不会被改。')) return;
-        // 必须过 run()：api.deleteAsset 现在会真的抛，裸 await 的话
-        // 后端拒绝就变成一个没人看的 rejected promise，页面照样"看起来删掉了"
-        const ok = await run('删除资产', () => api.deleteAsset(Number(btn.dataset.delAsset)));
-        if (!ok) return;
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-      });
+    saveBtn?.addEventListener('click', create);
+    root.querySelector('#na-cancel')?.addEventListener('click', close);
+    modal?.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    modal?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') create();
     });
   },
 };

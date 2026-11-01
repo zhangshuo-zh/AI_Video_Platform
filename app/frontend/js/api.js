@@ -131,12 +131,27 @@ export const api = {
   }).then(toJson),
   deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }).then(toJson),
 
-  assets: (pid, kind) => fetch(
-    `/api/projects/${pid}/assets${kind ? `?kind=${kind}` : ''}`).then(toJson),
+  // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
+  // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点
+  assets: (pid, kind, scope) => fetch(
+    `/api/projects/${pid}/assets?` + new URLSearchParams(
+      { ...(kind ? { kind } : {}), ...(scope && scope !== 'all' ? { scope } : {}) })).then(toJson),
   createAsset: (pid, body) => fetch(`/api/projects/${pid}/assets`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
+  asset: (id) => fetch(`/api/assets/${id}`).then(toJson),
+  // 整体提交：名称／类型／简介／提示词／别名／标签／范围一次改完。
+  // 同一个字段不留第二个编辑入口，所以没有"只改标签"这种半截接口
+  updateAsset: (id, body) => fetch(`/api/assets/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  setAssetCover: (id, path) => fetch(`/api/assets/${id}/cover`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }).then(toJson),
+  assetShots: (id) => fetch(`/api/assets/${id}/shots`).then(toJson),
   deleteAsset: (id) => fetch(`/api/assets/${id}`, { method: 'DELETE' }).then(toJson),
   uploadAssetImage: (id, file) => {
     const form = new FormData();

@@ -20,28 +20,19 @@ from models import (ProjectBatchDeleteIn, ProjectBatchIn, ProjectBatchOut, Proje
 from ranks import row_rank, user_rank
 from repositories.projects import projects as project_repo
 from repositories.users import users as user_repo
-from services import delete_project_cascade
+from services import MAX_TAGS, delete_project_cascade
+from services import clean_tags as _clean_tags
 
 router = APIRouter(prefix="/api", tags=["projects"])
 
-MAX_TAGS = 10
-MAX_TAG_LEN = 20
+# 标签的归一化规则与上限挪到 services 了：资产标签从 v0.60 起共用同一条，
+# 两边各写一份迟早出现"项目最多 10 个、资产最多 8 个"这种没人能解释的差别。
 
 # 批量删除的确认词。写成一行的理由：前端弹窗里要原样显示它，两处必须同一个值
 BATCH_DELETE_CONFIRM = "批量删除"
 
 # 批量动作 → 要写进 status 的值
 _BATCH_STATUS = {"archive": "archived", "restore": "active"}
-
-
-def _clean_tags(raw: list[str]) -> list[str]:
-    """去空白、去重、限长。超出的直接截掉而不是报错——标签是辅助信息，不该挡住主流程。"""
-    seen: list[str] = []
-    for item in raw:
-        tag = item.strip()[:MAX_TAG_LEN]
-        if tag and tag not in seen:
-            seen.append(tag)
-    return seen[:MAX_TAGS]
 
 
 def _clean_members(raw: list[int], actor, owner_id: int) -> list[int]:

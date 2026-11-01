@@ -6,7 +6,7 @@ import { MODULES } from './modules.js';
 import { store } from './store.js';
 import { api } from './api.js';
 import { renderView, currentViewId } from './router.js';
-import { setSub } from './navstate.js';
+import { setParam, setSub } from './navstate.js';
 import { escapeHtml } from './util.js';
 
 /* ---------------- 侧栏 ---------------- */
@@ -40,11 +40,14 @@ function bindNav() {
       group.querySelectorAll('.sub').forEach((x) => x.classList.remove('on'));
       sub.classList.add('on');
       setSub(viewId, index);
+      // 点侧栏（含二级标签）＝回列表：详情参数不清掉的话，
+      // 从资产详情点"资产中心"会停在原来那条资产上，看着像侧栏没反应
+      setParam(viewId, undefined);
       renderView(viewId);
       return;
     }
     const item = e.target.closest('.nav-item');
-    if (item) renderView(item.dataset.v);
+    if (item) { setParam(item.dataset.v, undefined); renderView(item.dataset.v); }
   });
 }
 
@@ -448,12 +451,17 @@ async function startApp() {
   appStarted = true;
   buildNav();
   syncChrome();
-  // 地址可以是 #projects 或 #projects/1（斜杠后半截是二级标签下标）。
+  // 地址有三段：#projects（模块）、#assets/1（模块＋二级标签）、
+  // #assets/1/a57（再带一个详情参数＝看第 57 号资产）。
   // 直接粘一个没权限的模块地址时退回首页，别渲染出一个满屏 403 的页面
-  const [startView, startSub] = (location.hash.replace('#', '') || 'overview').split('/');
+  const [startView, startSub, startDeep] = (location.hash.replace('#', '') || 'overview').split('/');
   const entry = MODULES.find((m) => m.id === startView);
   const view = (entry && !allowed(entry)) ? 'overview' : startView;
   if (startSub !== undefined && startSub !== '') setSub(view, Number(startSub));
+  // a57 这种写法：只有数字部分认，别的都当没给（粘错地址不该渲染出一个空详情壳）
+  if (view === startView && /^a\d+$/.test(startDeep || '')) {
+    setParam(view, Number(startDeep.slice(1)));
+  }
   await renderView(view);
 }
 

@@ -1,6 +1,6 @@
 /** 路由：按 id 渲染视图并同步侧栏高亮、地址栏 hash。 */
 import views from './views/index.js';
-import { getSub, setSub } from './navstate.js';
+import { getParam, getSub, setParam, setSub } from './navstate.js';
 import { MODULES } from './modules.js';
 
 let currentId = null;
@@ -10,8 +10,23 @@ export function currentViewId() {
   return currentId;
 }
 
+/** 打开某模块的详情：地址变成 #assets/1/a57，刷新与粘贴都回得到那一条。 */
+export function openDetail(viewId, param) {
+  setParam(viewId, param);
+  return renderView(viewId);
+}
+
+export function closeDetail(viewId) {
+  setParam(viewId, undefined);
+  return renderView(viewId);
+}
+
 export async function renderView(id) {
   const view = views[id] || views.overview;
+
+  // 换模块时把上一个模块的详情参数清掉：从资产详情跳去创作中心再跳回来，
+  // 应该回到列表，而不是莫名其妙落在那条旧资产上（它可能已经被删了）。
+  if (currentId && currentId !== id) setParam(currentId, undefined);
 
   // 深链可能带着已经不存在的二级页下标（撤掉成本账之后的 #projects/2 就是这种），
   // 在渲染之前钳回第一项，视图和侧栏高亮看到的才是同一个值。
@@ -47,7 +62,12 @@ export async function renderView(id) {
     });
   }
   const subIndex = getSub(id);
-  const target = '#' + id + (subIndex === undefined ? '' : '/' + subIndex);
+  const param = getParam(id);
+  // 有详情参数时二级下标不能省——地址是 #<view>/<sub>/a<id> 三段式，
+  // 少了中间那段，回来时就没法同时恢复"在哪个分类下"
+  let target = '#' + id;
+  if (param !== undefined) target += '/' + (subIndex ?? 0) + '/a' + param;
+  else if (subIndex !== undefined) target += '/' + subIndex;
   if (location.hash !== target) history.replaceState(null, '', target);
   window.scrollTo(0, 0);
 }

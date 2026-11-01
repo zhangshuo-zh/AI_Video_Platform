@@ -535,6 +535,69 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 #proj-rows tr.arch td{color:var(--ink-3)}
 #proj-rows tr.arch .t-strong{color:var(--ink-2);font-weight:500}
 
+/* ---------- 资产中心：卡片网格与详情 ---------- */
+/* 统计条压在卡片上面一行：指令 §八 明确"别让统计卡占据大部分首屏"，
+   所以它是一行文字而不是四张数字卡 */
+.asset-stats{display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  margin-bottom:12px;font-size:12px;color:var(--ink-2)}
+.asset-stats b{font-size:13.5px;color:var(--ink);font-variant-numeric:tabular-nums}
+.asset-filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  padding:10px 14px;border-bottom:1px solid var(--line)}
+.asset-filters .note{margin:0 2px 0 12px}
+.asset-filters .note:first-child{margin-left:0}
+
+/* 列宽 232—340 之间自适应、靠左排：写成 1fr 的话，只有一条资产时
+   卡片会被拉到整行宽，指令 §3.1-D 要的"每行 3～4 张"就没了形状 */
+.asset-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,340px));
+  justify-content:start;gap:14px;padding:14px}
+.asset-card{display:flex;flex-direction:column;border:1px solid var(--line-strong);
+  border-radius:var(--r-card);background:var(--sheet);overflow:hidden;cursor:pointer;
+  transition:border-color var(--fast),box-shadow var(--fast)}
+.asset-card:hover{border-color:var(--line-hover);box-shadow:var(--sh-1)}
+/* 卡片本身是 div，键盘靠里面那枚标题按钮；焦点要能看出整张卡被选中 */
+.asset-card:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+.asset-cover{position:relative;aspect-ratio:16/10;background:var(--field);
+  display:flex;align-items:center;justify-content:center;overflow:hidden}
+.asset-cover img{width:100%;height:100%;object-fit:cover;display:block}
+.asset-noimg{color:var(--ink-3)}
+.asset-noimg svg{width:40px;height:40px;display:block}
+.asset-scope{position:absolute;top:8px;left:8px;font-size:11px;padding:2px 8px;
+  border-radius:var(--capsule);background:var(--pop);color:var(--ink-2);
+  border:1px solid var(--line-strong)}
+.asset-body{padding:10px 12px 4px;display:flex;flex-direction:column;gap:7px}
+/* 标题做成"看不出是按钮"的按钮：可点是常驻的，不需要一圈假边框 */
+.asset-title{font:inherit;font-size:13px;font-weight:600;color:var(--ink);text-align:left;
+  border:0;background:transparent;padding:0;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.asset-title:hover{color:var(--accent)}
+.asset-tags{display:flex;flex-wrap:wrap;gap:4px}
+.asset-sum{font-size:11.5px;color:var(--ink-3);line-height:1.5;margin:0;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.asset-foot{margin-top:auto;padding:8px 12px 10px;display:flex;align-items:center;
+  justify-content:space-between;gap:8px;font-size:11.5px;border-top:1px solid var(--line)}
+
+.ad-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;
+  align-items:start}
+@media (max-width:1080px){.ad-grid{grid-template-columns:minmax(0,1fr)}}
+.ad-imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+.ad-img{margin:0;border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  overflow:hidden;background:var(--field)}
+.ad-img img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;cursor:zoom-in}
+.ad-img figcaption{display:flex;gap:6px;align-items:center;justify-content:center;
+  padding:6px;border-top:1px solid var(--line)}
+.ad-img.cover{border-color:var(--accent-line)}
+.ad-upload{display:inline-flex;margin-top:10px}
+.ad-ref{display:flex;gap:10px;align-items:center;justify-content:space-between;
+  padding:9px 0;border-bottom:1px solid var(--line)}
+.ad-ref:last-child{border-bottom:0}
+.ad-ref p{margin:2px 0 0;font-size:11.5px}
+/* 面包屑那一段：返回是动词，做成看不出边框的按钮，hover 才给颜色 */
+.crumb{font:inherit;font-size:inherit;font-weight:inherit;color:var(--ink-3);
+  border:0;background:transparent;padding:0;cursor:pointer}
+.crumb:hover{color:var(--accent)}
+.crumb-sep{color:var(--ink-3);font-weight:400;margin:0 2px}
+.btn.xs{font-size:11px;padding:2px 9px}
+
 /* ---------- 用户与角色 ---------- */
 /* 协作人名单：名字、账号挨在一起，移除按钮推到最右 */
 .mem-row{

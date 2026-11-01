@@ -1,7 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run } from '../util.js';
-import { getSub } from '../navstate.js';
+import { getParam, getSub, setParam } from '../navstate.js';
 
 /**
  * 创作中心 = 集（Episode）+ 三级文档（小说／剧本／分镜）。
@@ -70,6 +70,11 @@ export default {
         </div>
       </section>`;
     }
+
+    // 从资产详情点「去创作中心」跳过来时带着要定位的那一集：
+    // 用 navstate 的 param 槽传一次，读到就清掉，不越界去改对方的状态
+    const focus = getParam('writing');
+    if (focus) { pickedEpisodeId = focus; setParam('writing', undefined); }
 
     if (!episodes.some((e) => e.id === pickedEpisodeId)) {
       pickedEpisodeId = episodes[0].id;

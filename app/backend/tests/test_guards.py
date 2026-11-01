@@ -48,6 +48,10 @@ ROUTES = [
     # ---------- 资产 ----------
     ("GET", "/api/projects/{p}/assets", None, 404),
     ("POST", "/api/projects/{p}/assets", {"kind": "character", "name": "越权角色"}, 404),
+    ("GET", "/api/assets/{a}", None, 404),
+    ("PUT", "/api/assets/{a}", {"kind": "character", "name": "改名"}, 404),
+    ("PUT", "/api/assets/{a}/cover", {"path": "1/x.png"}, 404),
+    ("GET", "/api/assets/{a}/shots", None, 404),
     ("DELETE", "/api/assets/{a}", None, 404),
     ("POST", "/api/assets/{a}/images", "FILE", 404),
     ("DELETE", "/api/assets/{a}/images?path=x", None, 404),
@@ -140,17 +144,14 @@ def test_批量接口把看不见的收进_skipped_而不是整批失败(as_role
 def test_路由表与本表条数对齐(app):
     """表驱动测试的守门人：加端点必须同时进这张表，否则这里先红。
 
-    openapi 里的 43 条 = 本表 38 条业务 + 4 条 auth + health。
-    auth 与 health 不参与"匿名 401"的断言（它们本来就允许匿名进入），
-    所以单列在 EXCLUDED 里，不混进表。
+    不写死"43 条"这种数字——写死的人总会忘记改，忘了改就等于新端点
+    可以悄悄不进守卫回归。真正起作用的是下面那条集合相等。
     """
     paths = app.openapi()["paths"]
     real = {(m.upper(), p) for p, ops in paths.items() for m in ops}
     business = {(m, p) for m, p in real if p not in EXCLUDED}
     tabled = {(m, p.split("?")[0]) for m, p, _, _ in ROUTES}
-    assert len(real) == 43, f"路由总数从 43 变成 {len(real)}，请同步盘点文档"
     # 占位符名字两边不一样（表里写 {p}，openapi 里是 {project_id}），归一后再比
     norm = lambda s: re.sub(r"\{[^}]+\}", "{}", s)
-    assert {(m, norm(p)) for m, p in business} == {(m, norm(p)) for m, p in tabled}, (
-        f"表里缺：{sorted(set((m, norm(p)) for m, p in business) - set((m, norm(p)) for m, p in tabled))}；"
-        f"表里多：{sorted(set((m, norm(p)) for m, p in tabled) - set((m, norm(p)) for m, p in business))}")
+    a, b = {(m, norm(p)) for m, p in business}, {(m, norm(p)) for m, p in tabled}
+    assert a == b, f"表里缺：{sorted(a - b)}；表里多：{sorted(b - a)}"

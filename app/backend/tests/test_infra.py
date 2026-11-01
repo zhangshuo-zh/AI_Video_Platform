@@ -23,9 +23,16 @@ FRONTEND = BACKEND.parent / "frontend"
 
 # ---------------------------------------------------------------- 迁移与库
 def test_库停在最新迁移且外键干净():
+    """版本序列必须与 migrations/ 里的文件一一对上。
+
+    这里不写死"到 12 为止"：写死之后每加一条迁移都要记得来改它，
+    而忘了改的结果是"新迁移没跑也照样绿"。改成拿目录当基准，
+    加迁移的人不需要动这条测试。
+    """
+    on_disk = sorted(int(p.name.split("_")[0]) for p in (BACKEND / "migrations").glob("*.sql"))
     with get_conn() as conn:
-        v = [r["version"] for r in conn.execute("SELECT version FROM schema_version")]
-        assert sorted(v) == list(range(1, 12)), f"迁移版本不连续：{sorted(v)}"
+        v = sorted(r["version"] for r in conn.execute("SELECT version FROM schema_version"))
+        assert v == on_disk, f"库停在 {v}，磁盘上有 {on_disk}"
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
