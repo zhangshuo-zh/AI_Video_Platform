@@ -225,9 +225,11 @@ def save_content(doc, content: str, expected_version: str, actor: str,
             f"Git 提交失败，正文已退回上一版；你这次写的内容另存在 {saved}，"
             f"不用重敲。git 说：{exc}") from exc
 
-    row = docs.save(doc["id"], commit if commit else doc["git_commit"])
+    # commit 为 None 表示"内容和上一版一模一样"：不写库、不推 updated_at——
+    # 那一列的语义是"内容动过"，点一下保存什么都没改却把时间推走，等于让界面说谎。
+    # 直接把现状回给前端，前端那行"改动"就不会跳。
+    row = docs.save(doc["id"], commit) if commit else docs.get(doc["id"])
     docs.renew_on_save(doc["id"], user_id, minutes)
-    # commit 为 None 表示"内容和上一版一模一样"，版本指针不动（gitrepo.commit_file 里说了为什么）
     return {"row": row, "version": version_token(content), "commit": commit,
             "changed": commit is not None}
 

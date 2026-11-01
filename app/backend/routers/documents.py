@@ -208,7 +208,7 @@ def save_content(doc_id: int, payload: DocContentIn,
                             detail=f"这条文档记录的路径不安全，平台不会去写它：{err}") from err
     out = result["row"]
     return DocSaveOut(id=out["id"], version=result["version"], git_commit=out["git_commit"],
-                      changed=result["changed"])
+                      changed=result["changed"], updated_at=out["updated_at"])
 
 
 @router.post("/documents/{doc_id}/lock", response_model=DocLockOut)

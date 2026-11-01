@@ -377,11 +377,16 @@ class DocContentOut(BaseModel):
 
 
 class DocSaveOut(BaseModel):
-    """保存结果。`changed=false` 表示写的和盘上那份一模一样，没有产生新提交。"""
+    """保存结果。`changed=false` 表示写的和盘上那份一模一样，没有产生新提交。
+
+    `updated_at` 一起回：保存成功后界面上那行"当前提交 / 改动"要当场换掉。
+    只改提交号不改时间的话，刚存完一屏还写着旧的改动时间，看着像没存上。
+    """
     id: int
     version: str
     git_commit: str | None
     changed: bool
+    updated_at: str
 
 
 class DocVersionOut(BaseModel):

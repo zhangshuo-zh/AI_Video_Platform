@@ -148,6 +148,38 @@ def test_同样内容重复保存不攒空提交(as_role, fresh_project):
     assert len(c.get(f"/api/documents/{doc['id']}/versions").json()) == 1
 
 
+def test_没改内容再点保存不推改动时间(as_role, fresh_project):
+    """`updated_at` 的语义是"内容动过"（与 v0.62 归档、打开同一条口径）。
+
+    点一下保存、文本一个字没变，却把时间推到当前，界面上那行"改动"就跳了——
+    人看着以为存了什么新东西。这里用 2020 哨兵值断言它没被推（同一秒内相等会假绿）。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    doc = _create(c, pid, content="一句。")
+    tok = _token(c, doc["id"])
+    with get_conn() as conn:
+        conn.execute("UPDATE document SET updated_at = '2020-01-01 00:00:00' WHERE id = ?",
+                     (doc["id"],))
+    r = c.request("PUT", f"/api/documents/{doc['id']}/content",
+                  json={"content": "一句。", "expected_version": tok}).json()
+    assert r["changed"] is False
+    assert r["updated_at"] == "2020-01-01 00:00:00", "没改内容却把改动时间推走了"
+    assert r["git_commit"] == doc["git_commit"]
+
+
+def test_保存会带回改动时间(as_role, fresh_project):
+    """前端靠这个字段把底部那行"改动"当场换掉，不回传就只能显示旧时间。"""
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    doc = _create(c, pid, content="一句。")
+    tok = _token(c, doc["id"])
+    r = c.request("PUT", f"/api/documents/{doc['id']}/content",
+                  json={"content": "改过的另一句。", "expected_version": tok}).json()
+    assert r["changed"] is True
+    assert r["updated_at"] and r["updated_at"] != "2020-01-01 00:00:00"
+
+
 def test_正文补结尾换行且不会因此一直报冲突(as_role, fresh_project):
     """规范化成一条规则测：不补换行的话 diff 末尾永远挂着
     `\\ No newline at end of file`，而且下一次在末尾追加一句会把上一行也标成改动。

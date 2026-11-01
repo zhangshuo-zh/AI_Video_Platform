@@ -43,6 +43,16 @@ const DOC_STATUS = { draft: ['草稿', 'gray'], polishing: ['润色中', 'blue']
 const TAB_KIND = { 0: 'novel', 1: 'script' };
 const KIND_LABEL = { novel: '小说', script: '剧本' };
 
+/** 字数：去掉结尾换行再数。
+
+    服务端存的文件末尾一定有一个 \n（POSIX 文本，也是 diff 不挂
+    "No newline at end of file" 的前提），把它算进字数会让同一段文字
+    在"刚打完"和"刷新之后"显示差一个字。
+ */
+function charCount(text) {
+  return String(text || '').replace(/\n+$/, '').length;
+}
+
 // 侧栏二级导航里分镜排第三（小说、剧本在前），渲染后高亮它
 
 export default {
@@ -134,7 +144,7 @@ async function renderDocs(tab, subRow) {
       <div class="t ${d.id === pickedDocId ? 'on' : ''}" data-doc="${d.id}">
         ${escapeHtml(d.title)}
         <span class="chip ${tone}">${label}</span>
-        ${d.lock_holder_name
+        ${d.lock_holder_name && d.lock_holder_id !== store.user?.id
           ? `<span class="chip amber" title="锁到 ${escapeHtml(d.lock_expires_at)}，超时自己松开">
                ${escapeHtml(d.lock_holder_name)} 在改</span>` : ''}
         <span class="t-dim" style="float:right">${d.episode_title ? `第 ${d.episode_seq} 集` : '全项目'}
@@ -217,10 +227,11 @@ function editorHtml(doc) {
 
     <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px;
          display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-      <span class="sub" id="doc-count">${(draft ?? '').length} 字</span>
+      <span class="sub" id="doc-count">${charCount(draft)} 字</span>
       <span class="chip ${dirty ? 'amber' : 'green'}" id="doc-dirty">${dirty ? '未保存' : '与盘上一致'}</span>
-      <span class="sub">${doc.git_commit ? '当前提交 ' + doc.git_commit.slice(0, 8) : '还没有提交记录'}</span>
-      <span class="sub" style="margin-left:auto">创建 ${escapeHtml(doc.created_at)}
+      <span class="sub" id="doc-commit">${doc.git_commit ? '当前提交 ' + doc.git_commit.slice(0, 8) : '还没有提交记录'}</span>
+      <span class="sub" id="doc-updated" data-created="${escapeHtml(doc.created_at)}"
+            style="margin-left:auto">创建 ${escapeHtml(doc.created_at)}
         · 改动 ${escapeHtml(doc.updated_at)}</span>
     </div>
 
@@ -381,7 +392,7 @@ function mountDocs(root, tab) {
 
   ta.addEventListener('input', () => {
     draft = ta.value;
-    countEl.textContent = `${ta.value.length} 字`;
+    countEl.textContent = `${charCount(ta.value)} 字`;
     setDirty(true);
     // 一开始打字就顺手拿锁：界面能在别人那边显示"谁在改"，
     // 而不是等到保存被 423 挡回来才发现有人在写同一份
@@ -416,6 +427,17 @@ function mountDocs(root, tab) {
       draftVersion = out.version;
       serverCopy = null;
       setDirty(false);
+      // 底部那行"当前提交 / 改动"要当场换掉：不换的话刚存完还写着旧的提交号与旧时间，
+      // 人对着它没法判断这次到底存没存上（提示条只活到下一次操作）
+      const commitEl = root.querySelector('#doc-commit');
+      if (commitEl) {
+        commitEl.textContent = out.git_commit
+          ? `当前提交 ${out.git_commit.slice(0, 8)}` : '还没有提交记录';
+      }
+      const updEl = root.querySelector('#doc-updated');
+      if (updEl) {
+        updEl.textContent = `创建 ${updEl.dataset.created} · 改动 ${out.updated_at}`;
+      }
       notice = out.changed
         ? `已保存并提交（${(out.git_commit || '').slice(0, 8)}）`
         : '内容和上一版一样，没有产生新提交';
