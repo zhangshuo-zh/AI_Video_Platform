@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { escapeHtml, run } from '../util.js';
+import { bindModalDismiss, confirmDanger, escapeHtml, run, subChipRow } from '../util.js';
+// 这一页只经 system-config.js 转发渲染，页内切换器由它统一绑定，
+// 这里再绑一次会让一次点击触发两遍重渲染
 
 /**
  * 系统设置 · 用户与角色。
@@ -109,17 +111,20 @@ export default {
       <div class="page-head">
         <h1>系统设置</h1>
         <p>模型双轨与用户权限；密钥只显示配没配，值永远不出后端</p>
+        <div class="right">${subChipRow(['模型与密钥', '用户与角色'], 1)}</div>
       </div>
 
       <div class="card">
         <div class="card-head"><h2>用户</h2>
           <span class="sub">${users.length} 个 · 只列出不高于你自己层级的账号</span></div>
-        <table>
+        <div class="table-wrap">
+          <table>
           <thead><tr>
-            <th>用户名</th><th>显示名</th><th>角色</th><th>状态</th><th>最后登录</th><th class="r"></th>
+          <th>用户名</th><th>显示名</th><th>角色</th><th>状态</th><th>最后登录</th><th class="r"></th>
           </tr></thead>
           <tbody>${userRows}</tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       ${canWrite ? `
@@ -151,17 +156,19 @@ export default {
       <div class="card" style="margin-top:14px">
         <div class="card-head"><h2>角色权限</h2>
           <span class="sub">一列一个角色，勾完点那列顶部或底部的保存</span></div>
-        <table class="perm-matrix">
+        <div class="table-wrap">
+          <table class="perm-matrix">
           <thead><tr>
-            <th>权限点</th>
-            ${roles.map((r) => `<th>
-              <span>${escapeHtml(r.name)}</span>
-              ${r.code === 'admin' ? '<span class="t-dim">（内置，不可改）</span>'
-                : (canWrite ? `<button class="btn sm" data-save-role="${r.id}">保存</button>` : '')}
-            </th>`).join('')}
+          <th>权限点</th>
+          ${roles.map((r) => `<th>
+          <span>${escapeHtml(r.name)}</span>
+          ${r.code === 'admin' ? '<span class="t-dim">（内置，不可改）</span>'
+          : (canWrite ? `<button class="btn sm" data-save-role="${r.id}">保存</button>` : '')}
+          </th>`).join('')}
           </tr></thead>
           <tbody>${matrix}</tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       <div class="modal" id="roles-modal" hidden>
@@ -247,6 +254,13 @@ export default {
         if (!ok) return;
         refresh();
       });
+      // 新建用户这一栏原来只能点按钮：输入完口令回车没反应，
+      // 而它下面每个表单错误都是"聚焦到该填的那一格"，回车提交才成一套
+      ['#nu-username', '#nu-display', '#nu-pass'].forEach((sel) => {
+        root.querySelector(sel)?.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); createBtn.click(); }
+        });
+      });
     }
 
     /* ---------- 停用 / 启用 ---------- */
@@ -254,7 +268,12 @@ export default {
       btn.addEventListener('click', async () => {
         const id = Number(btn.dataset.toggle);
         const next = btn.dataset.active !== '1';
-        if (!next && !confirm('停用后该账号立刻掉线，确定？')) return;
+        // 停用不是不可逆（还能启用回来），所以按钮用主色而不是红色，
+        // 但后果要说清楚：对方会立刻掉线
+        if (!next && !(await confirmDanger({
+          title: '停用账号', danger: false, okText: '停用',
+          body: '停用后该账号<b>立刻掉线</b>，重新启用前无法登录。',
+        }))) return;
         btn.disabled = true;
         const ok = await run(next ? '启用' : '停用', () => api.updateUser(id, { is_active: next }));
         btn.disabled = false;
@@ -295,6 +314,7 @@ export default {
     });
     root.querySelector('#rm-cancel').addEventListener('click', closeRoles);
     rolesModal.addEventListener('click', (e) => { if (e.target === rolesModal) closeRoles(); });
+    bindModalDismiss(rolesModal, closeRoles);
 
     /* ---------- 重置口令 ---------- */
     const pwModal = root.querySelector('#pw-modal');
@@ -325,7 +345,12 @@ export default {
       refresh();
     });
     root.querySelector('#pw-cancel').addEventListener('click', closePw);
+    // 重置口令只有一个输入框，回车不提交就得手点一下，键盘用户白跑一趟
+    root.querySelector('#pw-new').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); root.querySelector('#pw-save').click(); }
+    });
     pwModal.addEventListener('click', (e) => { if (e.target === pwModal) closePw(); });
+    bindModalDismiss(pwModal, closePw);
 
     /* ---------- 删除用户 ----------
        名下有项目就必须表态：转移给谁，或者连同项目一起删。
@@ -375,6 +400,7 @@ export default {
 
     root.querySelector('#du-cancel').addEventListener('click', closeDel);
     delModal.addEventListener('click', (e) => { if (e.target === delModal) closeDel(); });
+    bindModalDismiss(delModal, closeDel);
 
     /* ---------- 角色权限矩阵 ---------- */
     root.querySelectorAll('[data-save-role]').forEach((btn) => {

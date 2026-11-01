@@ -471,6 +471,10 @@ main{min-width:0;display:flex;flex-direction:column}
 .stack{display:grid;gap:16px}
 
 /* ---------- 表格 ---------- */
+/* 表格一律坐在 .table-wrap 里：卡片是 overflow:hidden，窄屏时列会被裁掉而
+   没有滚动条，用户既看不见也拖不动（项目中心 7 列、权限矩阵每列 132px 最先撞）。
+   有滚动容器之后 860px 以下缩字号只是锦上添花，不再是唯一的补救 */
+.table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{
   text-align:left;font-weight:600;color:var(--ink-3);font-size:11.5px;letter-spacing:.03em;
@@ -914,6 +918,10 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
      （720px 宽时闸门里就只剩一枚猫头，实测 display:none）。 */
   .sidebar .brand-text,.side-foot{display:none}
   .brand{padding:16px 8px;justify-content:center}
+  /* 二级导航在窄屏收起。这条之所以敢收，是因为有 subs 且真有内容的三个模块
+     （资产／创作／系统设置）都在页内抬头摆了自己的切换器，功能没被藏起来；
+     生成／音频／审核／设定四页的 subs 目前还是装饰（点了内容不变），
+     等它们接真功能时必须一并补页内切换器，否则这里就是隐藏关键入口 */
   .nav-sub{display:none !important}
   .nav-item{font-size:0;justify-content:center;padding:10px 0;gap:0}
   .view{padding:16px 14px 56px}

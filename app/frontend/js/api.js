@@ -9,6 +9,13 @@ async function toJson(res) {
     try { detail = JSON.parse(text).detail ?? text; } catch { /* 不是 JSON 就原样 */ }
     const err = new Error(detail);
     err.status = res.status;
+    // 401 的统一出口：会话过期（默认 12 小时）时人往往正在填一个表单，
+    // 原来只有启动那一次会认 401，之后每个操作都只弹一句"失败：未登录"，
+    // 既没地方重登、也解释不了为什么突然干不了活。
+    // 登录接口自己的 401 是"口令错了"，不能拿它去挂过期闸门。
+    if (res.status === 401 && !/\/api\/auth\/(login|password)$/.test(res.url || '')) {
+      window.dispatchEvent(new CustomEvent('app:unauthorized'));
+    }
     throw err;
   }
   // 204 没有响应体，直接 JSON.parse 会炸

@@ -157,3 +157,23 @@
 另外两件盘点时没预料到的：`test_guards.py` 里 `POST /api/projects/batch` 对"看不见的项目"返回的是 **200 + skipped**，而 `DELETE /api/projects/{id}` 对 editor 返回 **403**（editor 的 15 个权限点里没有 `project:delete`）——同一张表里两类"越权"的不同落点，说明"批量逐项"与"单点守卫"确实是两套语义，测试表按实测分别写死。
 
 **未动的三件**（属于 W02，不在 W01 范围）：运行中 401 无重登出口、四处 `catch { [] }` 把错误伪装成空态、原生 `confirm()` 与自绘危险弹窗并存。
+
+---
+
+## 12. W02 完成后回填（2026-11-01）
+
+计划第 4—7 条已落，`pytest tests -q` → **120 passed**，CDP 真浏览器 **16 项全过**。逐条对账：
+
+| 盘点条目 | 现在 |
+|---|---|
+| CURRENT_UI §4「401 只在 boot 处理一次」 | 已修：`api.js` 认到 401 派 `app:unauthorized` → 闸门带说明；登录/改密接口的 401 排除 |
+| CURRENT_UI §4「错误伪装成空态」四处 | 已修：`writing.js` 三处 + `assets.js` 一处（v0.60 已改），统一 `errorBox/errorLine` |
+| CURRENT_UI §4「原生 confirm 五处」 | 已修：剩三处（另两处随 v0.60 资产页重写消失），统一 `confirmDanger` |
+| CURRENT_UI §5「四个弹窗缺 Escape」 | 已修，且**修的过程暴露一个更根本的错**：Escape 绑在弹窗元素上依赖焦点，成员弹窗打开时没有焦点 ⇒ 不生效。改成 document 级 + 关最上层可见弹窗 |
+| CURRENT_UI §5「两处缺 Enter」 | 已修：新建用户三个输入框、重置口令输入框 |
+| CURRENT_UI §9「表格无横向滚动」 | 已修：五张表统一 `.table-wrap`。**但实测修正了盘点的判断**：640px 时表格是靠换行压缩、并不溢出，要 380px 才逼出滚动条——所以这条修的是"溢出时得能滚"，不是"平时一直在裁" |
+| CURRENT_UI §9「860px 以下二级导航彻底消失」 | 已修：`writing`／`system-config`（含无权限那一屏）抬头补页内切换器，与侧栏同一个 `navstate` 下标；`assets` 页 v0.60 已有 |
+| CURRENT_UI §5「侧栏不可 Tab」 | **未做**，属可访问性专项，与 W02 的"错误一致性"不同轴，留到 W18 一起处理 |
+| CURRENT_UI §5「全站无焦点陷阱」 | **未做**，同上。`confirmDanger` 因为按钮自持焦点不受影响，其余弹窗 Tab 仍会跑到遮罩背后 |
+
+新增 5 条静态守门人测试（无原生 `confirm()`／每张 `<table>` 都有 `.table-wrap`／401 出口两端齐／有二级页的模块页内有切换器／`alert` 只在 `util.js`），并把原来写死 `util.js:20` 行号的那条改成只比文件名——行号会飘，那种断言只会制造无谓改动。

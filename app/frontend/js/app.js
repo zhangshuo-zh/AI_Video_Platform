@@ -183,7 +183,11 @@ function showGate(mode, note = '') {
   pwd.hidden = mode === 'login';
   document.getElementById('gate-old-wrap').hidden = !needOld;
   document.getElementById('gate-pcancel').hidden = mode !== 'voluntary';
-  document.getElementById('gate-note').textContent = note;
+  // 说明放在哪一块取决于当前是哪一屏：登录那一屏原来没有可放话的地方
+  const loginNote = document.getElementById('gate-login-note');
+  loginNote.hidden = !(mode === 'login' && note);
+  if (loginNote.hidden) loginNote.textContent = ''; else loginNote.textContent = note;
+  document.getElementById('gate-note').textContent = mode === 'login' ? '' : note;
   gate.hidden = false;
   (mode === 'login' ? document.getElementById('gate-user') : document.getElementById('gate-new')).focus();
 }
@@ -477,6 +481,13 @@ async function boot() {
   window.addEventListener('app:refresh', () => {
     syncChrome();
     renderView(currentViewId() || 'overview');
+  });
+  // 会话过期的出口（W02-a）：api.js 认到 401 就派这条。原来只有启动那一次
+  // 会去挂登录闸门，之后过期只会弹一句"失败：未登录"，人没地方重登。
+  // 闸门已经开着就别重复 focus——会把人正在输入的口令框清空焦点。
+  window.addEventListener('app:unauthorized', () => {
+    if (!document.getElementById('gate').hidden) return;
+    showGate('login', '登录会话已过期（默认 12 小时）。重新登录后回到原来这一页。');
   });
 
   // 先问身份：401 就去登录，其余错误当后端没起来处理

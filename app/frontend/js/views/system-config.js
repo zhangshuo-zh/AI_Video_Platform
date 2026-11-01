@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { escapeHtml, run } from '../util.js';
-import { getSub } from '../navstate.js';
+import { bindSubChips, escapeHtml, run, subChipRow } from '../util.js';
+import { getSub, setSub } from '../navstate.js';
 import usersPanel from './system-users.js';
 
 /**
@@ -9,15 +9,23 @@ import usersPanel from './system-users.js';
  *   0 模型与密钥 —— 五类能力 × 本地/云端
  *   1 用户与角色 —— 另一份文件（system-users.js），这里只做转发
  * 只有 provider 与 model 可编辑；密钥只显示"配没配"，值永远不出后端。
+ *
+ * 两个子页的抬头都摆一排页内切换器：窄屏侧栏二级标签会收起，
+ * 而且只有 user:read 的人进来第一屏是"没有权限"——那时切换器就是他唯一的路。
  */
+const SUBS = ['模型与密钥', '用户与角色'];
 export default {
   async render() {
     if ((getSub('system-config') ?? 0) === 1) return usersPanel.render();
     // 侧栏入口已经按权限隐藏了，但地址可以直接粘进来，所以这里再挡一道
     if (!store.can('system:config')) {
-      return `<section class="view on"><div class="card"><div class="empty">
+      return `<section class="view on">
+        <div class="page-head"><h1>系统设置</h1><p>模型与密钥</p>
+          <div class="right">${subChipRow(SUBS, 0)}</div></div>
+        <div class="card"><div class="empty">
         <div class="empty-t">没有权限</div>
-        <p>系统设置只有管理员能打开；要改模型配置，找管理员。</p>
+        <p>系统设置只有管理员能打开；要改模型配置，找管理员。
+           右边切到「用户与角色」还能看用户名单（你有 user:read）。</p>
       </div></div></section>`;
     }
 
@@ -59,6 +67,7 @@ export default {
         <h1>系统设置</h1>
         <p>每类能力两条轨，提交作业时默认走打勾的那条，也可以临时改</p>
         <div class="right">
+          ${subChipRow(SUBS, 0)}
           <span class="chip plain" id="save-state" hidden>已保存</span>
           <button class="btn primary" id="save-providers">保存</button>
         </div>
@@ -69,13 +78,15 @@ export default {
           <h2>模型配置</h2>
           <span class="sub">密钥不进数据库，只读环境变量 FV_KEY_&lt;PROVIDER&gt;</span>
         </div>
-        <table>
+        <div class="table-wrap">
+          <table>
           <thead><tr>
-            <th>能力</th><th>后端</th><th>Provider</th><th>模型</th><th>密钥</th>
-            <th class="c">启用</th><th class="c">默认</th>
+          <th>能力</th><th>后端</th><th>Provider</th><th>模型</th><th>密钥</th>
+          <th class="c">启用</th><th class="c">默认</th>
           </tr></thead>
           <tbody>${body}</tbody>
-        </table>
+          </table>
+        </div>
         <div class="card-body" style="border-top:1px solid var(--line)">
           <p class="note">
             <b>怎么配</b>：把云厂商给的 key 写进启动脚本或 <code>.env</code>，变量名按 provider 拼——
@@ -88,6 +99,8 @@ export default {
   },
 
   mount(root) {
+    // 切换器要在任何提前 return 之前绑上：无权限那一屏最需要它
+    bindSubChips(root, (i) => { setSub('system-config', i); window.dispatchEvent(new CustomEvent('app:refresh')); });
     if ((getSub('system-config') ?? 0) === 1) { usersPanel.mount?.(root); return; }
     const saveBtn = root.querySelector('#save-providers');
     const stateChip = root.querySelector('#save-state');

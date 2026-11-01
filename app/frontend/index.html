@@ -165,6 +165,9 @@
     </div>
 
     <div id="gate-login">
+      <!-- 会话过期时也走这个登录框，得有一句"为什么又让我登录"。
+           原来只有改密那块有 gate-note，登录框里没有可放话的地方 -->
+      <p class="gate-note" id="gate-login-note" hidden></p>
       <label class="modal-label" for="gate-user">用户名</label>
       <input id="gate-user" class="ctl" autocomplete="username" placeholder="用户名">
       <label class="modal-label" for="gate-pass">密码</label>

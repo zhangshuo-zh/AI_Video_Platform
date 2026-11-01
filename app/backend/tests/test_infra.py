@@ -253,10 +253,56 @@ def test_业务视图不直接拼_url():
 
 
 def test_alert_只有_util_一处():
-    """统一错误出口的守门人：有人新写 alert 就会红，逼他走 run()。"""
+    """统一错误出口的守门人：有人新写 alert 就会红，逼他走 run()。
+
+    不写行号——util.js 加几个函数行号就飘了，那种断言只会制造无谓的改动。
+    """
     hits = []
     for f in (FRONTEND / "js").rglob("*.js"):
-        for n, line in enumerate(f.read_text().split("\n"), 1):
+        for line in f.read_text().split("\n"):
             if re.search(r"(?<![\w.])alert\s*\(", line) and not line.strip().startswith("//"):
+                hits.append(f.name)
+    assert set(hits) == {"util.js"}, f"alert 出现在不该出现的地方：{sorted(set(hits))}"
+
+
+def test_危险确认不再用原生_confirm():
+    """W02-c：删集／删镜／停用账号原来用原生 confirm()，跟两套主题脱节，
+    而且"删除"和"知道了"长得一样。现在全站一套 confirmDanger。"""
+    hits = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        for n, line in enumerate(f.read_text().split("\n"), 1):
+            if re.search(r"(?<![\w.])confirm\s*\(", line) and not line.strip().startswith("//"):
                 hits.append(f"{f.name}:{n}")
-    assert hits == ["util.js:20"], f"alert 出现在不该出现的地方：{hits}"
+    assert not hits, f"还在用原生 confirm()：{hits}"
+
+
+def test_每张表都在横向滚动容器里():
+    """W02-d：卡片是 overflow:hidden，窄屏时列被裁掉又没有滚动条。"""
+    offenders = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        text = f.read_text()
+        tables = text.count("<table")
+        wraps = text.count('class="table-wrap"')
+        if tables != wraps:
+            offenders.append(f"{f.name}: table={tables} wrap={wraps}")
+    assert not offenders, f"表格没包 .table-wrap：{offenders}"
+
+
+def test_会话过期有统一出口():
+    """W02-a：原来只有启动那一次认 401，过期后每个操作只弹一句"失败：未登录"。"""
+    assert "app:unauthorized" in (FRONTEND / "js" / "api.js").read_text()
+    assert "app:unauthorized" in (FRONTEND / "js" / "app.js").read_text()
+    # 登录/改密接口的 401 是"口令错了"，不能拿去挂过期闸门（源码里是转义过的正则）
+    assert "login|password" in (FRONTEND / "js" / "api.js").read_text()
+
+
+def test_有二级页的模块页内也有切换器():
+    """W02-d：窄屏侧栏二级标签会收起，页内没有第二个入口就等于把功能藏了。
+
+    只查"已经有真实内容的三个模块"；生成／音频／审核／设定四页的 subs 目前
+    还是装饰，等接真功能时再纳入（那时这条测试要一起改）。
+    """
+    for name in ("assets.js", "writing.js", "system-config.js"):
+        text = (FRONTEND / "js" / "views" / name).read_text()
+        assert "data-kind" in text or "subChipRow" in text, f"{name} 缺页内切换器"
+    assert "subChipRow" in (FRONTEND / "js" / "views" / "system-users.js").read_text()

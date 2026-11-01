@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { escapeHtml, run } from '../util.js';
+import { bindModalDismiss, escapeHtml, run } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -137,11 +137,13 @@ export default {
         ${pickable ? '<div class="batch-bar" id="batch-bar" hidden></div>' : ''}
         ${pickable ? '<div class="batch-msg note" id="batch-msg" hidden></div>' : ''}
         ${projects.length ? `
-        <table>
+        <div class="table-wrap">
+          <table>
           <thead><tr>${pickable ? `<th class="c"><input type="checkbox" class="row-pick" id="pick-all"
-                       aria-label="全选当前筛选结果"></th>` : ''}<th>项目</th><th>标签</th><th>内容</th><th>创建</th><th>最后修改</th><th class="r"></th></tr></thead>
+          aria-label="全选当前筛选结果"></th>` : ''}<th>项目</th><th>标签</th><th>内容</th><th>创建</th><th>最后修改</th><th class="r"></th></tr></thead>
           <tbody id="proj-rows">${rowsFor(projects)}</tbody>
-        </table>
+          </table>
+        </div>
         <div class="empty" id="no-match" hidden style="padding:26px 20px">
           <div class="empty-t">没有匹配的项目</div>
           <p id="no-match-hint">换个关键词或清掉标签筛选。</p>
@@ -640,6 +642,8 @@ export default {
 
     root.querySelector('#mem-close').addEventListener('click', () => { memModal.hidden = true; });
     memModal.addEventListener('click', (e) => { if (e.target === memModal) memModal.hidden = true; });
+    // 成员弹窗原来只能点外面或"关闭"钮，键盘撤不回来——四个缺 Escape 的弹窗之一
+    bindModalDismiss(memModal, () => { memModal.hidden = true; });
 
     /* ---------- 删除项目 ---------- */
     const modal = root.querySelector('#del-modal');
@@ -689,6 +693,7 @@ export default {
     });
     root.querySelector('#del-cancel').addEventListener('click', closeModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    bindModalDismiss(modal, closeModal);
 
     okBtn.addEventListener('click', async () => {
       if (!pending) return;
@@ -729,6 +734,8 @@ export default {
     });
     root.querySelector('#tag-cancel')?.addEventListener('click', () => { tagModal.hidden = true; });
     tagModal?.addEventListener('click', (e) => { if (e.target === tagModal) tagModal.hidden = true; });
+    // Escape 原来只绑在输入框上：焦点一旦在"加标签/取消"钮上就撤不回来
+    if (tagModal) bindModalDismiss(tagModal, () => { tagModal.hidden = true; });
     tagInput?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') tagOk.click();
       if (e.key === 'Escape') tagModal.hidden = true;
@@ -765,6 +772,7 @@ export default {
     });
     root.querySelector('#bd-cancel')?.addEventListener('click', () => { bdModal.hidden = true; });
     bdModal?.addEventListener('click', (e) => { if (e.target === bdModal) bdModal.hidden = true; });
+    if (bdModal) bindModalDismiss(bdModal, () => { bdModal.hidden = true; });
 
     /* ---------- 去创作中心：只跳转，不在这里写集和分镜 ---------- */
     const gotoWriting = root.querySelector('#btn-goto-writing');
