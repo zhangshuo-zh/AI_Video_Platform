@@ -13,7 +13,8 @@ from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
-from routers import auth, content, documents, jobs, projects, settings, system, users
+from routers import (auth, content, documents, jobs, profiles, projects, settings,
+                     system, users)
 from services import ensure_workspace
 
 
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(content.router)
     app.include_router(documents.router)
     app.include_router(jobs.router)
+    app.include_router(profiles.router)
     app.include_router(projects.router)
     app.include_router(settings.router)
     app.include_router(system.router)

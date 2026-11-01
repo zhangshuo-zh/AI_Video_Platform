@@ -3,9 +3,12 @@
 POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `worker.py` 进程里。
 这条边界是规格 02 §7.2 的原话：请求接口不得等待模型跑完。
 """
+import json
+import mimetypes
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
+from fastapi.responses import FileResponse
 
 import access
 import jobfiles
@@ -13,8 +16,9 @@ import services
 from config import WORKER_ONLINE_SECONDS
 from db import get_conn
 from deps import require_permission, require_user
-from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, JobArtifactOut,
-                    JobDetailOut, JobLogOut, JobOut, JobSubmitIn, WorkerStatusOut)
+from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, CostBucket,
+                    CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobDetailOut,
+                    JobLogOut, JobOut, JobSubmitIn, LocalCostOut, WorkerStatusOut)
 from repositories.jobs import jobs
 from repositories.projects import projects as project_repo
 
@@ -78,23 +82,99 @@ def create_job(payload: JobSubmitIn, response: Response,
     return JobOut.from_row(row)
 
 
-@router.get("/jobs", response_model=list[JobOut])
-def list_jobs(project_id: int | None = None, status: str | None = None,
-              capability: str | None = None, limit: int = 100,
-              user=Depends(require_permission("job:read"))) -> list[JobOut]:
-    if status and status not in JOB_STATUSES:
-        raise HTTPException(status_code=422, detail=f"不认识的状态：{status}")
-    if capability and capability not in CAPABILITIES:
-        raise HTTPException(status_code=422, detail=f"不认识的能力：{capability}")
-
+def _visible_ids(user, project_id: int | None) -> list[int] | None:
+    """None＝管理员看全部；列表＝只看这些项目。看不见的项目回 404。"""
     if project_id is not None:
         access.ensure(user, project_id, "read")
-        ids = [project_id]
-    elif access.is_manager(user):
-        ids = None                      # 管理员看全部
-    else:
-        ids = [r["id"] for r in project_repo.list_visible(user["id"], False, "all")]
-    return [JobOut.from_row(r) for r in jobs.list(ids, status, capability, limit)]
+        return [project_id]
+    if access.is_manager(user):
+        return None
+    return [r["id"] for r in project_repo.list_visible(user["id"], False, "all")]
+
+
+def _statuses(raw: str | None) -> list[str]:
+    """status 允许逗号分隔：生成中心的"进行中"就是三个状态一起看。
+    单值照旧；不认识的值直接 422，不悄悄忽略。"""
+    wanted = [s.strip() for s in (raw or "").split(",") if s.strip()]
+    for value in wanted:
+        if value not in JOB_STATUSES:
+            raise HTTPException(status_code=422, detail=f"不认识的状态：{value}")
+    return wanted
+
+
+@router.get("/jobs", response_model=list[JobOut])
+def list_jobs(project_id: int | None = None, status: str | None = None,
+              capability: str | None = None, execution_mode: str | None = None,
+              q: str | None = None, limit: int = 100,
+              user=Depends(require_permission("job:read"))) -> list[JobOut]:
+    if capability and capability not in CAPABILITIES:
+        raise HTTPException(status_code=422, detail=f"不认识的能力：{capability}")
+    if execution_mode and execution_mode not in ("local", "cloud"):
+        raise HTTPException(status_code=422, detail=f"不认识的执行方式：{execution_mode}")
+    wanted = _statuses(status)
+    ids = _visible_ids(user, project_id)
+    rows = jobs.list(ids, capability=capability, limit=limit,
+                     statuses=wanted, execution_mode=execution_mode,
+                     keyword=(q or "").strip()[:200] or None)
+    return [JobOut.from_row(r) for r in rows]
+
+
+@router.get("/jobs/costs", response_model=CostSummaryOut)
+def job_costs(project_id: int | None = None,
+              user=Depends(require_permission("job:read"))) -> CostSummaryOut:
+    """成本账：Job 的聚合，唯一的读法。多币种分桶，绝不跨币种相加。
+
+    只汇总 known / pending_reconciliation；not_billable 是本地作业与
+    "排队中取消、一次都没调用供应商"的作业。本地机时另算一块。
+    """
+    summary = jobs.cost_summary(_visible_ids(user, project_id))
+    by_currency: dict[str, dict] = {}
+    for row in summary["rows"]:
+        bucket = by_currency.setdefault(row["currency"], {
+            "currency": row["currency"], "total_micros": 0, "jobs": 0,
+            "known": 0, "pending": 0, "capabilities": {},
+        })
+        total = int(row["total"] or 0)
+        n = int(row["n"] or 0)
+        bucket["total_micros"] += total
+        bucket["jobs"] += n
+        bucket["known" if row["billable_status"] == "known" else "pending"] += n
+        cap = bucket["capabilities"].setdefault(row["capability"], {"total": 0, "jobs": 0})
+        cap["total"] += total
+        cap["jobs"] += n
+
+    currencies = []
+    for code in sorted(by_currency):
+        bucket = by_currency[code]
+        currencies.append(CostCurrencyOut(
+            currency=code, total_micros=bucket["total_micros"], jobs=bucket["jobs"],
+            known=bucket["known"], pending=bucket["pending"],
+            by_capability=[
+                CostBucket(capability=cap, capability_label=CAPABILITIES.get(cap, cap),
+                           total_micros=val["total"], jobs=val["jobs"])
+                for cap, val in bucket["capabilities"].items()
+            ],
+        ))
+
+    local_jobs = len(summary["locals"])
+    elapsed = cpu = peak = 0
+    for row in summary["locals"]:
+        try:
+            res = json.loads(row["resources_json"] or "{}")
+        except ValueError:
+            res = {}
+        if not isinstance(res, dict):
+            res = {}
+        elapsed += int(row["elapsed_ms"] or res.get("wall_ms") or 0)
+        cpu += int(res.get("cpu_ms") or 0)
+        peak = max(peak, int(res.get("max_rss_kb") or 0))
+
+    return CostSummaryOut(
+        currencies=currencies, unpriced_jobs=summary["unpriced"],
+        local=LocalCostOut(jobs=local_jobs, elapsed_ms=elapsed, cpu_ms=cpu,
+                           max_rss_kb=peak),
+        total_jobs=summary["total_jobs"],
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailOut)
@@ -133,6 +213,19 @@ def job_artifacts(job_id: int,
                   user=Depends(require_permission("job:read"))) -> list[JobArtifactOut]:
     row = _load(job_id, user)
     return [JobArtifactOut(**item) for item in jobfiles.artifacts(row["result_paths_json"])]
+
+
+@router.get("/jobs/{job_id}/artifacts/{index}")
+def job_artifact_file(job_id: int, index: int,
+                      user=Depends(require_permission("job:read"))):
+    """取一件产物。路径在库里只是相对写法，读之前再比对一次真实边界；
+    越界或已不在都回 404，不泄露文件系统结构。"""
+    row = _load(job_id, user)
+    target = jobfiles.artifact_at(row["result_paths_json"], index)
+    if target is None:
+        raise HTTPException(status_code=404, detail="产物不存在或已清理")
+    media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media, filename=target.name)
 
 
 @router.get("/worker/status", response_model=WorkerStatusOut)

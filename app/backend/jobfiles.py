@@ -87,6 +87,24 @@ def artifacts(result_paths_json: str) -> list[dict]:
     return out
 
 
+def artifact_at(result_paths_json: str, index: int) -> Path | None:
+    """产物清单里的第 index 条，换算成经过边界校验的真实路径。
+
+    不存在或越界一律 None——调用方回 404，不把"路径长什么样"告诉外面。
+    """
+    try:
+        paths = json.loads(result_paths_json or "[]")
+    except ValueError:
+        return None
+    if not isinstance(paths, list) or index < 0 or index >= len(paths):
+        return None
+    try:
+        target = _resolve(str(paths[index]))
+    except JobPathError:
+        return None
+    return target if target.is_file() else None
+
+
 def remove_job(job_id: int) -> None:
     """删作业目录。只给服务端清理用（删项目），不暴露成接口。"""
     import shutil

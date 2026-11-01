@@ -1,14 +1,16 @@
-"""独立生成 worker（W07）。
+"""独立生成 worker（W07 建壳，W08 补机时）。
 
 它是**另一个进程**，不挂在 FastAPI 里：请求只入队并立刻返回 Job ID，
 模型跑几十分钟也不会把界面请求堵死（规格 01-4.4 / 02 §7.3）。
 
-W07 只做队列语义与执行壳：
+到现在仍只做队列语义与执行壳：
   * 真适配器（FastMetal / mlx-video / mflux / VoxCPM2 / ACE-Step）在这里
     只做白名单校验，然后以 `adapter_not_ready` 失败——执行接线是 W09，
     现在假装成功比不跑更糟；
   * 假适配器 `mock` 只在 `FASTVIDEO_ALLOW_MOCK=1` 时可用，用来把
     "排队 → 领取 → 成功/失败/取消 → 重试 → 崩溃恢复"整条链测穿。
+  * 每条作业收尾都记 wall/cpu/峰值内存（resources_json）：本地计 0 元，
+    但机时是判断"该不该转云端"的唯一依据（W08）。
 
 一条本地队列同一时刻只跑一个作业：领取前先看有没有租约未过期的
 starting/running，有就不领。租约每 0.2 秒续一次；进程被杀后租约到期，
@@ -19,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import resource
 import signal
 import socket
 import sys
@@ -61,6 +64,30 @@ def _write(log, message: str) -> None:
     log.flush()
 
 
+def _cpu_seconds() -> float:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
+
+
+def _resources(cpu_start: float, elapsed_ms: int) -> dict:
+    """本地作业的机时证据。金额是 0，但"占了多久机器"不能是空白——
+    将来要不要把这批活挪到云端，靠的就是这一栏。
+
+    `max_rss_kb` 是 worker 进程的生命周期峰值（getrusage 只给峰值），
+    不是这一条作业的独占内存；字段名照实写，不假装是单任务数字。
+    """
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    # ru_maxrss 的单位随系统走：Linux 给 KB，macOS 给字节。
+    # 不归一就写进库，界面上会得到"21344 MB"这种荒唐数字（W08 真截图抓到的）。
+    rss_kb = usage.ru_maxrss / 1024 if sys.platform == "darwin" else usage.ru_maxrss
+    return {
+        "wall_ms": int(elapsed_ms),
+        "cpu_ms": int(max(0.0, _cpu_seconds() - cpu_start) * 1000),
+        "max_rss_kb": int(rss_kb),
+        "measure": "getrusage(RUSAGE_SELF)",
+    }
+
+
 def _params(job) -> dict:
     try:
         value = json.loads(job["params_json"] or "{}")
@@ -92,7 +119,7 @@ def _validate(job) -> tuple[dict, str]:
         raise JobFailure("bad_params", "；".join(errors))
     raise JobFailure(
         "adapter_not_ready",
-        f"{adapter.label} 的执行接线在 W09；W07 只验证队列与参数，本次不运行模型")
+        f"{adapter.label} 的执行接线在 W09；现在只验证队列、参数与成本，本次不运行模型")
 
 
 def _run_mock(job, params: dict, log, wid: str) -> tuple[list[str], int]:
@@ -136,6 +163,7 @@ def process(job, wid: str) -> None:
     logs, _ = jobfiles.ensure_dirs(job["id"])
     log_path = logs / "run.log"
     started = time.monotonic()
+    cpu_start = _cpu_seconds()
     with log_path.open("a", encoding="utf-8") as log:
         _write(log, f"job #{job['id']} {job['capability']}/{job['execution_mode']} "
                     f"{job['provider_code']}/{job['model_code']} worker={wid}")
@@ -151,25 +179,29 @@ def process(job, wid: str) -> None:
             else:  # 目前 _validate 只返回 mock；真适配器会抛 adapter_not_ready
                 raise JobFailure("adapter_not_ready", "没有可执行的反适配器")
             jobs.succeed(job["id"], wid, jobfiles.relative(log_path), paths,
-                         elapsed, return_code=0)
+                         elapsed, return_code=0,
+                         resources=_resources(cpu_start, elapsed))
             _write(log, "状态：succeeded")
         except Cancelled as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             _write(log, f"状态：cancelled（{exc}）")
             jobs.cancelled(job["id"], wid, str(exc),
-                           jobfiles.relative(log_path), elapsed)
+                           jobfiles.relative(log_path), elapsed,
+                           resources=_resources(cpu_start, elapsed))
         except JobFailure as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             _write(log, f"状态：failed（{exc.code}）{exc.message}")
             jobs.fail(job["id"], wid, exc.code, exc.message,
-                      jobfiles.relative(log_path), exc.return_code, elapsed)
+                      jobfiles.relative(log_path), exc.return_code, elapsed,
+                      resources=_resources(cpu_start, elapsed))
         except Exception:
             elapsed = int((time.monotonic() - started) * 1000)
             detail = traceback.format_exc(limit=6)
             _write(log, "状态：failed（internal_error）\n" + detail)
             jobs.fail(job["id"], wid, "internal_error",
                       "worker 内部错误：" + traceback.format_exc(limit=1).strip(),
-                      jobfiles.relative(log_path), None, elapsed)
+                      jobfiles.relative(log_path), None, elapsed,
+                      resources=_resources(cpu_start, elapsed))
         finally:
             jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION)
 

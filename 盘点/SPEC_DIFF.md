@@ -245,3 +245,38 @@
 **这一轮真被踩到的两个实现问题（都修了）**：
 1. **"崩溃后立刻重启"会漏收**：只在启动时 `recover_stale()`，重启时租约还没过期，job 会永远停在 running。改成主循环每轮再收一次；正常作业每 0.2 秒续租，所以不会被误杀。真进程用 `kill -9` 复现并验证。
 2. **仓储层在未提交事务里用另一个连接读回**：`create/claim/retry/request_cancel` 原先调 `self.get()`，第二个连接看不到未提交的 INSERT/UPDATE，会拿到 None 或旧状态。全部改成在同一个连接里 `SELECT` 读回。
+
+## 16. W08 完成后回填（2026-11-01）
+
+`pytest tests -q` → **272 passed**（新增 `test_cost.py` 7 项、`test_profiles.py` 5 项、管理员空筛选 1 项；守卫表 +8 条入口＝参数化 +16）。路由 **72 条业务端点 / 77 条含 health 与四条 auth**。真浏览器 **33 项全过**，图在 `app/截图/v68-generate.png`、`v68-submit.png`、`v68-drawer.png`、`v68-profiles.png`、`v68-project-cost.png`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| CURRENT_SCHEMA「job 成本列建好但没人写」 | W08 开始写：`quantity/unit/unit_price_micros/cost_micros/currency/pricing_snapshot_json/billable_status`。另加 `resources_json`（本地机时）与 `generation_profile`（0016） |
+| 03 §5.3「Job 存单位、数量、单价、金额、币种、定价快照、账单核对状态」 | 七类齐；金额是整数 micros，数量是 REAL。定价快照含来源、确认人、确认时间、公式 |
+| 03 §5.4「generation_profile 参数模板」 | 表已建；项目模板按项目归属读写，全局模板（project_id NULL）只有管理员能写；改模板不影响已提交 Job 的参数快照 |
+| 03 §5.3「禁止失败自动清零 / 重试覆盖原 Job」 | 失败与取消都不动金额；重试新建一行继承计价快照、原行成本/日志/错误不动 |
+| W08 验收「云端预计成本需用户确认」 | 云端提交必须带 `estimate` 并 `user_confirmed_cloud=true`；金额服务端 Decimal 半入，不采信客户端总价 |
+| W08 验收「失败不默认归零」 | `fail()` 不写成本列；真浏览器里云端作业失败后仍 ¥6.00，账单状态待核对 |
+| W08 验收「多币种分别汇总」 | `GET /api/jobs/costs` 按币种分桶，`by_capability` 只在该币种内汇总；项目中心同样按币种分行，不合计 |
+| W08 验收「重试保留原成本」 | 新行继承数量/单价/币种/快照，金额重算为同一值并回到待核对；测试断言原行仍 4,000,000 micros |
+| W08 验收「本地任务记录耗时和资源」 | `resources_json` 记 wall_ms / cpu_ms / max_rss_kb；macOS 的字节值统一折算为 KB |
+| W08「队列表/过滤/详情/日志/产物/失败/重试/取消/参数模板」 | 生成中心一整页：四组筛选＋搜索、详情抽屉、日志尾部、产物下载、取消/重试、模板建改删应用、多币种成本账 |
+| W08「项目中心只读摘要」 | 项目列表带 `costs[]`（币种、金额、笔数、待核对笔数）；进入项目中心时重拉一次列表，避免看过的是旧账 |
+| CURRENT_API「作业列表只有状态/能力筛选」 | 加执行方式、逗号分隔状态（“进行中”＝四态）、作业号/提示词搜索；管理员无筛选的空条件 500 已修 |
+| CURRENT_ARCHITECTURE「普通模块没有可用的槽位选择接口」 | 新增 `GET /api/providers/available`：只回已启用槽位、健康与参数白名单，不带密钥变量名与备注 |
+
+**W08 的边界（别误读成“云端能计费了”）**：
+- 仍然**不跑任何模型**：真适配器照旧以 `adapter_not_ready` 失败；第一条真 mp4 在 W09。
+- 云端单价是**提交人填的预计**，带来源，不是价目表自动取价；实际用量与供应商回执（`provider_request_id`、known 账单）在 W10。
+- 产物只做“列表＋按序号下载”，文本/mock 可直接看；真视频的播放器、缩略图与落盘登记在 W09。
+- 业务 Task 表仍不建；参数模板不是提示词模板（§5.5 的 `prompt_template` 仍未动）。
+
+**这一轮真被踩到的五个问题（都修了）**：
+1. **管理员无筛选列作业 500**：`project_ids=None`、状态/能力也空时条件数组为空，SQL 拼成 `WHERE  ORDER BY`，回 500；空条件补 `1`，并加了一条守卫测试。
+2. **macOS 的 `ru_maxrss` 是字节**：直接按 KB 入库，成本卡片显示“21344 MB”；按平台折算成 KB，测试加“< 10,000,000 KB”上限。
+3. **抽屉只在打开时取一次**：作业从排队变失败后，正文仍停在“排队中”，错误与日志永远不出现；改为随 3 秒轮询刷新，并保留滚动位置。
+4. **模板列表重拉错项目**：新建模板后用“顶栏当前项目”重拉，刚建的模板从列表里消失；改为记住模板弹窗打开时的项目（保存到别的项目就跟着切换）。
+5. **刷新失败弹 alert 会堵死页面**：提交后一次 500 触发 `alert`，主线程阻塞，CDP 与“重试”都点不到；改成页内错误条。
+
+**本轮改到的文件**：`migrations/0016_cost_profile.sql`、`backend/models.py`、`backend/services.py`、`backend/repositories/jobs.py`、`backend/repositories/profiles.py`（新）、`backend/routers/jobs.py`、`backend/routers/profiles.py`（新）、`backend/routers/settings.py`、`backend/repositories/projects.py`、`backend/jobfiles.py`、`backend/worker.py`、`backend/main.py`、`frontend/js/api.js`、`frontend/js/util.js`、`frontend/js/modules.js`、`frontend/js/views/generate.js`、`frontend/js/views/projects.js`、`frontend/js/views/system-config.js`、`frontend/css/app.css`、`tests/conftest.py`、`tests/test_guards.py`、`tests/test_jobs.py`、`tests/test_cost.py`（新）、`tests/test_profiles.py`（新）。

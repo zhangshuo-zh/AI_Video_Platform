@@ -56,7 +56,7 @@ function paramsCell(adapter, model, provider) {
   if (!provider) return '<span class="hint">选 provider 后按清单显示</span>';
   if (!adapter) return '<span class="hint">未登记这个 provider；参数不猜，运行方式也不猜</span>';
   if (!adapter.params_known) {
-    return '<span class="hint">参数未核验，平台不预填（到 W07 按官方 schema 补齐）</span>';
+    return '<span class="hint">参数未核验，平台不预填（到 W10 接云端 adapter 时按官方 schema 补齐）</span>';
   }
   if (!adapter.models.length) return '<span class="hint">清单里没有模型档</span>';
   if (!model) return '<span class="hint">从「模型」列选一档，或按清单输入</span>';

@@ -116,6 +116,39 @@ export const api = {
   // worker 在线状态与队列长度（顶栏/侧栏/首页共用）
   workerStatus: () => fetch('/api/worker/status').then(toJson),
 
+  // 生成中心：队列、成本账、参数模板。
+  // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
+  jobs: (params = {}) => fetch('/api/jobs?' + new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)),
+  )).then(toJson),
+  job: (id) => fetch(`/api/jobs/${id}`).then(toJson),
+  submitJob: (body) => fetch('/api/jobs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  cancelJob: (id) => fetch(`/api/jobs/${id}/cancel`, { method: 'POST' }).then(toJson),
+  retryJob: (id) => fetch(`/api/jobs/${id}/retry`, { method: 'POST' }).then(toJson),
+  jobLogs: (id) => fetch(`/api/jobs/${id}/logs`).then(toJson),
+  jobArtifacts: (id) => fetch(`/api/jobs/${id}/artifacts`).then(toJson),
+  // 产物走浏览器直连（图片/视频能直接预览）；它不是 JSON，不能过 toJson
+  jobArtifactUrl: (id, index) => `/api/jobs/${id}/artifacts/${index}`,
+  jobCosts: (projectId) => fetch('/api/jobs/costs'
+    + (projectId ? `?project_id=${projectId}` : '')).then(toJson),
+  providerOptions: () => fetch('/api/providers/available').then(toJson),
+  generationProfiles: (projectId, capability) => fetch('/api/generation-profiles?'
+    + new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}),
+      ...(capability ? { capability } : {}) })).then(toJson),
+  createGenerationProfile: (body) => fetch('/api/generation-profiles', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  updateGenerationProfile: (id, body) => fetch(`/api/generation-profiles/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  deleteGenerationProfile: (id) => fetch(`/api/generation-profiles/${id}`,
+    { method: 'DELETE' }).then(toJson),
+
   // 模型双轨配置：读全部、整批写回
   providers: () => fetch('/api/providers').then(toJson),
   providerManifest: () => fetch('/api/providers/manifest').then(toJson),

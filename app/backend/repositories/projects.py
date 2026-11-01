@@ -52,7 +52,21 @@ class ProjectRepository:
                   AND e.status = 'done') AS episode_done,
                (SELECT COUNT(*) FROM shot s JOIN episode e ON e.id = s.episode_id
                   WHERE e.project_id = p.id) AS shot_count,
-               (SELECT COUNT(*) FROM asset a WHERE a.project_id = p.id) AS asset_count
+               (SELECT COUNT(*) FROM asset a WHERE a.project_id = p.id) AS asset_count,
+               -- 成本账的东家是生成中心；这里只带一份按币种的只读累计，
+               -- 口径与 /api/jobs/costs 完全一致：只算 known / pending，不跨币种相加
+               COALESCE((SELECT json_group_array(json_object(
+                            'currency', c.currency, 'total_micros', c.total,
+                            'jobs', c.n, 'pending', c.pending))
+                           FROM (SELECT currency, SUM(cost_micros) AS total,
+                                        COUNT(*) AS n,
+                                        SUM(CASE WHEN billable_status = 'pending_reconciliation'
+                                                 THEN 1 ELSE 0 END) AS pending
+                                   FROM job
+                                  WHERE project_id = p.id
+                                    AND cost_micros IS NOT NULL AND currency IS NOT NULL
+                                    AND billable_status IN ('known','pending_reconciliation')
+                                  GROUP BY currency ORDER BY currency) c), '[]') AS costs
           FROM project p
           LEFT JOIN app_user o ON o.id = p.owner_id
     """

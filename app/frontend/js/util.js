@@ -26,6 +26,24 @@ export async function run(label, fn) {
   }
 }
 
+/**
+ * 金额：后端一律给整数 micros（1e-6 货币单位），界面只负责显示。
+ *
+ * 不做前端汇总——成本账的真相在服务端；这里多留 4 位小数，
+ * 是因为云端按秒计价时一笔可能就是 ¥0.0036，四舍五入到 2 位会显示成 ¥0.00。
+ */
+const CURRENCY_SIGNS = { CNY: '¥', USD: '$', EUR: '€' };
+
+export function formatMoney(micros, currency) {
+  if (micros == null) return '—';
+  const sign = CURRENCY_SIGNS[currency] || (currency ? `${currency} ` : '');
+  const amount = Math.abs(Number(micros)) / 1_000_000;
+  const digits = amount > 0 && amount < 0.01 ? 4 : 2;
+  return sign + amount.toLocaleString('zh-CN', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
+}
+
 /** 403/404 补一句"为什么"，不让人对着一个状态码猜。 */
 function whyHint(err) {
   if (!err || !err.status) return '';

@@ -40,6 +40,7 @@ import services  # noqa: E402
 from repositories.content import assets, episodes, shots  # noqa: E402
 from repositories.projects import projects as project_repo  # noqa: E402
 from repositories.jobs import jobs as job_repo
+from repositories.profiles import profiles as profile_repo
 from repositories.users import sessions, users as user_repo  # noqa: E402
 from db import get_conn  # noqa: E402
 from security import hash_password, new_session_token  # noqa: E402
@@ -124,6 +125,14 @@ def seeded(app, people):
     sid = shots.create(eid, "开场", "", 5.0, [])["id"]
     aid = assets.create(pid, "character", f"角色_{uuid.uuid4().hex[:6]}", "", "", [])["id"]
     doc = services.create_document(pid, eid, "novel", "测试稿", "燧人蹲在洞口。", "测试账号")
+    # 这个 fixture 是 session 级的，可能在别的用例留下排队作业之后才第一次执行；
+    # 先把那些活收掉，下面"领取到的必须是我这一条"才成立（不是靠用例顺序）。
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status = 'cancelled',
+                      finished_at = datetime('now','localtime'),
+                      error_code = 'fixture_cleanup'
+                WHERE status IN ('queued','starting','running','cancel_requested')""")
     # 一条已经跑完的 Job：守卫表要测"看不见的作业回 404"，需要一个真实 id。
     # 用 succeeded 而不是 queued，免得 worker 测试把它当活干。
     job = job_repo.create({
@@ -136,9 +145,14 @@ def seeded(app, people):
     claimed = job_repo.claim_next("fixture-worker", 60)
     assert claimed is not None and claimed["id"] == job["id"]
     job_repo.succeed(job["id"], "fixture-worker", "", [], 1)
+    profile = profile_repo.create({
+        "project_id": pid, "name": "守卫用模板", "capability": "video",
+        "provider_code": "", "model_code": "", "params": {},
+        "created_by": people["editor"]["id"],
+    })
     return {"project_id": pid, "episode_id": eid, "shot_id": sid, "asset_id": aid,
             "document_id": doc["row"]["id"], "commit": doc["row"]["git_commit"],
-            "job_id": job["id"]}
+            "job_id": job["id"], "profile_id": profile["id"]}
 
 
 @pytest.fixture

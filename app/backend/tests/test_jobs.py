@@ -57,6 +57,15 @@ def _put_video(c, local=None, cloud=None):
     return resp.json()
 
 
+def test_管理员不带任何筛选也能列作业(as_role, seeded):
+    """管理员看全部时 project_ids=None、状态/能力也都没选，条件是空的。
+    W08 真浏览器第一轮就在这里撞到 "near ORDER: syntax error"。"""
+    r = as_role("admin").get("/api/jobs")
+    assert r.status_code == 200, r.text
+    assert any(row["id"] == seeded["job_id"] for row in r.json())
+    assert as_role("admin").get("/api/jobs?status=queued,running").status_code == 200
+
+
 def test_提交立刻返回_202_并冻结快照(as_role, clean_queue, seeded):
     c = as_role("editor")
     r = _submit(c, seeded["project_id"], episode_id=seeded["episode_id"],
@@ -282,9 +291,19 @@ def test_云端视频必须显式确认(as_role, provider_state, clean_queue, se
     assert r.status_code == 422
     assert "确认" in r.json()["detail"]
 
+    # W08 起，确认要与一张具体的计价单一起给：只有勾、没有量价，仍然不落库
+    r = _submit(c, seeded["project_id"], user_confirmed_cloud=True, **base)
+    assert r.status_code == 422
+    assert "预计成本" in r.json()["detail"]
+
+    base["estimate"] = {"quantity": 5, "unit": "second",
+                        "unit_price_micros": 1_200_000,
+                        "currency": "CNY", "source": "供应商官网 2026-11-01"}
     r = _submit(c, seeded["project_id"], user_confirmed_cloud=True, **base)
     assert r.status_code == 202, r.text
     assert r.json()["kind"] == "video_cloud"
+    assert r.json()["cost_micros"] == 6_000_000
+    assert r.json()["billable_status"] == "pending_reconciliation"
 
 
 def test_集与镜头必须对得上(as_role, clean_queue, seeded, fresh_project):

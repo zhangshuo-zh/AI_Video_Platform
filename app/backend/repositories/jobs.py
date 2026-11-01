@@ -17,6 +17,10 @@ COPY_FIELDS = (
     "project_id", "episode_id", "shot_id", "capability", "kind", "execution_mode",
     "provider_code", "model_code", "adapter_version", "prompt_snapshot",
     "params_json", "input_refs_json", "priority", "user_confirmed_cloud",
+    # 重试继承的是"这次大概是这个价"，不是"上次真的花了这么多"：
+    # 原行的金额一律不动；新行的账单状态重新回到待核对。
+    "quantity", "unit", "unit_price_micros", "cost_micros", "currency",
+    "pricing_snapshot_json",
 )
 
 
@@ -28,8 +32,11 @@ class JobRepository:
                    (project_id, episode_id, shot_id, capability, kind, execution_mode,
                     provider_code, model_code, adapter_version, prompt_snapshot,
                     params_json, input_refs_json, status, priority, idempotency_key,
-                    user_confirmed_cloud, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?)""",
+                    user_confirmed_cloud, quantity, unit, unit_price_micros,
+                    cost_micros, currency, pricing_snapshot_json, billable_status,
+                    created_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',
+                           ?,?,?,?,?,?,?,?,?,?,?)""",
                 (data["project_id"], data.get("episode_id"), data.get("shot_id"),
                  data["capability"], data["kind"], data["execution_mode"],
                  data["provider_code"], data["model_code"],
@@ -37,7 +44,14 @@ class JobRepository:
                  json.dumps(data.get("params", {}), ensure_ascii=False, sort_keys=True),
                  json.dumps(data.get("input_refs", []), ensure_ascii=False),
                  int(data.get("priority", 0)), data.get("idempotency_key"),
-                 int(bool(data.get("user_confirmed_cloud"))), data.get("created_by")),
+                 int(bool(data.get("user_confirmed_cloud"))),
+                 data.get("quantity"), data.get("unit"),
+                 data.get("unit_price_micros"), data.get("cost_micros"),
+                 data.get("currency"),
+                 json.dumps(data["pricing_snapshot"], ensure_ascii=False, sort_keys=True)
+                 if data.get("pricing_snapshot") else None,
+                 data.get("billable_status", "not_billable"),
+                 data.get("created_by")),
             )
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
@@ -52,8 +66,14 @@ class JobRepository:
                                 (key,)).fetchone()
 
     def list(self, project_ids: list[int] | None, status: str | None = None,
-             capability: str | None = None, limit: int = 100) -> list[sqlite3.Row]:
-        """project_ids=None 表示管理员看全部；空列表表示一个都看不见。"""
+             capability: str | None = None, limit: int = 100,
+             statuses: list[str] | None = None, execution_mode: str | None = None,
+             keyword: str | None = None) -> list[sqlite3.Row]:
+        """project_ids=None 表示管理员看全部；空列表表示一个都看不见。
+
+        status 与 statuses 是同一件事的两种写法：前者给旧调用方与深链，
+        后者给生成中心的多状态筛选（"进行中"＝三个状态一起看）。
+        """
         if project_ids is not None and not project_ids:
             return []
         conds: list[str] = []
@@ -62,16 +82,28 @@ class JobRepository:
             marks = ",".join("?" for _ in project_ids)
             conds.append(f"project_id IN ({marks})")
             args += list(project_ids)
-        if status:
-            conds.append("status = ?")
-            args.append(status)
+        wanted = list(statuses or ([] if not status else [status]))
+        if wanted:
+            marks = ",".join("?" for _ in wanted)
+            conds.append(f"status IN ({marks})")
+            args += wanted
         if capability:
             conds.append("capability = ?")
             args.append(capability)
+        if execution_mode:
+            conds.append("execution_mode = ?")
+            args.append(execution_mode)
+        if keyword:
+            # 只搜 id 与提示词：日志/产物正文不在这张表里，不能假装搜得到
+            conds.append("(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ?)")
+            args += [keyword, f"%{keyword}%"]
         args.append(min(max(limit, 1), 200))
+        # 管理员看全部、又没加任何筛选时 conds 是空的；直接拼会得到
+        # "WHERE  ORDER BY" 这种语法错误（W08 真浏览器第一轮就打出来了）
+        where = " AND ".join(conds) or "1"
         with get_conn() as conn:
             return conn.execute(
-                f"""SELECT * FROM job WHERE {' AND '.join(conds)}
+                f"""SELECT * FROM job WHERE {where}
                      ORDER BY id DESC LIMIT ?""", args).fetchall()
 
     # ---------- 领取与执行 ----------
@@ -129,45 +161,55 @@ class JobRepository:
                 (job_id, worker_id),
             )
 
+    @staticmethod
+    def _resources(resources: dict | None) -> str:
+        # 资源数据只增不减：失败与取消也要留——它们同样是"机器被占过"的证据
+        return json.dumps(resources or {}, ensure_ascii=False, sort_keys=True)
+
     def succeed(self, job_id: int, worker_id: str, log_path: str,
-                result_paths: list[str], elapsed_ms: int, return_code: int = 0) -> None:
+                result_paths: list[str], elapsed_ms: int, return_code: int = 0,
+                resources: dict | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'succeeded', finished_at = datetime('now','localtime'),
                           elapsed_ms = ?, return_code = ?, log_path = ?,
                           result_paths_json = ?, error_code = NULL, error_message = NULL,
-                          lease_until = NULL, worker_id = NULL,
+                          resources_json = ?, lease_until = NULL, worker_id = NULL,
                           updated_at = datetime('now','localtime')
                     WHERE id = ? AND worker_id = ?""",
                 (elapsed_ms, return_code, log_path,
-                 json.dumps(result_paths, ensure_ascii=False), job_id, worker_id),
+                 json.dumps(result_paths, ensure_ascii=False),
+                 self._resources(resources), job_id, worker_id),
             )
 
     def fail(self, job_id: int, worker_id: str, error_code: str, message: str,
              log_path: str = "", return_code: int | None = None,
-             elapsed_ms: int | None = None) -> None:
+             elapsed_ms: int | None = None, resources: dict | None = None) -> None:
+        """失败**不动成本列**：一条云端作业失败时，供应商可能已经计过费；
+        这里替人把金额清零，账就再也对不上了（数据字典 §5.3「禁止」）。"""
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'failed', finished_at = datetime('now','localtime'),
                           error_code = ?, error_message = ?, log_path = ?,
-                          return_code = ?, elapsed_ms = ?,
+                          return_code = ?, elapsed_ms = ?, resources_json = ?,
                           lease_until = NULL, worker_id = NULL,
                           updated_at = datetime('now','localtime')
                     WHERE id = ? AND worker_id = ?""",
                 (error_code, message[:2000], log_path, return_code, elapsed_ms,
-                 job_id, worker_id),
+                 self._resources(resources), job_id, worker_id),
             )
 
     def cancelled(self, job_id: int, worker_id: str | None, message: str = "",
-                  log_path: str = "", elapsed_ms: int | None = None) -> None:
+                  log_path: str = "", elapsed_ms: int | None = None,
+                  resources: dict | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = datetime('now','localtime'),
                           error_code = 'cancelled', error_message = ?, log_path = ?,
-                          elapsed_ms = ?, lease_until = NULL, worker_id = NULL,
+                          elapsed_ms = ?, resources_json = ?, lease_until = NULL, worker_id = NULL,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
-                (message[:2000], log_path, elapsed_ms, job_id),
+                (message[:2000], log_path, elapsed_ms, self._resources(resources), job_id),
             )
 
     def request_cancel(self, job_id: int) -> sqlite3.Row | None:
@@ -177,10 +219,16 @@ class JobRepository:
             if row is None:
                 return None
             if row["status"] == "queued":
+                # 排队中取消＝一次供应商调用都没发生，这笔钱不该进账。
+                # 金额与定价快照仍留着（详情里能看见当初的预计），
+                # 但账单状态改为不计费——成本账只汇总 known / pending。
                 conn.execute(
                     """UPDATE job SET status = 'cancelled',
                               finished_at = datetime('now','localtime'),
                               error_code = 'cancelled', error_message = '提交后取消，未执行',
+                              billable_status = CASE WHEN execution_mode = 'cloud'
+                                                     THEN 'not_billable'
+                                                     ELSE billable_status END,
                               updated_at = datetime('now','localtime') WHERE id = ?""",
                     (job_id,),
                 )
@@ -193,23 +241,35 @@ class JobRepository:
             return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
 
     def retry(self, original: sqlite3.Row, created_by: int | None) -> sqlite3.Row:
-        """重试＝新建一行，原行一个字段都不动（日志、成本、错误全保留）。"""
+        """重试＝新建一行，原行一个字段都不动（日志、成本、错误全保留）。
+
+        新行继承原行的**计价快照与预计金额**，但账单状态重新回到待核对：
+        上一次是 known 不代表这次也已知，得等供应商回执。本地重试仍然不计费。
+        """
         key = "retry-" + uuid.uuid4().hex
+        cloud = original["execution_mode"] == "cloud"
+        billable = "pending_reconciliation" if cloud and original["unit_price_micros"] is not None \
+            else "not_billable"
         with get_conn() as conn:
             cur = conn.execute(
                 """INSERT INTO job
                    (project_id, episode_id, shot_id, capability, kind, execution_mode,
                     provider_code, model_code, adapter_version, prompt_snapshot,
                     params_json, input_refs_json, status, priority, idempotency_key,
-                    retry_of_job_id, user_confirmed_cloud, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?)""",
+                    retry_of_job_id, user_confirmed_cloud, quantity, unit,
+                    unit_price_micros, cost_micros, currency, pricing_snapshot_json,
+                    billable_status, created_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (original["project_id"], original["episode_id"], original["shot_id"],
                  original["capability"], original["kind"], original["execution_mode"],
                  original["provider_code"], original["model_code"],
                  original["adapter_version"], original["prompt_snapshot"],
                  original["params_json"], original["input_refs_json"],
                  original["priority"], key, original["id"],
-                 original["user_confirmed_cloud"], created_by),
+                 original["user_confirmed_cloud"], original["quantity"],
+                 original["unit"], original["unit_price_micros"],
+                 original["cost_micros"], original["currency"],
+                 original["pricing_snapshot_json"], billable, created_by),
             )
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
@@ -252,6 +312,42 @@ class JobRepository:
             row = conn.execute("SELECT status FROM job WHERE id = ?",
                                (job_id,)).fetchone()
         return row["status"] if row else None
+
+    # ---------- 成本账（W08） ----------
+    @staticmethod
+    def _scope(project_ids: list[int] | None) -> tuple[str, list]:
+        if project_ids is None:
+            return "1", []
+        if not project_ids:
+            return "0", []
+        marks = ",".join("?" for _ in project_ids)
+        return f"project_id IN ({marks})", list(project_ids)
+
+    def cost_summary(self, project_ids: list[int] | None) -> dict:
+        """按币种 × 能力汇总。只算 known / pending：
+        not_billable 是本地与"提交后未执行"的作业，它们不进金额。"""
+        where, args = self._scope(project_ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT currency, capability, billable_status,
+                           SUM(cost_micros) AS total, COUNT(*) AS n
+                      FROM job
+                     WHERE {where}
+                       AND cost_micros IS NOT NULL AND currency IS NOT NULL
+                       AND billable_status IN ('known','pending_reconciliation')
+                     GROUP BY currency, capability, billable_status
+                     ORDER BY currency, capability""", args).fetchall()
+            unpriced = conn.execute(
+                f"""SELECT COUNT(*) AS n FROM job
+                     WHERE {where} AND execution_mode = 'cloud'
+                       AND (cost_micros IS NULL OR currency IS NULL)""", args).fetchone()["n"]
+            total = conn.execute(
+                f"SELECT COUNT(*) AS n FROM job WHERE {where}", args).fetchone()["n"]
+            locals_ = conn.execute(
+                f"""SELECT elapsed_ms, resources_json FROM job
+                     WHERE {where} AND execution_mode = 'local'""", args).fetchall()
+        return {"rows": [dict(r) for r in rows], "unpriced": int(unpriced or 0),
+                "total_jobs": int(total or 0), "locals": [dict(r) for r in locals_]}
 
     # ---------- worker 心跳 ----------
     def heartbeat(self, worker_id: str, pid: int, current_job_id: int | None,

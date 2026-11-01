@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, confirmDanger, escapeHtml, run } from '../util.js';
+import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -62,6 +62,13 @@ function rowsFor(projects) {
     const descHtml = p.description
       ? `<span class="t-desc" title="${escapeHtml(p.description)}">${escapeHtml(p.description)}</span>`
       : '';
+    // 成本账的明细在生成中心，这里只摆按币种的只读累计。不在这里做加总，
+    // 也不给编辑入口——两处各算一遍，迟早对不上（设计稿 §3.2）。
+    const costHtml = (p.costs || []).length
+      ? `<span class="t-desc cost-inline">成本 ${p.costs.map((c) =>
+        `${formatMoney(c.total_micros, c.currency)}${c.pending ? `（${c.pending} 笔待核对）` : ''}`
+      ).join(' · ')}</span>`
+      : '';
     // 进度先按"已定稿几集"算：episode.status 建表时就在，不用等二期的生成队列。
     // 等 job 表落地，这一格换成"通过 N/M 镜"，口径仍然是一个 chip
     const doneHtml = p.episode_count
@@ -84,7 +91,7 @@ function rowsFor(projects) {
           <span class="t-desc">所有人 ${escapeHtml(p.owner_name || '—')}</span></td>
         <td class="tagcell">${tagHtml}</td>
         <td class="t-dim">${p.episode_count} 集 · ${p.shot_count} 镜 · ${p.asset_count} 资产
-          ${doneHtml}${descHtml}</td>
+          ${doneHtml}${descHtml}${costHtml}</td>
         <td class="t-dim mono">${stamp(p.created_at)}</td>
         <!-- 排序本来就按它，界面却不摆出来：人看见"最新的在最前面"却找不到依据，
              只会以为排序坏了。空＝从没打开过，摆一个破折号而不是藏掉这一列 -->
@@ -103,6 +110,11 @@ function rowsFor(projects) {
 
 export default {
   async render() {
+    // 每次进项目中心都重拉一次：集/镜/资产的计数和成本累计都会变，
+    // 只靠启动那一份快照，生成中心跑完几条作业再回到这里，看到的还是旧账。
+    try {
+      await store.load();
+    } catch { /* 读不到就先用上一次的列表，别把整页打空 */ }
     const projects = store.projects;
     const cur = store.current;
     const canWrite = store.can('project:write');
@@ -559,8 +571,14 @@ export default {
         edDesc.value = p.description || '';
         edTags.value = p.tags.join(', ');
         // 只读那一行：计数与两个时间都不可改，摆在这里是为了"所有内容一次看全"
+        const costText = (p.costs || []).length
+          ? '　成本 ' + p.costs.map((c) =>
+            `${formatMoney(c.total_micros, c.currency)}${c.pending ? `（${c.pending} 笔待核对）` : ''}`
+          ).join(' · ')
+          : '';
         edMeta.textContent = `${p.episode_count} 集 · ${p.shot_count} 镜 · `
-          + `${p.asset_count} 资产　创建 ${stamp(p.created_at)}　修改 ${stamp(p.updated_at)}`;
+          + `${p.asset_count} 资产　创建 ${stamp(p.created_at)}　修改 ${stamp(p.updated_at)}`
+          + costText;
         editModal.hidden = false;
         edName.focus();
         edName.select();

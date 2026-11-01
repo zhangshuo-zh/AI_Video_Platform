@@ -3,9 +3,10 @@
 ASSET_KINDS 是"资产类型 → 中文名"的唯一出处，前端不再自己判断。
 """
 import json
+from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # 五类能力：固定，前端按这个顺序渲染，不靠库里查出来的顺序
 CAPABILITIES: dict[str, str] = {
@@ -17,6 +18,23 @@ CAPABILITIES: dict[str, str] = {
 }
 
 BACKENDS: dict[str, str] = {"local": "本地", "cloud": "云端"}
+
+# 计费单位白名单。不做自由文本：单位是给人对账的，
+# "sec"／"秒"／"seconds" 混着存，汇总时就成了三个口径。
+UNITS: dict[str, str] = {
+    "second": "秒",
+    "minute": "分钟",
+    "request": "次",
+    "token": "Token",
+    "image": "张",
+    "character": "字符",
+}
+
+BILLABLE_LABELS: dict[str, str] = {
+    "known": "已确认",
+    "pending_reconciliation": "待核对",
+    "not_billable": "不计费",
+}
 
 
 class ProjectIn(BaseModel):
@@ -80,6 +98,14 @@ class ProjectUpdateIn(BaseModel):
     tags: list[str] = []
 
 
+class ProjectCostOut(BaseModel):
+    """项目中心那一格只读累计。pending 是"其中待核对"的条数，不是金额。"""
+    currency: str
+    total_micros: int
+    jobs: int = 0
+    pending: int = 0
+
+
 class ProjectOut(BaseModel):
     id: int
     name: str
@@ -98,10 +124,21 @@ class ProjectOut(BaseModel):
     episode_done: int = 0
     shot_count: int = 0
     asset_count: int = 0
+    # 成本账的东家是生成中心，项目中心只读这一份累计（按币种分开，不加总）。
+    # 不在这里放明细：明细只属于生成中心那一页（设计稿 §3.2）。
+    costs: list["ProjectCostOut"] = []
 
     @classmethod
     def from_row(cls, row) -> "ProjectOut":
         keys = row.keys()
+
+        def costs():
+            try:
+                raw = json.loads(row["costs"] or "[]")
+            except (ValueError, KeyError, TypeError):
+                return []
+            return [ProjectCostOut(**item) for item in raw if isinstance(item, dict)]
+
         return cls(id=row["id"], name=row["name"], status=row["status"],
                    description=row["description"],
                    owner_id=row["owner_id"],
@@ -112,7 +149,8 @@ class ProjectOut(BaseModel):
                    episode_count=row["episode_count"] if "episode_count" in keys else 0,
                    episode_done=row["episode_done"] if "episode_done" in keys else 0,
                    shot_count=row["shot_count"] if "shot_count" in keys else 0,
-                   asset_count=row["asset_count"] if "asset_count" in keys else 0)
+                   asset_count=row["asset_count"] if "asset_count" in keys else 0,
+                   costs=costs())
 
 
 class ProjectSummary(BaseModel):
@@ -176,6 +214,24 @@ class ProviderUpdate(BaseModel):
     notes: str = Field(default="", max_length=500)
 
 
+class ProviderOptionOut(BaseModel):
+    """给提交表单看的可用槽位：只有 provider/模型与参数白名单，没有密钥名与备注。
+
+    生成中心的"本地／云端"选择靠它——普通编辑者没有 system:config，
+    不该为了选一条云端视频去读整张配置页。
+    """
+    capability: str
+    capability_label: str
+    backend: str
+    backend_label: str
+    provider: str
+    model: str
+    adapter_label: str
+    health_state: str
+    health_detail: str
+    models: list[dict] = []
+
+
 class CurrentProviderOut(BaseModel):
     """给其他模块只读的"当前默认"。
 
@@ -210,6 +266,26 @@ JOB_RUNNING = ("starting", "running", "cancel_requested")
 JOB_FINISHED = ("succeeded", "failed", "cancelled", "needs_attention")
 
 
+class JobEstimateIn(BaseModel):
+    """云端作业提交前那张"要花多少钱"的确认单。
+
+    数量 × 单价由**服务端**算，客户端只给观测量与价格快照：
+    让人填一个总价再信它，等于把账本交给前端。单价以 micros 存整数，
+    避免 0.1 + 0.2 这类浮点误差进了账；`source` 必填，是为了以后对账时
+    能回答"这个价是哪来的"——没有出处的数字不算数。
+    """
+    quantity: Decimal = Field(gt=0, le=Decimal("1000000"), max_digits=12, decimal_places=3)
+    unit: Literal["second", "minute", "request", "token", "image", "character"]
+    unit_price_micros: int = Field(ge=0, le=1_000_000_000_000)
+    currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
+    source: str = Field(min_length=1, max_length=200)
+
+    @field_validator("currency")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.upper()
+
+
 class JobSubmitIn(BaseModel):
     project_id: int
     episode_id: int | None = None
@@ -225,6 +301,9 @@ class JobSubmitIn(BaseModel):
     input_refs: list[str] = Field(default_factory=list, max_length=20)
     idempotency_key: str | None = Field(default=None, max_length=120,
                                          pattern=r"^[A-Za-z0-9._:-]+$")
+    # 云端作业必须带确认单并勾确认；本地作业带了会被拒——
+    # 那说明调用方把"本地免费"和"云端按量"搞混了，账上不能含糊。
+    estimate: JobEstimateIn | None = None
     user_confirmed_cloud: bool = False
     priority: int = Field(default=0, ge=0, le=100)
 
@@ -253,6 +332,14 @@ class JobOut(BaseModel):
     error_message: str | None
     has_log: bool
     has_artifacts: bool
+    # 成本只回整数 micros 与币种，格式化交给界面；
+    # billable_status 是给人看的口径：known 已确认 / pending 待核对 / not_billable 不计费
+    quantity: float | None = None
+    unit: str | None = None
+    cost_micros: int | None = None
+    currency: str | None = None
+    billable_status: str = "not_billable"
+    billable_status_label: str = "不计费"
 
     @classmethod
     def from_row(cls, row) -> "JobOut":
@@ -275,6 +362,11 @@ class JobOut(BaseModel):
             error_code=row["error_code"], error_message=row["error_message"],
             has_log=bool(row["log_path"]),
             has_artifacts=row["result_paths_json"] not in ("", "[]"),
+            quantity=row["quantity"], unit=row["unit"],
+            cost_micros=row["cost_micros"], currency=row["currency"],
+            billable_status=row["billable_status"],
+            billable_status_label=BILLABLE_LABELS.get(row["billable_status"],
+                                                      row["billable_status"]),
         )
 
 
@@ -286,12 +378,9 @@ class JobDetailOut(JobOut):
     log_path: str | None
     result_paths: list
     return_code: int | None
-    quantity: float | None
-    unit: str | None
     unit_price_micros: int | None
-    cost_micros: int | None
-    currency: str | None
-    billable_status: str
+    pricing_snapshot: dict
+    resources: dict
 
     @classmethod
     def from_row(cls, row) -> "JobDetailOut":
@@ -312,10 +401,95 @@ class JobDetailOut(JobOut):
                    log_path=row["log_path"],
                    result_paths=load(row["result_paths_json"], []),
                    return_code=row["return_code"],
-                   quantity=row["quantity"], unit=row["unit"],
                    unit_price_micros=row["unit_price_micros"],
-                   cost_micros=row["cost_micros"], currency=row["currency"],
-                   billable_status=row["billable_status"])
+                   pricing_snapshot=load(row["pricing_snapshot_json"], {}),
+                   resources=load(row["resources_json"], {}))
+
+
+# ---------- 成本账与参数模板（W08） ----------
+
+class CostBucket(BaseModel):
+    capability: str
+    capability_label: str
+    total_micros: int
+    jobs: int
+
+
+class CostCurrencyOut(BaseModel):
+    currency: str
+    total_micros: int
+    jobs: int
+    known: int
+    pending: int
+    by_capability: list[CostBucket] = []
+
+
+class LocalCostOut(BaseModel):
+    """本地作业没有金额，但有"用了多少机器"——
+    它是对账的另一半：判断该不该把这批活挪到云端，看的就是这一块。"""
+    jobs: int = 0
+    elapsed_ms: int = 0
+    cpu_ms: int = 0
+    max_rss_kb: int = 0
+
+
+class CostSummaryOut(BaseModel):
+    # 一种币种一个桶，绝不跨币种相加；unpriced 是"云端但没记价"的条数，
+    # 它必须显眼——有作业没进账比金额小更值得查
+    currencies: list[CostCurrencyOut] = []
+    unpriced_jobs: int = 0
+    local: LocalCostOut = LocalCostOut()
+    total_jobs: int = 0
+
+
+class GenerationProfileIn(BaseModel):
+    """参数模板。project_id 为空＝全局模板，只有管理员能写。"""
+    project_id: int | None = None
+    name: str = Field(min_length=1, max_length=60)
+    capability: Literal["text", "image", "video", "tts", "music"]
+    provider_code: str = Field(default="", max_length=80)
+    model_code: str = Field(default="", max_length=120)
+    params: dict = {}
+    is_default: bool = False
+
+
+class GenerationProfileUpdateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    params: dict = {}
+    is_default: bool = False
+
+
+class GenerationProfileOut(BaseModel):
+    id: int
+    project_id: int | None
+    project_name: str = ""
+    name: str
+    capability: str
+    capability_label: str
+    provider_code: str
+    model_code: str
+    params: dict
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_row(cls, row) -> "GenerationProfileOut":
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except ValueError:
+            params = {}
+        keys = row.keys()
+        return cls(
+            id=row["id"], project_id=row["project_id"],
+            project_name=row["project_name"] if "project_name" in keys else "",
+            name=row["name"], capability=row["capability"],
+            capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
+            provider_code=row["provider_code"], model_code=row["model_code"],
+            params=params if isinstance(params, dict) else {},
+            is_default=bool(row["is_default"]),
+            created_at=row["created_at"], updated_at=row["updated_at"],
+        )
 
 
 class JobLogOut(BaseModel):

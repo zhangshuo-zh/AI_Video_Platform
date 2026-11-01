@@ -8,6 +8,7 @@
 """
 import hashlib
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import adapters
@@ -388,6 +389,8 @@ def submit_job(payload, created_by: int | None) -> dict:
         if errors:
             raise JobInvalid("；".join(errors))
 
+    cost = _cost_of(payload, mode, created_by)
+
     return job_repo.create({
         "project_id": payload.project_id,
         "episode_id": payload.episode_id,
@@ -405,4 +408,48 @@ def submit_job(payload, created_by: int | None) -> dict:
         "idempotency_key": payload.idempotency_key,
         "user_confirmed_cloud": payload.user_confirmed_cloud,
         "created_by": created_by,
+        **cost,
     })
+
+
+def _cost_of(payload, mode: str, created_by: int | None) -> dict:
+    """把"预计成本确认单"变成 Job 的成本列。
+
+    三条口径，任何一条不成立都不落库：
+    1. 云端必须带确认单、必须勾确认。确认不是走形式——它把"按供应商计费"
+       这句话和一组具体的量 × 单价绑在一起，事后能指着这一行问"当时是谁点的、按什么价"。
+    2. 金额由服务端用 Decimal 算，四舍五入到整数 micros；客户端传什么总价都不采信。
+    3. 本地作业不计费。带确认单说明调用方把两条轨搞混了，直接拒掉，
+       比默默忽略、等到有人拿这条账去对预算更早暴露问题。
+    """
+    estimate = payload.estimate
+    if mode == "cloud":
+        if not payload.user_confirmed_cloud:
+            raise JobInvalid("云端作业要先确认按供应商计费的预计成本")
+        if estimate is None:
+            raise JobInvalid("云端作业必须带预计成本（数量、单位、单价、币种与价格来源）")
+        quantity = estimate.quantity
+        cost_micros = int((quantity * Decimal(estimate.unit_price_micros))
+                          .quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        snapshot = {
+            "quantity": str(quantity),
+            "unit": estimate.unit,
+            "unit_price_micros": estimate.unit_price_micros,
+            "currency": estimate.currency,
+            "source": estimate.source.strip(),
+            "cost_micros": cost_micros,
+            "formula": "quantity * unit_price_micros, half-up to integer micros",
+            "confirmed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "confirmed_by": created_by,
+            "billable": "pending_reconciliation",
+        }
+        return {"quantity": float(quantity), "unit": estimate.unit,
+                "unit_price_micros": estimate.unit_price_micros,
+                "cost_micros": cost_micros, "currency": estimate.currency,
+                "pricing_snapshot": snapshot,
+                "billable_status": "pending_reconciliation"}
+    if estimate is not None:
+        raise JobInvalid("本地作业不计费，不要提交预计成本；云端作业请显式指定 execution_mode")
+    return {"quantity": None, "unit": None, "unit_price_micros": None,
+            "cost_micros": 0, "currency": None, "pricing_snapshot": None,
+            "billable_status": "not_billable"}

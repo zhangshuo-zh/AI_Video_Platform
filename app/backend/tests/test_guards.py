@@ -93,12 +93,26 @@ ROUTES = [
     ("POST", "/api/jobs/{j}/retry", None, 404),
     ("GET", "/api/jobs/{j}/logs", None, 404),
     ("GET", "/api/jobs/{j}/artifacts", None, 404),
+    ("GET", "/api/jobs/{j}/artifacts/{i}", None, 404),
+    # 成本账按可见项目汇总：看不见那个项目时就是空账，不是 404
+    ("GET", "/api/jobs/costs", None, 200),
     ("GET", "/api/worker/status", None, 200),
+    # ---------- 参数模板（W08） ----------
+    ("GET", "/api/generation-profiles", None, 200),
+    ("POST", "/api/generation-profiles", {"project_id": "{p}", "name": "越权模板",
+                                          "capability": "video"}, 404),
+    # 全局模板只有管理员能建：editor 的 job:submit 过了，也在这里被挡
+    ("POST", "/api/generation-profiles", {"name": "全局越权", "capability": "video"}, 403),
+    ("PUT", "/api/generation-profiles/{g}", {"name": "改名", "params": {},
+                                             "is_default": False}, 404),
+    ("DELETE", "/api/generation-profiles/{g}", None, 404),
     # ---------- Provider（editor 没有 system:config） ----------
     ("GET", "/api/providers", None, 403),
     ("GET", "/api/providers/manifest", None, 403),
     # 当前默认是给普通模块看的只读摘要：有会话就能读，不带密钥/备注
     ("GET", "/api/providers/current", None, 200),
+    # 提交表单要用：只回可用的槽位与参数白名单，不带密钥变量名/备注
+    ("GET", "/api/providers/available", None, 200),
     ("PUT", "/api/providers", [{"id": 1, "provider": "x", "model": "",
                                 "enabled": False, "is_default": True}], 403),
 ]
@@ -123,7 +137,7 @@ def ids(seeded, people):
     return {"p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
             "d": seeded["document_id"], "c": seeded["commit"],
-            "j": seeded["job_id"]}
+            "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0}
 
 
 def _sub(v, ids):

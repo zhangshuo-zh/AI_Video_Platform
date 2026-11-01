@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import adapters
 from deps import require_permission, require_user
-from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOut,
-                    ProviderUpdate)
+from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
+                    ProviderOut, ProviderUpdate)
 from repositories.providers import has_key, providers
 
 router = APIRouter(prefix="/api", tags=["settings"])
@@ -43,6 +43,32 @@ def provider_manifest(_=Depends(require_permission("system:config"))) -> dict:
     免得"模型名听着像"就成了一个假承诺。
     """
     return adapters.manifest_payload()
+
+
+@router.get("/providers/available", response_model=list[ProviderOptionOut])
+def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
+    """提交作业时可选的槽位：只列已启用且填了 provider/模型的。
+
+    参数白名单跟着槽位一起回：界面按它渲染输入框，提交时后端再验一遍。
+    这里不含 key_env、notes 与本地运行时目录——那些是系统配置那一页的事。
+    """
+    out: list[ProviderOptionOut] = []
+    for row in providers.all():
+        if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
+            continue
+        adapter = adapters.find(row["capability"], row["backend"], row["provider"])
+        health = adapters.health(row)
+        out.append(ProviderOptionOut(
+            capability=row["capability"],
+            capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
+            backend=row["backend"],
+            backend_label=BACKENDS.get(row["backend"], row["backend"]),
+            provider=row["provider"], model=row["model"],
+            adapter_label=adapter.label if adapter else "",
+            health_state=health["state"], health_detail=health["detail"],
+            models=[m.as_dict() for m in adapter.models] if adapter else [],
+        ))
+    return out
 
 
 @router.get("/providers/current", response_model=list[CurrentProviderOut])
