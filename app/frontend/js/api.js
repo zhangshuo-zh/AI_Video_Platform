@@ -179,6 +179,11 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
+  // 整体改一镜：内容／提示词／时长／引用资产；镜号与所属集不在可改范围
+  updateShot: (id, body) => fetch(`/api/shots/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
   deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }).then(toJson),
 
   // 文档（W05）：元数据在库里、正文在工作区里、版本在 Git 里。

@@ -385,3 +385,34 @@
 5. **文本默认轨原本没配**：生产库里 text/local 是默认但空着；W11 要求默认轨可用，已把 text/cloud 设为默认（文本无本地路线，这是配置而不是代码兜底）。
 
 **本轮改到的文件**：`backend/docai.py`（新）、`backend/services.py`、`backend/models.py`、`backend/routers/documents.py`、`frontend/js/views/writing.js`、`frontend/js/api.js`、`frontend/css/app.css`、`tests/test_doc_ai.py`（新）、`tests/test_guards.py`、`盘点/W11_DOC_AI.md`（新）、`设计稿.md`、`app/截图/v71-*`。
+
+## 20. W12 完成后回填（2026-11-01）
+
+`pytest tests -q` → **332 passed**（新增 `test_shots.py` 7 项，守卫表加一条 `PUT /api/shots/{s}`）。路由 **77 条业务端点 / 82 条含 health 与四条 auth**（+1：镜头整体更新；作业筛选是加参数，不是新端点）。真浏览器 CDP **28 项全过**；图在 `app/截图/v72-shots.png`、`v72-modal.png`、`v72-assets.png`、`v72-night-shots.png`、`v72-night-modal.png`；字段映射与边界在 `盘点/W12_SHOTS.md`。
+
+| 盘点条目 | 现在 |
+|---|---|
+| W12「完整表格字段以当前 schema 映射为准」 | 当前 `shot` 表只有 `summary/prompt/duration/asset_ids` 四样可写，表就摆这四样＋镜号＋作业列；**01-4.3-L4 那六列（景别／运镜／对白／图像提示词／视频提示词／审核状态）没有新增**。理由：这一包不重建带字段的整表，现有 `summary` 承担动作与对白、`prompt` 承担生成提示词；真要分列得先定这些字段是否进生成 argv，否则又是第二套事实来源。题面里的"以当前 schema 映射为准"就是按这四样交付 |
+| W12「确认 shot 属于 episode 还是 doc 的关系」 | **属 Episode**：`shot.episode_id` 非空、`/api/episodes/{id}/shots` 一直按集列；§2 初稿写"属 Doc（剧本）"已改正。旧接口全部保留，未改路径、未改字段 |
+| W12「实现镜头编辑」 | `PUT /api/shots/{id}` 整体提交四字段；镜号与所属集不可改；空内容、时长不在 1—60 秒回 422；更新会 `touch` 项目最后修改时间。前端新建与编辑共用一张弹窗，编辑时带「编辑第 N 镜」标题与已选资产 |
+| W12「资产 picker/chips」 | 弹窗内按角色／场景／道具分组，可搜名字·标签·别名·类型说明；已选区常驻在候选上方，点一下撤掉。候选只列本项目资产与全局资产（接口返回什么就列什么），**保存仍由服务端复核** |
+| W12「引用资产只读、跳转资产中心」 | 表格里是 `.chip.plain` 只读标签，点它按 `kind` 选二级标签并写 `#assets/<sub>/a<id>`，落到资产详情；分镜页没有资产编辑入口 |
+| W12「每镜头作业提交与状态只读展示」 | 每行「生成」只做预填交接：项目／集／镜／提示词进生成中心，提交仍在那边。作业列显示"几条 · 最新 #id"与最新状态（八值各有中文与色），悬停列出每条 `#id 状态`；没有取消／重试按钮 |
+| W12「多个 Job 可对应一个镜头」 | `job.shot_id` 是普通外键，不设唯一；同一镜连提两条各自成行。`GET /api/jobs` 新增 `episode_id`／`shot_id`，先按实体绕回项目（看不见 404、级别不够 403），再下推筛选。前端一集一次取 200 条按 `shot_id` 分组 |
+| W12「修改 Shot 后不会改变已提交 Job 的输入快照」 | `ShotRepository.update()` 只 UPDATE `shot` 的四个字段并 `touch` 项目，从不写 `job`。测试与真浏览器都对比过改镜前后的 `prompt_snapshot`／`params`／`shot_id`／`queued_at`，四项全等 |
+| W12「不做节点画布」 | 没做：一面表格＋一张弹窗，没有画布依赖、没有拖拽坐标表 |
+| 验收：端到端 | 真浏览器 28 项：新建一镜（含 picker 搜索别名、点选）→ 后端四字段与 `asset_ids` 对 → 表格重绘出时长与资产名 → 编辑 B 镜改内容／提示词／加一个引用 → 作业快照与入队时间不变 → 点资产 chip 到场景详情（`#assets/2/a2`）→ 刷新后内容与"2 条"都还在。夜间主题另截两张确认 chip 与 picker 对比度 |
+
+**W12 的边界（别误读成"分镜这一层已经封版"）**：
+- **没有景别／运镜／对白字段**：见上表第一行，要加得先定它们与生成参数的关系。
+- **没有镜头级状态**：`shot.status` 列存在但界面不写，八值作业状态才是执行真相；这一包不制造第二个"完成"。
+- **没有画面预览**：产物与视频预览仍在生成中心详情抽屉；分镜表不嵌播放器。
+- **没有排序／批量**：镜号由创建顺序定，不能拖拽重排；批量改资产或批量删除也没做。
+- **不是任务表**：一镜多作业靠 `job.shot_id` 反查，没有 `Task` 实体。
+
+**这一轮真被踩到的问题（都修了）**：
+1. **`mountShots` 替换没清干净**：旧的快速添加、旧生成（读已被删掉的 `data-shot-summary`，预填会变空）与旧删除处理器还留在新块前面，等于同一按钮绑两遍。整段删掉，只留新的弹窗块。
+2. **资产候选三组挤成一行**：`pick-grp` 与 chip 一起放进 flex 容器，读起来像没有层次的标签云。改成"组名独占一行＋`.pick-row` 横排 chip"。
+3. **守卫表条数对不上**：新增 `PUT /api/shots/{s}` 后路由表 77 条，守卫表没加这一行，`test_路由表与本表条数对齐` 当场失败；补上即过。
+
+**本轮改到的文件**：`backend/repositories/content.py`、`backend/repositories/jobs.py`、`backend/routers/content.py`、`backend/routers/jobs.py`、`backend/tests/test_shots.py`（新）、`backend/tests/test_guards.py`、`frontend/js/api.js`、`frontend/js/views/writing.js`、`frontend/css/app.css`、`盘点/W12_SHOTS.md`（新）、`设计稿.md`、`app/截图/v72-*`。

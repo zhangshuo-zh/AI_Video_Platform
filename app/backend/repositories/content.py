@@ -79,6 +79,25 @@ class ShotRepository:
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
 
+    def update(self, shot_id: int, summary: str, prompt: str,
+               duration: float, asset_ids: list[int]) -> sqlite3.Row | None:
+        """整体改一镜的四个可编辑字段。
+
+        **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
+        搬动它等于让"第 3 镜"在别的集里又出现一次；真要挪就删了重建。
+        改完 touch 项目时间：项目中心"最近修改"是这件事在界面上的唯一回执。
+        """
+        with get_conn() as conn:
+            if conn.execute("SELECT 1 FROM shot WHERE id = ?", (shot_id,)).fetchone() is None:
+                return None
+            conn.execute(
+                """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?
+                    WHERE id = ?""",
+                (summary, prompt, duration, json.dumps(asset_ids), shot_id),
+            )
+            touch(conn, "shot", shot_id)
+            return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
+
     def set_status(self, shot_id: int, status: str) -> None:
         with get_conn() as conn:
             conn.execute("UPDATE shot SET status = ? WHERE id = ?", (status, shot_id))
@@ -137,6 +156,25 @@ class AssetRepository:
     def get(self, asset_id: int) -> sqlite3.Row | None:
         with get_conn() as conn:
             return conn.execute(f"{self._SELECT} WHERE a.id = ?", (asset_id,)).fetchone()
+
+    def usable_ids(self, project_id: int, asset_ids: list[int]) -> set[int]:
+        """这一组 id 里，哪些是当前项目**可以引用**的：自有或全局。
+
+        只回 id 不回整行：镜头保存时只需要判断"这组引用成不成立"。
+        把别家项目的资产 id 挡在写入口，才能保证那张引用表不会出现
+        "项目 A 的镜头引用了项目 B 的角色"——界面上看不见，删除保护也算不到它。
+        """
+        ids = [int(i) for i in asset_ids]
+        if not ids:
+            return set()
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT id FROM asset
+                     WHERE id IN ({marks}) AND (project_id = ? OR project_id IS NULL)""",
+                [*ids, project_id],
+            ).fetchall()
+        return {row["id"] for row in rows}
 
     def exists_name(self, project_id: int | None, kind: str, name: str,
                     exclude_id: int | None = None) -> bool:

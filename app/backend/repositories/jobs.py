@@ -68,11 +68,14 @@ class JobRepository:
     def list(self, project_ids: list[int] | None, status: str | None = None,
              capability: str | None = None, limit: int = 100,
              statuses: list[str] | None = None, execution_mode: str | None = None,
-             keyword: str | None = None) -> list[sqlite3.Row]:
+             keyword: str | None = None, episode_id: int | None = None,
+             shot_id: int | None = None) -> list[sqlite3.Row]:
         """project_ids=None 表示管理员看全部；空列表表示一个都看不见。
 
         status 与 statuses 是同一件事的两种写法：前者给旧调用方与深链，
         后者给生成中心的多状态筛选（"进行中"＝三个状态一起看）。
+        episode_id/shot_id 给创作中心的分镜表用：一集的作业一次取回，
+        前端再按 shot_id 分组，避免每行镜头各打一次接口。
         """
         if project_ids is not None and not project_ids:
             return []
@@ -93,6 +96,12 @@ class JobRepository:
         if execution_mode:
             conds.append("execution_mode = ?")
             args.append(execution_mode)
+        if episode_id is not None:
+            conds.append("episode_id = ?")
+            args.append(episode_id)
+        if shot_id is not None:
+            conds.append("shot_id = ?")
+            args.append(shot_id)
         if keyword:
             # 只搜 id 与提示词：日志/产物正文不在这张表里，不能假装搜得到
             conds.append("(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ?)")

@@ -80,6 +80,40 @@ def delete_episode(episode_id: int,
 
 # ---------- 分镜 ----------
 
+# 一镜最多挂多少个资产。不是业务上限，是"别让一条镜头把整页 chips 撑爆"的
+# 界面上限：一镜里有三五个角色/场景已经很多，四十个足够。
+MAX_SHOT_ASSETS = 40
+
+
+def _checked_asset_ids(project_id: int, raw: list[int]) -> list[int]:
+    """把前端交上来的引用收敛成服务端认可的一串 id。
+
+    三条都要在写入口拦：
+    1. 去重并保序——同一资产点两次不该在 chips 里出现两遍；
+    2. 必须是本项目资产或全局资产——别家项目的 id 一律拒，否则会出现
+       "看不见的引用"（删除保护算得到、界面上却找不到）；
+    3. 镜头编辑与新建走同一套，不然从创建口仍然能塞进脏 id。
+    """
+    ids: list[int] = []
+    for value in raw:
+        try:
+            asset_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="资产 id 必须是整数") from exc
+        if asset_id <= 0:
+            raise HTTPException(status_code=422, detail="资产 id 必须是正整数")
+        if asset_id not in ids:
+            ids.append(asset_id)
+    if len(ids) > MAX_SHOT_ASSETS:
+        raise HTTPException(status_code=422,
+                            detail=f"一镜最多引用 {MAX_SHOT_ASSETS} 个资产")
+    if ids and assets.usable_ids(project_id, ids) != set(ids):
+        raise HTTPException(
+            status_code=422,
+            detail="引用了不存在、不属于这个项目，或不是全局资产的 id")
+    return ids
+
+
 @router.get("/episodes/{episode_id}/shots", response_model=list[ShotOut])
 def list_shots(episode_id: int,
                user=Depends(require_permission("doc:read"))) -> list[ShotOut]:
@@ -91,13 +125,36 @@ def list_shots(episode_id: int,
              status_code=http_status.HTTP_201_CREATED)
 def create_shot(episode_id: int, payload: ShotIn,
                 user=Depends(require_permission("doc:write"))) -> ShotOut:
-    ensure_by("episode", episode_id, user, "write", "创作单元")
+    project = ensure_by("episode", episode_id, user, "write", "创作单元")
     summary = payload.summary.strip()
     if not summary:
         raise HTTPException(status_code=422, detail="镜头描述不能为空")
     row = shots.create(episode_id, summary, payload.prompt.strip(),
-                       payload.duration, payload.asset_ids)
+                       payload.duration,
+                       _checked_asset_ids(project["id"], payload.asset_ids))
     return ShotOut.from_row(row)
+
+
+@router.put("/shots/{shot_id}", response_model=ShotOut)
+def update_shot(shot_id: int, payload: ShotIn,
+                user=Depends(require_permission("doc:write"))) -> ShotOut:
+    """整体改一镜：内容、提示词、时长、引用资产一次提交。
+
+    和文档编辑同一条纪律——同一个字段不留两个入口；镜号与所属集不在
+    可编辑范围里（挪镜等于删了重建，历史与作业归属都会跟着乱）。
+    **已提交的作业不会跟着变**：Job 的提示词与参数是提交时冻住的快照。
+    """
+    project = ensure_by("shot", shot_id, user, "write", "镜头")
+    summary = payload.summary.strip()
+    if not summary:
+        raise HTTPException(status_code=422, detail="镜头描述不能为空")
+    row = shots.update(shot_id, summary, payload.prompt.strip(),
+                       payload.duration,
+                       _checked_asset_ids(project["id"], payload.asset_ids))
+    if row is None:
+        raise HTTPException(status_code=404, detail="镜头不存在")
+    return ShotOut.from_row(row)
+
 
 
 @router.delete("/shots/{shot_id}", status_code=http_status.HTTP_204_NO_CONTENT)

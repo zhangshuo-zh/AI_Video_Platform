@@ -1197,3 +1197,29 @@ pre.diff.ai{max-height:min(46vh,420px);overflow:auto;margin:6px 0 2px}
 @media (max-width:760px){
   .ai-price{grid-template-columns:minmax(0,1fr)}
 }
+
+/* ---------- W12：分镜表与资产引用 ---------- */
+/* 内容列是这一页的主读项，给它最多的余量；提示词压成一行灰字——
+   两段都换行时一行能长到三行，一屏只看得见五镜 */
+.shot-summary{font-size:12.5px;line-height:1.55;color:var(--ink);max-width:420px}
+.shot-prompt{max-width:420px}
+/* 资产 chip 是真能点的：悬停换强调色，光标也换，别让它看起来是死标签 */
+.shot-asset{cursor:pointer;transition:border-color var(--fast),color var(--fast)}
+.shot-asset:hover{border-color:var(--accent-line);color:var(--accent)}
+td.shot-jobs{white-space:nowrap;min-width:132px}
+td.shot-jobs .t-desc{max-width:180px}
+
+/* 资产 picker：搜索在上，候选按角色／场景／道具分组。
+   候选区自己滚动，40 个资产也不会把弹窗顶出屏幕 */
+.shot-pick{display:grid;gap:8px;min-width:0}
+.shot-pick .ctl{max-width:none}
+.asset-pick{border:1px solid var(--line);border-radius:10px;background:var(--panel-2);
+  padding:8px 10px;max-height:220px;overflow-y:auto}
+.asset-pick .t-dim{font-size:11.5px}
+.pick-block + .pick-block{margin-top:9px}
+.pick-grp{font-size:11px;color:var(--ink-3);letter-spacing:.04em;margin-bottom:5px}
+.pick-row{display:flex;flex-wrap:wrap;gap:5px}
+/* 已选区常驻在候选之上：点掉的入口和点上的入口必须在同一处看得见 */
+.pick-picked{display:flex;flex-wrap:wrap;gap:5px;align-items:center;
+  padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
+.pick-picked .grp{font-size:11.5px;color:var(--ink-3);margin-right:2px}

@@ -20,6 +20,12 @@ import { closeDetail, openDetail } from '../router.js';
 let pickedEpisodeId = null;
 let pickedDocId = null;
 
+// 分镜页这一轮渲染拿到的三份数据。表格里的"引用资产"要能按 id 反查名字、
+// 点 chip 要知道去资产中心的哪个分类；作业列要按 shot_id 归组。
+// 放在模块级是给 mount（）用——render 与 mount 是两次调用，靠 DOM 传对象
+// 会把数据塞进 dataset；每次 render 整体覆盖，不跨项目残留。
+let shotCache = { episodeId: null, shots: [], assets: [], jobs: [] };
+
 // 编辑器状态。放在模块级而不是每次 render 重取：人正在写的东西不能被一次刷新抹掉。
 // draftFor 记着这份草稿属于哪一份文档——换文档（含换项目、深链跳走再回来）必须重取，
 // 否则会出现"打开的是新文档、编辑器里是旧文档那段话"，看着像数据串了。
@@ -56,6 +62,19 @@ const AI_OPS = {
   prompt: { label: '提示词', scope: 'any', hint: '从正文提炼镜头提示词，每镜一行。' },
 };
 const AI_TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'needs_attention']);
+
+// 分镜表「作业」那一列的口径。状态本身由 Job 表说了算，镜头行只是读；
+// 不用 shot.status——那一列没有写入方，拿它显示等于让界面说谎。
+const SHOT_JOB_STATUS = {
+  queued: { label: '排队中', cls: 'gray' },
+  starting: { label: '启动中', cls: 'blue' },
+  running: { label: '运行中', cls: 'blue' },
+  succeeded: { label: '成功', cls: 'green' },
+  failed: { label: '失败', cls: 'red' },
+  cancel_requested: { label: '取消中', cls: 'amber' },
+  cancelled: { label: '已取消', cls: 'gray' },
+  needs_attention: { label: '待核对', cls: 'amber' },
+};
 
 // 集状态。这一列 0004 建表时就有，但一直没有写入口；项目中心的
 // "已定稿 N/M 集"就是它的聚合，所以入口放在这里——集的东家是创作中心
@@ -972,7 +991,6 @@ async function renderShots(tab, subRow) {
     let assets = [];
     let assetErr = null;
     try { assets = await api.assets(project.id); } catch (err) { assetErr = err; }
-    const assetNames = new Map(assets.map((a) => [a.id, a.name]));
 
     const createEp = `
       <div class="card-body" style="border-top:1px solid var(--line);padding:8px">
@@ -1004,10 +1022,27 @@ async function renderShots(tab, subRow) {
       pickedEpisodeId = episodes[0].id;
     }
     const current = episodes.find((e) => e.id === pickedEpisodeId);
+    const canWrite = store.can('doc:write');
+    const canSubmit = store.can('job:submit');
 
     let shots = [];
     let shotErr = null;
     try { shots = await api.shots(current.id); } catch (err) { shotErr = err; }
+
+    // 一集的作业一次取回，前端按 shot_id 分组。不按行各发一条：
+    // 20 镜的集就会变成 20 个请求，而作业列只需要"几条 + 最新状态"。
+    let jobRows = [];
+    let jobErr = null;
+    try { jobRows = await api.jobs({ episode_id: current.id, limit: 200 }); }
+    catch (err) { jobErr = err; }
+    const jobsByShot = new Map();
+    jobRows.forEach((job) => {
+      if (job.shot_id == null) return;
+      if (!jobsByShot.has(job.shot_id)) jobsByShot.set(job.shot_id, []);
+      jobsByShot.get(job.shot_id).push(job);
+    });
+
+    shotCache = { episodeId: current.id, shots, assets, jobs: jobRows };
 
     const epList = episodes.map((e) => {
       const [label, tone] = EP_STATUS[e.status] || [e.status, 'gray'];
@@ -1023,22 +1058,44 @@ async function renderShots(tab, subRow) {
       </div>`;
     }).join('');
 
+    const assetChip = (id) => {
+      const asset = assets.find((a) => a.id === id);
+      const name = asset ? asset.name : `#${id}`;
+      const kind = asset ? asset.kind_label : '资产';
+      const scope = asset && asset.project_id === null ? ' · 全局' : '';
+      return `<span class="chip plain shot-asset" data-goto-asset="${id}"
+                    title="${escapeHtml(kind + scope + '：到资产中心查看，不在这一页改')}">
+                ${escapeHtml(name)}</span>`;
+    };
+
+    // 作业列只说事实：几条、最新那条什么状态。没有按钮——
+    // 改作业状态不在这一页，重试/取消都在生成中心。
+    const jobCell = (list) => {
+      if (!list.length) return '<span class="chip gray">未提交</span>';
+      const latest = list[0];
+      const meta = SHOT_JOB_STATUS[latest.status] || { label: latest.status, cls: 'gray' };
+      const detail = list.map((j) => `#${j.id} ${j.status_label}`).join('；');
+      return `<span class="chip ${meta.cls}" title="${escapeHtml(detail)}">${meta.label}</span>
+              <span class="t-desc" title="${escapeHtml(detail)}">${list.length} 条 · #${latest.id}</span>`;
+    };
+
     const shotRows = shots.map((s) => `
       <tr data-sid="${s.id}">
         <td class="mono t-dim">${String(s.seq).padStart(3, '0')}</td>
-        <td>${escapeHtml(s.summary)}</td>
+        <td>
+          <div class="shot-summary">${escapeHtml(s.summary)}</div>
+          ${s.prompt ? `<div class="t-desc shot-prompt" title="${escapeHtml(s.prompt)}">
+            ${escapeHtml(s.prompt)}</div>` : ''}
+        </td>
         <td>${s.asset_ids.length
-          ? s.asset_ids.map((id) => `<span class="chip plain" data-goto-asset style="cursor:pointer"
-                    title="资产内容在资产中心改">${escapeHtml(assetNames.get(id) || `#${id}`)}</span>`).join(' ')
+          ? s.asset_ids.map(assetChip).join(' ')
           : '<span class="t-dim">—</span>'}</td>
         <td class="num">${s.duration}s</td>
-        <td><span class="chip ${s.status === 'done' ? 'green' : s.status === 'failed' ? 'red' : 'gray'}">${
-          { todo: '待生成', queued: '排队中', done: '已出片', failed: '失败' }[s.status] || s.status}</span></td>
+        <td class="shot-jobs">${jobCell(jobsByShot.get(s.id) || [])}</td>
         <td class="r">
-          <button class="btn sm" data-gen-shot="${s.id}"
-                  data-shot-summary="${escapeHtml(s.summary)}"
-                  data-shot-prompt="${escapeHtml(s.prompt || '')}">生成</button>
-          <button class="btn sm danger" data-del-shot="${s.id}">删除</button>
+          ${canWrite ? `<button class="btn sm" data-edit-shot="${s.id}">编辑</button>` : ''}
+          ${canSubmit ? `<button class="btn sm" data-gen-shot="${s.id}">生成</button>` : ''}
+          ${canWrite ? `<button class="btn sm danger" data-del-shot="${s.id}">删除</button>` : ''}
         </td>
       </tr>`).join('');
 
@@ -1059,8 +1116,9 @@ async function renderShots(tab, subRow) {
 
         <div class="card">
           <div class="card-head">
-            <h2>分镜</h2><span class="sub">一镜一行，生成作业按行提交</span>
+            <h2>分镜</h2><span class="sub">一镜一行；提交作业去生成中心</span>
             <div class="right">
+              ${canWrite ? '<button class="btn sm primary" id="shot-new">新建镜头</button>' : ''}
               <span class="sub">本集状态</span>
               <select id="ep-status" class="ctl sm" style="width:auto"
                       title="改成「定稿」后，项目中心那一页的进度会跟着走">
@@ -1070,33 +1128,69 @@ async function renderShots(tab, subRow) {
             </div>
           </div>
           ${assetErr ? errorLine('资产名单', assetErr) : ''}
+          ${jobErr ? errorLine('作业状态', jobErr) : ''}
           ${shotErr ? errorBox('这一集的镜头', shotErr) : shots.length ? `
           <div class="table-wrap">
             <table>
-            <thead><tr><th>镜号</th><th>内容</th><th>引用资产</th><th class="r">时长</th><th>状态</th><th class="r"></th></tr></thead>
+            <thead><tr><th>镜号</th><th>内容 / 提示词</th><th>引用资产</th>
+              <th class="r">时长</th><th>作业</th><th class="r"></th></tr></thead>
             <tbody>${shotRows}</tbody>
             </table>
             </div>` : `
             <div class="empty">
             <div class="empty-t">这一集还没有镜头</div>
-            <p>在下面加第一镜。提示词留空时，生成时用内容那一栏。</p>
+            <p>一镜一行，内容与提示词可以在同一张表里编辑；资产只选引用。</p>
+            ${canWrite ? '<p><button class="btn primary" id="shot-new-empty">新建第一镜</button></p>' : ''}
             </div>`}
 
-            <div class="card-body" style="border-top:1px solid var(--line)">
-            <div class="empty-form" style="justify-content:flex-start">
-            <input id="shot-summary" placeholder="这一镜发生什么" style="min-width:240px;flex:1">
-            <input id="shot-prompt" placeholder="提示词（可留空）" style="min-width:180px;flex:1">
-            <input id="shot-duration" type="number" min="1" max="60" step="1" value="5"
-            class="ctl" style="min-width:72px;width:72px">
-            <button class="btn primary" id="shot-create">加一镜</button>
-            </div>
-            <p class="hint" style="text-align:left;margin-top:8px">
-            引用的资产在这里只显示名字，定妆图与一致性提示词到资产中心改。
+          <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px">
+            <p class="hint" style="text-align:left;margin:0">
+            提示词留空时，生成用内容那一栏；引用资产只读，点名字到资产中心。
+            作业状态由队列说了算，这一页只显示、不修改。
             </p>
           </div>
         </div>
       </div>
+
+      ${shotModalHtml()}
     </section>`;
+}
+
+function shotModalHtml() {
+  if (!store.can('doc:write')) return '';
+  return `
+    <div class="modal" id="shot-modal" hidden>
+      <div class="modal-box wide">
+        <div class="modal-head neutral" id="shot-modal-title">编辑镜头</div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label for="sm-summary">内容</label>
+            <textarea id="sm-summary" class="ctl" rows="3" maxlength="500"
+                      placeholder="这一镜发生什么"></textarea>
+
+            <label for="sm-prompt">提示词</label>
+            <textarea id="sm-prompt" class="ctl" rows="4" maxlength="2000"
+                      placeholder="可留空；生成时用内容那一栏"></textarea>
+
+            <label for="sm-duration">时长（秒）</label>
+            <input id="sm-duration" class="ctl" type="number" min="1" max="60"
+                   step="1" value="5" style="width:120px">
+
+            <label class="top">引用资产</label>
+            <div class="shot-pick">
+              <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
+              <div id="sm-assets" class="asset-pick"></div>
+              <p class="hint" style="text-align:left">只选引用；角色／场景／道具的内容到资产中心改。</p>
+            </div>
+          </div>
+          <p class="modal-err" id="sm-error"></p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="sm-cancel">取消</button>
+          <button class="btn primary" id="sm-save">保存镜头</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function mountShots(root) {
@@ -1162,39 +1256,142 @@ function mountShots(root) {
       if (ok) refresh();
     });
 
-    const summaryEl = root.querySelector('#shot-summary');
-    const promptEl = root.querySelector('#shot-prompt');
-    const durationEl = root.querySelector('#shot-duration');
-    const createBtn = root.querySelector('#shot-create');
+    /* ---------- 镜头：新建与编辑共用一张弹窗 ---------- */
+    const shotModal = root.querySelector('#shot-modal');
+    let shotEdit = null;      // { id: number|null, selected: Set, query: string }
 
-    if (createBtn) {
-      const addShot = async () => {
-        const summary = summaryEl.value.trim();
-        if (!summary) { summaryEl.focus(); return; }
-        createBtn.disabled = true;
-        const ok = await run('添加', () => api.createShot(pickedEpisodeId, {
-          summary,
-          prompt: promptEl.value.trim(),
-          duration: Number(durationEl.value) || 5,
-        }));
-        createBtn.disabled = false;
-        if (!ok) return;
-        refresh();
+    const paintPicker = () => {
+      const box = root.querySelector('#sm-assets');
+      if (!box || !shotEdit) return;
+      const q = shotEdit.query.trim().toLowerCase();
+      const match = (a) => !q || [a.name, a.kind_label, a.summary,
+        ...(a.aliases || []), ...(a.tags || [])]
+        .join(' ').toLowerCase().includes(q);
+      const groups = [['character', '角色'], ['scene', '场景'], ['prop', '道具']];
+      const blocks = [];
+      groups.forEach(([kind, label]) => {
+        const list = (shotCache.assets || []).filter((a) => a.kind === kind && match(a));
+        if (!list.length) return;
+        const chips = list.map((a) => {
+          const on = shotEdit.selected.has(a.id);
+          const scope = a.project_id === null ? ' · 全局' : '';
+          return `<button type="button" class="chip ${on ? 'blue' : 'plain'}"
+            data-pick-asset="${a.id}" title="${escapeHtml(a.kind_label + scope)}">
+            ${escapeHtml(a.name)}</button>`;
+        }).join('');
+        // 组名独占一行：三类混在一行里读起来像一串没有层次的标签云
+        blocks.push(`<div class="pick-block">
+          <div class="pick-grp">${label}</div><div class="pick-row">${chips}</div></div>`);
+      });
+      if (!blocks.length) {
+        blocks.push('<span class="t-dim">没有匹配的资产。</span>');
+      }
+      const picked = [...shotEdit.selected].map((id) => {
+        const a = (shotCache.assets || []).find((x) => x.id === id);
+        return `<button type="button" class="chip green" data-unpick="${id}"
+                  title="点一下取消引用">${escapeHtml(a ? a.name : `#${id}`)} ×</button>`;
+      });
+      box.innerHTML = `
+        ${picked.length ? `<div class="pick-picked"><span class="grp">已选 ${picked.length}</span>
+          ${picked.join(' ')}</div>` : ''}
+        <div class="pick-list">${blocks.join('')}</div>`;
+      box.querySelectorAll('[data-pick-asset]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = Number(btn.dataset.pickAsset);
+          if (shotEdit.selected.has(id)) shotEdit.selected.delete(id);
+          else shotEdit.selected.add(id);
+          paintPicker();
+        });
+      });
+      box.querySelectorAll('[data-unpick]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          shotEdit.selected.delete(Number(btn.dataset.unpick));
+          paintPicker();
+        });
+      });
+    };
+
+    const closeShot = () => {
+      shotEdit = null;
+      if (shotModal) shotModal.hidden = true;
+    };
+
+    const openShot = (shot) => {
+      if (!shotModal) return;
+      shotEdit = {
+        id: shot ? shot.id : null,
+        selected: new Set(shot ? shot.asset_ids : []),
+        query: '',
       };
-      createBtn.addEventListener('click', addShot);
-      summaryEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') addShot(); });
+      root.querySelector('#shot-modal-title').textContent = shot
+        ? `编辑第 ${shot.seq} 镜` : '新建镜头';
+      root.querySelector('#sm-summary').value = shot ? shot.summary : '';
+      root.querySelector('#sm-prompt').value = shot ? shot.prompt : '';
+      root.querySelector('#sm-duration').value = shot ? shot.duration : 5;
+      const qEl = root.querySelector('#sm-asset-q');
+      qEl.value = '';
+      qEl.oninput = () => { if (shotEdit) { shotEdit.query = qEl.value; paintPicker(); } };
+      root.querySelector('#sm-error').textContent = '';
+      paintPicker();
+      shotModal.hidden = false;
+      root.querySelector('#sm-summary').focus();
+    };
+
+    const saveShot = async () => {
+      if (!shotEdit) return;
+      const summary = root.querySelector('#sm-summary').value.trim();
+      const errEl = root.querySelector('#sm-error');
+      if (!summary) { errEl.textContent = '内容不能为空'; return; }
+      const duration = Number(root.querySelector('#sm-duration').value);
+      if (!(duration > 0 && duration <= 60)) {
+        errEl.textContent = '时长要在 1—60 秒之间';
+        return;
+      }
+      const body = {
+        summary,
+        prompt: root.querySelector('#sm-prompt').value.trim(),
+        duration,
+        asset_ids: [...shotEdit.selected],
+      };
+      const saveBtn = root.querySelector('#sm-save');
+      saveBtn.disabled = true;
+      errEl.textContent = '';
+      const editing = shotEdit.id;
+      const ok = editing
+        ? await run('保存镜头', () => api.updateShot(editing, body))
+        : await run('新建镜头', () => api.createShot(pickedEpisodeId, body));
+      saveBtn.disabled = false;
+      if (!ok) return;          // 失败时弹窗留着，填的字还在
+      closeShot();
+      refresh();
+    };
+
+    root.querySelector('#shot-new')?.addEventListener('click', () => openShot(null));
+    root.querySelector('#shot-new-empty')?.addEventListener('click', () => openShot(null));
+    root.querySelectorAll('[data-edit-shot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const shot = shotCache.shots.find((s) => s.id === Number(btn.dataset.editShot));
+        if (shot) openShot(shot);
+      });
+    });
+    if (shotModal) {
+      root.querySelector('#sm-cancel')?.addEventListener('click', closeShot);
+      root.querySelector('#sm-save')?.addEventListener('click', saveShot);
+      shotModal.addEventListener('click', (e) => { if (e.target === shotModal) closeShot(); });
+      bindModalDismiss(shotModal, closeShot);
     }
 
     // 分镜 → 生成中心：把项目/集/镜/提示词一次交棒，不在这一页开第二个提交框。
     // 走 navstate 的一次性草稿而不是地址栏参数：刷新后不应该再弹一次。
     root.querySelectorAll('[data-gen-shot]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        const shot = shotCache.shots.find((s) => s.id === Number(btn.dataset.genShot));
         setJobPrefill({
           projectId: store.currentId,
           episodeId: pickedEpisodeId,
           shotId: Number(btn.dataset.genShot),
           capability: 'video',
-          prompt: (btn.dataset.shotPrompt || '').trim() || btn.dataset.shotSummary || '',
+          prompt: shot ? ((shot.prompt || '').trim() || shot.summary) : '',
         });
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'generate' }));
       });
@@ -1212,9 +1409,14 @@ function mountShots(root) {
       });
     });
 
-    /* ---------- 资产引用：只跳过去，不在这一页改 ---------- */
+    /* ---------- 资产引用：只读 chip，点它去资产详情 ---------- */
     root.querySelectorAll('[data-goto-asset]').forEach((chip) => {
       chip.addEventListener('click', () => {
+        const id = Number(chip.dataset.gotoAsset);
+        const asset = shotCache.assets.find((a) => a.id === id);
+        const sub = { character: 1, scene: 2, prop: 3 }[asset?.kind] ?? 0;
+        setSub('assets', sub);
+        setParam('assets', id);
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'assets' }));
       });
     });

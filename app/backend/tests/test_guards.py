@@ -45,6 +45,8 @@ ROUTES = [
     ("DELETE", "/api/episodes/{e}", None, 404),
     ("GET", "/api/episodes/{e}/shots", None, 404),
     ("POST", "/api/episodes/{e}/shots", {"summary": "一镜"}, 404),
+    ("PUT", "/api/shots/{s}",
+     {"summary": "越权改一镜", "prompt": "", "duration": 5, "asset_ids": []}, 404),
     ("DELETE", "/api/shots/{s}", None, 404),
     # ---------- 资产 ----------
     ("GET", "/api/projects/{p}/assets", None, 404),

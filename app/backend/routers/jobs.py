@@ -103,19 +103,38 @@ def _statuses(raw: str | None) -> list[str]:
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(project_id: int | None = None, status: str | None = None,
+def list_jobs(project_id: int | None = None, episode_id: int | None = None,
+              shot_id: int | None = None, status: str | None = None,
               capability: str | None = None, execution_mode: str | None = None,
               q: str | None = None, limit: int = 100,
               user=Depends(require_permission("job:read"))) -> list[JobOut]:
+    """队列列表。episode_id／shot_id 是给创作中心分镜表用的窄筛选。
+
+    传了集或镜就先按它们绕回项目判可见性（看不见回 404，不泄露存在），
+    再与 project_id 合并成同一个范围。前端一集只打一次，按 shot_id 分组，
+    不为一镜一行各发一条请求。
+    """
     if capability and capability not in CAPABILITIES:
         raise HTTPException(status_code=422, detail=f"不认识的能力：{capability}")
     if execution_mode and execution_mode not in ("local", "cloud"):
         raise HTTPException(status_code=422, detail=f"不认识的执行方式：{execution_mode}")
+    scope = project_id
+    if episode_id is not None:
+        row = access.ensure_by("episode", episode_id, user, "read", "创作单元")
+        if scope is not None and row["id"] != scope:
+            raise HTTPException(status_code=404, detail="创作单元不存在")
+        scope = row["id"]
+    if shot_id is not None:
+        row = access.ensure_by("shot", shot_id, user, "read", "镜头")
+        if scope is not None and row["id"] != scope:
+            raise HTTPException(status_code=404, detail="镜头不存在")
+        scope = row["id"]
     wanted = _statuses(status)
-    ids = _visible_ids(user, project_id)
+    ids = _visible_ids(user, scope)
     rows = jobs.list(ids, capability=capability, limit=limit,
                      statuses=wanted, execution_mode=execution_mode,
-                     keyword=(q or "").strip()[:200] or None)
+                     keyword=(q or "").strip()[:200] or None,
+                     episode_id=episode_id, shot_id=shot_id)
     return [JobOut.from_row(r) for r in rows]
 
 
