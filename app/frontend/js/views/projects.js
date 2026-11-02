@@ -948,8 +948,9 @@ export default {
 
       root.querySelector('#np-cancel').addEventListener('click', closeNew);
       newModal.addEventListener('click', (e) => { if (e.target === newModal) closeNew(); });
-      // Escape：另外四个弹窗都能键盘关，新建这个原来只能点外面——补齐
-      newModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeNew(); });
+      // Escape 统一走 util 里那一个实现：绑在弹窗元素上时，打开弹窗后没把焦点
+      // 送进去就永远收不到 keydown（另外四个弹窗最早都是这么漏的）
+      bindModalDismiss(newModal, closeNew);
       [npName, npTags].forEach((el) => {
         el.addEventListener('keydown', (e) => { if (e.key === 'Enter') npCreate.click(); });
       });
@@ -1023,7 +1024,7 @@ export default {
 
     root.querySelector('#ed-cancel').addEventListener('click', closeEdit);
     editModal.addEventListener('click', (e) => { if (e.target === editModal) closeEdit(); });
-    editModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeEdit(); });
+    bindModalDismiss(editModal, closeEdit);
     [edName, edTags].forEach((el) => {
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter') edSave.click(); });
     });
@@ -1226,8 +1227,8 @@ export default {
       okBtn.disabled = !pending || confirmEl.value.trim() !== pending.name;
     });
     confirmEl.addEventListener('keydown', (e) => {
+      // 只管 Enter：Escape 归下面那一句 bindModalDismiss，同一个弹窗不留两套关法
       if (e.key === 'Enter' && !okBtn.disabled) okBtn.click();
-      if (e.key === 'Escape') closeModal();
     });
     root.querySelector('#del-cancel').addEventListener('click', closeModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
@@ -1280,8 +1281,9 @@ export default {
     // Escape 原来只绑在输入框上：焦点一旦在"加标签/取消"钮上就撤不回来
     if (tagModal) bindModalDismiss(tagModal, () => { tagModal.hidden = true; });
     tagInput?.addEventListener('keydown', (e) => {
+      // 只管 Enter；Escape 由上面那句 bindModalDismiss 负责（原来只绑在这个
+      // 输入框上：焦点一旦落在"加标签／取消"钮上就撤不回来）
       if (e.key === 'Enter') tagOk.click();
-      if (e.key === 'Escape') tagModal.hidden = true;
     });
 
     const bdModal = root.querySelector('#batch-del-modal');
@@ -1315,8 +1317,8 @@ export default {
       bdOk.disabled = bdConfirm.value.trim() !== BATCH_DELETE_WORD;
     });
     bdConfirm?.addEventListener('keydown', (e) => {
+      // 只管 Enter；Escape 由下面那句 bindModalDismiss 负责
       if (e.key === 'Enter' && !bdOk.disabled) bdOk.click();
-      if (e.key === 'Escape') bdModal.hidden = true;
     });
     bdOk?.addEventListener('click', async () => {
       bdOk.disabled = true;

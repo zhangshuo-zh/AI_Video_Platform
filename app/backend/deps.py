@@ -36,10 +36,18 @@ def optional_user(request: Request):
     return request.state.user if user is not None else None
 
 
+# 初始口令没改之前只放行这三条：改密、看自己、登出。
+# 原来这条规则只写在前端（app.js 打开强制改密闸门），后端不拦＝拿着旧会话的人
+# 照样能调所有业务接口，"第一次登录必须改密"就只是个提示框
+_FORCE_PWD_EXEMPT = ("/api/auth/me", "/api/auth/password", "/api/auth/logout")
+
+
 def require_user(request: Request):
     user = optional_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="未登录")
+    if user["must_change_password"] and request.url.path not in _FORCE_PWD_EXEMPT:
+        raise HTTPException(status_code=403, detail="请先修改初始口令")
     return user
 
 

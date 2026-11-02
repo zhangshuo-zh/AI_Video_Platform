@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { escapeHtml, run } from '../util.js';
+import { bindModalDismiss, escapeHtml, run } from '../util.js';
 import { setParam } from '../navstate.js';
 import { closeDetail } from '../router.js';
 
@@ -267,7 +267,9 @@ export function mountDetail(root, id) {
   root.querySelector('#ad-del')?.addEventListener('click', () => { delModal.hidden = false; });
   root.querySelector('#ad-del-cancel')?.addEventListener('click', closeDel);
   delModal?.addEventListener('click', (e) => { if (e.target === delModal) closeDel(); });
-  delModal?.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDel(); });
+  // Escape 走 util 的那一个实现：绑在 delModal 上只有"焦点已经 Tab 进弹窗"
+  // 才收得到 keydown，而打开这个确认框时焦点还留在外面那张卡片上。
+  if (delModal) bindModalDismiss(delModal, closeDel);
   delOk?.addEventListener('click', async () => {
     delOk.disabled = true;
     const ok = await run('删除资产', () => api.deleteAsset(id));

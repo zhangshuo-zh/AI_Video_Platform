@@ -38,6 +38,9 @@ ROUTES = [
     ("DELETE", "/api/projects/{p}/members/{u}", None, 404),
     ("GET", "/api/member-candidates", None, 200),
     ("GET", "/api/tags", None, 200),
+    # 定妆图原来是 StaticFiles 挂载（不登录就能取），现在走带鉴权的路由：
+    # 匿名 401、看不见那个资产的人 404。路径参数是 `:path`，整段算一个占位符
+    ("GET", "/files/{af}", None, 404),
     # ---------- 创作单元 / 分镜 ----------
     ("GET", "/api/projects/{p}/episodes", None, 404),
     ("POST", "/api/projects/{p}/episodes", {"title": "第 9 集"}, 404),
@@ -198,7 +201,10 @@ def ids(seeded, people):
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
             "d": seeded["document_id"], "c": seeded["commit"],
             "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0,
-            "x": 0, "t": 0, "q": 0}
+            "x": 0, "t": 0, "q": 0,
+            # /files 的整段相对路径（资产目录下一张不存在的图）：
+            # 归属判定在文件存在性之前，所以外人拿到的还是 404
+            "af": f"{seeded['asset_id']}/not-there.png"}
 
 
 def _sub(v, ids):

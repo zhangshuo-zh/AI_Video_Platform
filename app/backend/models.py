@@ -796,14 +796,13 @@ class ShotOut(BaseModel):
     summary: str
     prompt: str
     duration: float
-    status: str
     asset_ids: list[int]
 
     @classmethod
     def from_row(cls, row) -> "ShotOut":
         return cls(id=row["id"], episode_id=row["episode_id"], seq=row["seq"],
                    summary=row["summary"], prompt=row["prompt"],
-                   duration=row["duration"], status=row["status"],
+                   duration=row["duration"],
                    asset_ids=json.loads(row["asset_ids"] or "[]"))
 
 
@@ -830,7 +829,9 @@ class AssetOut(BaseModel):
     aliases: list[str] = []
     tags: list[str] = []
     ref_images: list[str]
-    status: str
+    # 这里没有 status：资产那一列（0004 带来的 `draft|ready`）从来没有写入方，
+    # 0023 把它从表里摘掉了。"这个资产算不算齐了"在界面上由引用数与有没有定妆图现算，
+    # 留一列没人写的状态只会让人以为它有含义。
     # 详情页要摆"创建／最后修改"两个时间。第一次截图里它们是 undefined——
     # 模板用了字段而 schema 没带出来，这类错只有真渲染才会露出来
     created_at: str
@@ -849,7 +850,6 @@ class AssetOut(BaseModel):
                    aliases=json.loads(row["aliases"] or "[]") if "aliases" in keys else [],
                    tags=json.loads(row["tags"] or "[]") if "tags" in keys else [],
                    ref_images=json.loads(row["ref_images"] or "[]"),
-                   status=row["status"],
                    created_at=row["created_at"], updated_at=row["updated_at"],
                    ref_shot_count=(row["ref_shot_count"] or 0)
                    if "ref_shot_count" in keys else 0)

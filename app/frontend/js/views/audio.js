@@ -22,6 +22,17 @@ const TABS = [
 ];
 const KIND_LABEL = { dialogue: '台词', narration: '旁白', music: '音乐', sfx: '音效' };
 let audioNotice = '';   // 提交失败的原话留在页面上，不弹 alert 挡住下一次操作
+// 这句话是在"哪个项目 × 哪个页签"说的。它是模块级变量，视图重渲染不会自动清，
+// 不带这个键就会出现：在 A 项目配音页签报的"缺运行时"，切到 B 项目音乐页签还挂着，
+// 看上去像那边也失败了。键一对不上就丢掉——同一页签里再点一次别的行为也照旧能看见。
+let audioNoticeKey = '';
+// 页签下标只在这里做一次兜底：地址里出现越界的 sub 时按第 0 个渲染，
+// 提示条也要落在同一个下标上，否则一边算 3、一边算 0，话刚写上去就被自己清掉。
+const currentTab = () => {
+  const raw = getSub('audio') ?? 0;
+  return TABS[raw] ? raw : 0;
+};
+const noticeKeyOf = (pid, tab) => `${pid}:${tab}`;
 const STATUS = {
   draft: ['草稿', 'gray'], queued: ['排队中', 'blue'],
   ready: ['已就绪', 'green'], failed: ['失败', 'red'],
@@ -31,12 +42,15 @@ export default {
   async render() {
     const project = store.current;
     if (!project) {
+      audioNotice = ''; audioNoticeKey = '';
       return `<section class="view on"><div class="card"><div class="empty">
         <div class="empty-t">先选一个项目</div>
         <p>音频素材按项目与集组织；去项目中心选一个再回来。</p>
       </div></div></section>`;
     }
-    const tab = TABS[getSub('audio') ?? 0] ? (getSub('audio') ?? 0) : 0;
+    const tab = currentTab();
+    const key = noticeKeyOf(project.id, tab);
+    if (audioNoticeKey !== key) { audioNotice = ''; audioNoticeKey = ''; }
     const info = TABS[tab];
     const subRow = subChipRow(TABS.map((t) => t.label), tab);
     let episodes = [];
@@ -159,13 +173,14 @@ export default {
     root.querySelectorAll('[data-audio-submit]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        audioNotice = '';
+        audioNotice = ''; audioNoticeKey = '';
         try {
           await api.submitAudioClip(Number(btn.dataset.audioSubmit));
         } catch (e) {
           // 缺运行时是这一档的常见结果，用页内提示说明缺什么；
           // 弹 alert 会挡住下一次操作，也看不到别的素材状态
           audioNotice = `送进队列失败：${e.message}`;
+          audioNoticeKey = noticeKeyOf(store.currentId, currentTab());
           btn.disabled = false;
           refresh();
           return;

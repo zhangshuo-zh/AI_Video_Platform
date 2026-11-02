@@ -25,6 +25,15 @@ COPY_FIELDS = (
 )
 
 
+# 什么算"进了金额"。成本账（cost_summary）与项目看板（dashboard.summary）共用这一条，
+# 两处各写一遍迟早会漂——看板原来就少了一个 `currency IS NOT NULL`，
+# NULL 币种会被单独聚成一行，看上去像"有一笔没标币种的开销"，而成本账里根本没有它。
+# 规则本身：本地作业是 not_billable，不进金额；`known` 是已核价，
+# `pending_reconciliation` 是云端已出价但还没对账，两者都算。
+BILLABLE_WHERE = ("cost_micros IS NOT NULL AND currency IS NOT NULL "
+                  "AND billable_status IN ('known','pending_reconciliation')")
+
+
 class JobRepository:
     def create(self, data: dict) -> sqlite3.Row:
         with get_conn() as conn:
@@ -478,8 +487,7 @@ class JobRepository:
         return f"project_id IN ({marks})", list(project_ids)
 
     def cost_summary(self, project_ids: list[int] | None) -> dict:
-        """按币种 × 能力汇总。只算 known / pending：
-        not_billable 是本地与"提交后未执行"的作业，它们不进金额。"""
+        """按币种 × 能力汇总。金额口径见 `BILLABLE_WHERE`，项目看板共用那一条。"""
         where, args = self._scope(project_ids)
         with get_conn() as conn:
             rows = conn.execute(
@@ -487,8 +495,7 @@ class JobRepository:
                            SUM(cost_micros) AS total, COUNT(*) AS n
                       FROM job
                      WHERE {where}
-                       AND cost_micros IS NOT NULL AND currency IS NOT NULL
-                       AND billable_status IN ('known','pending_reconciliation')
+                       AND {BILLABLE_WHERE}
                      GROUP BY currency, capability, billable_status
                      ORDER BY currency, capability""", args).fetchall()
             unpriced = conn.execute(
@@ -552,7 +559,7 @@ class JobRepository:
                 """SELECT MIN(queued_at) AS at FROM job WHERE status = 'queued'"""
             ).fetchone()["at"]
             running = conn.execute(
-                """SELECT id, status, started_at, updated_at, lease_until, log_path,
+                """SELECT id, status, project_id, started_at, updated_at, lease_until,
                           capability, provider_code, model_code, execution_mode
                      FROM job
                     WHERE status IN ('starting','running','cancel_requested')
@@ -586,7 +593,9 @@ class JobRepository:
         for r in running:
             started = age(r["started_at"])
             running_rows.append({
-                "id": r["id"], "status": r["status"],
+                # project_id 是给 worker_status 做可见性过滤用的；log_path 不再往外给：
+                # 前端零引用，而它会把服务器目录结构摆进任何登录者的响应里
+                "id": r["id"], "status": r["status"], "project_id": r["project_id"],
                 "capability": r["capability"], "provider": r["provider_code"],
                 "model": r["model_code"], "execution_mode": r["execution_mode"],
                 "started_seconds": started,
@@ -595,7 +604,6 @@ class JobRepository:
                                   or age(r["lease_until"]) is None
                                   or r["lease_until"] < now.strftime("%Y-%m-%d %H:%M:%S")),
                 "over_runtime": started is not None and started > max_runtime_seconds,
-                "log_path": r["log_path"] or "",
             })
         return {
             "by_status": by_status,

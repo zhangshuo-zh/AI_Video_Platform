@@ -166,6 +166,9 @@ def test_内置_admin_角色的权限点后端也拦(as_role):
     c = as_role("superadmin")
     with get_conn() as conn:
         rid = conn.execute("SELECT id FROM role WHERE code='admin'").fetchone()["id"]
+        # bootstrap 建的超管带着"必须改初始口令"标记，会被 deps 那道闸门挡在 403；
+        # 这条测的是权限点不是改密闸门，先把标记清掉（改密闸门另有测试）
+        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE is_superuser = 1")
     r = c.put(f"/api/roles/{rid}/permissions", json={"permissions": []})
     assert r.status_code == 422, r.text
     assert "admin" in r.json()["detail"]

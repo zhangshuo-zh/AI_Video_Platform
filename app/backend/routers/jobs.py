@@ -293,11 +293,11 @@ def job_artifact_file(job_id: int, index: int,
 
 
 @router.get("/worker/status", response_model=WorkerStatusOut)
-def worker_status(_=Depends(require_user)) -> WorkerStatusOut:
+def worker_status(user=Depends(require_user)) -> WorkerStatusOut:
     """顶栏那个小圆点用的。任何登录者都能看在线状态与队列长度；
     作业内容仍要 job:read + 项目归属。
 
     P0 起这里还回 alerts：队列停滞、租约过期、运行超时、待核对——
     这些都不改任何作业状态，只是把"没人干活"和"刚入队"分开说。
     """
-    return WorkerStatusOut(**services.worker_status())
+    return WorkerStatusOut(**services.worker_status(user))

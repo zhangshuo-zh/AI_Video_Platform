@@ -13,7 +13,8 @@ from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
-from routers import (audio, auth, content, dashboard, documents, extraction, jobs,
+from routers import (audio, auth, content, dashboard, documents, extraction, files,
+                     jobs,
                      profiles, projects, review, settings, system, users)
 from services import ensure_workspace
 
@@ -51,6 +52,9 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(system.router)
     app.include_router(users.router)
+    # 定妆图走带鉴权的路由（原来是 StaticFiles 挂载，不登录就能拿图）。
+    # 必须排在兜底的前端挂载之前，否则 /files 会被它吞掉
+    app.include_router(files.router)
     # 前端是单页应用：点侧栏不会重新拉 JS，所以静态文件一律不缓存。
     # 局域网内多传几十 KB 无所谓，让人看到旧界面才是真麻烦。
     @app.middleware("http")
@@ -61,9 +65,10 @@ def create_app() -> FastAPI:
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    # 上传的定妆图等文件单独一个前缀，和前端分开
+    # 目录还是要建出来，但**不再静态挂载**：/files 现在是 routers/files.py
+    # 那条带登录与项目归属判定的路由。原来挂 StaticFiles 等于给所有定妆图开了
+    # 一个不用登录的后门，上传接口那层 ensure_asset 白做
     FILES_DIR.mkdir(parents=True, exist_ok=True)
-    app.mount("/files", StaticFiles(directory=FILES_DIR), name="files")
     # 静态前端必须最后挂，否则 /api 会被通配吃掉
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
     return app

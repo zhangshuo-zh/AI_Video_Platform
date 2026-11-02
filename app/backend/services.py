@@ -28,6 +28,8 @@ from config import (ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES,
                     WORKER_ONLINE_SECONDS)
 from db import get_conn
 from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
+from paths import describe as describe_path
+from paths import listdir_empty, resolve_within
 from repositories.audio import clips
 from repositories.content import assets
 from repositories.dashboard import dashboard
@@ -105,15 +107,16 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
 
     # 上传的图落在 FILES_DIR/<资产id>/ 下（content.py 上传接口），文件清完
     # 把空了的资产目录也收掉；目录里还有别的东西就留着，不越界。
-    files_root = str(FILES_DIR.resolve())
     asset_dirs: set[Path] = set()
     for rel in images:
-        target = (FILES_DIR / rel).resolve()
-        if str(target).startswith(files_root) and target.is_file():
+        # 走 paths.resolve_within：bare startswith(str(root)) 会把 data/files
+        # 匹配给 data/files-evil，一条脏记录就能把删除范围带出门外
+        target = resolve_within(FILES_DIR, rel)
+        if target is not None and target.is_file():
             target.unlink()
             asset_dirs.add(target.parent)
     for d in asset_dirs:
-        if d.is_dir() and not any(d.iterdir()):
+        if listdir_empty(d):
             d.rmdir()
 
     for rel in doc_paths:
@@ -131,7 +134,7 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     for rel in doc_paths:
         try:
             folder = path_of(rel).parent
-            if folder.is_dir() and not any(folder.iterdir()):
+            if listdir_empty(folder):
                 folder.rmdir()
         except PathError:
             pass
@@ -253,9 +256,13 @@ def save_content(doc, content: str, expected_version: str, actor: str,
         # 再把这次没提上去的内容另存一份到工作区外面（人不用重敲）。
         atomic_write(doc["rel_path"], current)
         saved = preserve_unapplied(doc, content)
-        raise GitSaveFailed(
+        # 整句过一道 describe：这句要原样进 HTTP 500 的 detail，
+        # 而 git 的 stderr 常把仓库绝对路径写进去（"… is outside repository"），
+        # 另存位置也是绝对路径。家目录和安装路径不该跟着一条错误消息出门，
+        # 换成 `data/unapplied/…` 这种写法反而更好定位。
+        raise GitSaveFailed(describe_path(
             f"Git 提交失败，正文已退回上一版；你这次写的内容另存在 {saved}，"
-            f"不用重敲。git 说：{exc}") from exc
+            f"不用重敲。git 说：{exc}")) from exc
 
     # commit 为 None 表示"内容和上一版一模一样"：不写库、不推 updated_at——
     # 那一列的语义是"内容动过"，点一下保存什么都没改却把时间推走，等于让界面说谎。
@@ -267,7 +274,11 @@ def save_content(doc, content: str, expected_version: str, actor: str,
 
 
 def preserve_unapplied(doc, content: str) -> str:
-    """把没提交上去的正文原样留一份，返回那个路径（进错误消息给人看）。"""
+    """把没提交上去的正文原样留一份，返回那个路径。
+
+    这里返回绝对路径是给调用方的——`save_content` 把它拼进错误消息时会先过一道
+    `describe_path`，人看到的是 `data/unapplied/…`，不是部署机的家门。
+    """
     target = unapplied_dir() / (
         f"doc{doc['id']}-{datetime.now():%Y%m%d-%H%M%S}.md")
     target.write_text(content, encoding="utf-8")
@@ -1369,14 +1380,29 @@ def _seconds_since(text: str | None) -> int | None:
         return None
 
 
-def worker_status() -> dict:
+def worker_status(user=None) -> dict:
     """worker 状态 + 队列健康。
 
     这里刻意**不**把"超时"写成 failed：判定与处置分开。
     界面看到告警，处置仍然是人取消或 worker 自己的 deadline 生效。
+
+    给了 user 就把"正在跑哪条作业"的明细按可见范围裁一遍：顶栏那个小圆点是
+    每人都在拉的，别人项目的 job id／供应商／模型不该顺着它漏出去。
+    计数（队列长度、待核对数）不裁——那是共享机器的客观状态，不是项目内容。
     """
     state = job_repo.worker_state()
     health = job_repo.queue_health(WORKER_MAX_RUNTIME_SECONDS)
+    if user is not None:
+        from access import ensure as _ensure
+        from fastapi import HTTPException as _HTTPException
+        visible = []
+        for row in health["running_jobs"]:
+            try:
+                _ensure(user, row["project_id"], "read")
+                visible.append(row)
+            except _HTTPException:
+                continue        # 看不见的项目连"它存在"都不说
+        health = {**health, "running_jobs": visible}
     age = None
     online = False
     heartbeat = ""

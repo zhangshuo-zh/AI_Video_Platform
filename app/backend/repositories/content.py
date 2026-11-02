@@ -102,10 +102,9 @@ class ShotRepository:
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
 
-    def set_status(self, shot_id: int, status: str) -> None:
-        with get_conn() as conn:
-            conn.execute("UPDATE shot SET status = ? WHERE id = ?", (status, shot_id))
-            touch(conn, "shot", shot_id)
+    # 没有 set_status：`shot.status` 那一列在 0023 被摘掉了——它零调用方，
+    # 而"这条镜头生成过没有"的事实本来就在 `job` 表里（最新一条作业的状态）。
+    # 再加一列就是两个真相源，早晚对不上。
 
     def delete(self, shot_id: int) -> bool:
         with get_conn() as conn:

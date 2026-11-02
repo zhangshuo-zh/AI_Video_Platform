@@ -189,21 +189,36 @@ class UserRepository:
 class SessionRepository:
     """会话落库：改密码或踢人时删一行就全网下线。"""
 
+    # 会话行要带出去的列，一次列清楚。写 `u.*` 的时候 `password_hash` 会跟着一起
+    # 变成"当前用户"对象——它本来不该出现在任何响应或缓存里，但只要列在那儿，
+    # 下一步就有人顺手把它 print 进日志、塞进导出。少给一列才是保证，
+    # `change_password` 那种真的要比对口令的地方改走 `users.get_by_id`。
+    _USER_COLUMNS = ("u.id, u.username, u.display_name, u.is_active, "
+                     "u.is_superuser, u.must_change_password")
+
     def create(self, token_hash: str, user_id: int, expires_at: str) -> None:
         with get_conn() as conn:
+            # 顺手清掉过期行：会话是"到期即废"的，但废行不会自己消失——
+            # 12 小时一期、一天十几次登录，几年下来库里攒的全是取不出来的死行。
+            # 挂在这里而不是单独定时器，是因为这一层没有常驻任务，而登录
+            # 恰好是唯一一个"每次都用到 session 表"的时刻。和插入同一条连接、
+            # 同一个事务，不会把刚写进去的这行删掉（它比 now 晚）。
+            conn.execute(
+                "DELETE FROM session WHERE expires_at <= datetime('now','localtime')")
             conn.execute(
                 "INSERT INTO session (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
                 (token_hash, user_id, expires_at),
             )
 
     def get(self, token_hash: str) -> sqlite3.Row | None:
-        # 返回 app_user 的全部列（含 id / is_superuser / is_active），
-        # 这样调用方拿到的就是"当前用户"，不用再查一次
+        # 返回当前用户的身份列（见 _USER_COLUMNS），这样调用方拿到的就是"这个人"，
+        # 不用再查一次；口令哈希不在其中。
         with get_conn() as conn:
             return conn.execute(
-                """SELECT u.*, s.expires_at
-                     FROM session s JOIN app_user u ON u.id = s.user_id
-                    WHERE s.token_hash = ? AND s.expires_at > datetime('now','localtime')""",
+                f"""SELECT {self._USER_COLUMNS}, s.expires_at
+                      FROM session s JOIN app_user u ON u.id = s.user_id
+                     WHERE s.token_hash = ?
+                       AND s.expires_at > datetime('now','localtime')""",
                 (token_hash,),
             ).fetchone()
 
@@ -215,9 +230,10 @@ class SessionRepository:
         with get_conn() as conn:
             conn.execute("DELETE FROM session WHERE user_id = ?", (user_id,))
 
-    def purge_expired(self) -> None:
+    def count(self) -> int:
+        """会话行数。只给回归测试和备份核对用，不进业务返回。"""
         with get_conn() as conn:
-            conn.execute("DELETE FROM session WHERE expires_at <= datetime('now','localtime')")
+            return conn.execute("SELECT COUNT(*) AS n FROM session").fetchone()["n"]
 
 
 users = UserRepository()

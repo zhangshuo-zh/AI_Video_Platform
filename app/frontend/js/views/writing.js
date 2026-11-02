@@ -69,8 +69,9 @@ const AI_OPS = {
 };
 const AI_TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'needs_attention']);
 
-// 分镜表「作业」那一列的口径。状态本身由 Job 表说了算，镜头行只是读；
-// 不用 shot.status——那一列没有写入方，拿它显示等于让界面说谎。
+// 分镜表「作业」那一列的口径。状态本身由 Job 表说了算，镜头行只是读。
+// `shot.status` 那一个候选（0004 带来的 todo|queued|done|failed）没有写入方，
+// 拿它显示等于让界面说谎——0023 已经把它从表里摘掉了，这里也就只有一个真相源。
 const SHOT_JOB_STATUS = {
   queued: { label: '排队中', cls: 'gray' },
   starting: { label: '启动中', cls: 'blue' },
@@ -1208,8 +1209,11 @@ function paintAiPreview(root) {
 
 async function pollAi(root, docId, jobId) {
   if (!ai || ai.jobId !== jobId) return;
-  // 人已经切到别的页：这一块 DOM 不在文档里了，继续轮询只会白打接口
-  if (!document.body.contains(root)) { closeAi(); return; }
+  // 人已经切到别的页：这一块 DOM 不在页面上了，继续轮询只会白打接口。
+  // 判活要问弹窗自己还挂不挂着——`root` 是共用的 `#view-root`，换页时它一直
+  // 待在 `document.body` 里，原来那句 `contains(root)` 永远为真，等于没判。
+  const modal = root.querySelector('#ai-modal');
+  if (!modal || !modal.isConnected) { closeAi(); return; }
   try {
     const data = await api.docAiJob(docId, jobId);
     if (!ai || ai.jobId !== jobId) return;
@@ -1310,13 +1314,16 @@ async function renderShots(tab, subRow) {
     let assetErr = null;
     try { assets = await api.assets(project.id); } catch (err) { assetErr = err; }
 
-    const createEp = `
+    // 建一集要 doc:write（POST /projects/{id}/episodes 声明的就是这一条）。
+    // 只有 doc:read 的人原来也会拿到这一行输入框和按钮，点下去吃 403——
+    // 这一页其余的写动作都已经按同一口径收过一遍了，这一行是最开始漏的。
+    const createEp = store.can('doc:write') ? `
       <div class="card-body" style="border-top:1px solid var(--line);padding:8px">
         <div class="row" style="gap:6px">
           <input id="ep-title" class="ctl sm" placeholder="新集标题" style="flex:1;min-width:0">
           <button class="btn sm primary" id="ep-create">建一集</button>
         </div>
-      </div>`;
+      </div>` : '';
 
     if (!episodes.length) {
       return `<section class="view on">

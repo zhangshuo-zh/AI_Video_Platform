@@ -25,6 +25,7 @@ from pathlib import Path
 import adapters
 import runtime
 from config import JOBS_DIR
+from paths import resolve_within, within
 
 CLOUD_RUNNER = Path(__file__).resolve().parent / "cloud_run.py"
 
@@ -114,15 +115,20 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     if not image:
         raise RunnerUnavailable("I2V 需要条件图；资产选择器接上之前不能从界面提交")
     image_path = Path(image).expanduser()
-    if not image_path.is_absolute():
+    root = (JOBS_DIR / str(job["id"])).resolve()
+    if image_path.is_absolute():
+        # 绝对路径以前直接放行——文件头的第 3 条硬约束写的是"不接受界面随手填
+        # 一个 /etc/passwd"，代码却没执行它。绝对路径照样要过边界：worker 是拿
+        # 这台机器的权限起进程的，任何能提交作业的人都能借它读全盘的文件。
+        target = image_path.resolve()
+    else:
         # 相对路径只允许落在本作业目录里；resolve 之后再做一次边界比对，
         # 挡住 ../ 和符号链接绕出去。
-        root = (JOBS_DIR / str(job["id"])).resolve()
-        image_path = (root / image_path).resolve()
-        if not str(image_path).startswith(str(root) + "/"):
-            raise RunnerUnavailable("条件图路径越出作业目录")
-    if not image_path.is_file():
-        raise RunnerUnavailable(f"条件图不存在：{image_path.name}")
+        target = resolve_within(root, str(image_path))
+    if target is None or not within(root, target):
+        raise RunnerUnavailable("条件图路径越出作业目录")
+    if not target.is_file():
+        raise RunnerUnavailable(f"条件图不存在：{target.name}")
 
     out = _mp4_path(outputs, job["id"], "mlx-video")
     seed = int(params.get("seed", 42))
@@ -133,7 +139,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     argv = [v["python"], "-m", "mlx_video.wan_2.generate",
             "--model-dir", v["model"],
             "--prompt", job["prompt_snapshot"],
-            "--image", str(image_path),
+            "--image", str(target),
             "--height", str(height), "--width", str(width),
             "--num-frames", str(frames), "--steps", str(steps),
             "--seed", str(seed), "--output-path", str(out)]
@@ -149,7 +155,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
         meta={"adapter": "mlx-video", "model": job["model_code"],
               "model_dir": v["model"], "python": v["python"],
               "seed": seed, "width": width, "height": height, "frames": frames,
-              "steps": steps, "image": str(image_path)})
+              "steps": steps, "image": str(target)})
 
 
 def _mflux(job, params: dict, outputs: Path) -> RunSpec:

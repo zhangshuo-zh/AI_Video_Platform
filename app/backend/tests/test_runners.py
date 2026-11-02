@@ -164,6 +164,24 @@ def test_mlx_video_条件图只能落在作业目录里(tmp_path, monkeypatch):
                            model_code="wan2.2-i2v-a14b"),
                       {"image": "../../outside.png"}, outputs)
 
+    # 绝对路径以前一路放行：runners.py 文件头的第 3 条硬约束写着"不接受界面随手
+    # 填一个 /etc/passwd"，代码却没执行它。worker 是拿这台机器的权限起进程的，
+    # 任何能提交作业的人都能借它读机器上任意一个文件。
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": "/etc/passwd"}, outputs)
+
+    # 同一个文件换成绝对写法递进来仍然合法：边界看的是解析后的位置，不是写法
+    abs_spec = runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                             {"image": str(image)}, outputs)
+    assert abs_spec.argv[abs_spec.argv.index("--image") + 1] == str(image.resolve())
+
+    # 目录里放一条指向外面的软链接：跟过去之后不在作业目录内，一样要拒
+    (job_dir / "evil.png").symlink_to("/etc/passwd")
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": "inputs/evil.png"}, outputs)
+
 
 def test_产物必须验魔数与非空(tmp_path):
     spec = runners.RunSpec(runner="fastmetal", argv=["x"],

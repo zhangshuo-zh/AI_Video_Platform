@@ -9,6 +9,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status as http_status
 
+from db import transaction
 from deps import actor_name, require_permission
 from models import (PasswordResetIn, PermissionOut, RoleOut, RolePermIn,
                     UserCreateIn, UserDeleteIn, UserOut, UserRolesIn, UserUpdateIn)
@@ -152,13 +153,40 @@ def delete_user(user_id: int, payload: UserDeleteIn,
             raise HTTPException(status_code=404, detail="接手人不存在")
         if payload.transfer_to == user_id:
             raise HTTPException(status_code=422, detail="不能转移给即将删除的账号")
-        for row in owned:
-            project_repo.set_owner(row["id"], payload.transfer_to)
+        # 转移 N 个项目 ＋ 删账号 ＝ 一个事务。原来它们是十几个独立事务，
+        # 第 3 个失败时前 2 个已经改了东家、账号还挂着——库里就是半套状态，
+        # 而且没人会立刻发现（删账号这件事本来就一年做不了几次）。
+        # 这一条包得起事务：全程只有库内写，不碰 Git 与磁盘。
+        # 失败要自己转成 500：让异常裸出去的话，界面只剩一句"Internal Server Error"，
+        # 而这里最该说的是"什么都没动、账号还在"——人据此才知道可以直接重来。
+        try:
+            with transaction():
+                for row in owned:
+                    project_repo.set_owner(row["id"], payload.transfer_to)
+                users.delete(user_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"转移与删账号已整体回滚：{len(owned)} 个项目的东家都没变、"
+                       f"账号也还在，修好原因后可以直接重来。卡住的那一步说：{exc}") from exc
     elif owned:
+        # 连带删项目**不能**包进事务：那一步要动工作区文件与 Git 提交，
+        # 回滚不会把它们带回去，"看起来原子"比不原子更危险。
+        # 所以这里做的是另一件事——把已经做到的部分如实报出来，
+        # 而不是让人对着一个 500 猜删到第几个了。
+        gone = []
         for row in owned:
-            delete_project_cascade(row["id"], actor=actor_name(user))
-
-    users.delete(user_id)
+            try:
+                delete_project_cascade(row["id"], actor=actor_name(user))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"名下 {len(owned)} 个项目已删掉 {len(gone)} 个，"
+                           f"卡在《{row['name']}》：{exc}。账号还在，"
+                           f"剩下的项目修好后可以再来一次；"
+                           f"已经删掉的那些不会回来。") from exc
+            gone.append(row["name"])
+        users.delete(user_id)
 
 
 @router.get("/roles", response_model=list[RoleOut])

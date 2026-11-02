@@ -81,7 +81,12 @@ def me(user=Depends(require_user)):
 @router.post("/password")
 def change_password(payload: ChangePasswordIn, response: Response,
                     user=Depends(require_user)):
-    if not verify_password(payload.old_password, user["password_hash"]):
+    # 口令哈希从库里现取，不从会话行上拿：sessions.get 现在只带身份列，
+    # 为的是让 `password_hash` 不再跟着"当前用户"这个对象到处走（缓存、日志、导出）。
+    # 比对新旧口令是这一条接口的专属需要，不该由所有接口的返回值一起买单。
+    account = users.get_by_id(user["id"])
+    if account is None or not verify_password(payload.old_password,
+                                              account["password_hash"]):
         raise HTTPException(status_code=401, detail="原密码不对")
     if payload.new_password == payload.old_password:
         raise HTTPException(status_code=422, detail="新密码不能和原密码相同")

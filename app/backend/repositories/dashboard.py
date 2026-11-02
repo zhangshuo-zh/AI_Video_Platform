@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from db import get_conn
+from repositories.jobs import BILLABLE_WHERE
 
 
 class DashboardRepository:
@@ -22,10 +23,12 @@ class DashboardRepository:
                 "SELECT status, COUNT(*) AS n FROM job WHERE project_id = ? GROUP BY status",
                 (project_id,))}
             costs = [dict(row) for row in conn.execute(
-                """SELECT currency, SUM(cost_micros) AS micros, COUNT(*) AS jobs
+                # 金额口径不在这里第二遍写：`BILLABLE_WHERE` 是成本账那一条，
+                # 看板少了 `currency IS NOT NULL` 时会多出一行 NULL 币种的"开销"，
+                # 两处数字对不上，人就分不清哪个是假的。
+                f"""SELECT currency, SUM(cost_micros) AS micros, COUNT(*) AS jobs
                      FROM job
-                    WHERE project_id = ? AND cost_micros IS NOT NULL
-                      AND billable_status IN ('known','pending_reconciliation')
+                    WHERE project_id = ? AND {BILLABLE_WHERE}
                     GROUP BY currency ORDER BY currency""", (project_id,))]
             gates = {row["status"]: row["n"] for row in conn.execute(
                 """SELECT status, COUNT(*) AS n FROM review_gate g

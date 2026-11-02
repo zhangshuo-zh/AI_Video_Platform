@@ -48,11 +48,20 @@ _OWNER_ONLY = {
 }
 
 
+# 认得的级别就这几个。写这个集合是为了下面那句 fail-closed：
+# 以前 need 拼错时，成员会一路走到函数末尾被**放行**——
+# 权限判定里最坏的一种失败方式，错一个字母就少一道门
+NEEDS = ("read", "write", "own", "delete", "manage")
+
+
 def ensure(user, project_id: int, need: str = "read"):
     """need：read 看 / write 改 / own 归档与恢复 / delete 删项目 / manage 管协作人。
 
     返回项目行（含 owner_id），调用方常要继续用。
+    未知级别一律按最严的处理（拒绝），不默认放行。
     """
+    if need not in NEEDS:
+        raise HTTPException(status_code=500, detail="内部：未知的权限级别")
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM project WHERE id = ?", (project_id,)).fetchone()
         if row is None:
@@ -66,8 +75,11 @@ def ensure(user, project_id: int, need: str = "read"):
 
     if member is None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if need in _OWNER_ONLY:
-        raise HTTPException(status_code=403, detail=_OWNER_ONLY[need])
+    if need != "read":
+        # 成员能读能改；own／delete／manage 三档都归所有人。
+        # 这里不再用 "need in _OWNER_ONLY" 判断：那样新加一档忘了登记就会静默放行
+        raise HTTPException(status_code=403,
+                            detail=_OWNER_ONLY.get(need, "只有项目所有人能做这件事"))
     return row
 
 

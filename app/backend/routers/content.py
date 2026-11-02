@@ -16,6 +16,7 @@ from deps import require_permission
 
 from models import (AssetCoverIn, AssetIn, AssetOut, AssetShotOut, EpisodeIn, EpisodeOut,
                     EpisodeStatusIn, ShotIn, ShotOut)
+from paths import listdir_empty, resolve_within
 from repositories.content import assets, episodes, shots
 from services import clean_tags
 
@@ -317,11 +318,11 @@ def delete_asset(asset_id: int,
     assets.delete(asset_id)
 
     for rel in images:
-        target = (FILES_DIR / rel).resolve()
-        if str(target).startswith(str(FILES_DIR.resolve())) and target.is_file():
+        target = resolve_within(FILES_DIR, rel)
+        if target is not None and target.is_file():
             target.unlink()
     folder = (FILES_DIR / str(asset_id)).resolve()
-    if folder.is_dir() and not any(folder.iterdir()):
+    if listdir_empty(folder):
         folder.rmdir()
 
 
@@ -393,8 +394,8 @@ def delete_asset_image(asset_id: int, path: str,
     if not removed:
         raise HTTPException(status_code=404, detail="这张图不在该资产下")
 
-    # 只删 FILES_DIR 里的文件：拼出来的路径必须仍在上传目录内
-    target = (FILES_DIR / path).resolve()
-    if str(target).startswith(str(FILES_DIR.resolve())) and target.is_file():
+    # 只删 FILES_DIR 里的文件：path 来自调用方，拼完解析后必须仍在上传目录内
+    target = resolve_within(FILES_DIR, path)
+    if target is not None and target.is_file():
         target.unlink()
     return AssetOut.from_row(row)

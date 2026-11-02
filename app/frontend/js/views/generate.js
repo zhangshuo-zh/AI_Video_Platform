@@ -100,12 +100,16 @@ function rowHtml(job) {
   const cap = CAPS[job.capability] || job.capability;
   const link = [job.episode_id ? `集 ${job.episode_id}` : '',
     job.shot_id ? `镜 ${job.shot_id}` : ''].filter(Boolean).join(' · ');
-  const actionCancel = ACTIVE.includes(job.status)
+  // 行内三个动作按接口要的权限点显隐（与抽屉里同一套口径）：列表只要 job:read
+  // 就能出这一行，不隐的话只读的人每行都挂着三个点了必 403 的钮。
+  const canCancel = store.can('job:cancel');
+  const canAct = store.can('job:submit');
+  const actionCancel = ACTIVE.includes(job.status) && canCancel
     ? `<button class="btn xs" data-cancel="${job.id}">取消</button>` : '';
-  const actionRetry = FINISHED_BAD.includes(job.status)
+  const actionRetry = FINISHED_BAD.includes(job.status) && canAct
     ? `<button class="btn xs" data-retry="${job.id}">重试</button>` : '';
   // 待核对的云端作业先核对再谈重试：那笔钱可能已经花了，默认重试是最坏的建议
-  const actionReconcile = job.status === 'needs_attention'
+  const actionReconcile = job.status === 'needs_attention' && canAct
     ? `<button class="btn xs" data-reconcile="${job.id}">核对</button>` : '';
   return `
     <tr data-job="${job.id}">
@@ -429,8 +433,19 @@ export default {
     if (pollTimer) clearInterval(pollTimer);
     if (searchTimer) clearTimeout(searchTimer);
 
+    /** 这一轮挂载还挂在页面上吗？
+     *
+     * `root` 是 `#view-root`，换页时它**仍然在 document.body 里**，只是里面的内容
+     * 被整体换掉了——所以原来那句 `document.body.contains(root)` 永远为真，
+     * 轮询根本停不下来。人从生成中心切到别的页之后，每 3 秒就会往一个已经不存在的
+     * `#gen-worker` 上写 innerHTML，控制台每轮一条未捕获 TypeError。
+     * 判活要看自己抓到的那个节点，`isConnected` 才说真话。
+     */
+    const alive = () => stats.isConnected;
+
     function paintWorker() {
       const el = root.querySelector('#gen-worker');
+      if (!el) return;
       const online = !!state.worker?.online;
       el.innerHTML = `<span class="dot ${online ? 'live' : 'idle'}"></span>
         ${online ? 'worker 在线' : 'worker 未接入'}`;
@@ -443,6 +458,7 @@ export default {
     }
 
     function paint() {
+      if (!alive()) return;
       paintWorker();
       stats.innerHTML = statsHtml();
       alerts.innerHTML = alertsHtml();
@@ -478,6 +494,8 @@ export default {
         state.costs = costs;
         state.worker = worker;
         state.error = null;
+        // 请求回来的时候人可能已经切走了：这一轮不画，也不去开抽屉
+        if (!alive()) return;
         paint();
         if (openJobId && !drawer.hidden && jobModal.hidden && profileModal.hidden
             && reconcileModal.hidden) {
@@ -501,6 +519,7 @@ export default {
     }
 
     function drawerLoading(id) {
+      if (!alive()) return;
       root.querySelector('#gen-drawer-title').textContent = `作业 #${id}`;
       root.querySelector('#gen-drawer-sub').innerHTML = '';
       drawerBody.innerHTML = '<p class="hint">正在读详情与日志……</p>';
@@ -594,13 +613,30 @@ export default {
         <b>待核对原因</b><p>${escapeHtml(job.attention_reason)}</p></div>` : '';
       const canMarkAttention = job.execution_mode === 'cloud'
         && ['succeeded', 'failed'].includes(job.status);
+      // 四个动作按"这条接口到底要哪个权限点"显隐。打开抽屉只要 job:read，
+      // 而取消要 job:cancel、重试／核对／标记要 job:submit（各自的服务端声明就是
+      // 这一行的依据）。不看权限点渲染，等于给只读的人摆四个点了必吃 403 的钮，
+      // 也等于让人误以为"我能取消别人的作业"。
+      const canCancel = store.can('job:cancel');
+      const canAct = store.can('job:submit');
       const actions = [
-        ACTIVE.includes(job.status) ? `<button class="btn" data-cancel="${job.id}">取消作业</button>` : '',
-        job.status === 'needs_attention'
+        ACTIVE.includes(job.status) && canCancel
+          ? `<button class="btn" data-cancel="${job.id}">取消作业</button>` : '',
+        job.status === 'needs_attention' && canAct
           ? `<button class="btn primary" data-reconcile="${job.id}">核对账单</button>` : '',
-        FINISHED_BAD.includes(job.status) ? `<button class="btn" data-retry="${job.id}">重试（新建一行）</button>` : '',
-        canMarkAttention ? `<button class="btn" data-attention="${job.id}">标记待核对</button>` : '',
+        FINISHED_BAD.includes(job.status) && canAct
+          ? `<button class="btn" data-retry="${job.id}">重试（新建一行）</button>` : '',
+        canMarkAttention && canAct
+          ? `<button class="btn" data-attention="${job.id}">标记待核对</button>` : '',
       ].filter(Boolean).join('');
+      // 动作区空着有两种原因，不能拿同一句话糊过去：一种是"这条已经跑完了"，
+      // 另一种是"你能看，但这个档位不让你动"。后者不写出来，人只会对着空白反复点。
+      const blocked = !actions && (
+        (ACTIVE.includes(job.status) && !canCancel)
+        || ((FINISHED_BAD.includes(job.status) || job.status === 'needs_attention') && !canAct));
+      const actionsHint = blocked
+        ? '这里没有你能按的钮：取消要 job:cancel，重试／核对要 job:submit。'
+        : '已结束，可关闭。';
 
       const artifacts = (arts || []).length ? arts.map((a, i) => {
         const name = a.path.split('/').pop() || a.path;
@@ -624,7 +660,7 @@ export default {
       }).join('') : '<p class="hint">还没有产物。</p>';
 
       return `
-        <div class="drawer-actions">${actions || '<span class="hint">已结束，可关闭。</span>'}</div>
+        <div class="drawer-actions">${actions || `<span class="hint">${actionsHint}</span>`}</div>
         ${err}
         ${attention}
         <div class="kv-grid">
@@ -669,6 +705,7 @@ export default {
           api.jobArtifacts(id).catch(() => []),
         ]);
         if (openJobId !== id) return;
+        if (!alive()) return;
         root.querySelector('#gen-drawer-title').textContent = `作业 #${job.id}`;
         root.querySelector('#gen-drawer-sub').innerHTML =
           `${statusChip(job.status, job.status_label)}
@@ -1479,7 +1516,7 @@ export default {
     })();
 
     pollTimer = setInterval(() => {
-      if (!document.body.contains(root)) { clearInterval(pollTimer); pollTimer = null; return; }
+      if (!alive()) { clearInterval(pollTimer); pollTimer = null; return; }
       // 弹窗开着时用户正在填，不重画列表；抽屉开着时只更新抬头
       if (!jobModal.hidden || !profileModal.hidden || !reconcileModal.hidden) return;
       refresh({ quiet: true });

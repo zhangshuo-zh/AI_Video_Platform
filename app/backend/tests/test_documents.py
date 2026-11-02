@@ -301,7 +301,9 @@ def test_Git_失败时退回上一版并另存未应用结果(as_role, fresh_pro
     tok = _token(c, doc["id"])
 
     def boom(*a, **kw):
-        raise gitrepo.GitError("假装 git 挂了")
+        # 顺带回一句带绝对路径的话：git 真挂了时 stderr 常长成这样
+        # （"fatal: /abs/path: … is outside repository"），而这句话要原样进 500 的 detail
+        raise gitrepo.GitError(f"fatal: {WORKSPACE_DIR} is outside repository")
 
     monkeypatch.setattr(gitrepo, "commit_file", boom)
     r = c.request("PUT", f"/api/documents/{doc['id']}/content",
@@ -313,7 +315,12 @@ def test_Git_失败时退回上一版并另存未应用结果(as_role, fresh_pro
     kept = list((WORKSPACE_DIR.parent / "unapplied").glob(f"doc{doc['id']}-*.md"))
     assert kept, f"没提交上去的正文没留底：{r.json()['detail'][:60]}"
     assert kept[0].read_text(encoding="utf-8") == "这次写的不该丢\n"   # 留的是规范化之后那份
-    assert "另存在" in r.json()["detail"], "错误消息要把底存哪儿了告诉人"
+    detail = r.json()["detail"]
+    assert "另存在" in detail, "错误消息要把底存哪儿了告诉人"
+    # 这句要出 HTTP 响应：绝对路径（家目录＋安装位置）不该跟着它出门，
+    # 换成 `data/unapplied/…` 的标签写法一样能定位
+    assert str(WORKSPACE_DIR) not in detail, detail
+    assert "data/unapplied/" in detail, detail
 
 
 def test_正文超大回_413(as_role, fresh_project, monkeypatch):

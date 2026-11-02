@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { escapeHtml, run } from '../util.js';
+import { bindModalDismiss, escapeHtml, run } from '../util.js';
 import { getParam, getSub, setSub } from '../navstate.js';
 import { openDetail } from '../router.js';
 import { renderDetail, mountDetail } from './asset-detail.js';
@@ -331,8 +331,10 @@ export default {
     saveBtn?.addEventListener('click', create);
     root.querySelector('#na-cancel')?.addEventListener('click', close);
     modal?.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    // Escape 交给 util 那一个实现（绑在弹窗上＝焦点必须在弹窗内才收得到）；
+    // Enter 只在输入框里提交，留着——它要的是"焦点在哪个控件"这个信息。
+    if (modal) bindModalDismiss(modal, close);
     modal?.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') close();
       if (e.key === 'Enter' && e.target.tagName === 'INPUT') create();
     });
   },

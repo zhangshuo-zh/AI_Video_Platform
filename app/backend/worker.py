@@ -40,6 +40,7 @@ import runners
 import validations
 from config import (ALLOW_MOCK, WORKER_LEASE_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
                     WORKER_POLL)
+from paths import describe as describe_path
 from repositories.jobs import jobs
 
 STOP = False
@@ -378,6 +379,23 @@ def _cloud_uncertain(job, code: str, request_id: str | None) -> bool:
                 and code in CLOUD_UNCERTAIN_CODES)
 
 
+def _internal_error_message(exc: BaseException) -> str:
+    """worker 自己崩了时对外那一句：异常类型 + 一行消息，不带堆栈。
+
+    为什么不再把 `traceback.format_exc()` 存进 `error_message`：这一列会随
+    每一条作业列表接口一起回传（队列页一次拉几十行），也会进素材导出与成本
+    CSV。多行堆栈铺在列表里既撑大响应、又让界面变成一坨，而它该待的地方
+    本来就是日志文件——`/api/jobs/{id}/logs` 与作业详情是同一道 `job:read`，
+    少写这一份并没有少给谁信息。
+    异常消息本身可能含着绝对路径（`FileNotFoundError` 会把路径写进 `str(exc)`），
+    所以再过一道 `describe_path`：部署机的家目录与安装路径不该跟着列表出门。
+    """
+    first = " ".join(str(exc).strip().split("\n")[:1])[:200]
+    brief = describe_path(first)
+    return (f"worker 内部错误：{type(exc).__name__}: {brief}" if brief
+            else f"worker 内部错误：{type(exc).__name__}")
+
+
 def process(job, wid: str) -> None:
     """跑一条已领取的作业：校验 → 执行 → 落状态。异常全部归一成失败或待核对。"""
     logs, outputs = jobfiles.ensure_dirs(job["id"])
@@ -464,12 +482,12 @@ def process(job, wid: str) -> None:
                           resources=_resources(cpu_start, elapsed,
                                                child_cpu_start, extra=extra),
                           provider_request_id=exc.provider_request_id)
-        except Exception:
+        except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             detail = traceback.format_exc(limit=6)
             _write(log, "状态：failed（internal_error）\n" + detail)
             jobs.fail(job["id"], wid, "internal_error",
-                      "worker 内部错误：" + traceback.format_exc(limit=1).strip(),
+                      _internal_error_message(exc),
                       jobfiles.relative(log_path), None, elapsed,
                       resources=_resources(cpu_start, elapsed,
                                            child_cpu_start, extra=extra))
