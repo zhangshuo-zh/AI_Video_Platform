@@ -27,6 +27,34 @@ const stamp = (t) => t.slice(0, 16);
 // 让下一次 render 带出来——直接写进当前 DOM 的话，紧接着的 refresh 就把它冲掉了。
 let flash = '';
 
+// ⋯ 菜单是 fixed 浮层：页面一滚、表格一横滚、窗口一缩放，它就不再指着原来那一行。
+// 与其让它跟着跳（横滚时一路抖），不如收起并把焦点还给触发它的 ⋯。
+// 监听挂在 window 上，而视图每次 render 都会重建闭包，所以这里只留"当前该叫谁"
+// 一个槽位：触发即摘监听，切页留下的旧闭包不会攒成一堆孤儿监听。
+let onViewportMove = null;
+
+function dismissRowMenu() {
+  const close = onViewportMove;
+  disarmRowMenu();
+  if (close) close();
+}
+
+function armRowMenu(close) {
+  onViewportMove = close;
+  window.addEventListener('scroll', dismissRowMenu, true);   // 捕获：表格内部横滚也算
+  window.addEventListener('resize', dismissRowMenu);
+}
+
+function disarmRowMenu() {
+  onViewportMove = null;
+  window.removeEventListener('scroll', dismissRowMenu, true);
+  window.removeEventListener('resize', dismissRowMenu);
+}
+
+// 菜单与视口之间留的缝：贴边不留零，不然看着像被裁了一半
+const MENU_EDGE = 8;
+const MENU_GAP = 4;
+
 const STATUS_LABELS = { active: '在产', archived: '已归档', all: '全部' };
 const BATCH_DELETE_WORD = '批量删除';
 const MAX_TAGS = 10;
@@ -621,6 +649,7 @@ export default {
     let menuOwner = null;
 
     const closeRowMenu = (returnFocus = false) => {
+      disarmRowMenu();
       if (!rowMenu || rowMenu.hidden) return;
       rowMenu.hidden = true;
       rowMenu.innerHTML = '';
@@ -638,14 +667,33 @@ export default {
       rowMenu.innerHTML = src.innerHTML;
       rowMenu.dataset.project = String(id);
       rowMenu.hidden = false;
-      // 贴着按钮右缘展开；窗口太窄时往左让一点，别把菜单顶出屏幕
-      const r = btn.getBoundingClientRect();
-      const w = rowMenu.offsetWidth || 200;
-      rowMenu.style.top = `${Math.round(r.bottom + 4)}px`;
-      rowMenu.style.left = `${Math.max(8, Math.round(r.right - w))}px`;
+      placeRowMenu(btn);
       menuOwner = btn;
       btn.setAttribute('aria-expanded', 'true');
       rowMenu.querySelector('[role="menuitem"]')?.focus();
+      // 焦点落定前不挂收起：菜单贴着视口下缘时，focus() 自己可能小滚一下
+      armRowMenu(() => closeRowMenu(true));
+    }
+
+    /** 把菜单摆进视口：优先朝下，下面放不下就朝上，两头都放不下就贴进来自己滚。 */
+    function placeRowMenu(btn) {
+      const r = btn.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 必须先 hidden=false 再量：隐藏元素量出来全是 0。
+      // 上限要先落到样式上再量高度，否则"两头都放不下"时会按未截断的高度算出负 top
+      rowMenu.style.maxHeight = `${Math.max(120, vh - MENU_EDGE * 2)}px`;
+      const w = rowMenu.offsetWidth || 186;
+      const h = rowMenu.offsetHeight || 160;
+      const roomBelow = vh - r.bottom - MENU_GAP - MENU_EDGE;
+      const roomAbove = r.top - MENU_GAP - MENU_EDGE;
+      rowMenu.style.top = Math.round(
+        h + MENU_GAP <= roomBelow ? r.bottom + MENU_GAP
+          : (h + MENU_GAP <= roomAbove ? r.top - MENU_GAP - h
+            : (roomBelow >= roomAbove ? vh - MENU_EDGE - h : MENU_EDGE))) + 'px';
+      // 横向靠按钮右缘，但整块必须留在视口里
+      rowMenu.style.left = Math.round(
+        Math.min(Math.max(r.right - w, MENU_EDGE), vw - w - MENU_EDGE)) + 'px';
     }
 
     const openProject = (id) => {
