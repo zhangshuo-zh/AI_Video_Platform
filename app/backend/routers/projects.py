@@ -269,8 +269,12 @@ def transfer_ownership(project_id: int, payload: ProjectTransferIn,
     """把项目交给别人。四条口径，都是"交出去之后还会发生什么"决定的：
 
     1. 谁能发起：`ensure(..., "manage")` —— 只有所有人与管理员，和删项目、管成员同一把锁。
-    2. 交给谁：**必须是当前协作人**。把一个跟项目毫无关系的人直接扶成所有人，
-       等于用一次转移绕过"先加进来再共事"这一步；要交给别人，先加为协作人。
+    2. 交给谁（v0.81 改口）：**任何你够得着的启用账号**，不再要求先加为协作人。
+       层级这一条仍然卡着——`user_rank(接手人) <= user_rank(发起人)`，与"建项目时不能邀请
+       比自己高的人"是同一条规则：制作把项目交给超级管理员之后自己降成协作人，
+       就再也拿不回来了，这种单向门不能开。
+       为什么去掉"先加协作人"：交接这一步本身就把对方变成所有人，多那道门槛只会
+       让「成员」弹窗在没有协作人时显示不出一行可点的按钮（就是这么被当成"没有这个功能"）。
     3. 原所有人：**自动降为协作人**，不是消失。交完就看不见这个项目的话，
        没人敢点这个按钮，历史进度也等于自己给自己锁在门外。
        反过来，接手人原本在协作人名单里，交完就把他那行删掉——
@@ -287,10 +291,8 @@ def transfer_ownership(project_id: int, payload: ProjectTransferIn,
     target = user_repo.get_by_id(target_id)
     if target is None or not target["is_active"]:
         raise HTTPException(status_code=404, detail="接手人不存在或已停用")
-    member_ids = {r["user_id"] for r in project_repo.members(project_id)}
-    if target_id not in member_ids:
-        raise HTTPException(status_code=422,
-                            detail="只能交给当前协作人；先把对方加为协作人，再转所有权")
+    if user_rank(target) > user_rank(user):
+        raise HTTPException(status_code=422, detail="对方层级高于你，不能把项目交给他")
 
     project_repo.transfer_owner(project_id, target_id, old_owner)
     return _members_payload(project_id, user)

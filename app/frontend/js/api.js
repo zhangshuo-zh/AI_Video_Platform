@@ -90,7 +90,7 @@ export const api = {
   removeProjectMember: (id, userId) => fetch(`/api/projects/${id}/members/${userId}`, {
     method: 'DELETE',
   }).then(toJson),
-  // 转移所有权。规则在后端：接手人必须是当前协作人，交完自己降为协作人
+  // 转移所有权。规则在后端：接手人要启用且层级不高于发起人（v0.81 起不必先是协作人），交完自己降为协作人
   transferProject: (id, userId) => fetch(`/api/projects/${id}/transfer`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),

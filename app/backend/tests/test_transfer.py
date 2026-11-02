@@ -54,13 +54,31 @@ def test_所有人可转给协作人且自己降为协作人(proj_with_member, a
     assert pid in ids
 
 
-def test_只能交给当前协作人(proj_with_member):
-    c = proj_with_member['client']
+def test_可以交给还没加入的账号(proj_with_member):
+    """v0.81 改口：不再要求先加为协作人。
+
+    原来那条门槛让「成员」弹窗在没有协作人时整行都不出现，人以为没这功能；
+    而交接这一步本身就把对方变成所有人，"先加进来"并没有多守住什么。
+    """
+    c, pid, owner = proj_with_member['client'], proj_with_member['pid'], proj_with_member['owner']
     stranger = _user('editor')
-    r = c.request("POST", f"/api/projects/{proj_with_member['pid']}/transfer",
-                  json={"user_id": stranger['id']})
+    r = c.request("POST", f"/api/projects/{pid}/transfer", json={"user_id": stranger['id']})
+    assert r.status_code == 200, r.text
+    assert r.json()["owner_id"] == stranger['id'], "交接没换成新所有人"
+    with get_conn() as conn:
+        members = {m['user_id'] for m in conn.execute(
+            "SELECT user_id FROM project_member WHERE project_id=?", (pid,))}
+    assert owner in members, "原所有人要留在协作人名单里"
+    assert stranger['id'] not in members, "接手人已是所有人，不该还挂在协作人名单上"
+
+
+def test_不能交给层级高于自己的账号(proj_with_member):
+    """层级这条不放宽：制作把项目交给超管后自己降为协作人，就再也拿不回来了。"""
+    c, pid = proj_with_member['client'], proj_with_member['pid']
+    boss = _user('admin')
+    r = c.request("POST", f"/api/projects/{pid}/transfer", json={"user_id": boss['id']})
     assert r.status_code == 422, r.text
-    assert "协作人" in r.json()["detail"], r.json()
+    assert "层级" in r.json()["detail"], r.json()
 
 
 def test_转给已经是所有人的对象要拒(proj_with_member):
