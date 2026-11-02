@@ -62,10 +62,12 @@ export const store = {
   /** 拉一次列表和类型字典；首次加载/新建项目后调用 */
   async load() {
     this.projects = await api.projects();
-    // 当前项目被删或还没选过时挑一个：列表按"最后打开"排，projects[0] 完全可能是
-    // 个归档项目——把"当前"换成不做了的项目，人还能接着去创作中心编它。
-    // 只剩归档的就宁可不选（顶栏照旧提示"未选择项目"），归档不进当前项目这套逻辑
-    if (!this.projects.some((p) => p.id === this.currentId)) {
+    // 当前项目被删、还没选过、或**刚被归档**时重新挑一个：
+    // 列表按"最后打开"排，projects[0] 完全可能是归档项目；顶栏菜单又只列在产，
+    // 当前项目留着归档的话，会出现"面包屑写着 A、下拉里找不到 A"的两套事实。
+    // 只剩归档的就宁可不选（顶栏照旧提示"未选择项目"）
+    const cur = this.projects.find((p) => p.id === this.currentId);
+    if (!cur || cur.status === 'archived') {
       const first = this.activeProjects[0] || null;
       this.currentId = first ? first.id : null;
     }

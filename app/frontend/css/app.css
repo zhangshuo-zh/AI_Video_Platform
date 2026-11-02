@@ -558,6 +558,65 @@ td.key-cell code{font-family:var(--mono);font-size:11px}
 #proj-rows tr.arch td{color:var(--ink-3)}
 #proj-rows tr.arch .t-strong{color:var(--ink-2);font-weight:500}
 
+/* ---------- 项目中心：概览、行内主次与更多菜单（v0.77） ---------- */
+/* 统计只摆三个数、每个都来自现有接口字段：在产/已归档看 project.status，
+   "待核对账单"看成本汇总的 pending 笔数。不做"生产阶段"这种没有数据源的新状态。 */
+.proj-stats{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px}
+.stat{
+  display:flex;align-items:baseline;gap:7px;padding:9px 14px;border-radius:12px;
+  background:var(--panel);border:1px solid var(--edge);box-shadow:var(--sh-1);
+}
+.stat-n{font-size:19px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat-l{font-size:11.5px;color:var(--ink-3)}
+.stat.warn .stat-n{color:var(--warn)}
+
+/* 项目名是可点的"打开"：平时是正文的粗体，悬停才变主色。
+   主操作另有常驻的「打开」按钮，所以这里不靠下划线暗示可点性 */
+.proj-open{
+  padding:0;margin:0;border:0;background:none;font:inherit;font-size:13px;
+  font-weight:600;color:var(--ink);text-align:left;cursor:pointer;letter-spacing:-.01em;
+}
+.proj-open:hover{color:var(--accent)}
+.proj-open:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring);border-radius:4px}
+.chip.now{margin-left:6px;padding:0 6px;font-size:10px}
+.proj-main{min-width:210px}
+.tagcell{min-width:130px}
+
+/* 内容：一行计数 + 一条定稿进度。进度只是 episode.status 的画法，不落库 */
+.proj-content{min-width:190px}
+.proj-prog{display:flex;align-items:center;gap:8px;margin-top:5px}
+.prog{width:96px;height:4px;border-radius:2px;background:var(--hover);overflow:hidden;flex:none}
+.prog i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.prog-t{font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.proj-activity{min-width:140px;font-size:11.5px;color:var(--ink-2);white-space:nowrap}
+.proj-activity span{display:block;line-height:1.55}
+.proj-actions{white-space:nowrap}
+.more-wrap{position:relative;display:inline-block;margin-left:6px}
+.more{min-width:30px;padding-left:0;padding-right:0}
+
+/* 行内"更多"菜单：fixed 浮层。放进单元格会被 .table-wrap 的 overflow 裁掉 */
+.row-menu{
+  position:fixed;z-index:60;min-width:186px;padding:5px;
+  background:var(--sheet);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--sh-2);display:grid;gap:1px;
+}
+.row-menu button{
+  appearance:none;border:0;background:none;font:inherit;font-size:12.5px;color:var(--ink);
+  text-align:left;padding:7px 10px;border-radius:6px;cursor:pointer;white-space:nowrap;
+}
+.row-menu button:hover,.row-menu button:focus-visible{background:var(--hover);outline:none}
+.row-menu button.danger{color:var(--bad)}
+
+/* 一次性结果提示（新建成功、归档、批量汇总）：一条窄带，不弹窗 */
+.proj-msg{padding:9px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--ink-2)}
+.proj-sort{width:112px}
+
+/* 新建／修改弹窗里的字段级提示与错误：错误贴着字段读，不进 alert */
+.pf-ctl{display:grid;gap:4px;min-width:0}
+.pf-hint-inline{font-size:11px;color:var(--ink-3)}
+.req{font-size:10.5px;font-weight:500;color:var(--ink-3);margin-left:2px}
+.form-err{margin:10px 0 0;font-size:12px;color:var(--bad)}
+
 /* ---------- 资产中心：卡片网格与详情 ---------- */
 /* 统计条压在卡片上面一行：指令 §八 明确"别让统计卡占据大部分首屏"，
    所以它是一行文字而不是四张数字卡 */
