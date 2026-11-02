@@ -16,10 +16,13 @@
 
 `--check` 不写文件：校验四份说明书中这些数字是否与本机现算一致，
 不一致时逐条列出并让退出码为 1，供提交前当门闩用。
+`.github/workflows/tests.yml` 的「发布基线门禁」就是它的常驻去处——CI 里测试
+已单独跑过，所以带 `--pytest-log` 读同一次运行的日志，不再白等第二遍。
 
 只依赖标准库。用法：
     app/backend/.venv/bin/python tools/make_release_baseline.py           # 生成
     app/backend/.venv/bin/python tools/make_release_baseline.py --check   # 只校验
+    ... --check --pytest-log /tmp/pytest.log                              # CI：复用本次测试日志
 """
 from __future__ import annotations
 
@@ -120,15 +123,37 @@ print(json.dumps({"paths": paths, "operations": operations,
 
 
 def run_tests() -> tuple[int, str]:
-    """现场跑全量 pytest。返回 (passed 数, 耗时原文)。"""
+    """现场跑全量 pytest。返回 (passed 数, 耗时原文)。
+
+    输出原样转发到本进程 stdout：CI 里这一步是"测试＋门禁"合一的，
+    只把尾巴三行留给日志的话，用例挂了人看不到断言在哪。
+    """
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--tb=line", "-p", "no:cacheprovider"],
         capture_output=True, text=True, cwd=BACKEND,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-    m = re.search(r"(\d+) passed[^\n]*?in ([\d.]+)s", proc.stdout + proc.stderr)
+    text = proc.stdout + proc.stderr
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    m = re.search(r"(\d+) passed[^\n]*?in ([\d.]+)s", text)
     if proc.returncode != 0 or m is None:
-        tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
-        raise SystemExit("pytest 未全绿，拒绝生成基线：\n" + "\n".join(tail))
+        raise SystemExit("pytest 未全绿，拒绝生成基线")
+    return int(m.group(1)), m.group(0).split("in ", 1)[1].rstrip()
+
+
+def passed_from_log(path: Path) -> tuple[int, str]:
+    """从本次 CI 已经跑过的 pytest 日志里取 passed 数与耗时。
+
+    为什么需要这一条：CI 已经单独跑了一遍全量测试（为了让失败输出直接可读），
+    --check 再跑一遍就是白等 25 秒。这里读的是同一次运行留下的日志，
+    不是人抄的数——数字仍然"现算"，只是算的是本次流水线。
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if re.search(r"\b\d+ failed\b|\b\d+ error", text):
+        raise SystemExit("日志里有失败或错误，门禁不通过")
+    m = re.search(r"(\d+) passed[^\n]*?in ([\d.]+)s", text)
+    if m is None:
+        raise SystemExit(f"日志里找不到 passed 汇总，别拿空日志过门禁：{path}")
     return int(m.group(1)), m.group(0).split("in ", 1)[1].rstrip()
 
 
@@ -193,7 +218,8 @@ def build_md(facts: dict) -> str:
     a("# AI 视频生产平台 发布基线")
     a("")
     a("- 本文件由 `tools/make_release_baseline.py` 生成：数字一律现算，不要手改；")
-    a("- 四份说明书的关键数字以本文件为准；`--check` 可在提交前校验两者一致。")
+    a("- 四份说明书的关键数字以本文件为准；`--check` 校验两者一致——本地提交前跑一次，"
+      "CI（`.github/workflows/tests.yml` 的「发布基线门禁」）每次都跑。")
     a("")
     a(f"- 生成日期：{today}")
     a(f"- Git：`{facts['commit']}`（{facts['branch']}）；设计稿 {facts['design']}")
@@ -290,11 +316,16 @@ def check_docs(facts: dict) -> int:
 
 def main() -> None:
     check = "--check" in sys.argv
+    # --pytest-log 只给 --check 用：CI 里测试已经单独跑过一遍，读同一次运行的日志，
+    # 不再白等第二遍。生成模式不认这个参数——基线里的数必须是这一趟真跑出来的。
+    log = Path(sys.argv[sys.argv.index("--pytest-log") + 1]) if "--pytest-log" in sys.argv else None
+    if log and not check:
+        raise SystemExit("--pytest-log 只与 --check 同用；生成基线必须现场跑测试")
     commit, branch = git_info()
     migrations = sorted((BACKEND / "migrations").glob("[0-9]" * 4 + "_*.sql"))
     latest = int(migrations[-1].name[:4])
     probe = probe_app()
-    passed, duration = run_tests()
+    passed, duration = passed_from_log(log) if log else run_tests()
     facts = {"commit": commit, "branch": branch, "design": design_version(),
              "docs": doc_versions(), "migration": latest, "tables": probe["tables"],
              "paths": probe["paths"], "operations": probe["operations"],
