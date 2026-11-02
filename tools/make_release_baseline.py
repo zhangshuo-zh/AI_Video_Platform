@@ -218,7 +218,12 @@ def build_md(facts: dict) -> str:
     a("| 槽位 | " + " | ".join(KIND_LABELS[k] for k in KIND_ORDER) + " | 生产可用 |")
     a("|---|" + "---|" * (len(KIND_ORDER) + 1))
     for slot in facts["matrix"]:
-        track = f"{CAP_LABELS.get(slot['capability'], slot['capability'])} · {slot['backend']} · {slot['provider']}"
+        # provider 为空的行是"这一轨还没配 provider、但留过环境检查痕"，
+        # 拼出"文本 · local · "这种尾随分隔符会被读成表格坏了，直接不拼。
+        parts = [CAP_LABELS.get(slot['capability'], slot['capability']), slot['backend']]
+        if slot['provider']:
+            parts.append(slot['provider'])
+        track = " · ".join(parts)
         if slot["model"]:
             track += f" / {slot['model']}"
         cells = []
