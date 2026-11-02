@@ -55,6 +55,13 @@ function buildNav() {
   }).join('');
 }
 
+// 渲染完再同步顶栏：项目中心的 render 会重拉列表，当前项目被删或归档时会换人，
+// 只同步一次的话顶部还挂着旧项目名。所有"换视图"的入口都走这里。
+async function goView(id) {
+  await renderView(id);
+  syncChrome();
+}
+
 function bindNav() {
   document.getElementById('nav').addEventListener('click', (e) => {
     const sub = e.target.closest('.sub');
@@ -68,11 +75,11 @@ function bindNav() {
       // 点侧栏（含二级标签）＝回列表：详情参数不清掉的话，
       // 从资产详情点"资产中心"会停在原来那条资产上，看着像侧栏没反应
       setParam(viewId, undefined);
-      renderView(viewId);
+      goView(viewId);
       return;
     }
     const item = e.target.closest('.nav-item');
-    if (item) { setParam(item.dataset.v, undefined); renderView(item.dataset.v); }
+    if (item) { setParam(item.dataset.v, undefined); goView(item.dataset.v); }
   });
 }
 
@@ -413,7 +420,7 @@ function setupPalette() {
     if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
     if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
     if (e.key === 'Enter' && shown[index]) {
-      renderView(shown[index].id);
+      goView(shown[index].id);
       close();
     }
   });
@@ -421,7 +428,7 @@ function setupPalette() {
   pal.addEventListener('click', (e) => { if (e.target === pal) close(); });
   list.addEventListener('click', (e) => {
     const it = e.target.closest('.pal-item');
-    if (it) { renderView(it.dataset.v); close(); }
+    if (it) { goView(it.dataset.v); close(); }
   });
 }
 
@@ -504,10 +511,13 @@ async function boot() {
   setupGate();
   bindUserMenu();
 
-  window.addEventListener('app:go', (e) => renderView(e.detail));
-  window.addEventListener('app:refresh', () => {
+  // 视图自己的 render 可能改当前项目（项目中心进入时会重拉列表，当前项被删或归档
+  // 就退回在产第一个）。所以渲染完要再同步一次顶栏——先同步的那次拿的是旧状态，
+  // 会出现"列表里已经没有这个项目、顶栏还写着它"。
+  window.addEventListener('app:go', (e) => goView(e.detail));
+  window.addEventListener('app:refresh', async () => {
     syncChrome();
-    renderView(currentViewId() || 'overview');
+    await goView(currentViewId() || 'overview');
   });
   // 会话过期的出口（W02-a）：api.js 认到 401 就派这条。原来只有启动那一次
   // 会去挂登录闸门，之后过期只会弹一句"失败：未登录"，人没地方重登。

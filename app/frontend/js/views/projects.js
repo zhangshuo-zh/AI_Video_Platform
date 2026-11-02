@@ -598,7 +598,16 @@ export default {
         const btn = e.target.closest('[data-batch]');
         if (!btn) return;
         const action = btn.dataset.batch;
-        if (action === 'clear') { picked.clear(); renderBar(); return; }
+        if (action === 'clear') {
+          // 集合和复选框一起清：只清集合，行里仍显示勾着，再点一下等于"取消一个没选的"
+          picked.clear();
+          root.querySelectorAll('#proj-rows .row-pick, #pick-all').forEach((box) => {
+            box.checked = false;
+            box.indeterminate = false;
+          });
+          renderBar();
+          return;
+        }
         if (action === 'tag') { openTagModal(); return; }
         if (action === 'delete') { openBatchDelModal(); return; }
         doBatch(action);
