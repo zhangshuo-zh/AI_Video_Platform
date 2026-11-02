@@ -53,6 +53,12 @@ class ProjectRepository:
                (SELECT COUNT(*) FROM shot s JOIN episode e ON e.id = s.episode_id
                   WHERE e.project_id = p.id) AS shot_count,
                (SELECT COUNT(*) FROM asset a WHERE a.project_id = p.id) AS asset_count,
+               -- 这两个计数是给"批量删除前要清点"用的。原来那里对每个项目
+               -- 各打一次 /summary，勾 20 个就是 20 个请求；列表本来就要拉，
+               -- 顺手带出来，清点就零额外请求
+               (SELECT COUNT(*) FROM document d WHERE d.project_id = p.id) AS document_count,
+               (SELECT COUNT(*) FROM asset a, json_each(COALESCE(NULLIF(a.ref_images, ''), '[]'))
+                  WHERE a.project_id = p.id) AS image_count,
                -- 成本账的东家是生成中心；这里只带一份按币种的只读累计，
                -- 口径与 /api/jobs/costs 完全一致：只算 known / pending，不跨币种相加
                COALESCE((SELECT json_group_array(json_object(
@@ -191,11 +197,16 @@ class ProjectRepository:
                 (project_id,),
             ).rowcount > 0
 
-    def add_tags(self, project_id: int, tags: list[str], limit: int) -> sqlite3.Row | None:
-        """追加标签，已有的跳过、总数超出 limit 就截掉后加的。
+    def add_tags(self, project_id: int, tags: list[str],
+                 limit: int) -> dict | None:
+        """追加标签，并说清哪些真加上了、哪些被挡在外面。
 
         和 set_tags 的"整组替换"是两回事：批量给十几个项目加同一个标签时，
         替换会把各项目自己原有的标签全冲掉。
+
+        返回 {"row", "added", "already", "over_cap"}：项目已经 10 个标签时，
+        新标签一个也装不下，但写操作本身没失败——只回"成功"的话，
+        界面就会把什么都没变的项目也报成"已加标签"。
         """
         with get_conn() as conn:
             if conn.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
@@ -203,16 +214,25 @@ class ProjectRepository:
             have = [r["tag"] for r in conn.execute(
                 "SELECT tag FROM project_tag WHERE project_id = ? ORDER BY rowid", (project_id,))]
             merged = list(have)
+            added: list[str] = []
+            already: list[str] = []
+            over_cap: list[str] = []
             for tag in tags:
-                if tag not in merged:
+                if tag in merged:
+                    already.append(tag)
+                elif len(merged) >= limit:
+                    over_cap.append(tag)          # 位置满了，后面的都装不下
+                else:
                     merged.append(tag)
+                    added.append(tag)
             conn.execute("DELETE FROM project_tag WHERE project_id = ?", (project_id,))
             conn.executemany(
                 "INSERT OR IGNORE INTO project_tag (project_id, tag) VALUES (?, ?)",
                 [(project_id, tag) for tag in merged[:limit]],
             )
             touch(conn, "project", project_id)
-            return conn.execute(self._SELECT + " WHERE p.id = ?", (project_id,)).fetchone()
+            return {"row": conn.execute(self._SELECT + " WHERE p.id = ?", (project_id,)).fetchone(),
+                    "added": added, "already": already, "over_cap": over_cap}
 
     def all_tags(self, user_id: int, everything: bool) -> list[sqlite3.Row]:
         """筛选条用的标签清单，只统计自己看得见的项目。

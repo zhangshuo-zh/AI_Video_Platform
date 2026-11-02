@@ -124,9 +124,22 @@ class ProjectSkip(BaseModel):
     reason: str = ""
 
 
+class ProjectNote(BaseModel):
+    """批量操作里"做成了，但有话要说"的那一项。
+
+    和 ProjectSkip 分开：skipped 是没做（权限不够），note 是做了但没全做到——
+    比如项目标签已经 10 个，新标签一个也加不进去。混在一起报，
+    人就会以为"已加标签 3 个项目"里那 3 个都加上了。
+    """
+    id: int
+    name: str = ""
+    note: str = ""
+
+
 class ProjectBatchOut(BaseModel):
     done: list[int] = []
     skipped: list[ProjectSkip] = []
+    notes: list[ProjectNote] = []
 
 
 class ProjectTagsIn(BaseModel):
@@ -171,6 +184,10 @@ class ProjectOut(BaseModel):
     episode_done: int = 0
     shot_count: int = 0
     asset_count: int = 0
+    # 这两个计数只服务于"批量删除前清点影响范围"：列表顺手带出来，
+    # 那里就不必对每个项目各打一次 /summary
+    document_count: int = 0
+    image_count: int = 0
     # 成本账的东家是生成中心，项目中心只读这一份累计（按币种分开，不加总）。
     # 不在这里放明细：明细只属于生成中心那一页（设计稿 §3.2）。
     costs: list["ProjectCostOut"] = []
@@ -197,6 +214,8 @@ class ProjectOut(BaseModel):
                    episode_done=row["episode_done"] if "episode_done" in keys else 0,
                    shot_count=row["shot_count"] if "shot_count" in keys else 0,
                    asset_count=row["asset_count"] if "asset_count" in keys else 0,
+                   document_count=row["document_count"] if "document_count" in keys else 0,
+                   image_count=row["image_count"] if "image_count" in keys else 0,
                    costs=costs())
 
 

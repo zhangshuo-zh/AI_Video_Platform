@@ -38,8 +38,18 @@ def project_of(kind: str, target_id: int) -> int | None:
     return row["project_id"] if row else None
 
 
+# "这件事只有挂名的人能做"——三种情况分开写原因，别共用一句含糊的话。
+# own 是 v0.84 新加的：归档／恢复会改变别人眼前看到的是哪部剧，
+# 原来跟着 project:write 走，协作人能把所有人的项目收起来。
+_OWNER_ONLY = {
+    "delete": "只有项目所有人能删除项目",
+    "manage": "只有项目所有人能管理协作人",
+    "own": "只有项目所有人能归档或恢复这个项目",
+}
+
+
 def ensure(user, project_id: int, need: str = "read"):
-    """need：read 看 / write 改 / delete 删项目 / manage 管协作人。
+    """need：read 看 / write 改 / own 归档与恢复 / delete 删项目 / manage 管协作人。
 
     返回项目行（含 owner_id），调用方常要继续用。
     """
@@ -56,8 +66,8 @@ def ensure(user, project_id: int, need: str = "read"):
 
     if member is None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if need in ("delete", "manage"):
-        raise HTTPException(status_code=403, detail="只有项目所有人能删除项目或管理协作人")
+    if need in _OWNER_ONLY:
+        raise HTTPException(status_code=403, detail=_OWNER_ONLY[need])
     return row
 
 

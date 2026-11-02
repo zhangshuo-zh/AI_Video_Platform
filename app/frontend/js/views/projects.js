@@ -8,15 +8,33 @@ import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run } from '.
  * 新建收进弹窗（含指定协作人），主页面只留"筛选 + 一张表"，不再挂一整块表单。
  * 列表的筛选是纯前端做的：项目就几十个，不值为它再跑一趟接口。
  */
+// 排序、状态筛选与搜索词各存一份到 localStorage（键名前缀与主题那条一致）：
+// 这一页是天天开的，每次刷新都回到"在产＋最近打开＋空搜索"，等于逼人每天重设一遍。
+// 浏览器禁用本地存储时读写都静默失败，功能照常，只是不记事。
+const PREF = 'fv.projects.';
+const pref = (k, fallback) => {
+  try { return localStorage.getItem(PREF + k) || fallback; } catch { return fallback; }
+};
+const savePref = (k, v) => { try { localStorage.setItem(PREF + k, v); } catch { /* 不记事而已 */ } };
+
 let activeTag = '';
 // 状态筛选默认"在产"——归档的意思就是不挡在眼前。三档：active / archived / all
-let activeStatus = 'active';
+const STATUSES = ['active', 'archived', 'all'];
+let activeStatus = STATUSES.includes(pref('status', 'active')) ? pref('status', 'active') : 'active';
 // 搜索词放模块级：批量操作完、切项目后视图都会重画，词丢了人只会以为"筛坏了"
-let keyword = '';
+let keyword = pref('q', '');
 // 勾选的项目 id。批量操作完要留着，所以放模块级；每次 render 按现存项目剪掉一次
 const picked = new Set();
 // 排序方式。默认"最近打开"就是服务端给的顺序；另两种在本地重排行，不动筛选状态
-let sortMode = 'opened';
+const SORTS = ['opened', 'updated', 'name'];
+let sortMode = SORTS.includes(pref('sort', 'opened')) ? pref('sort', 'opened') : 'opened';
+// 选中一行之后别让列表立刻重排：点最后一行它跳到第一行，鼠标底下换了内容，
+// 容易误点到下一行。keepOrder 为真时下一次渲染沿用刚才那份行序；
+// 改排序／筛选／搜索，或做完一次本来就该改变顺序的操作，就把它清掉。
+let keepOrder = false;
+let lastOrder = [];
+// 重绘会换掉整段 tbody，键盘焦点跟着丢。选中一行后把焦点放回同一行。
+let refocusRow = null;
 
 // 库里存的是 datetime('now','localtime') 出来的 'YYYY-MM-DD HH:MM:SS'。
 // 创建和最后修改两列必须走同一个截法：一个截 10 位、一个截 16 位，
@@ -113,6 +131,10 @@ function filtersHtml(allTags) {
 }
 
 function rowsFor(projects) {
+  // 同名项目光看名字分不出哪条是哪条，删除要输项目名那道确认也跟着失效。
+  // 只在真重名时补一个 #id，不重名的行不掺噪音。
+  const nameCount = new Map();
+  projects.forEach((p) => nameCount.set(p.name, (nameCount.get(p.name) || 0) + 1));
   return projects.map((p) => {
     // 权限只决定按钮显不显示；点下去的拦截在服务端
     const canWrite = store.can('project:write');
@@ -148,7 +170,8 @@ function rowsFor(projects) {
     const menuItems = [
       canWrite ? '<button type="button" role="menuitem" data-act="edit">修改项目</button>' : '',
       canOwn(p) ? '<button type="button" role="menuitem" data-act="members">成员与所有权</button>' : '',
-      canWrite ? `<button type="button" role="menuitem" data-act="${archived ? 'restore' : 'archive'}">
+      // 归档／恢复 v0.84 起是 own 级（服务端同样拦）：它改变别人眼前看到的是哪部剧
+      canOwn(p) ? `<button type="button" role="menuitem" data-act="${archived ? 'restore' : 'archive'}">
         ${archived ? '恢复到在产' : '归档（数据保留）'}</button>` : '',
       canDelete && canOwn(p) ? '<button type="button" role="menuitem" class="danger" data-act="delete">永久删除…</button>' : '',
     ].filter(Boolean).join('');
@@ -158,11 +181,15 @@ function rowsFor(projects) {
           data-opened="${escapeHtml(p.last_opened_at || '')}"
           data-updated="${escapeHtml(p.updated_at)}"
           data-created="${escapeHtml(p.created_at)}"
-          tabindex="0" ${p.id === store.currentId ? 'aria-current="true"' : ''}
+          data-owner="${escapeHtml(p.owner_name || '')}"
+          data-desc="${escapeHtml(p.description || '')}"
+          tabindex="${p.id === store.currentId ? 0 : -1}"
+          ${p.id === store.currentId ? 'aria-current="true"' : ''}
           class="${p.id === store.currentId ? 'sel ' : ''}${archived ? 'arch' : ''}">
         ${pickCell}
         <td class="proj-main">
           <span class="t-strong">${escapeHtml(p.name)}</span>
+          ${nameCount.get(p.name) > 1 ? `<span class="chip gray mono" title="有同名项目，用编号区分">#${p.id}</span>` : ''}
           ${p.id === store.currentId ? '<span class="chip blue now">当前</span>' : ''}
           ${archived ? '<span class="chip gray">已归档</span>' : ''}
           <span class="t-desc">所有人 ${escapeHtml(p.owner_name || '—')}</span>
@@ -245,9 +272,8 @@ export default {
           <h2>项目</h2><span class="sub" id="proj-count">共 ${projects.length} 个</span>
           <div class="right">
             <select id="proj-sort" class="ctl sm proj-sort" aria-label="排序方式">
-              <option value="opened">最近打开</option>
-              <option value="updated">最近修改</option>
-              <option value="name">项目名称</option>
+              ${SORTS.map((k) => `<option value="${k}"${k === sortMode ? ' selected' : ''}>${
+                { opened: '最近打开', updated: '最近修改', name: '项目名称' }[k]}</option>`).join('')}
             </select>
             <input id="proj-search" class="ctl sm" placeholder="搜项目名或标签"
                    style="width:200px" value="${escapeHtml(keyword)}">
@@ -404,7 +430,9 @@ export default {
                  说明也挪进控件列下面一行，不再堆成弹窗底部的一大段。 -->
             <div class="form-grid mem-grid">
               <span class="pf-label">所有人</span>
-              <p class="mem-owner" id="mem-owner">读取中…</p>
+              <!-- 用 div 不用 p：.modal-body p 那条通用规则会给 12.5px／1.8 行距＋10px 下边距，
+                   字段名与值就不同线了，名单框也会被撑高 -->
+              <div class="mem-owner" id="mem-owner">读取中…</div>
 
               <span class="pf-label top">协作人</span>
               <div class="pf-ctl">
@@ -467,9 +495,34 @@ export default {
       || cmpOpened(a, b);
     const cmpName = (a, b) => a.dataset.name.localeCompare(b.dataset.name, 'zh-Hans-CN');
     const CMP = { opened: cmpOpened, updated: cmpUpdated, name: cmpName };
+    // 上一次显示的行序里排第几；没排过的（刚建的、刚筛出来的）排到最后
+    const pinnedRank = (tr) => {
+      const i = lastOrder.indexOf(Number(tr.dataset.id));
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
     const applySort = () => {
       if (!tbody) return;
-      allRows().sort(CMP[sortMode] || cmpOpened).forEach((tr) => tbody.appendChild(tr));
+      const rows = allRows();
+      const cmp = CMP[sortMode] || cmpOpened;
+      // 刚选中一行时沿用上一次那份行序：它不该在眼前跳到列表第一行，
+      // 鼠标底下换了内容最容易误点到下一行。其余情况按当前排序正常排
+      rows.sort(keepOrder && lastOrder.length ? (a, b) => pinnedRank(a) - pinnedRank(b) || cmp(a, b) : cmp);
+      rows.forEach((tr) => tbody.appendChild(tr));
+      lastOrder = rows.map((tr) => Number(tr.dataset.id));
+      focusAnchor(rows);
+    };
+    /** roving tabindex：整张表只留一个 Tab 停靠点，行间靠 ↑↓ 走。
+        锚点是当前项目那一行；它不在可见行里（例如被筛掉了）就用第一条可见行。 */
+    const focusAnchor = (rows) => {
+      const visible = rows.filter((tr) => !tr.hidden);
+      const anchor = visible.find((tr) => Number(tr.dataset.id) === store.currentId)
+        || visible[0];
+      rows.forEach((tr) => { tr.tabIndex = tr === anchor ? 0 : -1; });
+      if (refocusRow != null) {
+        const back = visible.find((tr) => Number(tr.dataset.id) === refocusRow);
+        refocusRow = null;
+        back?.focus();
+      }
     };
     applySort();
 
@@ -481,7 +534,10 @@ export default {
       rows.forEach((tr) => {
         const name = tr.dataset.name.toLowerCase();
         const tags = JSON.parse(tr.dataset.tags || '[]');
-        const hitKeyword = !kw || name.includes(kw)
+        // 搜的是"这一行摆出来的东西"：名字、标签、所有人、介绍。
+        // 只搜前两样时，"搜不到我同事名下的项目"看着像数据丢了
+        const hay = [name, tr.dataset.owner || '', tr.dataset.desc || ''];
+        const hitKeyword = !kw || hay.some((t) => t.includes(kw))
           || tags.some((t) => t.toLowerCase().includes(kw));
         const hitTag = !activeTag || tags.includes(activeTag);
         const hitStatus = activeStatus === 'all' || tr.dataset.status === activeStatus;
@@ -514,13 +570,19 @@ export default {
           hint.textContent = `没有在产项目。有 ${archivedCount} 个已归档，切到上面「已归档」看看。`;
         }
       }
+      // 筛完再定一次焦点锚点：锚点那行可能被筛掉了，得换一条可见的
+      focusAnchor(rows);
       renderBar();
     };
 
     if (sortEl) {
+      sortEl.value = sortMode;
       sortEl.addEventListener('change', () => {
         sortMode = sortEl.value;
+        savePref('sort', sortMode);
+        keepOrder = false;      // 人主动换排序，就该看到换完的真实顺序
         applySort();
+        applyFilter();
       });
     }
 
@@ -546,14 +608,18 @@ export default {
         const canWrite = store.can('project:write');
         // 只给当前选择"用得上"的动作：全是归档项目时"归档"没有意义，
         // 摆着只会让人点一下发现什么都没变
-        const anyActive = selected.some((p) => p.status !== 'archived');
-        const anyArchived = selected.some((p) => p.status === 'archived');
+        const archivable = (p) => (store.isManager || p.owner_id === store.user?.id)
+          && p.status !== 'archived';
+        const restorable = (p) => (store.isManager || p.owner_id === store.user?.id)
+          && p.status === 'archived';
+        const anyActive = selected.some(archivable);
+        const anyArchived = selected.some(restorable);
         bar.innerHTML = `
           <span>已选 <b>${ids.length}</b> 个</span>
           <span class="bd-names">${escapeHtml(names.join('、'))}</span>
           <span class="right">
-            ${canWrite && anyActive ? '<button class="btn sm" data-batch="archive">归档</button>' : ''}
-            ${canWrite && anyArchived ? '<button class="btn sm" data-batch="restore">恢复在产</button>' : ''}
+            ${anyActive ? '<button class="btn sm" data-batch="archive">归档</button>' : ''}
+            ${anyArchived ? '<button class="btn sm" data-batch="restore">恢复在产</button>' : ''}
             ${canWrite ? '<button class="btn sm" data-batch="tag">加标签</button>' : ''}
             ${store.can('project:delete') ? '<button class="btn sm danger" data-batch="delete">删除</button>' : ''}
             <button class="btn sm ghost" data-batch="clear">取消选择</button>
@@ -591,6 +657,13 @@ export default {
       }
       if (action === 'archive' && res.done.length) text += '。切到上面「已归档」可以找回';
       if (action === 'delete' && res.skipped.length) text += '。其余项目没动';
+      // notes 是"做成了但没全做到"：标签已满的项目也算在 done 里，
+      // 不说一句，结果条就成了报喜不报忧
+      if (res.notes && res.notes.length) {
+        text += `。${res.notes.length} 个项目没全加上：`
+          + res.notes.map((n) => n.note).join('；');
+      }
+      keepOrder = false;   // 批量改的是数据本身，行序该跟着变
       setNote(text);
       refresh();
       return true;
@@ -599,6 +672,8 @@ export default {
     if (searchEl) {
       searchEl.addEventListener('input', () => {
         keyword = searchEl.value;
+        savePref('q', keyword);
+        keepOrder = false;
         applyFilter();
       });
       applyFilter();
@@ -609,8 +684,13 @@ export default {
       const bindChips = () => {
         filters.querySelectorAll('[data-status],[data-tag]').forEach((chip) => {
           chip.addEventListener('click', () => {
-            if (chip.dataset.status !== undefined) activeStatus = chip.dataset.status;
-            else activeTag = chip.dataset.tag;
+            if (chip.dataset.status !== undefined) {
+              activeStatus = chip.dataset.status;
+              savePref('status', activeStatus);
+            } else {
+              activeTag = chip.dataset.tag;
+            }
+            keepOrder = false;
             filters.innerHTML = filtersHtml(allTags);
             bindChips();
             applyFilter();
@@ -656,9 +736,9 @@ export default {
       });
     }
 
-    /* ---------- 行：切当前 / 打开 / 更多菜单 ----------
-       "打开"是主操作：设为当前项目并进创作中心，这是回到工位最短的路。
-       点整行只切当前、不跳页——两件事分开，误点一下不会把人带走。 */
+    /* ---------- 行：选中 / 更多菜单 ----------
+       选中一行就是"打开它"：设为当前项目，不跳页。
+       点复选框、⋯ 与行内按钮都不触发选中——几件事各管各的。 */
     const rowMenu = root.querySelector('#row-menu');
     let menuOwner = null;
 
@@ -742,6 +822,21 @@ export default {
       });
     }
 
+    /* 选中一行就是"打开它"：设为当前项目，不跳页（去干活用页头那颗钮）。
+       归档项目不能当当前项目（顶栏只列在产的），所以点它必须给一句话——
+       以前是静默退回在产第一个，看着像点了没反应。 */
+    const selectRow = (tr) => {
+      const id = Number(tr.dataset.id);
+      const p = store.projects.find((x) => x.id === id);
+      if (p && p.status === 'archived') {
+        setNote(`《${p.name}》已归档 —— 先在 ⋯ 里「恢复到在产」，才能把它设为当前项目。`);
+        return;
+      }
+      keepOrder = true;   // 它刚被打开，不该在眼前跳到列表第一行
+      refocusRow = id;
+      store.select(id);
+    };
+
     root.querySelectorAll('#proj-rows tr[data-id]').forEach((tr) => {
       tr.addEventListener('click', (e) => {
         const id = Number(tr.dataset.id);
@@ -749,14 +844,28 @@ export default {
         if (e.target.closest('.row-pick')) return;
         if (e.target.closest('[data-more]')) { openRowMenu(e.target.closest('[data-more]'), id); return; }
         if (e.target.closest('button')) return;
-        store.select(id);
+        selectRow(tr);
       });
-      // 行可以 Tab 到、Enter／空格选中：删掉「打开」按钮后，这是键盘用户切项目的那条路
+      // 行可以 Tab 到、Enter／空格选中：没有「打开」按钮后，这是键盘用户切项目的那条路
       tr.addEventListener('keydown', (e) => {
         if (e.target !== tr) return;          // 焦点在行内控件上时不抢它的按键
-        if (e.key !== 'Enter' && e.key !== ' ') return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          selectRow(tr);
+          return;
+        }
+        // ↑↓／Home／End 在可见行之间移焦点：整张表只占一个 Tab 停靠点
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+        const rows = visibleRows();
+        const i = rows.indexOf(tr);
+        const next = e.key === 'ArrowDown' ? rows[i + 1]
+          : e.key === 'ArrowUp' ? rows[i - 1]
+            : e.key === 'Home' ? rows[0] : rows[rows.length - 1];
+        if (!next) return;
         e.preventDefault();
-        store.select(Number(tr.dataset.id));
+        tr.tabIndex = -1;
+        next.tabIndex = 0;
+        next.focus();
       });
     });
     root.querySelectorAll('#proj-rows .row-pick').forEach((box) => {
@@ -826,6 +935,7 @@ export default {
           await store.load();
           store.currentId = created.id;
           closeNew();
+          keepOrder = false;
           setNote(`已创建《${created.name}》，并设为当前项目`
             + `${cut ? '；标签超出上限的部分已截掉' : ''}`);
           refresh();
@@ -939,7 +1049,7 @@ export default {
               <span class="t-dim mono">${escapeHtml(m.username)}</span>
               <button class="btn sm" data-rm-member="${m.user_id}">移除</button>
             </div>`).join('')
-        : '<p class="mem-empty">还没有协作人</p>';
+        : '<div class="mem-empty">还没有协作人</div>';
       memAdd.innerHTML = data.candidates.length
         ? data.candidates.map((c) => `<option value="${c.user_id}">${
             escapeHtml(c.display_name || c.username)}（${escapeHtml(c.username)}）</option>`).join('')
@@ -1067,7 +1177,12 @@ export default {
 
       try {
         const s = await api.projectSummary(id);
-        summaryEl.innerHTML = `将删除《<b>${escapeHtml(s.name)}</b>》，以及它下面的 `
+        // 同名项目删的是哪一条要能看出来：不重名的行不掺噪音
+        const dup = store.projects.filter((p) => p.name === name).length > 1;
+        const mine = store.projects.find((p) => p.id === id);
+        const which = dup
+          ? ` <span class="t-dim mono">#${id}　创建于 ${mine ? stamp(mine.created_at) : '—'}</span>` : '';
+        summaryEl.innerHTML = `将删除《<b>${escapeHtml(s.name)}</b>》${which}，以及它下面的 `
           + `<b>${s.episodes}</b> 集、<b>${s.shots}</b> 条镜头、<b>${s.assets}</b> 个资产、`
           + `<b>${s.documents}</b> 份文档和 <b>${s.image_files}</b> 张已上传的定妆图。`;
       } catch (err) {
@@ -1091,6 +1206,7 @@ export default {
         await store.load();
       });
       if (!done) return;
+      keepOrder = false;
       setNote(`已归档《${name}》。切到上面「已归档」可以找回`);
       refresh();
     }
@@ -1101,6 +1217,7 @@ export default {
         await store.load();
       });
       if (!done) return;
+      keepOrder = false;
       setNote(`已恢复《${name}》到在产`);
       refresh();
     }
@@ -1119,8 +1236,9 @@ export default {
     okBtn.addEventListener('click', async () => {
       if (!pending) return;
       okBtn.disabled = true;
+      const gone = pending;
       const ok = await run('删除', async () => {
-        await api.deleteProject(pending.id, confirmEl.value.trim());
+        await api.deleteProject(gone.id, confirmEl.value.trim());
         // 当前项目被删后的回退交给 store.load()：它现在优先退到在产的第一个，
         // 这里再自己挑一次 projects[0] 等于绕过那条规则
         await store.load();
@@ -1128,6 +1246,10 @@ export default {
       okBtn.disabled = false;
       if (!ok) return;
       closeModal();
+      // 新建、归档、恢复、批量都有提示条，删除原来没有——删掉的东西本来就该
+      // 有最响的反馈；而且它可能因为当前筛选根本不在这一屏里，"那行不见了"看不见
+      setNote(`已删除《${gone.name}》${gone.id === store.currentId ? '，当前项目已换掉' : ''}`);
+      keepOrder = false;
       refresh();
     });
 
@@ -1172,27 +1294,19 @@ export default {
       const ids = [...picked];
       const names = ids
         .map((id) => store.projects.find((p) => p.id === id)?.name).filter(Boolean);
+      // 清点用列表已经带出来的计数（同一份 SQL，与 /summary 口径一致）：
+      // 原来这里对每个项目各打一次 /summary，勾 20 个就是 20 个请求。
+      // 单个删除仍然现取 /summary——那一下最要紧，一个请求换一份当场的事实话。
+      const chosen = ids.map((id) => store.projects.find((x) => x.id === id)).filter(Boolean);
+      const total = (key) => chosen.reduce((n, x) => n + (x[key] || 0), 0);
       bdConfirm.value = '';
       bdOk.disabled = true;
-      bdList.textContent = '正在清点影响范围……';
-      bdModal.hidden = false;
-      bdConfirm.focus();
-      // 影响范围逐个取权威汇总（集／镜／资产／文档／定妆图），不在前端估。
-      // 有一条读不到就如实说"没读到"——清点是给人看的参考，不是删除的前置条件；
-      // 确认词与服务端逐项权限检查才是。
-      const sums = await Promise.all(ids.map((id) => api.projectSummary(id).catch(() => null)));
-      if (bdModal.hidden) return;              // 清点途中被关掉了
-      const got = sums.filter(Boolean);
-      const total = (key) => got.reduce((n, s) => n + (s[key] || 0), 0);
       let text = `将删除 <b>${ids.length}</b> 个项目：<b>${escapeHtml(names.join('、'))}</b>，`
         + '连同它们的作业、音频与审核记录。';
-      if (got.length) {
-        text += ` 合计 <b>${total('episodes')}</b> 集、<b>${total('shots')}</b> 条镜头、`
-          + `<b>${total('assets')}</b> 个资产、<b>${total('documents')}</b> 份文档、`
-          + `<b>${total('image_files')}</b> 张已上传的定妆图。`;
-      }
-      if (got.length < ids.length) {
-        text += ` 其中 ${ids.length - got.length} 个项目的影响范围没读到，删除前请确认名单。`;
+      if (chosen.length) {
+        text += ` 合计 <b>${total('episode_count')}</b> 集、<b>${total('shot_count')}</b> 条镜头、`
+          + `<b>${total('asset_count')}</b> 个资产、<b>${total('document_count')}</b> 份文档、`
+          + `<b>${total('image_count')}</b> 张已上传的定妆图。`;
       }
       bdList.innerHTML = text;
     }

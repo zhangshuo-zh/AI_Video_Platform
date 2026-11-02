@@ -14,9 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from access import ensure, is_manager
 from deps import actor_name, require_permission
 from models import (ProjectBatchDeleteIn, ProjectBatchIn, ProjectBatchOut, ProjectIn,
-                    ProjectMemberIn, ProjectMemberOut, ProjectMembersOut, ProjectOut,
-                    ProjectSkip, ProjectStatusIn, ProjectSummary, ProjectTagsIn,
-                    ProjectTransferIn,
+                    ProjectMemberIn, ProjectMemberOut, ProjectMembersOut, ProjectNote,
+                    ProjectOut, ProjectSkip, ProjectStatusIn, ProjectSummary,
+                    ProjectTagsIn, ProjectTransferIn,
                     ProjectUpdateIn)
 from ranks import row_rank, user_rank
 from repositories.projects import projects as project_repo
@@ -89,8 +89,12 @@ def mark_project_opened(project_id: int,
 @router.patch("/projects/{project_id}/status", response_model=ProjectOut)
 def set_project_status(project_id: int, payload: ProjectStatusIn,
                        user=Depends(require_permission("project:write"))) -> ProjectOut:
-    """归档或恢复。值由 ProjectStatusIn 的 Literal 把关，写别的直接 422。"""
-    ensure(user, project_id, "write")
+    """归档或恢复。值由 ProjectStatusIn 的 Literal 把关，写别的直接 422。
+
+    v0.84 起这一件事要 own（所有人或管理员），不再跟着 write 走：
+    归档会改变别人眼前看到的是哪部剧，协作人不该能把名下的项目收起来。
+    """
+    ensure(user, project_id, "own")
     row = project_repo.set_status(project_id, payload.status)
     if row is None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -103,23 +107,34 @@ def batch_projects(payload: ProjectBatchIn,
     """批量归档／恢复／加标签。逐项过权限，被拒的进 skipped 并报原因。"""
     done: list[int] = []
     skipped: list[ProjectSkip] = []
+    notes: list[ProjectNote] = []
     add_tags = _clean_tags(payload.tags) if payload.action == "tag" else []
     if payload.action == "tag" and not add_tags:
         raise HTTPException(status_code=422, detail="没有可添加的标签")
+    # 归档／恢复是"own"级（只有所有人或管理员），加标签仍是"write"级：
+    # 给项目打标签是日常协作，把一部剧从别人眼前收走不是
+    need = "write" if payload.action == "tag" else "own"
 
     for project_id in payload.ids:
         try:
             # 看不见的项目在这里就是 404，不因为"是批量"而降级成 403
-            ensure(user, project_id, "write")
+            ensure(user, project_id, need)
         except HTTPException as err:
             skipped.append(ProjectSkip(id=project_id, reason=str(err.detail)))
             continue
         if payload.action == "tag":
-            project_repo.add_tags(project_id, add_tags, MAX_TAGS)
+            res = project_repo.add_tags(project_id, add_tags, MAX_TAGS)
+            if res and res["over_cap"]:
+                # 一个都没加上和加上一半，都要说出来——只回 done 等于界面在报喜
+                names = "、".join(res["over_cap"])
+                notes.append(ProjectNote(
+                    id=project_id,
+                    note=(f"标签已满 {MAX_TAGS} 个，未追加：{names}" if not res["added"]
+                          else f"标签装不下，只加上 {'、'.join(res['added'])}；未追加：{names}")))
         else:
             project_repo.set_status(project_id, _BATCH_STATUS[payload.action])
         done.append(project_id)
-    return ProjectBatchOut(done=done, skipped=skipped)
+    return ProjectBatchOut(done=done, skipped=skipped, notes=notes)
 
 
 @router.post("/projects/batch-delete", response_model=ProjectBatchOut)
