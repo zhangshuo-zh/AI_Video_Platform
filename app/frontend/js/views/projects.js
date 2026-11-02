@@ -142,8 +142,9 @@ function rowsFor(projects) {
       ? `<td class="c"><input type="checkbox" class="row-pick" data-pick="${p.id}"
               aria-label="选择 ${escapeHtml(p.name)}"${picked.has(p.id) ? ' checked' : ''}></td>`
       : '';
-    // 行内只留两个动作：打开（主）＋ ⋯（修改／成员／归档／删除）。
-    // 三个管理按钮常驻一列，日常最常用的"继续做这个项目"反而没有位置。
+    // 行内只有一个动作：⋯（修改／成员／归档／删除）。
+    // "用哪个项目"由选中这件事本身表达——点一行（或 Tab 到行上按 Enter）就是切当前，
+    // 再去创作中心用页头那颗钮。原来那颗「打开」把两件事捆在一起，反而多一个入口。
     const menuItems = [
       canWrite ? '<button type="button" role="menuitem" data-act="edit">修改项目</button>' : '',
       canOwn(p) ? '<button type="button" role="menuitem" data-act="members">成员与所有权</button>' : '',
@@ -157,11 +158,11 @@ function rowsFor(projects) {
           data-opened="${escapeHtml(p.last_opened_at || '')}"
           data-updated="${escapeHtml(p.updated_at)}"
           data-created="${escapeHtml(p.created_at)}"
+          tabindex="0" ${p.id === store.currentId ? 'aria-current="true"' : ''}
           class="${p.id === store.currentId ? 'sel ' : ''}${archived ? 'arch' : ''}">
         ${pickCell}
         <td class="proj-main">
-          <button type="button" class="proj-open" data-open="${p.id}"
-                  title="设为当前项目并进入创作中心">${escapeHtml(p.name)}</button>
+          <span class="t-strong">${escapeHtml(p.name)}</span>
           ${p.id === store.currentId ? '<span class="chip blue now">当前</span>' : ''}
           ${archived ? '<span class="chip gray">已归档</span>' : ''}
           <span class="t-desc">所有人 ${escapeHtml(p.owner_name || '—')}</span>
@@ -182,7 +183,6 @@ function rowsFor(projects) {
           <span class="t-dim">最后修改 ${stamp(p.updated_at)}</span>
         </td>
         <td class="r proj-actions">
-          <button type="button" class="btn sm" data-open="${p.id}">打开</button>
           ${menuItems ? `<span class="more-wrap">
             <button type="button" class="btn sm more" data-more="${p.id}"
                     aria-haspopup="menu" aria-expanded="false"
@@ -405,16 +405,19 @@ export default {
               <button class="btn" id="mem-add-btn">加为协作人</button>
             </div>
             <!-- 转移所有权：只有所有人与管理员看得见（renderMembers 里判）。
-                 放在成员弹窗而不是行内按钮列，是因为它要先看到"能交给谁"这份名单 -->
+                 这一行**常驻**，不再因为"还没有协作人"就整行藏起来——藏起来的后果是
+                 人以为没这个功能（v0.81 前就是这样）。没得挑的时候禁用并说清为什么。 -->
             <div class="row" id="mem-transfer-row" hidden
                  style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
               <span class="note">转移给</span>
               <select id="mem-transfer" class="ctl" style="min-width:200px"></select>
               <button class="btn danger-solid" id="mem-transfer-btn">转移所有权</button>
             </div>
+            <p class="modal-meta" id="mem-transfer-hint" hidden></p>
             <p class="modal-meta">协作人可以查看和修改这个项目；删项目和管协作人只有所有人能做。
-              转移所有权只能交给已加入的协作人，交出去之后你会变成协作人——仍然看得见、改得动，
-              只是删项目和管人归对方了。</p>
+              交接对象是<b>所有你够得着的启用账号</b>（协作人和还没加入的都在列，层级比你高的不列）；
+              交给还没加入的人时会直接把他变成所有人，不用先加一遍。
+              交出去之后你会变成协作人——仍然看得见、改得动，只是删项目和管人归对方了。</p>
           </div>
           <div class="modal-actions">
             <button class="btn" id="mem-close">关闭</button>
@@ -696,11 +699,6 @@ export default {
         Math.min(Math.max(r.right - w, MENU_EDGE), vw - w - MENU_EDGE)) + 'px';
     }
 
-    const openProject = (id) => {
-      store.select(Number(id));      // 先切当前（它自己会重画一次）
-      goWriting();                   // 再进创作中心——"打开项目"就是回到工位
-    };
-
     if (rowMenu) {
       rowMenu.addEventListener('click', (e) => {
         const item = e.target.closest('[data-act]');
@@ -739,9 +737,15 @@ export default {
         // 复选框那一下是"选不选"，不是"切不切当前项目"，两件事不能同时发生
         if (e.target.closest('.row-pick')) return;
         if (e.target.closest('[data-more]')) { openRowMenu(e.target.closest('[data-more]'), id); return; }
-        if (e.target.closest('[data-open]')) { openProject(id); return; }
         if (e.target.closest('button')) return;
         store.select(id);
+      });
+      // 行可以 Tab 到、Enter／空格选中：删掉「打开」按钮后，这是键盘用户切项目的那条路
+      tr.addEventListener('keydown', (e) => {
+        if (e.target !== tr) return;          // 焦点在行内控件上时不抢它的按键
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        store.select(Number(tr.dataset.id));
       });
     });
     root.querySelectorAll('#proj-rows .row-pick').forEach((box) => {
@@ -911,6 +915,7 @@ export default {
     const memAdd = root.querySelector('#mem-add');
     const memAddBtn = root.querySelector('#mem-add-btn');
     let memId = null;
+    let memData = null;   // 弹窗当前这份名单，确认框要说"对方还没加入"时用
 
     const renderMembers = (data) => {
       const ownerName = store.projects.find((x) => x.id === memId)?.owner_name || '—';
@@ -932,16 +937,26 @@ export default {
       memAddBtn.disabled = !data.candidates.length;
       // 转移这一行只对"所有人或管理员"出现。前端只是不摆按钮，
       // 真拦在后面：ensure(..., "manage")
+      memData = data;
       const canManage = store.isManager || data.owner_id === store.user?.id;
       const transferRow = root.querySelector('#mem-transfer-row');
       const transferSel = root.querySelector('#mem-transfer');
       const transferBtn = root.querySelector('#mem-transfer-btn');
-      const transferrable = data.members.filter((m) => m.user_id !== data.owner_id);
-      transferRow.hidden = !(canManage && transferrable.length);
-      if (!transferRow.hidden) {
-        transferSel.innerHTML = transferrable.map((m) => `<option value="${m.user_id}">${
-          escapeHtml(m.display_name || m.username)}（${escapeHtml(m.username)}）</option>`).join('');
-        transferBtn.disabled = false;
+      const transferHint = root.querySelector('#mem-transfer-hint');
+      // 交接对象＝协作人 ＋ 还能邀请进来的人。两份名单都由后端按"启用中、
+      // 层级够得着、不是所有人自己"筛过，前端不再自己拼一份用户列表。
+      const targets = [...data.members.filter((m) => m.user_id !== data.owner_id),
+                       ...data.candidates];
+      transferRow.hidden = !canManage;
+      if (canManage) {
+        transferSel.innerHTML = targets.length
+          ? targets.map((m) => `<option value="${m.user_id}">${
+              escapeHtml(m.display_name || m.username)}（${escapeHtml(m.username)}）</option>`).join('')
+          : '<option value="">没有可交接的账号</option>';
+        transferSel.disabled = !targets.length;
+        transferBtn.disabled = !targets.length;
+        transferHint.hidden = targets.length > 0;
+        transferHint.textContent = '没有可交接的账号：只能交给启用中、且层级不高于你的账号。';
       }
     };
 
@@ -981,12 +996,14 @@ export default {
     root.querySelector('#mem-transfer-btn')?.addEventListener('click', async () => {
       const uid = Number(root.querySelector('#mem-transfer').value);
       if (!uid || memId === null) return;
-      const who = root.querySelector('#mem-transfer')
-        .selectedOptions[0]?.textContent?.trim() || '对方';
+      const sel = root.querySelector('#mem-transfer');
+      const who = sel.selectedOptions[0]?.textContent?.trim() || '对方';
       const btn = root.querySelector('#mem-transfer-btn');
+      const joined = (memData?.members || []).some((m) => m.user_id === uid);
       if (!(await confirmDanger({
         title: '转移所有权', okText: '确认转移',
         body: `把这个项目交给 <b>${escapeHtml(who)}</b>？<br>`
+            + (joined ? '' : '对方还没加入这个项目，交接会直接把他变成所有人。<br>')
             + '你会变成协作人：仍然能看和改，但删项目、管协作人归对方。',
       }))) return;
       btn.disabled = true;
@@ -1185,9 +1202,7 @@ export default {
     /* ---------- 去创作中心：只跳转，不在这里写集和分镜 ---------- */
     const gotoWriting = root.querySelector('#btn-goto-writing');
     if (gotoWriting) {
-      gotoWriting.addEventListener('click', () => {
-        window.dispatchEvent(new CustomEvent('app:go', { detail: 'writing' }));
-      });
+      gotoWriting.addEventListener('click', goWriting);
     }
   },
 };

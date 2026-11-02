@@ -570,14 +570,9 @@ td.key-cell code{font-family:var(--mono);font-size:11px}
 .stat-l{font-size:11.5px;color:var(--ink-3)}
 .stat.warn .stat-n{color:var(--warn)}
 
-/* 项目名是可点的"打开"：平时是正文的粗体，悬停才变主色。
-   主操作另有常驻的「打开」按钮，所以这里不靠下划线暗示可点性 */
-.proj-open{
-  padding:0;margin:0;border:0;background:none;font:inherit;font-size:13px;
-  font-weight:600;color:var(--ink);text-align:left;cursor:pointer;letter-spacing:-.01em;
-}
-.proj-open:hover{color:var(--accent)}
-.proj-open:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring);border-radius:4px}
+/* 整行就是一个可聚焦的选择控件：Tab 到行上按 Enter 或空格＝切当前项目。
+   焦点环画在行内圈（outline-offset 负值），不然会被表格边框切掉半圈 */
+#proj-rows tr:focus-visible{outline:2px solid var(--ring);outline-offset:-2px}
 .chip.now{margin-left:6px;padding:0 6px;font-size:10px}
 .proj-main{min-width:210px}
 .tagcell{min-width:130px}
@@ -591,7 +586,7 @@ td.key-cell code{font-family:var(--mono);font-size:11px}
 .proj-activity{min-width:140px;font-size:11.5px;color:var(--ink-2);white-space:nowrap}
 .proj-activity span{display:block;line-height:1.55}
 .proj-actions{white-space:nowrap}
-.more-wrap{position:relative;display:inline-block;margin-left:6px}
+.more-wrap{position:relative;display:inline-block}
 .more{min-width:30px;padding-left:0;padding-right:0}
 
 /* 行内"更多"菜单：fixed 浮层。放进单元格会被 .table-wrap 的 overflow 裁掉 */
