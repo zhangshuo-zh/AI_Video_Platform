@@ -39,13 +39,15 @@ BILLABLE_LABELS: dict[str, str] = {
     "not_billable": "不计费",
 }
 
-# 一条"能用"的结论凭什么成立。四类互不升级——外部评审点名的就是这一刀：
-# mock 跑通不等于真实供应商可用，环境齐备不等于真产出过文件。
+# 一条"能用"的结论凭什么成立。五类互不升级——外部评审点名的就是这一刀：
+# mock 跑通不等于真实供应商可用，环境齐备不等于真产出过文件，
+# 真实调用成功也只证明"链路产出过"，文件好不好要人看过（产物验收）才算数。
 VALIDATION_KINDS: dict[str, str] = {
     "env_check": "环境检查",
     "mock": "假适配器",
     "real_call": "真实调用",
     "target_machine": "目标机基准",
+    "artifact_review": "产物验收",
 }
 
 # 错误码 → 人话分类。不追求穷尽：没登记的原样显示，至少不会把未知伪装成已知。
@@ -660,13 +662,18 @@ class JobRetryPreviewOut(BaseModel):
 
 
 class ValidationIn(BaseModel):
-    """主动记一次验证。`real_call` 必须带 job_id——真调用的凭据就是那条作业。"""
+    """主动记一次验证。`real_call` 必须带 job_id——真调用的凭据就是那条作业。
+
+    `artifact_review` 额外要求 `passed`：这一档记的是人看过产物之后的结论，
+    通过与否必须明说，服务端不猜、界面不默认。
+    """
     capability: Literal["text", "image", "video", "tts", "music"]
     backend: Literal["local", "cloud"]
     provider: str = Field(default="", max_length=40)
     model: str = Field(default="", max_length=120)
-    kind: Literal["env_check", "mock", "real_call", "target_machine"]
+    kind: Literal["env_check", "mock", "real_call", "target_machine", "artifact_review"]
     job_id: int | None = None
+    passed: bool | None = None          # 只有 artifact_review 用：True=通过，False=不通过
     paid_confirmed: bool = False
     detail: str = Field(default="", max_length=500)
 

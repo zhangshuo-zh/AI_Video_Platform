@@ -149,7 +149,8 @@ def record_job_validation(job_id: int, payload: ValidationIn,
     if payload.kind == "env_check":
         raise HTTPException(status_code=422, detail="环境检查不走作业，请用「环境检查」按钮")
     try:
-        result = validations.from_job(job_id, payload.kind, user["id"], payload.detail)
+        result = validations.from_job(job_id, payload.kind, user["id"], payload.detail,
+                                      passed=payload.passed)
     except validations.ValidationInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ValidationOut.from_row(result["validation"])

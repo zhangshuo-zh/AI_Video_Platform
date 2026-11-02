@@ -27,17 +27,20 @@ const HEALTH = {
 };
 
 // P0：验证出处与健康是两件事。健康只回答"环境齐不齐"，验证回答"凭什么认为真能产出"。
-// 这枚标签按可信度从高到低取第一个 ok：目标机 > 真实调用 > 模拟 > 环境检查。
-// 环境检查通过永远不能冒充真实调用——那正是外部评审点名的口径事故。
+// 这枚标签按可信度从高到低取第一个 ok：目标机 > 产物验收 > 真实调用 > 模拟 > 环境检查。
+// 产物验收比真实调用多一道人眼，所以排更高；环境检查通过永远不能冒充真实调用——
+// 那正是外部评审点名的口径事故。
 const VAL_BADGE = {
   target_machine: ['green', '目标机已验证'],
+  artifact_review: ['green', '产物验收通过'],
   real_call: ['green', '真实调用已验证'],
   mock: ['amber', '仅模拟验证'],
   env_check: ['blue', '仅环境检查'],
   never: ['gray', '未验证'],
 };
 const VAL_KIND_LABEL = {
-  env_check: '环境检查', mock: '模拟', real_call: '真实调用', target_machine: '目标机基准',
+  env_check: '环境检查', mock: '模拟', real_call: '真实调用',
+  target_machine: '目标机基准', artifact_review: '产物验收',
 };
 const VAL_STATE = {
   ok: ['green', '通过'], missing: ['red', '缺东西'], unknown: ['amber', '未检查'],
@@ -46,7 +49,7 @@ const VAL_STATE = {
 };
 
 function badgeOf(v) {
-  for (const kind of ['target_machine', 'real_call', 'mock', 'env_check']) {
+  for (const kind of ['target_machine', 'artifact_review', 'real_call', 'mock', 'env_check']) {
     if ((v?.[kind] || {}).state === 'ok') return kind;
   }
   return 'never';
@@ -116,12 +119,12 @@ function healthCell(health) {
 }
 
 // 验证列：一枚出处标签 + 生产可用判定 + 两个常驻可见的入口。
-// "生产可用"只认服务端口径（环境齐 + 真实调用过），界面不自己拼这个结论。
+// "生产可用"只认服务端口径（环境齐 + 真实调用过 + 产物验收通过），界面不自己拼这个结论。
 function validationCell(r) {
   const v = r.validation || {};
   const kind = badgeOf(v);
   const [tone, label] = VAL_BADGE[kind];
-  const tip = ['env_check', 'mock', 'real_call', 'target_machine'].map((k) => {
+  const tip = ['env_check', 'mock', 'real_call', 'target_machine', 'artifact_review'].map((k) => {
     const item = v[k] || {};
     const st = (VAL_STATE[item.state] || ['', item.state || '没有记录'])[1];
     return `${VAL_KIND_LABEL[k]}：${st}${item.at ? '（' + String(item.at).slice(5, 16) + '）' : ''}`;
@@ -259,8 +262,9 @@ export default {
           </p>
           <p class="note">
             <b>验证与健康不是一回事</b>：健康只说环境齐不齐；「验证」列说这一档凭什么被认为真能产出。
-            环境检查不发请求、不加载权重，永远不能替代真实调用；真实调用与目标机基准都要从一条
-            <b>已成功</b>的作业登记，假适配器的成功记不成真实调用。「生产可用」＝环境齐＋真实调用过，由服务端判定。
+            环境检查不发请求、不加载权重，永远不能替代真实调用；真实调用、目标机基准与产物验收都要从一条
+            <b>已成功</b>的作业登记，假适配器的成功记不成真实调用。真实调用成功只说明链路产出过文件，
+            文件好不好要人看过——产物验收通过才算数。「生产可用」＝环境齐＋真实调用过＋产物验收通过，由服务端判定。
           </p>
         </div>
       </div>
@@ -278,7 +282,13 @@ export default {
               <select id="val-kind" class="ctl">
                 <option value="real_call">真实调用</option>
                 <option value="target_machine">目标机基准</option>
+                <option value="artifact_review">产物验收（人工看片）</option>
                 <option value="mock">模拟（假适配器）</option>
+              </select>
+              <label for="val-passed" id="val-passed-label">验收结论</label>
+              <select id="val-passed" class="ctl">
+                <option value="pass">通过</option>
+                <option value="fail">不通过</option>
               </select>
               <label for="val-detail">说明</label>
               <input id="val-detail" class="ctl" maxlength="500"
@@ -286,8 +296,8 @@ export default {
               <span class="pf-label"></span>
               <label class="pf-check"><input type="checkbox" id="val-paid"> 云端调用已确认计费</label>
             </div>
-            <p class="modal-meta">真实调用与目标机基准都读一条已成功的作业；云端真实调用必须先有计费确认。
-              环境检查请用列表里的「环境检查」按钮，不走这里。</p>
+            <p class="modal-meta">真实调用、目标机基准与产物验收都读一条已成功的作业；云端调用必须先有计费确认。
+              产物验收记的是人看过文件后的结论，通过与否必须明说。环境检查请用列表里的「环境检查」按钮，不走这里。</p>
             <p class="modal-err" id="val-error"></p>
             <h3 class="drawer-h">最近记录</h3>
             <div id="val-list"><p class="hint">正在读验证历史……</p></div>
@@ -407,7 +417,7 @@ export default {
     }
 
     function summaryHtml(v) {
-      const kinds = ['env_check', 'mock', 'real_call', 'target_machine'];
+      const kinds = ['env_check', 'mock', 'real_call', 'target_machine', 'artifact_review'];
       const rows = kinds.map((k) => {
         const item = v?.[k] || {};
         const at = item.at ? String(item.at).slice(0, 16) : '—';
@@ -423,7 +433,7 @@ export default {
       const target = v?.target_machine_ready ? '<span class="chip green">目标机已验证</span>' : '';
       return `<div class="kv-grid">${rows}</div>
         <p class="modal-meta">${ready} ${target}
-          <span class="hint">生产可用＝环境齐＋真实调用过，由服务端判定；界面不自己拼。</span></p>`;
+          <span class="hint">生产可用＝环境齐＋真实调用过＋产物验收通过，由服务端判定；界面不自己拼。</span></p>`;
     }
 
     function valListHtml(records) {
@@ -451,6 +461,7 @@ export default {
       root.querySelector('#val-detail').value = '';
       root.querySelector('#val-paid').checked = false;
       root.querySelector('#val-error').textContent = '';
+      syncPassedRow();
       root.querySelector('#val-list').innerHTML = '<p class="hint">正在读验证历史……</p>';
       try {
         const all = await api.providerValidations(100);
@@ -466,6 +477,14 @@ export default {
 
     function closeValModal() { valModal.hidden = true; valSlot = null; }
 
+    // 「验收结论」只在产物验收这一档出现：别的档记的是事实（作业成功），
+    // 产物验收记的是人的判断，通过与否必须显式给，不能藏在默认值里。
+    function syncPassedRow() {
+      const isReview = root.querySelector('#val-kind').value === 'artifact_review';
+      root.querySelector('#val-passed-label').hidden = !isReview;
+      root.querySelector('#val-passed').hidden = !isReview;
+    }
+
     async function submitValidation() {
       const errEl = root.querySelector('#val-error');
       errEl.textContent = '';
@@ -480,6 +499,9 @@ export default {
         paid_confirmed: root.querySelector('#val-paid').checked,
         detail: root.querySelector('#val-detail').value.trim(),
       };
+      if (kind === 'artifact_review') {
+        body.passed = root.querySelector('#val-passed').value === 'pass';
+      }
       const btn = root.querySelector('#val-submit');
       btn.disabled = true;
       try {
@@ -528,6 +550,7 @@ export default {
     bindValidationActions(root);
     root.querySelector('#val-close').addEventListener('click', closeValModal);
     root.querySelector('#val-submit').addEventListener('click', submitValidation);
+    root.querySelector('#val-kind').addEventListener('change', syncPassedRow);
     valModal.addEventListener('click', (e) => { if (e.target === valModal) closeValModal(); });
     bindModalDismiss(valModal, closeValModal);
   },

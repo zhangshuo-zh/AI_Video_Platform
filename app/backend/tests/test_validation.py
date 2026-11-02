@@ -5,7 +5,9 @@
 - 环境检查（env_check）通过，永远不能把 real_call 那一格点亮；
 - mock 跑绿一次，不能记成真实调用——否则测试环境的绿会冒充生产可用；
 - 真实调用必须有一条成功作业 + 一份读得到的产物做凭据；
-- "生产可用"只由服务端按 环境齐 ∧ 真调用过 算出来，界面不自己拼。
+- 产物验收（artifact_review）记的是人看过文件后的结论，通过与否必须明说，
+  不通过也算一条记录（state=failed），但不能因此把生产可用点亮；
+- "生产可用"只由服务端按 环境齐 ∧ 真调用过 ∧ 产物验收通过 算出来，界面不自己拼。
 
 这些用例都不打真供应商、不加载权重：真实调用凭据用一条本地成功作业 + 落盘产物，
 环境检查的结论复用 adapters.health()，是什么就是什么，不替它美化。
@@ -65,6 +67,10 @@ def test_mock_成功不能记成真实调用(fresh_project, clean_queue):
     with pytest.raises(validations.ValidationInvalid) as exc:
         validations.from_job(job["id"], "real_call", created_by=None)
     assert "假适配器" in str(exc.value)
+    # 产物验收同一条规矩：假适配器跑出的文件再好看，也不是真模型产出
+    with pytest.raises(validations.ValidationInvalid) as exc:
+        validations.from_job(job["id"], "artifact_review", created_by=None, passed=True)
+    assert "假适配器" in str(exc.value)
 
 
 def test_真实作业产物不可读时拒记(fresh_project, clean_queue):
@@ -107,8 +113,8 @@ def test_云端真实调用要先有计费确认(fresh_project, clean_queue):
     assert ok["validation"]["paid_confirmed"] == 1
 
 
-def test_生产可用要环境齐且真调用过():
-    """直接喂两条同槽位记录，验服务端口径，不依赖本机健康结论。"""
+def test_生产可用要环境齐且真调用过且产物验收通过():
+    """直接喂同槽位记录，验服务端口径的阶梯：三档齐了才算，缺一档都不行。"""
     slot = {"capability": "image", "backend": "local", "provider": "mflux"}
     val_repo.record({**slot, "model": "m", "kind": "env_check", "state": "ok"})
     summary = validations.summary_for(slot)
@@ -117,14 +123,78 @@ def test_生产可用要环境齐且真调用过():
 
     val_repo.record({**slot, "model": "m", "kind": "real_call", "state": "ok"})
     summary = validations.summary_for(slot)
-    assert summary["production_ready"] is True
+    # 环境齐＋真调用过还不够：链路产出过文件不等于文件被人看过
+    assert summary["production_ready"] is False
     assert validations.badge(summary)[0] == "real_call"
+
+    val_repo.record({**slot, "model": "m", "kind": "artifact_review", "state": "ok"})
+    summary = validations.summary_for(slot)
+    assert summary["production_ready"] is True
+    # 徽章按可信度从高到低：产物验收比真实调用多一道人眼
+    assert validations.badge(summary)[0] == "artifact_review"
 
     val_repo.record({**slot, "model": "m", "kind": "target_machine", "state": "ok"})
     summary = validations.summary_for(slot)
     assert summary["target_machine_ready"] is True
-    # 徽章按可信度从高到低：目标机 > 真实调用
+    # 目标机基准仍是最高档
     assert validations.badge(summary)[0] == "target_machine"
+
+
+def test_产物验收必须有明确结论(fresh_project, clean_queue):
+    """passed 没给就拒记：这一档记的是人的判断，服务端不猜、不默认。"""
+    pid = fresh_project("editor")
+    job = _succeeded_job(pid, artifact=b"to-be-reviewed")
+    with pytest.raises(validations.ValidationInvalid) as exc:
+        validations.from_job(job["id"], "artifact_review", created_by=None)
+    assert "必须给出结论" in str(exc.value)
+
+
+def test_产物验收不通过也留痕且不点亮生产可用(fresh_project, clean_queue):
+    pid = fresh_project("editor")
+    slot = provider_repo.slot("video", "local")
+    # 三条记录都必须落在 slot 的 provider 上（默认种子是空串），summary 才能对上号
+    prov = slot["provider"]
+    job = _succeeded_job(pid, artifact=b"broken-frames", provider=prov)
+    # 先把三档铺垫齐，再记一次"不通过"，看生产可用是否被错误点亮
+    val_repo.record({"capability": "video", "backend": "local",
+                     "provider": prov, "model": "fastmetal-1.3b-qad",
+                     "kind": "env_check", "state": "ok"})
+    val_repo.record({"capability": "video", "backend": "local",
+                     "provider": prov, "model": "fastmetal-1.3b-qad",
+                     "kind": "real_call", "state": "ok"})
+    rec = validations.from_job(job["id"], "artifact_review", created_by=None,
+                               passed=False, detail="花屏")["validation"]
+    assert rec["kind"] == "artifact_review" and rec["state"] == "failed"
+    assert rec["job_id"] == job["id"]
+    assert "花屏" in rec["detail"]
+    summary = validations.summary_for(slot)
+    assert summary["artifact_review"]["state"] == "failed"
+    assert summary["production_ready"] is False
+    # 不通过也算一次验收：徽章仍回落到真实调用那一档
+    assert validations.badge(summary)[0] == "real_call"
+    # 人再验一次通过了，最新记录说话，生产可用才点亮
+    job2 = _succeeded_job(pid, artifact=b"fixed-frames", provider=prov)
+    ok = validations.from_job(job2["id"], "artifact_review", created_by=None,
+                              passed=True)["validation"]
+    assert ok["state"] == "ok"
+    summary = validations.summary_for(slot)
+    assert summary["production_ready"] is True
+
+
+def test_产物验收要产物可读且云端要先确认计费(fresh_project, clean_queue):
+    pid = fresh_project("editor")
+    # 产物不在盘上：链路产出过的证据都没了，人眼验的是哪个文件？
+    job = _succeeded_job(pid, artifact=None)
+    with pytest.raises(validations.ValidationInvalid) as exc:
+        validations.from_job(job["id"], "artifact_review", created_by=None, passed=True)
+    assert "产物文件已不可读" in str(exc.value)
+    # 云端作业没确认计费：与真实调用同一条规矩
+    cloud = _succeeded_job(pid, capability="text", execution_mode="cloud",
+                           provider="deepseek", model="deepseek-flash",
+                           artifact=b"cloud-text", confirmed_cloud=False)
+    with pytest.raises(validations.ValidationInvalid) as exc:
+        validations.from_job(cloud["id"], "artifact_review", created_by=None, passed=True)
+    assert "计费确认" in str(exc.value)
 
 
 def test_mock_徽章永远排在真实调用之下():
@@ -133,7 +203,7 @@ def test_mock_徽章永远排在真实调用之下():
     val_repo.record({**slot, "model": "m", "kind": "real_call", "state": "ok"})
     summary = validations.summary_for(slot)
     assert validations.badge(summary)[0] == "real_call"
-    # mock 通过也不等于生产可用（还缺环境检查）
+    # mock 通过也不等于生产可用（还缺环境检查和产物验收）
     assert summary["production_ready"] is False
 
 
@@ -164,6 +234,15 @@ def test_validate_job_入口不收_env_check(as_role, seeded):
                json={"capability": "video", "backend": "local", "kind": "env_check"})
     assert r.status_code == 422
     assert "环境检查不走作业" in r.json()["detail"]
+
+
+def test_validate_job_入口产物验收必须有结论(as_role, seeded):
+    """接口层也不许漏传 passed：body 里没有就是没有，服务端不补默认值。"""
+    c = as_role("admin")
+    r = c.post(f"/api/providers/validate-job/{seeded['job_id']}",
+               json={"capability": "video", "backend": "local", "kind": "artifact_review"})
+    assert r.status_code == 422
+    assert "必须给出结论" in r.json()["detail"]
 
 
 def test_环境检查接口留痕且不带密钥值(as_role, provider_state, monkeypatch):

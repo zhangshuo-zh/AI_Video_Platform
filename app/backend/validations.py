@@ -57,31 +57,36 @@ def _artifact_digest(job) -> tuple[str, int | None]:
 
 
 def from_job(job_id: int, kind: str, created_by: int | None,
-             detail: str = "") -> dict:
+             detail: str = "", passed: bool | None = None) -> dict:
     """把一条跑完的作业登记成该槽位的验证记录。
 
     `real_call` 与 `target_machine` 都走这里：前者证明"这条链路真的产出过文件"，
     后者还需要人在界面上确认"跑的就是目标机"（本模块不猜机器）。
+    `artifact_review` 是第五档——产物验收：链路产出过不等于产出得好，
+    必须有人看过文件并给出通过／不通过的结论，`passed` 必须明说，服务端不猜。
     """
-    if kind not in ("mock", "real_call", "target_machine"):
+    if kind not in ("mock", "real_call", "target_machine", "artifact_review"):
         raise ValidationInvalid(f"不能从作业记成「{kind}」")
+    if kind == "artifact_review" and passed is None:
+        # 请求本身的形状问题先于作业状态判定：结论没给，看哪条作业都不成立
+        raise ValidationInvalid("产物验收必须给出结论：通过还是不通过")
     job = job_repo.get(job_id)
     if job is None:
         raise ValidationInvalid("这条作业不存在或已删除")
     if job["status"] != "succeeded":
         raise ValidationInvalid("只有成功的作业能作为验证凭据")
     is_mock = job["execution_mode"] == "mock" or job["provider_code"] == "mock"
-    if kind == "real_call" and is_mock:
-        raise ValidationInvalid("假适配器的成功不能记成真实调用")
+    if kind in ("real_call", "artifact_review") and is_mock:
+        raise ValidationInvalid("假适配器的成功不能记成真实调用／产物验收")
     if kind == "mock" and not is_mock:
         raise ValidationInvalid("这条作业不是假适配器跑的；要记真实调用请选「真实调用」")
-    if kind in ("real_call", "target_machine") and job["execution_mode"] == "cloud" \
-            and not job["user_confirmed_cloud"]:
-        raise ValidationInvalid("云端真实调用必须先有计费确认记录")
+    if kind in ("real_call", "target_machine", "artifact_review") \
+            and job["execution_mode"] == "cloud" and not job["user_confirmed_cloud"]:
+        raise ValidationInvalid("云端调用必须先有计费确认记录")
 
     sha, size = _artifact_digest(job)
-    if kind in ("real_call", "target_machine") and not sha:
-        raise ValidationInvalid("产物文件已不可读，不能记成真实调用")
+    if kind in ("real_call", "target_machine", "artifact_review") and not sha:
+        raise ValidationInvalid("产物文件已不可读，不能记成真实调用／产物验收")
 
     resources = {}
     try:
@@ -98,11 +103,16 @@ def from_job(job_id: int, kind: str, created_by: int | None,
         "artifact_sha256_present": bool(sha),
         "execution_mode": job["execution_mode"],
     }
+    # 产物验收的 state 记的是人的结论：通过＝ok，不通过＝failed。
+    # 其余三档本来就是"作业成功"这条事实的凭据，一律 ok。
+    state = ("ok" if passed else "failed") if kind == "artifact_review" else "ok"
+    if kind == "artifact_review" and not detail:
+        detail = "产物人工验收通过。" if passed else "产物人工验收不通过。"
     row = repo.record({
         "capability": job["capability"], "backend": job["execution_mode"],
         "provider": job["provider_code"], "model": job["model_code"],
         "adapter_code": adapter.code if adapter else job["provider_code"],
-        "manifest_version": job["adapter_version"], "kind": kind, "state": "ok",
+        "manifest_version": job["adapter_version"], "kind": kind, "state": state,
         "detail": detail or f"作业 #{job['id']} 成功，产物校验通过。",
         "checks": checks,
         "params": json_loads(job["params_json"]),
@@ -155,7 +165,7 @@ def _first_path(job) -> str:
 
 
 def summary_for(row) -> dict:
-    """某一槽位的四类 provenance 摘要。界面按这个决定敢不敢说"生产可用"。"""
+    """某一槽位的五类 provenance 摘要。界面按这个决定敢不敢说"生产可用"。"""
     latest = repo.latest_by_kind(row["capability"], row["backend"], row["provider"])
 
     def brief(kind: str) -> dict:
@@ -166,9 +176,11 @@ def summary_for(row) -> dict:
                 "detail": rec["detail"], "job_id": rec["job_id"]}
 
     out = {kind: brief(kind) for kind in KIND_LABELS}
-    # 生产可用的唯一口径：环境齐 + 真调用过。目标机基准没跑就是没跑，不猜。
+    # 生产可用的唯一口径：环境齐＋真实调用过＋产物验收通过。
+    # 目标机基准没跑就是没跑，不猜；产物没验过也不能顶上。
     out["production_ready"] = (out["env_check"]["state"] == "ok"
-                               and out["real_call"]["state"] == "ok")
+                               and out["real_call"]["state"] == "ok"
+                               and out["artifact_review"]["state"] == "ok")
     out["target_machine_ready"] = out["target_machine"]["state"] == "ok"
     return out
 
@@ -176,9 +188,10 @@ def summary_for(row) -> dict:
 def badge(summary: dict) -> tuple[str, str]:
     """给界面的一枚标签：(state, at)。
 
-    顺序就是可信度顺序，**从高到低**；环境检查永远不能冒充真实调用。
+    顺序就是可信度顺序，**从高到低**；产物验收比真实调用多一道人眼，
+    所以排更高；环境检查永远不能冒充真实调用。
     """
-    for kind in ("target_machine", "real_call", "mock", "env_check"):
+    for kind in ("target_machine", "artifact_review", "real_call", "mock", "env_check"):
         item = summary.get(kind) or {}
         if item.get("state") == "ok":
             return kind, item.get("at") or ""

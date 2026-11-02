@@ -68,9 +68,9 @@ class ValidationRepository:
 
     def latest_by_kind(self, capability: str, backend: str,
                        provider: str) -> dict[str, sqlite3.Row]:
-        """一次取回四类各自的最新记录。槽位健康那一列要同时用四档，逐类查会打四次。"""
+        """一次取回五类各自的最新记录。槽位健康那一列要同时用五档，逐类查会打五次。"""
         out: dict[str, sqlite3.Row] = {}
-        for kind in ("env_check", "mock", "real_call", "target_machine"):
+        for kind in ("env_check", "mock", "real_call", "target_machine", "artifact_review"):
             row = self.latest(capability, backend, provider, kind)
             if row is not None:
                 out[kind] = row

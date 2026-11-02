@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>黄金样例与故障演练</title>
+<style>
+:root {
+  --ink: #1d1d1f;
+  --muted: #5f6673;
+  --line: rgba(0,0,0,.12);
+  --bg: #f5f5f7;
+  --card: rgba(255,255,255,.92);
+  --code: #f0f2f5;
+  --accent: #2453cf;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--bg);
+  font: 15px/1.72 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main {
+  max-width: 1080px;
+  margin: 32px auto 72px;
+  padding: 44px 56px 64px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 14px 38px rgba(0,0,0,.08);
+}
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin: -24px 0 32px;
+}
+h1 { font-size: 34px; line-height: 1.25; margin: 0 0 18px; letter-spacing: -.02em; }
+h2 { font-size: 26px; margin: 42px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 21px; margin: 32px 0 12px; }
+h4 { font-size: 17px; margin: 24px 0 10px; }
+p, ul, ol { margin: 0 0 16px; }
+ul, ol { padding-left: 26px; }
+li { margin: 7px 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--code);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: .92em;
+}
+pre {
+  overflow: auto;
+  padding: 18px;
+  border-radius: 12px;
+  background: #17181b;
+  color: #f2f3f5;
+}
+pre code { padding: 0; background: transparent; color: inherit; }
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 18px auto 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.08);
+}
+.table-wrap { overflow-x: auto; margin: 18px 0 24px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 10px 12px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+th { background: #ececf0; font-weight: 650; white-space: nowrap; }
+tbody tr:nth-child(even) { background: rgba(0,0,0,.018); }
+hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+footer {
+  max-width: 1080px;
+  margin: -48px auto 40px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+@media print {
+  body { background: #fff; }
+  main { margin: 0; border: 0; box-shadow: none; border-radius: 0; }
+  img { break-inside: avoid; }
+  table { break-inside: avoid; }
+}
+@media (max-width: 720px) {
+  main { margin: 0; padding: 28px 20px 44px; border-radius: 0; }
+  h1 { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+<main>
+<h1>黄金样例与故障演练</h1>
+<p>版本：v1.0（2026-11-02）｜对应平台版本：v0.75＋阶段 1（迁移 0022） 适用：AI 视频生产平台（<code>平台设计/app/</code>）</p>
+<h2>修订记录</h2>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>版本</th><th>改动</th></tr></thead><tbody><tr><td>2026-11-02</td><td>v1.0</td><td>按《最新建设文档评审与优化实施方案》阶段 1 建：黄金样例包＋八步手册、七条 Job 故障演练实测、备份恢复演练实测、付费项列为人工步骤</td></tr></tbody></table></div>
+<h2>1. 黄金样例</h2>
+<h3>1.1 样例包</h3>
+<p>每次发布后按这一套东西原样跑一遍，跑通了才算发布完成。内容是原创的微型故事，只有三镜，本地预览档几分钟内能跑完。</p>
+<p><strong>剧本</strong>（创作中心 → 文档，约 300 字，保存后记录 Git 版本号）：</p>
+<p>&gt; 《修伞匠》 &gt; 雨下了三天。巷口的老人还坐在他的摊子后头，面前摆着三把断伞。 &gt; 镜一：雨巷全景。青石板反着光，修伞摊缩在屋檐下，老人戴着老花镜低头理伞骨。 &gt; 镜二：手部特写。粗糙的手指捏着细伞骨，铁丝在指间绕了两圈，收紧。 &gt; 镜三：中景。少女把一把修好的伞递回来，老人接伞，抬头笑了一下。雨还在下。</p>
+<p><strong>资产</strong>（资产中心，2 项）：</p>
+<div class="table-wrap"><table><thead><tr><th>资产</th><th>类型</th><th>说明</th></tr></thead><tbody><tr><td>修伞老人</td><td>角色</td><td>参考图 1 张；一致性提示词：蓝布围裙、老花镜、灰白短发</td></tr><tr><td>雨巷</td><td>场景</td><td>参考图 1 张；一致性提示词：江南小巷、青石板、屋檐滴水</td></tr></tbody></table></div>
+<p><strong>镜头表</strong>（创作中心 → 分镜，3 条，都关联上面两个资产）：</p>
+<div class="table-wrap"><table><thead><tr><th>镜号</th><th>景别</th><th>生成档</th><th>提示词要点</th></tr></thead><tbody><tr><td>1</td><td>全景</td><td>本地预览（FastMetal 1.3B）</td><td>雨巷、修伞摊、屋檐，参考图＝雨巷</td></tr><tr><td>2</td><td>特写</td><td>本地预览（FastMetal 1.3B）</td><td>手部、伞骨、铁丝，参考图＝修伞老人</td></tr><tr><td>3</td><td>中景</td><td>本地预览（FastMetal 1.3B）</td><td>递伞、接伞、笑，参考图＝修伞老人＋雨巷</td></tr></tbody></table></div>
+<h3>1.2 八步执行手册</h3>
+<ol><li><strong>建项目与剧本</strong>：项目中心新建项目 → 创作中心建文档《修伞匠·剧本》，粘贴 1.1 的剧本并保存。记录文档版本（Git commit 号）。</li><li><strong>抽取</strong>：创作页对该文档发起文本抽取 → 抽出候选后逐条看原文证据，人工确认。当前版本不会自动把抽取结果变成正式分镜，确认后仍要手工建镜头。</li><li><strong>建资产与镜头</strong>：资产中心建 2 项资产并传参考图 → 创作中心建 3 条镜头，关联资产。逐条检查提示词和参考图是否对得上。</li><li><strong>提交生成</strong>：生成中心选本地预览档提交。提交前确认路由、参数快照、费用提示；本地不花钱，云端档必须逐次勾计费确认。</li><li><strong>查产物</strong>：作业抽屉看产物文件、大小、时长、分辨率与 sha256；确认产物挂在对的镜头上。看不过眼的进「验证记录」登记产物验收结论。</li><li><strong>音频</strong>：配音/音乐三个运行时（VoxCPM2、ACE-Step、口型对齐）装好之前，界面显示未验证就是未验证，不在样例里假装跑过。装好后这一步补真实调用。</li><li><strong>审核与导出</strong>：审核中心过 gate 报告 → 人工签字 → 项目看板导出镜头清单。</li><li><strong>备份恢复</strong>：按 §2.3 的三条命令做一次备份 → 校验 → 恢复到临时目录，确认项目、文档 Git 历史、Job 和产物引用都还在。</li></ol>
+<h3>1.3 验收标准</h3>
+<p>每个结果都要能一路追溯到：输入文档版本 → 镜头 → 资产 → 模型档 → 参数快照 → Job → 费用 → 审核结论。任何一步失败，要能说出失败发生在哪一步。八步全部留下记录，这套记录就是这次发布可以复现的证据。</p>
+<h2>2. 故障演练记录</h2>
+<h3>2.1 演练方式与证据分级</h3>
+<p>演练脚本在 <code>tools/fault_drill.py</code>，一条命令重放全部七条，只打临时库、不打真供应商、不花一分钱：</p>
+<pre><code class="language-bash">app/backend/.venv/bin/python tools/fault_drill.py</code></pre>
+<p>证据分三档，本表只用这三档说话：<strong>实测</strong>＝本日在真实代码路径上跑出来的输出；<strong>测试证据</strong>＝pytest 里钉住同一语义的用例；<strong>人工步骤</strong>＝要花钱、要真机或要真账单，平台不代跑、也不许伪造。</p>
+<h3>2.2 七条演练结果（实测 2026-11-02）</h3>
+<div class="table-wrap"><table><thead><tr><th>#</th><th>演练</th><th>结论</th><th>观测</th></tr></thead><tbody><tr><td>1</td><td>本地任务运行中 worker 被强制终止，重启后租约恢复</td><td>通过</td><td>租约未过期时 <code>recover_stale</code> 返回全 0，不误伤；租约过期后收成 <code>failed(worker_lost)</code>，可重试</td></tr><tr><td>2</td><td>云端已取得请求 ID、本地租约过期</td><td>通过</td><td>收成 <code>needs_attention</code> 而不是 failed；成本快照与 <code>pending_reconciliation</code> 原样保留，系统不会替人再打一次供应商</td></tr><tr><td>3</td><td>云端结果未知、账单未确认</td><td>通过</td><td>不给实际金额的核对被拒（409「确认结果前必须填实际金额」）；核对成功后 <code>actual_cost_micros=12345</code> 入账、预估 <code>cost_micros=16000</code> 不被改写</td></tr><tr><td>4</td><td>产物路径存在但文件为空/损坏</td><td>通过</td><td>空文件被拒「产物是空的：empty.mp4」；乱字节被拒「不是可识别的 video 文件」；正常 ISO-BMFF 头放行</td></tr><tr><td>5</td><td>重试前看预览、重试不覆盖历史</td><td>通过</td><td>预览返回链上合计 16000 微元、1 笔待核对、<code>may_charge_again=True</code> 及警告文案；重试落成新行（<code>retry_of=#4</code>），原行状态、错误、成本、产物路径一个字段没动</td></tr><tr><td>6</td><td>重复点击提交</td><td>通过</td><td>同一幂等键第二次回 200、作业号不变，库里该键只有 1 行</td></tr><tr><td>7</td><td>worker 离线、队列积压、待核对告警</td><td>通过</td><td>心跳拨老后 <code>online=False、queued=4</code>，告警 <code>worker_offline</code>（含启动命令提示）；报警后排队的作业仍是 queued，没有被悄悄重试或判失败</td></tr></tbody></table></div>
+<p>同一语义在 pytest 里有常驻回归：<code>tests/test_attention.py</code>（18 项，含 <code>needs_attention</code> 告警码）、<code>tests/test_jobs.py</code>（队列语义与恢复）。</p>
+<h3>2.3 备份恢复演练（实测 2026-11-02）</h3>
+<pre><code class="language-bash">cd app/backend
+.venv/bin/python -m backup create /tmp/fv-restore-drill/bk     # 备份（对源只读）
+.venv/bin/python -m backup verify  /tmp/fv-restore-drill/bk    # 校验
+FASTVIDEO_DB=&lt;临时目录&gt;/platform.db FASTVIDEO_FILES=… FASTVIDEO_JOBS=… \
+  FASTVIDEO_WORKSPACE=… .venv/bin/python -m backup restore /tmp/fv-restore-drill/bk --yes</code></pre>
+<p>观测：备份含库＋workspace 219 个文件＋jobs 33 个文件；校验报告 <code>schema 21，integrity ok，外键 ok</code>；恢复进临时目录后 <code>schema=21、表=27（含 schema_version）、job=13、model_validation=6</code>，与源库一致，恢复前的旧数据自动另存为 safety 目录。正式环境恢复仍必须对着真库做一次（人工步骤），演练不代替它。</p>
+<h3>2.4 两个状态不是一回事</h3>
+<p><code>job.status=needs_attention</code> 说的是<strong>作业</strong>需要人处理；<code>billable_status=pending_reconciliation</code> 说的是<strong>费用</strong>待核对。云端作业可以同时占这两个标记，也可以只占后者（比如回执成功但账单没核对）。演练 2、3 的输出把这条界线跑实了：挂待核对时费用快照不动，核对时实际金额单独入账。</p>
+<p>现库事实（2026-11-02 只读盘点）：job 共 13 条（succeeded 11、failed 2）；其中 #37、#38、#39 三条云端文本作业 <code>succeeded</code> 且 <code>pending_reconciliation</code>——这正是评审说的"预估金额不能当实际费用"的活样本，要等人在 DeepSeek 后台对出真实账单后走核对，平台不自动消掉它们。</p>
+<h3>2.5 人工步骤（阻塞项，平台不代跑）</h3>
+<div class="table-wrap"><table><thead><tr><th>事项</th><th>为什么必须人工</th><th>解除条件</th></tr></thead><tbody><tr><td>云端视频真调用演练</td><td>花钱，每次调用要操作者确认预算与费用上限</td><td>确认阿里云 Wan 档位后跑一条，登记 real_call</td></tr><tr><td>三笔云端文本账单核对（#37–#39）</td><td>实际金额只存在于供应商后台，平台不猜</td><td>DeepSeek 控制台对账 → 生成中心核对 → 登记 real_call</td></tr><tr><td>音频三运行时真调用</td><td>运行时未装齐，装了才算</td><td>VoxCPM2/ACE-Step/口型对齐装好并健康检查通过</td></tr><tr><td>M5 Ultra 目标机基准</td><td>目标机未到货，查无记录就显示 UNKNOWN，不填推算值</td><td>机器到货后跑 §1.2 八步＋目标机档验证</td></tr><tr><td>正式库上的完整恢复</td><td>演练恢复进的是临时目录，正式恢复会覆盖 data/</td><td>定维护窗口，备份→verify→restore --yes→重启验证</td></tr></tbody></table></div>
+</main>
+<footer>由 <code>tools/build_doc_html.py</code> 生成 · 源文件：黄金样例与故障演练.md · 图片已内嵌，单文件可直接分发</footer>
+</body>
+</html>
