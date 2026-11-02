@@ -574,6 +574,20 @@ td.key-cell code{font-family:var(--mono);font-size:11px}
    焦点环画在行内圈（outline-offset 负值），不然会被表格边框切掉半圈 */
 #proj-rows tr:focus-visible{outline:2px solid var(--ring);outline-offset:-2px}
 .chip.now{margin-left:6px;padding:0 6px;font-size:10px}
+
+/* 协作人弹窗：三行同一个骨架（字段名在左、控件列在右），
+   两行「下拉＋按钮」宽度对齐；按钮统一次级描边＋红字，
+   实心红留给确认框里那一下真正要按的「确认转移」 */
+.mem-grid{max-width:none;gap:14px 18px}
+.mem-owner{margin:0;font-size:12.5px;color:var(--ink);line-height:1.6}
+.mem-list{border:1px solid var(--line);border-radius:var(--r-ctl);padding:2px 10px;
+  background:var(--field);margin-bottom:8px}
+.mem-list .mem-row{padding:7px 0}
+.mem-empty{margin:0;padding:9px 0;font-size:11.5px;color:var(--ink-3)}
+.mem-act{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.mem-act select{flex:1 1 170px;min-width:0}
+.mem-act .btn{flex:none}
+.mem-act + .pf-hint-inline{margin-top:2px}
 .proj-main{min-width:210px}
 .tagcell{min-width:130px}
 

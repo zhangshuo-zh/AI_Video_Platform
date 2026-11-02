@@ -398,26 +398,37 @@ export default {
         <div class="modal-box">
           <div class="modal-head neutral">协作人 · <span id="mem-proj"></span></div>
           <div class="modal-body">
-            <p class="modal-meta" id="mem-owner"></p>
-            <div id="mem-list"></div>
-            <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-              <select id="mem-add" class="ctl" style="min-width:200px"></select>
-              <button class="btn" id="mem-add-btn">加为协作人</button>
+            <!-- 三行都用 .form-grid：字段名在左、控件在右，两行"下拉＋按钮"对成同一个形状。
+                 原来上面是裸的下拉＋按钮，下面是"文字＋下拉＋红实心按钮"，
+                 左边界差一截、按钮一轻一重，红色还把最不该抢镜的动作抢了镜。
+                 说明也挪进控件列下面一行，不再堆成弹窗底部的一大段。 -->
+            <div class="form-grid mem-grid">
+              <span class="pf-label">所有人</span>
+              <p class="mem-owner" id="mem-owner">读取中…</p>
+
+              <span class="pf-label top">协作人</span>
+              <div class="pf-ctl">
+                <div class="mem-list" id="mem-list"></div>
+                <div class="mem-act">
+                  <select id="mem-add" class="ctl" aria-label="要邀请的账号"></select>
+                  <button class="btn" id="mem-add-btn">加为协作人</button>
+                </div>
+                <span class="pf-hint-inline">只能邀请与你同级或更低的启用账号。协作人能看和改，
+                  不能删项目、管协作人。</span>
+              </div>
+
+              <!-- 转移所有权：label 与控件列一起显隐（renderMembers 里判）。
+                   这一行**常驻**，不再因为"还没有协作人"就整行藏起来——藏起来的后果是
+                   人以为没这个功能（v0.81 前就是这样）。没得挑的时候禁用并说清为什么。 -->
+              <span class="pf-label top" id="mem-transfer-label" hidden>转移给</span>
+              <div class="pf-ctl" id="mem-transfer-row" hidden>
+                <div class="mem-act">
+                  <select id="mem-transfer" class="ctl" aria-label="接手人"></select>
+                  <button class="btn danger" id="mem-transfer-btn">转移所有权</button>
+                </div>
+                <span class="pf-hint-inline" id="mem-transfer-hint"></span>
+              </div>
             </div>
-            <!-- 转移所有权：只有所有人与管理员看得见（renderMembers 里判）。
-                 这一行**常驻**，不再因为"还没有协作人"就整行藏起来——藏起来的后果是
-                 人以为没这个功能（v0.81 前就是这样）。没得挑的时候禁用并说清为什么。 -->
-            <div class="row" id="mem-transfer-row" hidden
-                 style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
-              <span class="note">转移给</span>
-              <select id="mem-transfer" class="ctl" style="min-width:200px"></select>
-              <button class="btn danger-solid" id="mem-transfer-btn">转移所有权</button>
-            </div>
-            <p class="modal-meta" id="mem-transfer-hint" hidden></p>
-            <p class="modal-meta">协作人可以查看和修改这个项目；删项目和管协作人只有所有人能做。
-              交接对象是<b>所有你够得着的启用账号</b>（协作人和还没加入的都在列，层级比你高的不列）；
-              交给还没加入的人时会直接把他变成所有人，不用先加一遍。
-              交出去之后你会变成协作人——仍然看得见、改得动，只是删项目和管人归对方了。</p>
           </div>
           <div class="modal-actions">
             <button class="btn" id="mem-close">关闭</button>
@@ -920,7 +931,7 @@ export default {
     const renderMembers = (data) => {
       const ownerName = store.projects.find((x) => x.id === memId)?.owner_name || '—';
       root.querySelector('#mem-owner').textContent =
-        `所有人：${ownerName}${data.owner_id === store.user?.id ? '（你自己）' : ''}`;
+        `${ownerName}${data.owner_id === store.user?.id ? '（你自己）' : ''}`;
       memList.innerHTML = data.members.length
         ? data.members.map((m) => `
             <div class="mem-row">
@@ -928,7 +939,7 @@ export default {
               <span class="t-dim mono">${escapeHtml(m.username)}</span>
               <button class="btn sm" data-rm-member="${m.user_id}">移除</button>
             </div>`).join('')
-        : '<p class="t-dim">还没有协作人</p>';
+        : '<p class="mem-empty">还没有协作人</p>';
       memAdd.innerHTML = data.candidates.length
         ? data.candidates.map((c) => `<option value="${c.user_id}">${
             escapeHtml(c.display_name || c.username)}（${escapeHtml(c.username)}）</option>`).join('')
@@ -940,6 +951,7 @@ export default {
       memData = data;
       const canManage = store.isManager || data.owner_id === store.user?.id;
       const transferRow = root.querySelector('#mem-transfer-row');
+      const transferLabel = root.querySelector('#mem-transfer-label');
       const transferSel = root.querySelector('#mem-transfer');
       const transferBtn = root.querySelector('#mem-transfer-btn');
       const transferHint = root.querySelector('#mem-transfer-hint');
@@ -947,7 +959,7 @@ export default {
       // 层级够得着、不是所有人自己"筛过，前端不再自己拼一份用户列表。
       const targets = [...data.members.filter((m) => m.user_id !== data.owner_id),
                        ...data.candidates];
-      transferRow.hidden = !canManage;
+      transferRow.hidden = transferLabel.hidden = !canManage;
       if (canManage) {
         transferSel.innerHTML = targets.length
           ? targets.map((m) => `<option value="${m.user_id}">${
@@ -955,8 +967,10 @@ export default {
           : '<option value="">没有可交接的账号</option>';
         transferSel.disabled = !targets.length;
         transferBtn.disabled = !targets.length;
-        transferHint.hidden = targets.length > 0;
-        transferHint.textContent = '没有可交接的账号：只能交给启用中、且层级不高于你的账号。';
+        transferHint.textContent = targets.length
+          ? '可以交给任何你够得着的启用账号，含还没加入的——交接会直接把他变成所有人。'
+            + '交出去后你变成协作人：仍能看和改，删项目与管人归对方。'
+          : '没有可交接的账号：只能交给启用中、且层级不高于你的账号。';
       }
     };
 
