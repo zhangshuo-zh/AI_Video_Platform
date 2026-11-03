@@ -65,8 +65,13 @@ def _params(raw: dict | None) -> dict:
 def create(project_id: int, episode_id: int, created_by: int | None, *,
            params: dict | None = None, idempotency_key: str | None = None,
            pipeline_run_id: int | None = None,
-           subtitle_path: str | None = None) -> dict:
-    """建一条成片记录并发起合成。返回成片视图（含 job_id）。"""
+           subtitle_path: str | None = None,
+           shot_jobs: dict[int, int] | None = None) -> dict:
+    """建一条成片记录并发起合成。返回成片视图（含 job_id）。
+
+    `shot_jobs` 传了就按它钉每一镜用哪条作业（产线必须传，见 timeline.build）：
+    产线签的是某一条，而成片默认取"最新成功"——不钉住就会被手抽重生成顶掉。
+    """
     key = (idempotency_key or "").strip() or None
     if key:
         existing = job_repo.by_key(key)
@@ -81,7 +86,7 @@ def create(project_id: int, episode_id: int, created_by: int | None, *,
     try:
         timeline = timeline_mod.build(
             project_id, episode_id, require_approved=True,
-            subtitle_path=subtitle_path)
+            subtitle_path=subtitle_path, shot_jobs=shot_jobs)
     except timeline_mod.CompositionInvalid as exc:
         raise CompositionInvalid(exc.message, exc.reasons) from exc
 

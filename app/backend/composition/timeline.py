@@ -25,9 +25,11 @@ import json
 import jobfiles
 from config import COMPOSE_MAX_SHOTS
 from composition import validators
+from models import JOB_STATUSES
 from repositories.audio import clips
 from repositories.compositions import compositions
 from repositories.content import episodes, shots
+from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
 
 
@@ -59,8 +61,17 @@ def _shot_review(job) -> tuple[str, str]:
 
 def build(project_id: int, episode_id: int, *,
           require_approved: bool = True,
-          subtitle_path: str | None = None) -> dict:
-    """生成一份时间线快照。任何前置不成立都抛 `CompositionInvalid`。"""
+          subtitle_path: str | None = None,
+          shot_jobs: dict[int, int] | None = None) -> dict:
+    """生成一份时间线快照。任何前置不成立都抛 `CompositionInvalid`。
+
+    `shot_jobs` 是"这一镜到底用哪条作业"的显式钉法（键 shot_id，值 job_id）。
+    产线必须传它：产线签的是**某一条**作业的产物，而成片默认取"最新成功"——
+    产线跑到一半有人手抽重生成一镜，最新成功就不是产线签过的那条了。
+    传了 `shot_jobs` 就只认钉住的那几条：钉的作业没签、不存在、不属于这一镜，
+    一律进 reasons 点名，不退回"最新的那条"（那正是要防的静默替换）。
+    手动成片不传，保持"每镜最新成功"的口径。
+    """
     episode = episodes.get(episode_id)
     if episode is None or episode["project_id"] != project_id:
         raise CompositionInvalid("这一集不属于该项目")
@@ -72,13 +83,30 @@ def build(project_id: int, episode_id: int, *,
             f"这一集有 {len(shot_rows)} 个镜头，超过单次合成上限 "
             f"{COMPOSE_MAX_SHOTS}；请先拆分成多集")
 
-    jobs_by_shot = compositions.latest_video_jobs(episode_id)
+    pinned = shot_jobs if shot_jobs is not None else None
+    jobs_by_shot = None if pinned is not None else compositions.latest_video_jobs(episode_id)
     reasons: list[str] = []
     timeline_shots: list[dict] = []
     total_ms = 0
     for shot in shot_rows:
         shot_id = int(shot["id"])
-        video_job = jobs_by_shot.get(shot_id)
+        if pinned is not None:
+            job_id = pinned.get(shot_id)
+            video_job = job_repo.get(int(job_id)) if job_id else None
+            if video_job is None:
+                reasons.append(f"第 {shot['seq']} 镜没有产线签过的视频作业")
+                continue
+            if int(video_job["shot_id"] or 0) != shot_id:
+                reasons.append(
+                    f"第 {shot['seq']} 镜钉的作业 #{job_id} 不属于这一镜")
+                continue
+            if video_job["status"] != "succeeded":
+                reasons.append(
+                    f"第 {shot['seq']} 镜钉的作业 #{job_id} 状态是"
+                    f"「{JOB_STATUSES.get(video_job['status'], video_job['status'])}」，不是成功")
+                continue
+        else:
+            video_job = jobs_by_shot.get(shot_id)
         if video_job is None:
             reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
             continue

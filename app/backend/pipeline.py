@@ -844,6 +844,57 @@ def _submit_job_node(run, node: dict, by_key: dict) -> None:
         "execution_mode": job["execution_mode"]})
 
 
+def _shot_of_key(node_key: str) -> int | None:
+    """`<模板key>#s<镜头id>` 里取出镜头 id；不是按镜头展开的节点返回 None。"""
+    marker = "#s"
+    if marker not in node_key:
+        return None
+    try:
+        return int(node_key.rsplit(marker, 1)[1])
+    except ValueError:
+        return None
+
+
+def compose_shot_jobs(run) -> dict[int, int] | None:
+    """这条运行里每一镜用哪条作业：取产线自己签过的那条，不取"最新成功"。
+
+    为什么必须有这一层：产线的「镜头审核」签的是**某一条**作业的产物，而成片
+    默认按"这一镜最新一条成功视频"取。产线跑到一半有人手抽重生成一镜并签了字，
+    最新成功就换人了——产线签过的那条被静默顶掉，成片用的是另一条素材。
+    所以产线成片把节点里冻结的 `job_id` 钉进时间线：签的哪条，拼的就哪条。
+
+    优先 `shot_review` 节点 `input_json.job_id`（那是"等谁签字"冻下来的），
+    没有再退到 `video_generate` 节点自己的 `job_id`（同一支线里就是它）。
+    两者都没有的镜头不会被补成"最新的那条"，留给时间线点名拒绝。
+    """
+    nodes = pipeline_repo.nodes_for_run(run["id"])
+    by_shot: dict[int, int] = {}
+    for node in nodes:
+        if node["node_type"] != "shot_review":
+            continue
+        shot_id = _shot_of_key(node["node_key"])
+        if shot_id is None:
+            continue
+        try:
+            payload = json.loads(node["input_json"] or "{}")
+        except ValueError:
+            payload = {}
+        job_id = payload.get("job_id") or node["job_id"]
+        if job_id:
+            by_shot[shot_id] = int(job_id)
+    if by_shot:
+        return by_shot
+    # 没有镜头审核节点（自定义模板只到生成）：仍用产线派出的作业，
+    # 不回到"最新成功"——产线派出哪条就是哪条
+    for node in nodes:
+        if node["node_type"] != "video_generate" or not node["job_id"]:
+            continue
+        shot_id = _shot_of_key(node["node_key"])
+        if shot_id is not None:
+            by_shot[shot_id] = int(node["job_id"])
+    return by_shot or None
+
+
 def _submit_composition_node(run, node: dict) -> None:
     """成片合成节点：建时间线＋成片行＋Job，三步一个事务（在 composition 里）。
 
@@ -868,7 +919,10 @@ def _submit_composition_node(run, node: dict) -> None:
     try:
         view = create_composition(
             run["project_id"], run["episode_id"], run["created_by"],
-            idempotency_key=key, pipeline_run_id=run["id"])
+            idempotency_key=key, pipeline_run_id=run["id"],
+            # 产线签的哪条，就拼哪条；不传这个参数就会退回"每镜最新成功"，
+            # 那正是"产线签 A、成片用 B"的来路
+            shot_jobs=compose_shot_jobs(run))
     except CompositionInvalid as exc:
         detail = "；".join(exc.reasons[:6]) if exc.reasons else exc.message
         pipeline_repo.finish_node(

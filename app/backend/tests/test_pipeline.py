@@ -956,3 +956,55 @@ def test_v2合成前置检查失败会点名并停在那格(people, clean_queue)
     assert nodes["check_composition"]["status"] == "blocked"
     assert _count_jobs("pl-") == before     # 一条合成 Job 都没排
     assert view["status"] == "failed"
+
+
+def test_成片按产线签过的那条作业钉住(fresh_project, people):
+    """`compose_shot_jobs` 只认产线自己冻结的作业，不回到"最新成功"。
+
+    两档：有「镜头审核」节点时取它 input 里冻的 job_id（那是"等谁签字"）；
+    只有生成节点的自定义模板退到生成节点自己挂的作业，仍然不是全库最新。
+    """
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    s1 = shots.create(eid, "第一镜", "", 1.0, [])["id"]
+    s2 = shots.create(eid, "第二镜", "", 1.0, [])["id"]
+    template = pipeline_repo.latest_templates()[0]
+
+    def _run() -> dict:
+        return pipeline_repo.create_run(
+            project_id=pid, episode_id=eid, template_id=template["id"],
+            template_version=template["version"], input_snapshot={},
+            idempotency_key=None, created_by=people["editor"]["id"],
+            started_at="2026-11-03 10:00:00")
+
+    run = _run()
+    pipeline_repo.create_nodes(run["id"], [
+        {"node_key": f"shot_video#s{s1}", "node_type": "video_generate",
+         "depends_on": [], "label": "镜头视频生成"},
+        {"node_key": f"review_shot#s{s1}", "node_type": "shot_review",
+         "depends_on": [], "label": "镜头审核", "input": {"job_id": 101}},
+        {"node_key": f"shot_video#s{s2}", "node_type": "video_generate",
+         "depends_on": [], "label": "镜头视频生成"},
+        {"node_key": f"review_shot#s{s2}", "node_type": "shot_review",
+         "depends_on": [], "label": "镜头审核", "input": {"job_id": 202}},
+    ])
+    assert pipeline.compose_shot_jobs(run) == {s1: 101, s2: 202}
+
+    # 没有审核节点时退到生成节点自己挂的作业
+    run2 = _run()
+    pipeline_repo.create_nodes(run2["id"], [
+        {"node_key": f"shot_video#s{s1}", "node_type": "video_generate",
+         "depends_on": [], "label": "镜头视频生成"},
+        {"node_key": f"shot_video#s{s2}", "node_type": "video_generate",
+         "depends_on": [], "label": "镜头视频生成"},
+    ])
+    real = [job_repo.create({
+        "project_id": pid, "episode_id": eid, "shot_id": shot, "capability": "video",
+        "kind": "video_local", "execution_mode": "local", "provider_code": "mock",
+        "model_code": "mock-1", "adapter_version": "mock", "prompt_snapshot": "",
+        "params": {}, "input_refs": [], "created_by": people["editor"]["id"],
+    })["id"] for shot in (s1, s2)]
+    nodes = {n["node_key"]: n for n in pipeline_repo.nodes_for_run(run2["id"])}
+    pipeline_repo.attach_job(nodes[f"shot_video#s{s1}"]["id"], real[0])
+    pipeline_repo.attach_job(nodes[f"shot_video#s{s2}"]["id"], real[1])
+    assert pipeline.compose_shot_jobs(run2) == {s1: real[0], s2: real[1]}

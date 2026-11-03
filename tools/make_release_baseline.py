@@ -43,19 +43,30 @@ BASELINE = DOCS / "发布基线.md"
 
 DOC_NAMES = ("需求概要说明书", "系统设计说明书", "数据字典", "系统使用说明书")
 
-# 已知未验证与阻塞项。这里写的是"为什么空"，不是"忘了填"：
-# 每一条都有明确的人工前置条件，设备或密钥不可用时不得伪造结果。
-BLOCKERS = [
-    ("视频 · 云端 真实付费调用", "本机没有 DASHSCOPE_API_KEY 与 Workspace，且未授权付费预算"),
-    ("文本抽取 真实模型跑批（W13）", "未付费验证；代码与假 HTTP 全链已测穿"),
-    ("配音 VoxCPM2 ／ 音乐 ACE-Step ／ 口型 Rhubarb", "运行时与权重未安装，提交会明确失败，不落假产物"),
-    ("目标机基准（全部能力）", "M5 Ultra 目标机未到位；现有记录只有 M4 Air 的 FastMetal 一组"),
-    ("设定中心", "只有入口与空态文案，没有表、接口与写路径"),
-    ("产线生成节点 真实模型跑通", "阶段 B／C／E 全走 mock 适配器与临时库；本机没有图像运行时，真跑一镜要装运行时或授权云端付费"),
-    ("成片 用真实模型素材整集验收", "合成链路与 ffprobe 验收已真跑，但输入是本机临时构造的测试视频；真实模型出一整集还没跑过"),
-    ("成片 硬字幕", "后端有 `subtitle_path` 与 FFmpeg subtitles 滤镜，但没有测试覆盖、页面也没有入口，不算已完成能力"),
-    ("worker 资源占用记录", "`worker_node.resources_json` 仍是空对象；并发上限与心跳有，实际占用要接目标机基准一起补"),
-]
+# 已知未验证与阻塞项**不写在这个脚本里**：条目住 `tools/release_blockers.json`，
+# 每条带核对日期。上一版把它们写成常量，硬字幕做完之后没人回头改，基线继续宣称
+# "没有测试覆盖、页面也没有入口"——自动生成不等于自动正确，第二份手写账迟早会漂。
+BLOCKERS_FILE = ROOT / "tools" / "release_blockers.json"
+
+
+def load_blockers() -> list[dict]:
+    """读阻塞项清单。缺文件、缺字段直接拒绝生成，不产出空表糊过去。"""
+    if not BLOCKERS_FILE.exists():
+        raise SystemExit(f"缺 {BLOCKERS_FILE.relative_to(ROOT)}：阻塞项不再写死在脚本里，"
+                         "请把条目（含核对日期）放进那个文件")
+    try:
+        data = json.loads(BLOCKERS_FILE.read_text(encoding="utf-8"))
+    except ValueError as err:
+        raise SystemExit(f"{BLOCKERS_FILE.name} 解析失败：{err}")
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        raise SystemExit(f"{BLOCKERS_FILE.name} 里没有 items")
+    for entry in items:
+        missing = [k for k in ("item", "reason", "checked_at") if not entry.get(k)]
+        if missing:
+            raise SystemExit(f"{BLOCKERS_FILE.name} 有一条缺 {missing}：{entry!r}")
+    return items
+
 
 # 现算的"生产可用"口径，必须与 validations.summary_for 保持一致（那里是唯一定义处）：
 # 环境检查 ok ＋ 真实调用 ok ＋ 产物验收 ok。缺任何一环都只算"未达生产可用"。
@@ -166,6 +177,26 @@ def live_db_path() -> Path:
     return Path(env) if env else BACKEND / "data" / "platform.db"
 
 
+def provider_slot_counts() -> tuple[int, int]:
+    """`provider_config` 的固定行数与其中填了 provider 的行数。
+
+    十行是产品口径（5 类能力 × 本地／云端）；填了 provider 的才是"配过"的。
+    矩阵只列有配置或有记录的槽位，这两个数负责把"没列出来的那几行"说清楚——
+    没列出来是没配置，不是被过滤。
+    """
+    path = live_db_path()
+    if not path.exists():
+        return 0, 0
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        total = int(con.execute("SELECT COUNT(*) FROM provider_config").fetchone()[0])
+        configured = int(con.execute(
+            "SELECT COUNT(*) FROM provider_config WHERE provider <> ''").fetchone()[0])
+    finally:
+        con.close()
+    return configured, total
+
+
 def validation_matrix() -> list[dict]:
     """只读现役库：每个配置过的槽位，五档出处各自最新一条的状态。"""
     path = live_db_path()
@@ -267,12 +298,21 @@ def build_md(facts: dict) -> str:
     a("")
     a("> 生产可用＝环境检查 ok ＋ 真实调用 ok ＋ 产物验收 ok（与 `validations.summary_for` 同一口径）。环境检查通过只代表条件齐了。")
     a("")
+    a(f"> 槽位口径：`provider_config` 是固定十行（5 类能力 × 本地／云端），本表只列"
+      f"**填了 provider 或留过验证记录**的槽位（当前 {len(facts['matrix'])} 行；"
+      f"其中填了 provider 的 {facts['configured_slots']} / {facts['total_slots']} 行）。"
+      "没列出的槽位不是被这张表过滤，而是还没配置，在「系统设置 · 模型与密钥」里显示「未配置」。")
+    a("")
     a("## 3. 未验证能力与阻塞项")
     a("")
-    a("| 能力 | 阻塞原因（人工前置条件） |")
-    a("|---|---|")
-    for name, why in BLOCKERS:
-        a(f"| {name} | {why} |")
+    blockers = load_blockers()
+    a("| 能力 | 阻塞原因（人工前置条件） | 核对日期 |")
+    a("|---|---|---|")
+    for entry in blockers:
+        a(f"| {entry['item']} | {entry['reason']} | {entry['checked_at']} |")
+    a("")
+    a("> 本表逐条来自 `tools/release_blockers.json`，第三列是最后一次人工核对的日期；"
+      "做完的能力要从那里删掉，而不是在脚本里另写一份。")
     a("")
     a("## 4. 演练与备份记录")
     a("")
@@ -338,6 +378,8 @@ def main() -> None:
              "business": probe["business"], "health": probe["health"],
              "auth": probe["auth"], "passed": passed, "duration": duration,
              "matrix": validation_matrix(),
+             "configured_slots": provider_slot_counts()[0],
+             "total_slots": provider_slot_counts()[1],
              "drill_job": preserve_baseline_line(r"Job 故障演练：(.+)$"),
              "drill_backup": preserve_baseline_line(r"备份恢复演练：(.+)$"),
              "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$"),

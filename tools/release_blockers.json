@@ -1,0 +1,50 @@
+{
+  "_comment": "《发布基线》§3 的唯一数据源。每条必须带 checked_at（最后一次人工核对的日期）。条目做完就删掉，不要在脚本里另写一份——上一版把表写死在 make_release_baseline.py 的常量里，硬字幕做完后没人回头改，基线一直宣称'没有测试覆盖、页面也没有入口'。",
+  "items": [
+    {
+      "item": "视频 · 云端 真实付费调用",
+      "reason": "本机没有 DASHSCOPE_API_KEY 与 Workspace，且未授权付费预算",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "文本抽取 真实模型跑批（W13）",
+      "reason": "未付费验证；代码与假 HTTP 全链已测穿",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "配音 VoxCPM2 ／ 音乐 ACE-Step ／ 口型 Rhubarb",
+      "reason": "运行时与权重未安装，提交会明确失败，不落假产物",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "文本 · cloud · deepseek 的验证登记",
+      "reason": "跑过真实调用，但没有落成 model_validation 记录（缺成功作业与产物 sha256 的登记），所以矩阵里这一档仍是未验证；要用它做生产，得先补一条真实调用登记",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "目标机基准（全部能力）",
+      "reason": "M5 Ultra 目标机未到位；现有记录只有 M4 Air 的 FastMetal 一组",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "设定中心",
+      "reason": "只有入口与空态文案（按钮已禁用），没有表、接口与写路径",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "产线生成节点 真实模型跑通",
+      "reason": "阶段 B／C／E 全走 mock 适配器与临时库；本机没有图像运行时，真跑一镜要装运行时或授权云端付费",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "成片 用真实模型素材整集验收",
+      "reason": "合成链路与 ffprobe 验收已真跑，但输入是本机临时构造的测试视频；真实模型出一整集还没跑过",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "worker 资源占用记录",
+      "reason": "worker_node.resources_json 仍是空对象 {}；并发上限与心跳有，实际占用要接目标机基准一起补",
+      "checked_at": "2026-11-03"
+    }
+  ]
+}

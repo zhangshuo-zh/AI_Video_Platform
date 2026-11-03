@@ -278,3 +278,54 @@ def test_字幕文件不见了或不属于本项目就拒绝(stage, fresh_projec
                                    stage["user_id"], subtitle_path=mine)
     assert "字幕" in exc.value.message
 
+
+
+def test_产线钉住的作业优先于最新成功(stage):
+    """产线签 A，之后手抽又跑出 B：钉住 A 就必须拼 A，手动路径才是"最新的那条"。
+
+    这就是"产线签 A、成片用 B"那条缺口的反证：不传 shot_jobs 时取最新成功，
+    传了以后只认钉住的那条。
+    """
+    _signed(stage)
+    shot1, shot2 = stage["shot_ids"]
+    job_a, job_b = stage["jobs"]
+    # 同一镜再跑一条"更新"的片段（颜色不同，两条都签）
+    newer = _clip(stage["project_id"], stage["episode_id"], shot1,
+                  stage["user_id"], "green")
+    _approve(newer, stage["project_id"], stage["user_id"])
+
+    pinned = composition_service.create(
+        stage["project_id"], stage["episode_id"], stage["user_id"],
+        params={"width": 640, "height": 360, "fps": 24},
+        shot_jobs={shot1: job_a["id"], shot2: job_b["id"]})
+    timeline = composition_service.view(pinned["id"])["timeline"]
+    assert timeline["shots"][0]["video"]["job_id"] == job_a["id"]
+
+    # 不钉作业（成片中心的手动路径）时仍取最新成功：这是两条路径的差别
+    loose = composition_service.create(
+        stage["project_id"], stage["episode_id"], stage["user_id"],
+        params={"width": 640, "height": 360, "fps": 24})
+    loose_timeline = composition_service.view(loose["id"])["timeline"]
+    assert loose_timeline["shots"][0]["video"]["job_id"] == newer["id"]
+
+
+def test_钉住的作业没签或不属这一镜就点名拒绝(stage):
+    shot1, shot2 = stage["shot_ids"]
+    job_a, job_b = stage["jobs"]
+    # 一条都没签：钉的作业不能被"顺手签了别的那条"带过
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        composition_service.create(
+            stage["project_id"], stage["episode_id"], stage["user_id"],
+            params={"width": 640, "height": 360, "fps": 24},
+            shot_jobs={shot1: job_a["id"], shot2: job_b["id"]})
+    text = "；".join(exc.value.reasons)
+    assert "第 1 镜" in text and "没有审核签字" in text
+
+    # 把第二镜的作业钉到第一镜上：要说"不属于这一镜"，不能静默换片
+    _signed(stage)
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        composition_service.create(
+            stage["project_id"], stage["episode_id"], stage["user_id"],
+            params={"width": 640, "height": 360, "fps": 24},
+            shot_jobs={shot1: job_b["id"], shot2: job_b["id"]})
+    assert "不属于这一镜" in "；".join(exc.value.reasons)
