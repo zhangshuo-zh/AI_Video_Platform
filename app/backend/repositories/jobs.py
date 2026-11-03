@@ -95,6 +95,22 @@ class JobRepository:
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
 
+    def latest_succeeded_by_shot(self, episode_id: int) -> dict[int, sqlite3.Row]:
+        """这一集里每镜最新一条**成功**的作业。键是 shot_id。
+
+        只给分镜列表标「源已变」用：过期与否看的是"最新那条成功产物是不是基于旧源"，
+        失败的尝试不算——它本来就没产物可用。
+        """
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT j.* FROM job j
+                    JOIN (SELECT shot_id, MAX(id) AS mid FROM job
+                           WHERE episode_id = ? AND shot_id IS NOT NULL
+                             AND status = 'succeeded'
+                           GROUP BY shot_id) t ON t.mid = j.id""",
+                (episode_id,)).fetchall()
+        return {int(row["shot_id"]): row for row in rows}
+
     def get(self, job_id: int) -> sqlite3.Row | None:
         with get_conn() as conn:
             return conn.execute(

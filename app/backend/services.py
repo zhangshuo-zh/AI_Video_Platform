@@ -1498,6 +1498,20 @@ def shot_source_version(shot) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def shots_view(episode_id: int) -> list[dict]:
+    """分镜列表 + 每镜「最新成功作业是否基于旧源内容」。
+
+    标记放在服务端算：前端拿不到分镜源指纹（它需要读引用资产的版本信息），
+    让浏览器自己判断等于把口径复制一份到 JS 里。
+    """
+    latest = job_repo.latest_succeeded_by_shot(episode_id)
+    out = []
+    for row in shots.list_by_episode(episode_id):
+        job = latest.get(int(row["id"]))
+        out.append({"shot": row, "source_stale": bool(job and job_source_stale(job))})
+    return out
+
+
 def job_source_stale(job) -> bool:
     """这条作业的产物是不是基于**旧版**分镜／资产生的。
 

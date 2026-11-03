@@ -1032,3 +1032,47 @@ def test_生产前检查_阻断与警告分开(fresh_project, people):
     with pytest.raises(pipeline.PipelineInvalid) as exc:
         pipeline.create_run(pid, eid, template["id"], people["editor"]["id"])
     assert "生产前检查没过" in str(exc.value)
+
+
+def test_没有参考图的资产要警告(fresh_project):
+    """`ref_images` 存的是 JSON 文本，空清单是 "[]"——非空字符串。
+
+    v0.96 真浏览器验收抓到这条警告从来没说过话：`if not row["ref_images"]` 对
+    "[]" 永远为假，界面因此少了一寸"定妆一致性没有依据"的提醒。
+    """
+    pid = fresh_project("editor")
+    from repositories.content import assets
+    eid = episodes.create(pid, "第 1 集")["id"]
+    bare = assets.create(project_id=pid, kind="character", name="没定妆",
+                         summary="", consistency_prompt="银发")["id"]
+    assert json.loads(assets.get(bare)["ref_images"]) == []
+    shots.create(eid, "第一镜", "推门", 1.0, [bare])
+    template = next(t for t in pipeline_repo.latest_templates()
+                    if t["name"] == "标准漫剧单集生产" and t["version"] == 2)
+
+    warnings = pipeline.preflight(pid, eid, template["id"])["warnings"]
+    assert any("没定妆" in item and "没有参考图" in item for item in warnings)
+    # 有一致性提示词，就不该同时报"没有一致性提示词"
+    assert not any("没定妆" in item and "一致性提示词" in item for item in warnings)
+
+
+def test_预检接口在发起前给出清单(as_role, fresh_project):
+    """`GET /projects/{id}/preflight`：看得见的人拿清单，看不见的人 404。"""
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    shots.create(eid, "第一镜", "", 1.0, [999999])
+    template = next(t for t in pipeline_repo.latest_templates()
+                    if t["name"] == "标准漫剧单集生产" and t["version"] == 2)
+
+    resp = c.get(f"/api/projects/{pid}/preflight"
+                 f"?episode_id={eid}&template_id={template['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any("资产 #999999 不存在" in item for item in data["blocking"])
+    assert any("没有提示词" in item for item in data["warnings"])
+    assert data["info"]["shots"] == 1
+
+    outsider = as_role("outsider")
+    assert outsider.get(f"/api/projects/{pid}/preflight?episode_id={eid}"
+                        ).status_code == 404

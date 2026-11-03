@@ -18,7 +18,7 @@ from models import (AssetCoverIn, AssetIn, AssetOut, AssetShotOut, EpisodeIn, Ep
                     EpisodeStatusIn, ShotIn, ShotOut)
 from paths import listdir_empty, resolve_within
 from repositories.content import assets, episodes, shots
-from services import clean_tags
+from services import clean_tags, shots_view
 
 router = APIRouter(prefix="/api", tags=["content"])
 
@@ -119,7 +119,8 @@ def _checked_asset_ids(project_id: int, raw: list[int]) -> list[int]:
 def list_shots(episode_id: int,
                user=Depends(require_permission("doc:read"))) -> list[ShotOut]:
     ensure_by("episode", episode_id, user, "read", "创作单元")
-    return [ShotOut.from_row(row) for row in shots.list_by_episode(episode_id)]
+    return [ShotOut.from_row(item["shot"], source_stale=item["source_stale"])
+            for item in shots_view(episode_id)]
 
 
 @router.post("/episodes/{episode_id}/shots", response_model=ShotOut,

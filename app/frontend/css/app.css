@@ -783,6 +783,19 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .mod p{font-size:12px;color:var(--ink-2);line-height:1.65}
 .mod .ents{margin-top:10px;font-size:11.5px;color:var(--ink-3);border-top:1px solid var(--line);padding-top:8px}
 
+/* ---------- 发起运行前的生产前检查 ---------- */
+.pl-pre{margin-top:12px;max-height:220px;overflow:auto;border:1px solid var(--line);
+  border-radius:10px;background:var(--panel-2);padding:8px 10px}
+.pl-pre:empty{display:none}
+.pl-pre-group{margin-bottom:6px}
+.pl-pre-group:last-child{margin-bottom:0}
+.pl-pre-group b{display:block;font-size:11.5px;margin-bottom:4px}
+.pl-pre-group.bad b{color:var(--bad)}
+.pl-pre-group.warn b{color:var(--warn)}
+.pl-pre-group ul{margin:0;padding-left:16px;font-size:11.5px;line-height:1.7;color:var(--ink-2)}
+.pl-pre-group li.bad::marker{color:var(--bad)}
+.pl-pre-group li.warn::marker{color:var(--warn)}
+
 /* ---------- 首页待办条（/api/workbench） ----------
    四格：待签字／失败作业／待核对账单／进行中的运行。数字是主角，所以给 22px；
    标签与出处各降一档。宽屏一行，1080 以下两列，760 以下一列。

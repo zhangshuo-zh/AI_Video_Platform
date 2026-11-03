@@ -388,3 +388,31 @@ def test_改引用资产也算源内容变了(as_role, fresh_project, clean_queu
                       consistency_prompt="银发、灰斗篷", aliases=[], tags=[],
                       project_id=pid)
     assert job_source_stale(job_repo.get(job["id"])) is True
+
+
+def test_分镜列表标出源已变(as_role, fresh_project, clean_queue):
+    """分镜行要能自己看出"这条产物已过期"，而不是等成片才报错。
+
+    标记由服务端算：前端拿不到分镜源指纹（要读引用资产的版本信息），
+    让浏览器自己判断等于把口径复制一份到 JS。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    sid = shots.create(eid, "开场", "雨夜石阶", 2.0, [])["id"]
+    job = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "image", "prompt": "雨夜石阶",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01, "text": "一帧"},
+    }).json()
+    assert worker.run_once(f"w-shot-{job['id']}") == job["id"]
+
+    rows = c.get(f"/api/episodes/{eid}/shots").json()
+    assert rows[0]["source_stale"] is False
+
+    c.put(f"/api/shots/{sid}", json={
+        "summary": "改成白天石阶", "prompt": "白天石阶", "duration": 2.0,
+        "asset_ids": []})
+    rows = c.get(f"/api/episodes/{eid}/shots").json()
+    assert rows[0]["source_stale"] is True

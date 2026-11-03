@@ -176,8 +176,14 @@ def _node_resources() -> dict:
     except OSError:          # 极老的 Unix/容器不给负载；给空而不是整个心跳失败
         load1 = load5 = load15 = 0.0
     try:
-        free, total = shutil.disk_usage(JOBS_DIR).free, shutil.disk_usage(JOBS_DIR).total
-    except OSError:          # 目录还没建（首次启动前）也要能报心跳
+        # 目录可能还没建（首次启动、测试用临时库）。往上找到第一个真实存在的父级
+        # 再问卷——问的是"这块盘还剩多少"，与那一层目录在不在无关。
+        probe = JOBS_DIR
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        usage_disk = shutil.disk_usage(probe)
+        free, total = usage_disk.free, usage_disk.total
+    except OSError:          # 问不到就报 0，不拿一个猜的数冒充读数
         free = total = 0
     return {
         "cores": os.cpu_count() or 0,

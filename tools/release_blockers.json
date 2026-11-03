@@ -42,8 +42,13 @@
       "checked_at": "2026-11-03"
     },
     {
-      "item": "worker 资源占用记录",
-      "reason": "worker_node.resources_json 仍是空对象 {}；并发上限与心跳有，实际占用要接目标机基准一起补",
+      "item": "成片 硬字幕的真实烧录验证",
+      "reason": "本机 FFmpeg 9.0.2 没有 libass（`ffmpeg -filters` 查不到 subtitles），测试只能走「提交前就拒」那一档；带 libass 的机器上要跑一次「烧与不烧的 PSNR 对比」才算把这一寸验完",
+      "checked_at": "2026-11-03"
+    },
+    {
+      "item": "预检里的磁盘阈值",
+      "reason": "5GB 是拍的默认值，没按目标机实际产物尺寸校过；M5 Ultra 到位后要和 §7.6 基准一起定",
       "checked_at": "2026-11-03"
     }
   ]

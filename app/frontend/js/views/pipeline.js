@@ -135,6 +135,7 @@ function createModal(episodes, templates, busy) {
         <select id="pl-ep" class="ctl">${epOptions || '<option value="">本项目还没有集</option>'}</select>
         <label class="modal-label" for="pl-tpl" style="margin-top:12px">用哪个模板</label>
         <select id="pl-tpl" class="ctl">${tplOptions || '<option value="">没有可用模板</option>'}</select>
+        <div class="pl-pre" id="pl-pre"><p class="hint">正在做生产前检查…</p></div>
         <p class="modal-meta">发起后由 worker 的节拍按依赖推进；同一集同时只允许一条未结束的运行。
           生成节点会派成普通作业，走平台配的默认模型轨——<b>不会</b>替人切云端、也不会替人确认计费。</p>
         <p class="bar bad" id="pl-modal-err" hidden></p>
@@ -145,6 +146,20 @@ function createModal(episodes, templates, busy) {
       </div>
     </div>
   </div>`;
+}
+
+/** 生产前检查的三档渲染。阻断红、警告琥珀；都空时说一句"检查过"。 */
+function preflightHtml(data) {
+  const block = data?.blocking || [];
+  const warn = data?.warnings || [];
+  if (!block.length && !warn.length) {
+    return '<p class="hint">生产前检查通过：分镜、引用资产、默认模型轨与运行冲突都没问题。</p>';
+  }
+  const items = (list, tone) => list.map((t) => `<li class="${tone}">${escapeHtml(t)}</li>`).join('');
+  return `${block.length ? `<div class="pl-pre-group bad">
+      <b>不能发起（${block.length}）</b><ul>${items(block, 'bad')}</ul></div>` : ''}
+    ${warn.length ? `<div class="pl-pre-group warn">
+      <b>可以发起，但要注意（${warn.length}）</b><ul>${items(warn, 'warn')}</ul></div>` : ''}`;
 }
 
 function nodeRows(detail, canSubmit) {
@@ -745,9 +760,30 @@ export default {
       err.hidden = true;
       idemKey = (crypto.randomUUID?.() ?? `pl-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       modal.hidden = false;
+      okBtn.disabled = false;
       modal.querySelector('#pl-ep')?.focus();
+      checkPreflight();
     };
     const closeModal = () => { modal.hidden = true; };
+    const preBox = modal.querySelector('#pl-pre');
+    const okBtn = modal.querySelector('[data-pl-ok]');
+    const checkPreflight = async () => {
+      const episodeId = Number(modal.querySelector('#pl-ep').value);
+      const templateId = Number(modal.querySelector('#pl-tpl').value);
+      if (!episodeId || !templateId) { preBox.innerHTML = ''; okBtn.disabled = false; return; }
+      preBox.innerHTML = '<p class="hint">正在做生产前检查…</p>';
+      try {
+        const data = await api.preflight(store.current.id, episodeId, templateId);
+        preBox.innerHTML = preflightHtml(data);
+        okBtn.disabled = (data.blocking || []).length > 0;
+      } catch (e) {
+        // 读不到预检不替人做决定：照常允许点，服务端发起时还会再挡一次
+        preBox.innerHTML = `<p class="pl-err">读不到预检结果：${escapeHtml(e.message || e)}</p>`;
+        okBtn.disabled = false;
+      }
+    };
+    modal.querySelector('#pl-ep')?.addEventListener('change', checkPreflight);
+    modal.querySelector('#pl-tpl')?.addEventListener('change', checkPreflight);
     bindModalDismiss(modal, closeModal);
     modal.querySelector('[data-pl-cancel]').addEventListener('click', closeModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });

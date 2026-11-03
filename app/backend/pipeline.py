@@ -423,7 +423,14 @@ def preflight(project_id: int, episode_id: int,
             if row is None:
                 blocking.append(f"第 {shot['seq']} 镜引用的资产 #{asset_id} 不存在")
                 continue
-            if not row["ref_images"]:
+            # `ref_images` 存的是 JSON 文本：空清单是 "[]"，非空字符串——
+            # 直接 `if not row["ref_images"]` 永远为真，「没有参考图」这条警告
+            # 就从来没说过话（v0.96 真浏览器验收时抓到）。先解析再判空。
+            try:
+                ref_images = json.loads(row["ref_images"] or "[]")
+            except ValueError:
+                ref_images = []
+            if not ref_images:
                 warnings.append(f"资产「{row['name']}」没有参考图，定妆一致性没有依据")
             if not (row["consistency_prompt"] or "").strip():
                 warnings.append(f"资产「{row['name']}」没有一致性提示词")

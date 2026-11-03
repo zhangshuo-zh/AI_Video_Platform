@@ -306,6 +306,11 @@ export const api = {
 
   // 产线中心（0026／阶段 C）：只做编排。不建第二条队列、不记第二本账——
   // 这里拿到的 job_id／review_id 都是引用，成本与产物仍去生成中心读。
+  // 发起运行之前的生产前检查：只读，blocking／warnings／info 三档
+  preflight: (pid, episodeId, templateId) => fetch(
+    `/api/projects/${pid}/preflight?` + new URLSearchParams({
+      episode_id: episodeId, ...(templateId ? { template_id: templateId } : {}),
+    })).then(toJson),
   pipelineTemplates: () => fetch('/api/pipeline/templates').then(toJson),
   pipelineTemplate: (id) => fetch(`/api/pipeline/templates/${id}`).then(toJson),
   pipelineRuns: (pid) => fetch(`/api/projects/${pid}/pipeline/runs`).then(toJson),

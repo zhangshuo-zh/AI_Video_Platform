@@ -170,6 +170,8 @@ ROUTES = [
     ("POST", "/api/projects/{p}/pipeline/runs",
      {"episode_id": "{e}", "template_id": 1, "idempotency_key": "越权探测"}, 404),
     ("GET", "/api/projects/{p}/pipeline/runs", None, 404),
+    # 发起前的生产前检查：只读，但只对看得见的项目开放（别人的项目 404）
+    ("GET", "/api/projects/{p}/preflight?episode_id={e}", None, 404),
     ("GET", "/api/pipeline/runs/{x}", None, 404),
     ("POST", "/api/pipeline/runs/{x}/advance", None, 404),
     ("POST", "/api/pipeline/runs/{x}/pause", None, 404),

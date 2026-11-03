@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import worker
 from db import get_conn
 from repositories.jobs import jobs as job_repo, resource_class
 
@@ -112,6 +115,35 @@ def test_两个worker同时领只有一条拿到(queue):
     got = [r["id"] for r in rows if r is not None]
     assert got == [job["id"]]
     _finish(job["id"], "e1-race-1")
+
+
+def test_心跳带资源占用():
+    """`worker_node.resources_json` 不是装饰：面板要靠它回答"还要不要再开一个 worker"。
+
+    读数只保证**形状与口径**，不保证具体数值——数值随机器走，写死反而会让
+    测试在别的机器上假红。
+    """
+    sample = worker._node_resources()
+    for key in ("cores", "load1", "cpu_pct", "rss_peak_mb",
+                "disk_free_gb", "disk_total_gb"):
+        assert key in sample, key
+    assert isinstance(sample["cpu_pct"], (int, float))
+    assert sample["rss_peak_mb"] > 0            # 进程自己总要占点内存；0 说明单位搞错了
+    assert sample["disk_total_gb"] > 0
+
+    # 第二次采样是"这两次心跳之间"的占用，不能把整个生命周期的均值拖回来
+    time.sleep(0.6)
+    again = worker._node_resources()
+    assert 0.0 <= again["cpu_pct"] < 100.0 * (os.cpu_count() or 1)
+
+    job_repo.heartbeat("e1-res-1", 999, None, "test",
+                       limits={"global": 2, "per": {}}, resources=sample)
+    rows = {w["worker_id"]: w for w in job_repo.workers(online_seconds=60)}
+    assert rows["e1-res-1"]["resources"]["disk_total_gb"] == sample["disk_total_gb"]
+    with get_conn() as conn:
+        conn.execute("UPDATE worker_node SET heartbeat_at = "
+                     "datetime('now','localtime','-1 day') "
+                     "WHERE worker_id = 'e1-res-1'")
 
 
 def test_心跳能列出多个worker与各自上限(as_role):

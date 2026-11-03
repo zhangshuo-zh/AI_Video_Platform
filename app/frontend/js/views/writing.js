@@ -1395,12 +1395,13 @@ async function renderShots(tab, subRow) {
 
     // 作业列只说事实：几条、最新那条什么状态。没有按钮——
     // 改作业状态不在这一页，重试/取消都在生成中心。
-    const jobCell = (list) => {
+    const jobCell = (list, sourceStale) => {
       if (!list.length) return '<span class="chip gray">未提交</span>';
       const latest = list[0];
       const meta = SHOT_JOB_STATUS[latest.status] || { label: latest.status, cls: 'gray' };
       const detail = list.map((j) => `#${j.id} ${j.status_label}`).join('；');
       return `<span class="chip ${meta.cls}" title="${escapeHtml(detail)}">${meta.label}</span>
+              ${sourceStale ? '<span class="chip amber" title="分镜或引用资产改过，这条产物已过期；要重新生成并重新签字">源已变</span>' : ''}
               <span class="t-desc" title="${escapeHtml(detail)}">${list.length} 条 · #${latest.id}</span>`;
     };
 
@@ -1416,7 +1417,7 @@ async function renderShots(tab, subRow) {
           ? s.asset_ids.map(assetChip).join(' ')
           : '<span class="t-dim">—</span>'}</td>
         <td class="num">${s.duration}s</td>
-        <td class="shot-jobs">${jobCell(jobsByShot.get(s.id) || [])}</td>
+        <td class="shot-jobs">${jobCell(jobsByShot.get(s.id) || [], s.source_stale)}</td>
         <td class="r">
           ${canWrite ? `<button class="btn sm" data-edit-shot="${s.id}">编辑</button>` : ''}
           ${canSubmit ? `<button class="btn sm" data-gen-shot="${s.id}">生成</button>` : ''}

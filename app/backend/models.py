@@ -804,13 +804,17 @@ class ShotOut(BaseModel):
     prompt: str
     duration: float
     asset_ids: list[int]
+    # 这一镜最新的成功作业是不是基于旧版分镜／资产生成的。只读标记，
+    # 不参与编辑回写：PUT 只认四个可编辑字段，带上它也会被忽略。
+    source_stale: bool = False
 
     @classmethod
-    def from_row(cls, row) -> "ShotOut":
+    def from_row(cls, row, source_stale: bool = False) -> "ShotOut":
         return cls(id=row["id"], episode_id=row["episode_id"], seq=row["seq"],
                    summary=row["summary"], prompt=row["prompt"],
                    duration=row["duration"],
-                   asset_ids=json.loads(row["asset_ids"] or "[]"))
+                   asset_ids=json.loads(row["asset_ids"] or "[]"),
+                   source_stale=bool(source_stale))
 
 
 class AssetIn(BaseModel):

@@ -78,6 +78,19 @@ def get_template(template_id: int,
     return PipelineTemplateOut(**pipeline.template_view(_template(template_id)))
 
 
+@router.get("/projects/{project_id}/preflight")
+def preflight(project_id: int, episode_id: int, template_id: int | None = None,
+              user=Depends(require_permission("job:submit"))) -> dict:
+    """发起运行之前的生产前检查（只读，不建运行、不写状态）。
+
+    返回 `blocking`（必须修，否则发起会被 422 挡住）、`warnings`（能发起，但会写进
+    事件时间线）与 `info`（这次检查依据的数字与时间）。前端在发起弹窗里直接展示，
+    让人在按下「开始生产」之前就看到缺什么。
+    """
+    access.ensure(user, project_id, "read")
+    return pipeline.preflight(project_id, episode_id, template_id)
+
+
 @router.post("/projects/{project_id}/pipeline/runs", response_model=PipelineRunOut,
              status_code=http_status.HTTP_201_CREATED)
 def create_run(project_id: int, payload: PipelineRunIn,
