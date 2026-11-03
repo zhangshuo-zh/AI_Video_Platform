@@ -296,6 +296,36 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
+  // 产物审核（0025／D1）：审的是一条已成功作业的产物，签字仍只在审核中心落
+  jobReviews: (pid) => fetch(`/api/projects/${pid}/job-reviews`).then(toJson),
+  jobReview: (jobId) => fetch(`/api/jobs/${jobId}/review`).then(toJson),
+  jobReviewSign: (jobId, body) => fetch(`/api/jobs/${jobId}/review-sign`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+
+  // 产线中心（0026／阶段 C）：只做编排。不建第二条队列、不记第二本账——
+  // 这里拿到的 job_id／review_id 都是引用，成本与产物仍去生成中心读。
+  pipelineTemplates: () => fetch('/api/pipeline/templates').then(toJson),
+  pipelineTemplate: (id) => fetch(`/api/pipeline/templates/${id}`).then(toJson),
+  pipelineRuns: (pid) => fetch(`/api/projects/${pid}/pipeline/runs`).then(toJson),
+  pipelineRun: (id) => fetch(`/api/pipeline/runs/${id}`).then(toJson),
+  createPipelineRun: (pid, body) => fetch(`/api/projects/${pid}/pipeline/runs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  advancePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/advance`,
+    { method: 'POST' }).then(toJson),
+  pausePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/pause`,
+    { method: 'POST' }).then(toJson),
+  resumePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/resume`,
+    { method: 'POST' }).then(toJson),
+  cancelPipelineRun: (id, reason = '') => fetch(`/api/pipeline/runs/${id}/cancel`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  }).then(toJson),
+  retryPipelineNode: (id) => fetch(`/api/pipeline/nodes/${id}/retry`,
+    { method: 'POST' }).then(toJson),
 
   // 音频中心（W15）：素材仍送生成中心的同一条队列
   audioClips: (pid, params = {}) => fetch(

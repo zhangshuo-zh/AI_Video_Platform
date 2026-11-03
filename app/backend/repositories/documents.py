@@ -13,6 +13,7 @@ import sqlite3
 
 from db import get_conn
 from repositories.projects import touch
+from repositories.reviews import reviews
 
 # 一把锁默认多久（分钟）由 config.LOCK_MINUTES 给，调用方传进来，
 # 仓储层不 import config：这样"锁多久"这件事在测试里可以随便调，不用改环境变量重启进程。
@@ -139,6 +140,11 @@ class DocumentRepository:
     def delete(self, doc_id: int) -> sqlite3.Row | None:
         """删元数据行。锁行跟着外键 CASCADE 走，不用手动清。
 
+        签字要手动清：0025 把 `review_item.doc_id` 换成了多态的
+        `target_kind + target_id`，多态列建不了外键，也就没有 CASCADE 白送了。
+        两句在同一个 `with get_conn()` 里，要么都成要么都不成——
+        文档删了签字还在，就成了指向空气的审核记录。
+
         返回删掉的那一行（含 rel_path），因为调用方要拿它去删文件——
         删完再查就什么都没有了，文件会变成孤儿。
         """
@@ -149,6 +155,7 @@ class DocumentRepository:
             if row is None:
                 return None
             project_id = row["project_id"]
+            reviews.delete_for_document(conn, doc_id)
             conn.execute("DELETE FROM document WHERE id = ?", (doc_id,))
             touch(conn, "project", project_id)
             return row

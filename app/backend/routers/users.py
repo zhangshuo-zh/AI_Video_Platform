@@ -187,6 +187,11 @@ def delete_user(user_id: int, payload: UserDeleteIn,
                            f"已经删掉的那些不会回来。") from exc
             gone.append(row["name"])
         users.delete(user_id)
+    else:
+        # 名下没有项目：没什么要"二选一"的，直接删账号。
+        # 这一支原来是缺的——`elif owned:` 为假时函数一路走到结尾什么都没做，
+        # 却照样回 204：界面说"已删除"，库里账号还在（阶段 B 验收时撞到的）。
+        users.delete(user_id)
 
 
 @router.get("/roles", response_model=list[RoleOut])

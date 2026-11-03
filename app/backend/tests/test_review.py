@@ -93,7 +93,7 @@ def test_正文改过之后旧报告与旧签字都不算新版本(as_role, fres
                      json={"anchor": anchor, "decision": "approved"})
     assert blocked.status_code == 409
     # 新版本没有签字：计数按当前版本查，旧签字不会混进来
-    assert reviews.counts(doc["id"], got["current_version"]) == {
+    assert reviews.counts(reviews.DOCUMENT, doc["id"], got["current_version"]) == {
         "approved": 0, "rejected": 0, "returned": 0}
 
 

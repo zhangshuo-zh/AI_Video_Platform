@@ -39,6 +39,15 @@ export const MODULES = [
     ents: 'Job · Task',
   },
   {
+    // v0.90 阶段 C：编排层，排在生成中心之后——它读的是生成中心的事实。
+    // perms 是进入门槛：job:read 就够了（viewer 也能看进度，签字与发起另按点卡）
+    id: 'pipeline', label: '产线中心', icon: 'ic-pipeline',
+    subs: ['运行', '模板'],
+    perms: ['job:read'],
+    desc: '单集生产的编排层：模板、运行、节点与事件。干活仍交给生成中心那一个队列，签字仍归审核中心。',
+    ents: 'PipelineRun · PipelineNode',
+  },
+  {
     id: 'audio', label: '音频中心', icon: 'ic-audio',
     subs: ['配音', '音乐', '口型', '音效'],
     desc: '台词、配音素材、音乐条目、口型 viseme 挂接；作业送生成中心排队，这里不开队列。',
@@ -46,8 +55,10 @@ export const MODULES = [
   },
   {
     id: 'review', label: '审核中心', icon: 'ic-review',
-    subs: ['校验结果', '人工签字'],
-    desc: '校验器 gate 与人工签字，签字只在这里落，别处只显示状态。',
+    // 二级页与页内分页一一对应（0025 起多了产物审核）：侧栏高亮和页面看到的
+    // 必须是同一个值，所以这里的顺序要与 views/review.js 的 TABS 一字不差
+    subs: ['文档审核', '产物审核'],
+    desc: '校验器 gate 与人工签字，产物验收也在这里签；签字只在这里落，别处只显示状态。',
     ents: 'Review',
   },
   {

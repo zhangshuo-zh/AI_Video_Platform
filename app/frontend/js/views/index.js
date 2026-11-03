@@ -4,9 +4,10 @@ import projects from './projects.js';
 import assets from './assets.js';
 import writing from './writing.js';
 import generate from './generate.js';
+import pipeline from './pipeline.js';
 import audio from './audio.js';
 import review from './review.js';
 import knowledge from './knowledge.js';
 import systemConfig from './system-config.js';
 
-export default { overview, projects, assets, writing, generate, audio, review, knowledge, 'system-config': systemConfig };
+export default { overview, projects, assets, writing, generate, pipeline, audio, review, knowledge, 'system-config': systemConfig };

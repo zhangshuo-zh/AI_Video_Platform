@@ -179,6 +179,33 @@ def test_恢复不动租约未过期的活(as_role, clean_queue, seeded):
     assert jobs.get(job["id"])["status"] == "starting"
 
 
+def test_别人的_worker_id_改不动一条作业的终态(as_role, clean_queue, seeded):
+    """审计 R1：`cancelled()` 原来只按 id 写，谁拿着一个不相干的 worker_id
+    都能覆盖"谁收的尾、跑了多久"这三样。补上 `AND worker_id = ?` 之后，
+    四条终态写入（succeed／fail／needs_attention／cancelled）用同一条规则。
+
+    反证就是这条用例本身：把守卫去掉，第一段断言会当场变红。
+    """
+    c = as_role("editor")
+    job = _submit(c, seeded["project_id"]).json()
+    claimed = jobs.claim_next("w-owner", 60)
+    assert claimed is not None and claimed["id"] == job["id"]
+
+    # 冒名者：id 对、worker 不对 → 一个字段都不该动
+    jobs.cancelled(job["id"], "w-imposter", "别人来收尾")
+    row = jobs.get(job["id"])
+    assert row["status"] == "starting"
+    assert row["worker_id"] == "w-owner"
+    assert not row["error_message"]
+
+    # 正主：同一行改得动
+    jobs.cancelled(job["id"], "w-owner", "本人收尾")
+    row = jobs.get(job["id"])
+    assert row["status"] == "cancelled"
+    assert row["error_message"] == "本人收尾"
+    assert row["worker_id"] is None
+
+
 def test_取消排队中的作业(as_role, clean_queue, seeded):
     c = as_role("editor")
     job = _submit(c, seeded["project_id"], params={"sleep": 2}).json()

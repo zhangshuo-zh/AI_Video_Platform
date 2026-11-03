@@ -26,7 +26,7 @@ import validations
 from config import (ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES,
                     LOG_SILENCE_SECONDS, QUEUE_STALL_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
                     WORKER_ONLINE_SECONDS)
-from db import get_conn
+from db import get_conn, transaction
 from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from paths import describe as describe_path
 from paths import listdir_empty, resolve_within
@@ -636,35 +636,41 @@ def extraction_submit(doc, payload, created_by: int | None) -> dict:
         source=price.source[:200])
     cost = _cost_of(SimpleNamespace(estimate=confirmed, user_confirmed_cloud=True),
                     "cloud", created_by)
-    job = job_repo.create({
-        "project_id": doc["project_id"],
-        "episode_id": doc["episode_id"],
-        "shot_id": None,
-        "capability": "text",
-        "kind": "text",
-        "execution_mode": "cloud",
-        "provider_code": route["provider"],
-        "model_code": route["model"].code,
-        "adapter_version": adapters.MANIFEST_VERSION,
-        "prompt_snapshot": prompt,
-        "params": params,
-        "input_refs": [{
-            "operation": "extract",
-            "doc_id": doc["id"],
-            "doc_title": doc["title"],
-            "base_version": data["version"],
-            "prompt_version": extraction.PROMPT_VERSION,
-        }],
-        "priority": 0,
-        "user_confirmed_cloud": True,
-        "created_by": created_by,
-        **cost,
-    })
-    run = extraction_runs.create_run(
-        project_id=doc["project_id"], doc_id=doc["id"], job_id=job["id"],
-        doc_title=doc["title"], base_version=data["version"],
-        content_hash=data["version"], model_code=route["model"].code,
-        prompt_version=extraction.PROMPT_VERSION, created_by=created_by)
+    # Job 行与抽取运行行必须在**同一个事务**里落（裁定 D2）。
+    # 原来是两次独立提交：进程在中间死掉，就会留下一条"没有归属的付费 Job"——
+    # 抽取页看不见它（run 没建），成本账里却有它（job 建了），而这笔钱是云端调用，
+    # 供应商那边可能已经计了费。两步都是纯库内写，不碰 Git／磁盘／网络，
+    # 正好落在 `transaction()` 允许的边界里。
+    with transaction():
+        job = job_repo.create({
+            "project_id": doc["project_id"],
+            "episode_id": doc["episode_id"],
+            "shot_id": None,
+            "capability": "text",
+            "kind": "text",
+            "execution_mode": "cloud",
+            "provider_code": route["provider"],
+            "model_code": route["model"].code,
+            "adapter_version": adapters.MANIFEST_VERSION,
+            "prompt_snapshot": prompt,
+            "params": params,
+            "input_refs": [{
+                "operation": "extract",
+                "doc_id": doc["id"],
+                "doc_title": doc["title"],
+                "base_version": data["version"],
+                "prompt_version": extraction.PROMPT_VERSION,
+            }],
+            "priority": 0,
+            "user_confirmed_cloud": True,
+            "created_by": created_by,
+            **cost,
+        })
+        run = extraction_runs.create_run(
+            project_id=doc["project_id"], doc_id=doc["id"], job_id=job["id"],
+            doc_title=doc["title"], base_version=data["version"],
+            content_hash=data["version"], model_code=route["model"].code,
+            prompt_version=extraction.PROMPT_VERSION, created_by=created_by)
     return {"run": run, "deduped": False}
 
 
@@ -902,7 +908,7 @@ def review_state(doc, can_sign: bool = False, gate=None) -> dict:
     except ValueError:
         summary = {}
     stale = data["version"] != gate["base_version"]
-    signs = reviews.signs(doc["id"], gate["base_version"])
+    signs = reviews.signs(reviews.DOCUMENT, doc["id"], gate["base_version"])
     return {
         "id": gate["id"], "project_id": doc["project_id"], "doc_id": doc["id"],
         "doc_title": doc["title"], "base_version": gate["base_version"],
@@ -910,7 +916,7 @@ def review_state(doc, can_sign: bool = False, gate=None) -> dict:
         "status": gate["status"],
         "status_label": _REVIEW_STATUS.get(gate["status"], gate["status"]),
         "findings": findings, "summary": summary,
-        "counts": reviews.counts(doc["id"], gate["base_version"]),
+        "counts": reviews.counts(reviews.DOCUMENT, doc["id"], gate["base_version"]),
         "signatures": [_review_signature_view(row) for row in signs],
         "can_sign": bool(can_sign and not stale),
         "created_by_name": "", "created_at": gate["created_at"],
@@ -933,7 +939,8 @@ def review_sign(doc, payload, user) -> dict:
     if payload.anchor not in anchors and payload.anchor != "document":
         raise reviewgate.ReviewInvalid("这个锚点不在本次报告里")
     reviews.upsert_sign(
-        project_id=doc["project_id"], doc_id=doc["id"], gate_id=gate["id"],
+        project_id=doc["project_id"], target_kind=reviews.DOCUMENT,
+        target_id=doc["id"], gate_id=gate["id"],
         base_version=gate["base_version"], anchor=payload.anchor,
         decision=payload.decision, note=payload.note, user_id=user["id"])
     return review_state(doc, can_sign=True, gate=gate)
@@ -950,7 +957,7 @@ def review_queue(project_id: int) -> list[dict]:
         except Exception:
             continue
         gate = reviews.latest_gate(doc["id"])
-        counts = reviews.counts(doc["id"], data["version"])
+        counts = reviews.counts(reviews.DOCUMENT, doc["id"], data["version"])
         if gate is None:
             out.append({
                 "doc_id": doc["id"], "doc_title": doc["title"],
@@ -986,6 +993,130 @@ def review_queue(project_id: int) -> list[dict]:
             "stale": stale,
         })
     return out
+
+
+# ---------- 产物审核（0025／裁定 D1）：关键帧与镜头视频的人工验收 ----------
+class ReviewNotReviewable(Exception):
+    """这条作业现在没法被人审（没成功，或没有产物）。路由回 409。"""
+
+
+ARTIFACT_ANCHOR = "artifact"
+
+
+def artifact_version(job) -> str:
+    """产物清单摘要：把"审的是哪一版产物"钉成一个可复算的令牌。
+
+    与文档的 `base_version` 同一条道理——签字必须绑在被审的东西上，东西变了
+    旧签字就不能算数。这里的"东西"是产物清单：相对路径 ＋ 是否还在 ＋ 字节数。
+    产物被清理、被新一次生成顶掉，摘要就变，界面显示"已失配"，
+    不会出现"文件早就没了、页面上还挂着通过"。
+    """
+    manifest = jobfiles.artifacts(job["result_paths_json"])
+    blob = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _artifact_anchors(job) -> list[str]:
+    """可签的锚点：整条作业，或某一件产物。下标越界的锚点一律拒。"""
+    count = len(jobfiles.artifacts(job["result_paths_json"]))
+    return [ARTIFACT_ANCHOR] + [f"{ARTIFACT_ANCHOR}:{i}" for i in range(count)]
+
+
+def _job_id_of(job) -> int:
+    """作业行的主键有两种写法：`job_repo.get()` 给的是 `id`，
+    审核队列那条 SQL 为了跟 `shot_id`／`episode_id` 分得清，别成了 `job_id`。
+    两个都认，省得调用方记着"这一行是哪儿来的"。"""
+    keys = job.keys()
+    return job["id"] if "id" in keys else job["job_id"]
+
+
+def _job_reviewable(job) -> tuple[bool, str]:
+    """只有"已成功且有产物"的作业能审。原因要能说出口，不是简单的真假。"""
+    if job["status"] != "succeeded":
+        return False, (f"这条作业的状态是「{JOB_STATUSES.get(job['status'], job['status'])}」；"
+                       f"只有已成功的作业才有产物可审")
+    if not jobfiles.artifacts(job["result_paths_json"]):
+        return False, "这条作业没有登记任何产物，没有可审的对象"
+    return True, ""
+
+
+def job_review_state(job, can_sign: bool = False) -> dict:
+    """一条作业的审核面：产物清单、版本摘要、当前版的签字与计数、是否失配。
+
+    `shot_seq`／`episode_title` 这些是队列 SQL 顺手带出来的；单条详情走
+    `job_repo.get()` 时没有这几列，所以按"有没有这个键"取，不给就留空——
+    比为了两列去多跑一次创作中心的查询划算。
+    """
+    job_id = _job_id_of(job)
+    keys = job.keys()          # 队列 SQL 多带的那两列，详情那条没有
+    reviewable, reason = _job_reviewable(job)
+    version = artifact_version(job) if reviewable else ""
+    all_signs = reviews.signs(reviews.JOB, job_id) if reviewable else []
+    signs = [row for row in all_signs if row["base_version"] == version]
+    return {
+        "job_id": job_id, "project_id": job["project_id"],
+        "capability": job["capability"],
+        "capability_label": CAPABILITIES.get(job["capability"], job["capability"]),
+        "execution_mode": job["execution_mode"],
+        "provider_code": job["provider_code"], "model_code": job["model_code"],
+        "episode_id": job["episode_id"],
+        "episode_title": (job["episode_title"] if "episode_title" in keys else "") or "",
+        "shot_id": job["shot_id"],
+        "shot_seq": job["shot_seq"] if "shot_seq" in keys else None,
+        "status": job["status"],
+        "status_label": JOB_STATUSES.get(job["status"], job["status"]),
+        "finished_at": job["finished_at"] or "",
+        "artifacts": jobfiles.artifacts(job["result_paths_json"]),
+        "base_version": version,
+        "reviewable": reviewable, "reason": reason,
+        # 有签字落在别的版本上＝产物换过了，那些签字不能再算到这一版头上
+        "stale": len(all_signs) != len(signs),
+        "counts": reviews.counts(reviews.JOB, job_id, version),
+        "signatures": [_review_signature_view(row) for row in signs],
+        "anchors": _artifact_anchors(job) if reviewable else [],
+        "can_sign": bool(can_sign and reviewable),
+    }
+
+
+def job_review_queue(project_id: int) -> list[dict]:
+    """项目里的产物审核队列。签字批量取一次，不为每条作业各查一趟。"""
+    rows = reviews.job_queue(project_id)
+    signs = reviews.signs_for_jobs(project_id, [r["job_id"] for r in rows])
+    by_job: dict[int, list] = {}
+    for row in signs:
+        by_job.setdefault(row["target_id"], []).append(row)
+    out = []
+    for row in rows:
+        state = job_review_state(row)
+        mine = by_job.get(row["job_id"], [])
+        # 队列里的 job 一定是 succeeded 且有产物（SQL 已经筛过），
+        # 所以这里的 stale 只看"签字绑的是不是当前这版产物"
+        state["stale"] = any(s["base_version"] != state["base_version"] for s in mine)
+        state["signatures"] = [_review_signature_view(s) for s in mine
+                               if s["base_version"] == state["base_version"]]
+        state["counts"] = reviews.counts(reviews.JOB, row["job_id"], state["base_version"])
+        out.append(state)
+    return out
+
+
+def job_review_sign(job, payload, user) -> dict:
+    """给一条作业的产物签字。锚点必须在当前产物清单里，版本必须对得上。
+
+    产线的 `image_review`／`shot_review` 节点就调这里——**审核结论只有这一个
+    写入口**，产线只拿 `review_item.id` 当引用，不复制结论（不变量 3）。
+    """
+    reviewable, reason = _job_reviewable(job)
+    if not reviewable:
+        raise ReviewNotReviewable(reason)
+    version = artifact_version(job)
+    if payload.anchor not in _artifact_anchors(job):
+        raise reviewgate.ReviewInvalid("这个锚点不在本次产物清单里")
+    reviews.upsert_sign(
+        project_id=job["project_id"], target_kind=reviews.JOB,
+        target_id=_job_id_of(job),
+        gate_id=None, base_version=version, anchor=payload.anchor,
+        decision=payload.decision, note=payload.note, user_id=user["id"])
+    return job_review_state(job, can_sign=True)
 
 
 # ---------- 音频中心（W15） ----------

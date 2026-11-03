@@ -238,10 +238,19 @@ class JobRepository:
                  self._resources(resources), provider_request_id, job_id, worker_id),
             )
 
-    def cancelled(self, job_id: int, worker_id: str | None, message: str = "",
+    def cancelled(self, job_id: int, worker_id: str, message: str = "",
                   log_path: str = "", elapsed_ms: int | None = None,
                   resources: dict | None = None,
                   provider_request_id: str | None = None) -> None:
+        """收尾成 cancelled。与 succeed／fail 同一道归属守卫。
+
+        审计 R1：这一条原来是唯一只看 `id` 的终态写入。`recover_stale()` 收尾时
+        会把 `worker_id` 置 NULL，所以"恢复之后旧 worker 回来覆盖终态"这条路在
+        succeed／fail 上已经关死，只有 cancelled 还开着——危害有限（状态同为终态，
+        被覆盖的是 `error_message`／`elapsed_ms`／`resources_json` 这三样收尾证据），
+        但"谁收的尾"本来就该只有一个答案，补 `AND worker_id = ?` 让四条终态写入
+        用同一条规则。调用方（worker.process）本来就传着自己那一份 wid。
+        """
         with get_conn() as conn:
             conn.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = datetime('now','localtime'),
@@ -249,9 +258,9 @@ class JobRepository:
                           elapsed_ms = ?, resources_json = ?, lease_until = NULL, worker_id = NULL,
                           provider_request_id = COALESCE(?, provider_request_id),
                           updated_at = datetime('now','localtime')
-                    WHERE id = ?""",
+                    WHERE id = ? AND worker_id = ?""",
                 (message[:2000], log_path, elapsed_ms, self._resources(resources),
-                 provider_request_id, job_id),
+                 provider_request_id, job_id, worker_id),
             )
 
     def needs_attention(self, job_id: int, worker_id: str, error_code: str, message: str,

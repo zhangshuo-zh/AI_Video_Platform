@@ -92,6 +92,28 @@ def test_转移账号中途失败时不留半套状态(as_role, monkeypatch):
     assert set(_owners(ids).values()) == {heir}
 
 
+def test_名下没有项目的账号也要真删掉(as_role):
+    """阶段 B 验收撞到的：这一支原来不存在，接口回 204、账号还在库里。
+
+    `transfer_to is None` 且 `delete_projects=False` 时，代码走的是
+    `elif owned:`——名下没有项目就两个分支都不进，函数什么也不做就返回 204。
+    界面上写"已删除"，下一次登录列表里那个人还在，这就是 W01-b 收拾过的
+    那一类"假成功的 DELETE"，只是这一处漏了网。
+    """
+    admin = as_role("admin")
+    victim = _make_user("viewer")
+    assert project_repo.owned_by(victim) == []          # 前提：名下一个项目都没有
+
+    r = admin.request("DELETE", f"/api/users/{victim}",
+                      json={"transfer_to": None, "delete_projects": False})
+    assert r.status_code == 204, r.text
+    assert user_repo.get_by_id(victim) is None, "回了 204 但账号还在＝假成功"
+    with get_conn() as conn:
+        rows = conn.execute("SELECT COUNT(*) AS n FROM app_user WHERE id = ?",
+                            (victim,)).fetchone()["n"]
+    assert rows == 0
+
+
 def test_连带删项目失败时要说清删到哪一步(as_role, monkeypatch):
     """这条路回滚不回来（Git 与文件已经动了），至少让人看见做到哪里、账号还在不在。"""
     admin = as_role("admin")

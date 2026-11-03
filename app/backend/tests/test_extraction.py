@@ -303,3 +303,42 @@ def test_作业失败时运行也失败(as_role, text_ai, fresh_project, clean_q
     view = c.get(f"/api/extract/runs/{run['id']}").json()
     assert view["status"] == "parse_failed"
     assert "JSON" in view["note"]
+
+
+def test_建运行那一步崩了不会留下孤儿付费作业(as_role, text_ai, fresh_project,
+                                            clean_queue, monkeypatch):
+    """裁定 D2：Job 行与抽取运行行必须在同一个事务里落。
+
+    反证方式：把 `create_run` 换成必炸的函数，再数库里多了几条 job。
+    收口之前这一步会多出 1 条——云端、`pending_reconciliation`，
+    成本账上有这笔钱，抽取页却找不到它属于哪一次运行（run 没建成）。
+    那正是"付了费却没人认领"的一种账。
+    """
+    doc, _data, pid = _make_doc(fresh_project)
+    c = as_role("editor")
+
+    def count_jobs():
+        with get_conn() as conn:
+            return conn.execute("SELECT COUNT(*) AS n FROM job").fetchone()["n"]
+
+    before = count_jobs()
+
+    def boom(**kwargs):
+        raise RuntimeError("模拟建运行那一步崩溃")
+
+    original = services.extraction_runs.create_run
+    monkeypatch.setattr(services.extraction_runs, "create_run", boom)
+    # TestClient 会把服务端异常原样抛出来，所以这里必须接住
+    with pytest.raises(RuntimeError):
+        _submit(c, pid, doc["id"])
+    assert count_jobs() == before, "第二步崩了，第一步的 Job 行没跟着回滚"
+
+    # 修好之后同一份输入还能正常提交：回滚没有把库留在半套状态上。
+    # 这里手动还原而不是 monkeypatch.undo()——undo 会把 text_ai fixture 设的
+    # DEEPSEEK_API_KEY 一起撤掉，于是"修好之后"反而变成"环境没了"，测的不是同一件事。
+    monkeypatch.setattr(services.extraction_runs, "create_run", original)
+    r = _submit(c, pid, doc["id"])
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["deduped"] is False and body["job_id"], body
+    assert count_jobs() == before + 1

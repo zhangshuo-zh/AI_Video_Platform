@@ -1,4 +1,14 @@
-"""校验报告与人工签字（W14）。SQL 只在这一层。"""
+"""校验报告与人工签字（W14；0025 起审核对象多态化）。SQL 只在这一层。
+
+审核对象只有两档：
+  * `document`——审的是正文的某一版，`base_version` 是正文 sha256，锚点是字符偏移；
+  * `job`——审的是某条已成功作业的产物，`base_version` 是产物清单摘要，
+    锚点是 `artifact`（整条作业）或 `artifact:<下标>`（某一件产物）。
+
+两档共用一张表、一套签字语义（改判不叠历史、版本失配就作废）。产线的
+「关键帧验收」「镜头审核」都落在 `job` 这一档：**审核结论只有这一个写入口**，
+产线只存引用，不复制结论。
+"""
 from __future__ import annotations
 
 import json
@@ -6,8 +16,17 @@ import sqlite3
 
 from db import get_conn
 
+DOCUMENT = "document"
+JOB = "job"
+
 
 class ReviewRepository:
+    # 审核对象的两档。挂在类上是为了调用方写 `reviews.DOCUMENT`——
+    # `from … import reviews` 是单例导入，模块级常量那样写取不到。
+    DOCUMENT = DOCUMENT
+    JOB = JOB
+
+    # ---------- gate：仍然只针对文档（规则校验器读的是正文） ----------
     def create_gate(self, *, project_id: int, doc_id: int, base_version: str,
                     status: str, findings: list[dict], summary: dict,
                     created_by: int | None) -> sqlite3.Row:
@@ -34,12 +53,14 @@ class ReviewRepository:
             return conn.execute("SELECT * FROM review_gate WHERE id = ?",
                                 (gate_id,)).fetchone()
 
-    def signs(self, doc_id: int, base_version: str | None = None) -> list[sqlite3.Row]:
+    # ---------- 签字 ----------
+    def signs(self, target_kind: str, target_id: int,
+              base_version: str | None = None) -> list[sqlite3.Row]:
         sql = """SELECT r.*, u.display_name AS signed_by_name
                    FROM review_item r
                    LEFT JOIN app_user u ON u.id = r.signed_by
-                  WHERE r.doc_id = ?"""
-        args: list = [doc_id]
+                  WHERE r.target_kind = ? AND r.target_id = ?"""
+        args: list = [target_kind, target_id]
         if base_version is not None:
             sql += " AND r.base_version = ?"
             args.append(base_version)
@@ -47,55 +68,95 @@ class ReviewRepository:
         with get_conn() as conn:
             return conn.execute(sql, args).fetchall()
 
-    def signed_versions(self, doc_id: int) -> list[str]:
-        with get_conn() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT base_version FROM review_item WHERE doc_id = ?",
-                (doc_id,)).fetchall()
-        return [row["base_version"] for row in rows]
-
-    def upsert_sign(self, *, project_id: int, doc_id: int, gate_id: int | None,
-                    base_version: str, anchor: str, decision: str, note: str,
-                    user_id: int) -> sqlite3.Row:
-        """同一版同一锚点改判：UNIQUE 冲突时更新，不叠第二条。"""
+    def upsert_sign(self, *, project_id: int, target_kind: str, target_id: int,
+                    gate_id: int | None, base_version: str, anchor: str,
+                    decision: str, note: str, user_id: int) -> sqlite3.Row:
+        """同一对象、同一版、同一锚点改判：UNIQUE 冲突时更新，不叠第二条。"""
         with get_conn() as conn:
             conn.execute(
                 """INSERT INTO review_item
-                   (project_id, doc_id, gate_id, base_version, anchor, decision,
-                    note, signed_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(doc_id, base_version, anchor) DO UPDATE SET
+                   (project_id, target_kind, target_id, gate_id, base_version,
+                    anchor, decision, note, signed_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(target_kind, target_id, base_version, anchor) DO UPDATE SET
                        gate_id = excluded.gate_id,
                        decision = excluded.decision,
                        note = excluded.note,
                        signed_by = excluded.signed_by,
                        signed_at = datetime('now','localtime')""",
-                (project_id, doc_id, gate_id, base_version, anchor, decision,
-                 note, user_id))
+                (project_id, target_kind, target_id, gate_id, base_version, anchor,
+                 decision, note, user_id))
             return conn.execute(
                 """SELECT r.*, u.display_name AS signed_by_name
                      FROM review_item r LEFT JOIN app_user u ON u.id = r.signed_by
-                    WHERE r.doc_id = ? AND r.base_version = ? AND r.anchor = ?""",
-                (doc_id, base_version, anchor)).fetchone()
+                    WHERE r.target_kind = ? AND r.target_id = ?
+                      AND r.base_version = ? AND r.anchor = ?""",
+                (target_kind, target_id, base_version, anchor)).fetchone()
 
-    def counts(self, doc_id: int, base_version: str) -> dict:
+    def counts(self, target_kind: str, target_id: int, base_version: str) -> dict:
         with get_conn() as conn:
             rows = conn.execute(
                 """SELECT decision, COUNT(*) AS n FROM review_item
-                    WHERE doc_id = ? AND base_version = ?
+                    WHERE target_kind = ? AND target_id = ? AND base_version = ?
                     GROUP BY decision""",
-                (doc_id, base_version)).fetchall()
+                (target_kind, target_id, base_version)).fetchall()
         out = {"approved": 0, "rejected": 0, "returned": 0}
         out.update({row["decision"]: row["n"] for row in rows})
         return out
 
-    def project_signs(self, project_id: int) -> list[sqlite3.Row]:
+    def delete_for_document(self, conn, doc_id: int) -> None:
+        """删文档时清掉它的签字。
+
+        为什么要在代码里删：`target_id` 是多态列，建不了外键，也就没有 CASCADE
+        （0025 之前这一条是 `doc_id REFERENCES document ON DELETE CASCADE` 白送的）。
+        调用方 `repositories/documents.delete()` 已经握着一条开着的连接，
+        所以这里收 `conn` 而不是自己再开一条——文档行与签字必须在同一个事务里走，
+        否则文档删了、签字还在，就成了指向空气的审核记录。
+        """
+        conn.execute(
+            "DELETE FROM review_item WHERE target_kind = 'document' AND target_id = ?",
+            (doc_id,))
+
+    # ---------- 产物审核队列（关键帧／镜头视频） ----------
+    def job_queue(self, project_id: int, limit: int = 200) -> list[sqlite3.Row]:
+        """这个项目里"可以被人审"的作业：已成功、是图像或视频、产物清单非空。
+
+        镜头号与集号一次带出来，界面不必为每条作业再问一次创作中心（N+1）。
+        签字另查一次（`signs_for_jobs` 批量），不在这条 SQL 里做子查询——
+        一条作业可能有多件产物、多个锚点的签字，摊平成行反而难读。
+        """
         with get_conn() as conn:
             return conn.execute(
-                """SELECT r.*, u.display_name AS signed_by_name
-                     FROM review_item r LEFT JOIN app_user u ON u.id = r.signed_by
-                    WHERE r.project_id = ? ORDER BY r.id DESC""",
-                (project_id,)).fetchall()
+                """SELECT j.id AS job_id, j.project_id, j.capability, j.kind,
+                          j.execution_mode, j.provider_code, j.model_code,
+                          j.shot_id, j.episode_id, j.status,
+                          j.result_paths_json, j.finished_at,
+                          s.seq AS shot_seq, e.seq AS episode_seq, e.title AS episode_title
+                     FROM job j
+                     LEFT JOIN shot s ON s.id = j.shot_id
+                     LEFT JOIN episode e ON e.id = j.episode_id
+                    WHERE j.project_id = ?
+                      AND j.status = 'succeeded'
+                      AND j.capability IN ('image','video')
+                      AND j.result_paths_json NOT IN ('', '[]')
+                    ORDER BY j.id DESC
+                    LIMIT ?""",
+                (project_id, min(max(limit, 1), 200))).fetchall()
+
+    def signs_for_jobs(self, project_id: int, job_ids: list[int]) -> list[sqlite3.Row]:
+        """批量取这批作业的签字。空列表直接回空，不拼出 `IN ()` 那种语法错误。"""
+        if not job_ids:
+            return []
+        marks = ",".join("?" for _ in job_ids)
+        with get_conn() as conn:
+            return conn.execute(
+                f"""SELECT r.*, u.display_name AS signed_by_name
+                      FROM review_item r
+                      LEFT JOIN app_user u ON u.id = r.signed_by
+                     WHERE r.project_id = ? AND r.target_kind = 'job'
+                       AND r.target_id IN ({marks})
+                     ORDER BY r.id""",
+                [project_id, *job_ids]).fetchall()
 
 
 reviews = ReviewRepository()

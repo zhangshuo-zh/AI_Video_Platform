@@ -112,6 +112,11 @@ ROUTES = [
     ("POST", "/api/documents/{d}/review-gate", None, 404),
     ("POST", "/api/documents/{d}/review-sign",
      {"anchor": "document", "decision": "approved"}, 404),
+    # 产物审核（0025／裁定 D1）：审的是一条已成功作业的产物，签字仍只此一个入口
+    ("GET", "/api/projects/{p}/job-reviews", None, 404),
+    ("GET", "/api/jobs/{j}/review", None, 404),
+    ("POST", "/api/jobs/{j}/review-sign",
+     {"anchor": "artifact", "decision": "approved"}, 404),
     # ---------- 音频中心（W15） ----------
     ("GET", "/api/projects/{p}/audio-clips", None, 404),
     ("POST", "/api/projects/{p}/audio-clips",
@@ -153,6 +158,21 @@ ROUTES = [
     # 成本账按可见项目汇总：看不见那个项目时就是空账，不是 404
     ("GET", "/api/jobs/costs", None, 200),
     ("GET", "/api/worker/status", None, 200),
+    # ---------- 自动化漫剧产线（0026／阶段 B） ----------
+    # 模板是全局的、只读，有 job:read 就能看 ⇒ editor（outsider）200。
+    # 运行／节点一定挂项目：看不见那个项目就 404，连"这条运行存在"都不透露。
+    # 权限点一个新都没加，所以这里不会出现 403 的那一档。
+    ("GET", "/api/pipeline/templates", None, 200),
+    ("GET", "/api/pipeline/templates/{x}", None, 404),
+    ("POST", "/api/projects/{p}/pipeline/runs",
+     {"episode_id": "{e}", "template_id": 1, "idempotency_key": "越权探测"}, 404),
+    ("GET", "/api/projects/{p}/pipeline/runs", None, 404),
+    ("GET", "/api/pipeline/runs/{x}", None, 404),
+    ("POST", "/api/pipeline/runs/{x}/advance", None, 404),
+    ("POST", "/api/pipeline/runs/{x}/pause", None, 404),
+    ("POST", "/api/pipeline/runs/{x}/resume", None, 404),
+    ("POST", "/api/pipeline/runs/{x}/cancel", {"reason": "越权探测"}, 404),
+    ("POST", "/api/pipeline/nodes/{x}/retry", None, 404),
     # ---------- 参数模板（W08） ----------
     ("GET", "/api/generation-profiles", None, 200),
     ("POST", "/api/generation-profiles", {"project_id": "{p}", "name": "越权模板",

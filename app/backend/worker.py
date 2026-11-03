@@ -16,6 +16,13 @@ W09 起真适配器不再以 `adapter_not_ready` 失败：
 一条本地队列同一时刻只跑一个作业：领取前先看有没有租约未过期的
 starting/running，有就不领。跑作业时每 0.2 秒续租并看一眼取消，
 模型内部再长也不会被恢复逻辑误杀。
+
+自动化漫剧产线的调度节拍也住在这个进程里（每轮循环调一次
+`pipeline.tick()`）。理由：本进程已经是常驻循环、已经在每轮做
+`recover_stale()`，也是唯一会写 Job 状态的地方；调度器放这儿，
+"派活"与"收活"就是同一个进程里的先后两步，不用再造回调通道。
+API 那边的 `POST /advance` 调的是同一个 `advance_run()`，两边都幂等，
+谁先跑都不会把同一个节点派两次。
 """
 from __future__ import annotations
 
@@ -36,6 +43,7 @@ from pathlib import Path
 
 import adapters
 import jobfiles
+import pipeline
 import runners
 import validations
 from config import (ALLOW_MOCK, WORKER_LEASE_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
@@ -521,6 +529,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signals()
     wid = worker_id()
+    # 模板表补齐：worker 可能比 API 进程先起来（比如只跑 worker 做批处理），
+    # 那时候产线运行照样要能推进，所以两边都调一次；重复调用是空操作。
+    pipeline.ensure_builtin_templates()
     recovered = jobs.recover_stale()
     if recovered["failed"] or recovered["cancelled"]:
         print(f"启动恢复：failed={recovered['failed']} cancelled={recovered['cancelled']}")
@@ -531,6 +542,14 @@ def main(argv: list[str] | None = None) -> int:
         # 崩溃后立刻重启会看到租约还没过期，于是一条作业会永远挂在 running。
         # 正常跑着的作业每 0.2 秒续租，不会被这里误判。
         jobs.recover_stale()
+        # 产线节拍：先把该派的节点派成 Job，再往下走 run_once 领取。
+        # 顺序反过来也能工作（下一轮补上），只是白等一个轮询周期。
+        # 这里出异常不能让 worker 整个退出——一条产线的定义有问题，
+        # 不该把队列里其它正常作业一起拖死。
+        try:
+            pipeline.tick()
+        except Exception as exc:
+            print(f"[产线] 推进失败，本轮跳过：{type(exc).__name__}: {exc}")
         did = run_once(wid)
         jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION)
         if args.once:

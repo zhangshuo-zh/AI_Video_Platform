@@ -9,19 +9,24 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import pipeline
 from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
-from routers import (audio, auth, content, dashboard, documents, extraction, files,
-                     jobs,
-                     profiles, projects, review, settings, system, users)
+from routers import (audio, auth, content, dashboard, documents, extraction,
+                     files, jobs, pipeline as pipeline_api, profiles, projects,
+                     review, settings, system, users)
 from services import ensure_workspace
 
 
 def create_app() -> FastAPI:
     migrate(verbose=False)          # 启动时把库补到最新，重复执行是安全的
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
+    # 内置产线模板按 (name, version) 补齐：已有的不动，只插缺的。
+    # 放这里是因为 worker 进程也要有一份同样的模板表，而两边共用同一个库，
+    # 谁先起来谁补齐都行——插过一次之后就是空操作。
+    pipeline.ensure_builtin_templates()
     # 稿件工作区（Markdown + Git）准备好。这一步失败不拦启动：
     # 没装 git、工作区指向了一个只读盘，坏的只是"文档"这一条腿，
     # 项目/资产/分镜照常用；为了这一条让整个平台起不来，人反而不知道是哪坏了。
@@ -47,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(audio.router)
     app.include_router(dashboard.router)
     app.include_router(jobs.router)
+    app.include_router(pipeline_api.router)
     app.include_router(profiles.router)
     app.include_router(projects.router)
     app.include_router(settings.router)
