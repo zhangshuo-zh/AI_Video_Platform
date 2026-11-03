@@ -376,6 +376,9 @@ def test_worker_心跳决定在线(as_role):
     with get_conn() as conn:
         conn.execute("""UPDATE worker_state SET heartbeat_at =
                         datetime('now','localtime','-1 hour') WHERE id = 1""")
+        # 阶段 E 起在线判定看 worker_node（每个进程一行）；单行镜像只作兼容
+        conn.execute("""UPDATE worker_node SET heartbeat_at =
+                        datetime('now','localtime','-1 hour')""")
     offline = c.get("/api/worker/status").json()
     assert offline["online"] is False
     assert offline["current_job_id"] is None

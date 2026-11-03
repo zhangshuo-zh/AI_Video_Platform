@@ -783,6 +783,31 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .mod p{font-size:12px;color:var(--ink-2);line-height:1.65}
 .mod .ents{margin-top:10px;font-size:11.5px;color:var(--ink-3);border-top:1px solid var(--line);padding-top:8px}
 
+/* ---------- 首页待办条（/api/workbench） ----------
+   四格：待签字／失败作业／待核对账单／进行中的运行。数字是主角，所以给 22px；
+   标签与出处各降一档。宽屏一行，1080 以下两列，760 以下一列。
+   用 <button> 而不是 div：这三格都是"点一下去对应页面"，键盘要能到达。 */
+.wb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.wb-card{
+  display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+  padding:12px 14px;text-align:left;font:inherit;color:inherit;cursor:pointer;
+  background:var(--panel);border:1px solid var(--edge);border-radius:var(--r-card);
+  box-shadow:var(--sh-1);
+  transition:border-color var(--mid),box-shadow var(--mid);
+}
+.wb-card:hover{border-color:var(--accent-line);box-shadow:inset 0 1px 0 var(--accent-edge),var(--sh-2)}
+.wb-card:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-tint)}
+.wb-card b{font-size:22px;font-weight:650;letter-spacing:-.02em;line-height:1.2;
+  font-variant-numeric:tabular-nums}
+.wb-card span{font-size:12.5px;color:var(--ink-2)}
+.wb-card em{font-size:11.5px;font-style:normal;color:var(--ink-3)}
+/* 颜色只标"需要人管"的那两档：失败是坏，待核对是待判，其余保持中性 */
+.wb-card.bad b{color:var(--bad)}
+.wb-card.warn b{color:var(--warn)}
+@media (max-width:1080px){.wb-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.wb-grid{grid-template-columns:minmax(0,1fr)}}
+
+
 /* 实体关系：主干缩进树 + 支线四行 */
 .lbl{font-size:11.5px;color:var(--ink-3);letter-spacing:.04em;margin-bottom:8px}
 .etree,.etree ul{list-style:none}
@@ -1227,6 +1252,14 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
   .pf-actions{width:100%;justify-content:flex-end}
 }
 
+/* 页内二级切换器（小说／剧本／分镜、文档审核／产物审核、运行／模板／整季……）
+   只在窄屏需要：861px 起侧栏的 .nav-sub 是展开的，页内再摆一排就是同一份状态
+   两个控件——用户还得挑一个点。窄屏侧栏收起时才靠它兜底，所以方向必须是
+   min-width，不能反过来写成 max-width。 */
+@media (min-width:861px){
+  .sub-chip{display:none}
+}
+
 /* 系统设置里偏好"减少动态效果"的人不少，这条得听 */
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0 !important;
@@ -1402,3 +1435,64 @@ td.shot-jobs .t-desc{max-width:180px}
 .pl-summary{cursor:pointer;font-size:12px;color:var(--accent)}
 .pl-tpl-nodes{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
 .pl-tpl-nodes li{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+
+/* ---------- v0.91 阶段 D：成片中心 ----------
+ * 成片页的主读项是视频本身：播放器铺满卡片宽度、按 16:9 留位；
+ * 时间线与音频只是核对信息，用比产线节点更轻的竖向列表。
+ * 状态色继续沿用全局 chip 语义，不另开色板。 */
+.cp-detail .card-body{padding-top:12px}
+.cp-video{display:block;width:100%;max-width:min(100%,760px);margin:0 auto;
+  max-height:min(62vh,560px);background:#000;
+  border-radius:12px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:contain}
+.cp-meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;
+  margin-top:10px;font-size:11.5px;color:var(--ink-3)}
+.cp-meta .mono{font-size:11px;overflow-wrap:anywhere;min-width:0}
+.cp-sub{margin:16px 0 6px;font-size:12px;font-weight:600;color:var(--ink-2)}
+/* 来源行要能读完：全局 .t-desc 是"列表里的一行摘要"，320px 截断，这里不适用 */
+.cp-src{margin:0;font-size:11.5px;line-height:1.7;color:var(--ink-3);
+  overflow-wrap:anywhere}
+.cp-shot{display:flex;gap:10px;border:1px solid var(--line);border-radius:10px;
+  background:var(--panel-2);padding:8px 10px;min-width:0}
+.cp-shot-main{min-width:0;flex:1}
+.cp-shot .pl-title{gap:6px}
+.cp-shot .pl-meta{margin-top:2px;gap:6px 10px}
+.cp-audios{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.cp-audio{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;
+  font-size:11.5px;color:var(--ink-2)}
+.cp-err{margin:10px 0 0;font-size:12px;line-height:1.6;color:var(--bad);
+  word-break:break-word}
+#cp-modal .modal-box{max-width:520px}
+#cp-modal .ctl{width:100%}
+/* 字幕那一栏：选择器铺满、下面的小工具横排；
+   禁用态由服务端给的"这台机器烧不了"决定，样式上要说清这不是没传文件 */
+.cp-srt-wrap{display:grid;gap:6px}
+.cp-srt-tools{gap:6px;flex-wrap:wrap}
+.cp-srt-upload{display:inline-flex;align-items:center}
+.cp-srt-hint{font-size:11.5px;line-height:1.6;color:var(--ink-3);margin:0}
+.cp-srt-wrap select:disabled{opacity:.6;cursor:not-allowed}
+
+/* ---------- 整季生产（阶段 E，v0.92） ---------- */
+.season-workers .card-body{padding-top:10px}
+.season-eps{display:grid;gap:4px;max-height:220px;overflow:auto;
+  border:1px solid var(--line);border-radius:10px;background:var(--panel-2);
+  padding:6px 8px;margin-top:4px}
+.season-ep{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12px}
+.season-ep input{accent-color:var(--accent)}
+.season-ep .t-desc{margin:0;max-width:none;white-space:nowrap}
+.season-ep-head{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;margin-top:14px}
+.season-ep-head .modal-label{margin:0}
+.season-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:10px;margin:2px 0 4px}
+.season-stats>div{border:1px solid var(--line);border-radius:10px;
+  background:var(--panel-2);padding:8px 10px;min-width:0}
+.season-stats b{display:block;margin-top:3px;font-size:13px;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.season-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.season-detail .card-body{padding-top:12px}
+.season-err{display:block;max-width:340px;font-size:11px;line-height:1.55;
+  color:var(--bad);word-break:break-word}
+@media (max-width:760px){
+  .season-err{max-width:none}
+  .season-stats{grid-template-columns:1fr}
+}

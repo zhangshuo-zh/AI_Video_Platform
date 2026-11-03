@@ -59,6 +59,21 @@ class PipelineRepository:
         with get_conn() as conn:
             return conn.execute(sql).fetchall()
 
+    def latest_templates(self) -> list[sqlite3.Row]:
+        """每个名字只出最新一版：界面默认选当前口径，旧版本仍可按 id 取到。
+
+        旧版本不删——已经跑过的运行冻结在那一版；但"新发起"不该在四张卡里
+        猜哪个是现在的标准流程。
+        """
+        with get_conn() as conn:
+            return conn.execute(
+                """SELECT t.* FROM pipeline_template t
+                    JOIN (SELECT name, MAX(version) AS v
+                            FROM pipeline_template WHERE enabled = 1
+                           GROUP BY name) m
+                      ON m.name = t.name AND m.v = t.version
+                    ORDER BY t.name""").fetchall()
+
     # ---------- 运行 ----------
     def create_run(self, *, project_id: int, episode_id: int, template_id: int,
                    template_version: int, input_snapshot: dict,

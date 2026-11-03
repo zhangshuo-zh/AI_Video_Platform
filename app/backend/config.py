@@ -47,6 +47,36 @@ QUEUE_STALL_SECONDS = int(os.environ.get("FASTVIDEO_QUEUE_STALL_SECONDS", "120")
 # 默认给 10 分钟；它只是观测阈值，不会自动杀进程（杀进程仍由运行超时负责）。
 LOG_SILENCE_SECONDS = int(os.environ.get("FASTVIDEO_LOG_SILENCE_SECONDS", "600"))
 
+# ---------- 成片中心（阶段 D） ----------
+# FFmpeg 由 worker 的子进程执行，绝不在请求线程里跑；路径可换（brew／自编译）。
+FFMPEG_BIN = os.environ.get("FASTVIDEO_FFMPEG", "ffmpeg")
+FFPROBE_BIN = os.environ.get("FASTVIDEO_FFPROBE", "ffprobe")
+# 默认输出 720p：目标机与局域网预览够用，合成本身是 CPU 重活，1080p 留给显式选择。
+COMPOSE_WIDTH = int(os.environ.get("FASTVIDEO_COMPOSE_WIDTH", "1280"))
+COMPOSE_HEIGHT = int(os.environ.get("FASTVIDEO_COMPOSE_HEIGHT", "720"))
+COMPOSE_FPS = int(os.environ.get("FASTVIDEO_COMPOSE_FPS", "24"))
+COMPOSE_CRF = int(os.environ.get("FASTVIDEO_COMPOSE_CRF", "20"))
+COMPOSE_PRESET = os.environ.get("FASTVIDEO_COMPOSE_PRESET", "veryfast")
+# 防呆：一集几百镜还硬合成会把临时目录与内存拖死；超过就明确拒绝，不静默截断。
+COMPOSE_MAX_SHOTS = int(os.environ.get("FASTVIDEO_COMPOSE_MAX_SHOTS", "200"))
+
+# ---------- 并发与整季（阶段 E） ----------
+# 一条 worker 进程能领哪些资源类；默认全接，且全局只跑一条——与旧行为一致。
+RESOURCE_CLASSES = ("text", "image", "video", "audio", "compose")
+WORKER_MAX_GLOBAL = int(os.environ.get("FASTVIDEO_WORKER_MAX_GLOBAL", "1"))
+# 每类资源的默认上限。实际值要用目标机基准测出来，这里只是安全起点。
+WORKER_MAX_PER_RESOURCE = {
+    name: int(os.environ.get(f"FASTVIDEO_WORKER_MAX_{name.upper()}", "1"))
+    for name in RESOURCE_CLASSES
+}
+# 一整季同时最多推进几条单集运行。默认 1＝串行；调高前先看 worker 的并发上限。
+SEASON_MAX_ACTIVE_RUNS = int(os.environ.get("FASTVIDEO_SEASON_MAX_ACTIVE", "1"))
+# 单季可设的并发上限（防呆）：再多也不该在一台 16GB 机器上同时推。
+SEASON_MAX_ACTIVE_LIMIT = int(os.environ.get("FASTVIDEO_SEASON_MAX_ACTIVE_LIMIT", "8"))
+# 一次整季发起最多包含多少集（防呆，不是业务上限；要更多就分批）。
+SEASON_MAX_EPISODES = int(os.environ.get("FASTVIDEO_SEASON_MAX_EPISODES", "200"))
+
+
 # 测试/演示用的假适配器（只 sleep、写一个文本结果）。默认关；
 # 打开后 API 与 worker 才认识 provider=mock，生产环境不该出现它。
 ALLOW_MOCK = os.environ.get("FASTVIDEO_ALLOW_MOCK") == "1"

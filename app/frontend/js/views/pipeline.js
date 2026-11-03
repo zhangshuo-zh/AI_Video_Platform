@@ -17,7 +17,7 @@ import {
   bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow,
 } from '../util.js';
 
-const TABS = ['运行', '模板'];
+const TABS = ['运行', '模板', '整季'];
 // 与后端 pipeline.RUN_STATUS_LABELS／NODE_STATUS_LABELS 同一套词，这里只决定颜色
 const RUN_TONE = {
   running: 'blue', waiting_review: 'amber', attention: 'amber', paused: 'amber',
@@ -37,6 +37,7 @@ const TYPE_LABEL = {
   image_generate: '关键帧生成', video_generate: '镜头视频',
   image_review: '关键帧验收', shot_review: '镜头审核',
   human_gate: '人工确认', export_prepare: '成片准备',
+  export_compose: '成片合成', export_validate: '成片验收', export_review: '成片审核',
 };
 const FINISHED = ['completed', 'completed_with_errors', 'failed', 'cancelled'];
 const EVENT_LABEL = {
@@ -52,8 +53,20 @@ const EVENT_LABEL = {
 // 打开的运行与同一句提示都要跨重绘活着；提示带上「项目 × 页签」的键，
 // 换项目或换页签就收走——同一个失败的提示不该跟着人到下一个项目。
 let openRunId = null;
+let openSeasonId = null;
 let notice = '';
 let noticeKey = '';
+
+const SEASON_TONE = {
+  running: 'blue', paused: 'amber', cancelled: 'gray',
+  completed: 'green', completed_with_errors: 'amber',
+};
+const SEASON_ITEM_TONE = {
+  pending: 'gray', failed: 'red', running: 'blue', paused: 'amber',
+  waiting_review: 'amber', attention: 'amber', cancelled: 'gray',
+  completed: 'green', completed_with_errors: 'amber',
+};
+const RES_LABEL = { text: '文本', image: '图片', video: '视频', audio: '音频', compose: '合成' };
 
 const currentTab = () => {
   const raw = getSub('pipeline') ?? 0;
@@ -205,6 +218,276 @@ function detailHtml(detail) {
   </div>`;
 }
 
+/* ---------------- 整季生产（阶段 E-2／E-3） ---------------- */
+
+function money(micros, currencies) {
+  const value = Number(micros || 0) / 1_000_000;
+  const cur = (currencies && currencies[0]) || 'CNY';
+  const symbol = cur === 'CNY' ? '¥' : `${cur} `;
+  return `${symbol}${value.toFixed(2)}`;
+}
+
+function agoText(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  return `${Math.floor(seconds / 3600)} 小时前`;
+}
+
+function workerPanel() {
+  const w = store.worker;
+  const workers = w?.workers || [];
+  const byRes = w?.queue?.by_resource || {};
+  const resChips = Object.keys(RES_LABEL).map((key) => {
+    const q = byRes[key] || { queued: 0, running: 0 };
+    return `<span class="chip ${q.running ? 'blue' : 'plain'}">${RES_LABEL[key]}
+      ${q.running ? `跑 ${q.running}` : ''}${q.queued ? ` 等 ${q.queued}` : ''}
+      ${!q.running && !q.queued ? '空闲' : ''}</span>`;
+  }).join('');
+  const rows = workers.map((node) => {
+    const limits = node.limits || {};
+    const per = limits.per || {};
+    const cap = Object.keys(RES_LABEL)
+      .map((key) => `${RES_LABEL[key]}${per[key] ?? 1}`).join(' · ');
+    const r = node.resources || {};
+    // 占用是机器实况、上限是人声明的意愿：出问题时先看左边那一列，
+    // 而不是先去调上限——负载 8 而 cores 4 时再怎么调上限都只是排队更久
+    const busy = r.cores ? `负载 ${r.load1 ?? 0}/${r.cores} 核` : '';
+    const use = `CPU ${r.cpu_pct ?? 0}% · 内存峰值 ${r.rss_peak_mb ?? 0}MB`;
+    const disk = r.disk_total_gb ? `盘余 ${r.disk_free_gb ?? 0}/${r.disk_total_gb}GB` : '';
+    const occ = [busy, use, disk].filter(Boolean).join(' · ');
+    return `<tr>
+      <td class="mono">${escapeHtml(node.host || node.worker_id)}<span class="t-desc">pid ${node.pid}</span></td>
+      <td><span class="chip ${node.online ? 'green' : 'gray'}">${node.online ? '在线' : '离线'}</span></td>
+      <td class="num">${escapeHtml(agoText(node.age_seconds))}</td>
+      <td class="num">${escapeHtml(occ || '—')}<span class="t-desc">全局 ${limits.global ?? 1} · ${escapeHtml(cap)}</span></td>
+      <td>${node.current_job_id
+        ? `<button class="btn xs" data-go-job="${node.current_job_id}">作业 #${node.current_job_id}</button>`
+        : '<span class="t-desc">空闲</span>'}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card season-workers">
+    <div class="card-head"><h2>本机 worker</h2>
+      <span class="sub">占用是机器实况、上限是人给的额度；能不能并行看槽位，该不该再开一个看左边</span>
+      <div class="right"><span class="chip ${w?.online ? 'green' : 'gray'}">${w?.online ? '在线' : '离线'}</span></div></div>
+    <div class="card-body">
+      <div class="row" style="gap:6px;flex-wrap:wrap">${resChips}</div>
+      ${workers.length ? `<div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>进程</th><th>状态</th><th class="num">心跳</th>
+          <th class="num">占用与上限</th><th>正在跑</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<p class="hint">还没有 worker 心跳。离线时队列不会自己前进：另开终端跑 <code>./run.sh worker</code>。</p>`}
+    </div>
+  </div>`;
+}
+
+function seasonRows(list) {
+  return list.map((s) => {
+    const tone = SEASON_TONE[s.status] || 'gray';
+    return `<tr class="${s.id === openSeasonId ? 'sel' : ''}">
+      <td><b>${escapeHtml(s.name)}</b></td>
+      <td>${escapeHtml(s.template_name)} <span class="t-desc">v${s.template_version}</span></td>
+      <td><span class="chip ${tone}">${escapeHtml(s.status_label)}</span></td>
+      <td style="min-width:150px">${progressBar(s.progress)}</td>
+      <td class="num">${s.max_active_runs} 条</td>
+      <td class="num">${money(s.cost?.cost_micros, s.cost?.currencies)}</td>
+      <td class="num t-dim">${escapeHtml(s.created_at)}</td>
+      <td class="r"><button class="btn sm primary" data-open-season="${s.id}">查看</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function seasonDetailHtml(d, canSubmit) {
+  const tone = SEASON_TONE[d.status] || 'gray';
+  const canRun = canSubmit && !d.cancelled && !d.finished;
+  const canRetry = canSubmit && !d.cancelled
+    && (d.counts.failed > 0 || d.status === 'completed_with_errors');
+  const items = d.items.map((i) => {
+    const itemTone = SEASON_ITEM_TONE[i.status] || 'gray';
+    return `<tr>
+      <td><b>第 ${i.episode_seq} 集</b>
+        ${i.episode_title && i.episode_title !== `第 ${i.episode_seq} 集`
+          ? `<span class="t-desc">${escapeHtml(i.episode_title)}</span>` : ''}</td>
+      <td><span class="chip ${itemTone}">${escapeHtml(i.status_label)}</span></td>
+      <td style="min-width:140px">${i.run_id ? progressBar(i.progress) : '<span class="t-desc">还没开始</span>'}</td>
+      <td class="num">${money(i.cost?.cost_micros, d.cost?.currencies)}<span class="t-desc">${i.cost?.jobs ?? 0} 条作业</span></td>
+      <td>${i.error_message ? `<span class="season-err">${escapeHtml(i.error_message)}</span>` : '<span class="t-desc">—</span>'}</td>
+      <td class="r">${i.run_id ? `<button class="btn xs" data-open-run="${i.run_id}">运行</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card season-detail">
+    <div class="card-head"><h2>${escapeHtml(d.name)}</h2>
+      <span class="sub">${escapeHtml(d.template_name)} v${d.template_version}
+        · 最多同时 ${d.max_active_runs} 集 · 成本按产线派出的作业汇总</span>
+      <div class="right"><span class="chip ${tone}">${escapeHtml(d.status_label)}</span></div></div>
+    <div class="card-body">
+      ${d.cancel_reason ? `<div class="bar bad"><p>取消原因：${escapeHtml(d.cancel_reason)}</p></div>` : ''}
+      <div class="season-stats">
+        <div><span class="t-desc">进度</span><b>${d.progress.done} / ${d.progress.total} 集</b></div>
+        <div><span class="t-desc">状态分布</span><b>完成 ${d.counts.completed} · 失败 ${d.counts.failed} · 待开始 ${d.counts.pending}</b></div>
+        <div><span class="t-desc">累计成本</span><b>${money(d.cost.cost_micros, d.cost.currencies)}</b>
+          <span class="t-desc">${d.cost.jobs} 条作业；本地作业为 0</span></div>
+      </div>
+      ${(canRun || canRetry) ? `<div class="row season-actions">
+        ${canRun ? (d.paused
+          ? '<button class="btn sm" data-season-resume>恢复排产</button>'
+          : '<button class="btn sm" data-season-pause>暂停排产</button>') : ''}
+        ${canRetry ? '<button class="btn sm" data-season-retry>继续失败集</button>' : ''}
+        ${canRun ? '<button class="btn sm danger" data-season-cancel>取消整季</button>' : ''}
+      </div>` : ''}
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>集</th><th>状态</th><th>进度</th><th class="num">成本</th>
+          <th>原因</th><th class="r"></th></tr></thead>
+        <tbody>${items}</tbody></table></div>
+      <p class="hint">「继续失败集」只重试失败节点：已成功的镜头不会重新生成。
+        页面不轮询，worker 推进后刷新看最新。</p>
+    </div>
+  </div>`;
+}
+
+function seasonModal(templates, episodes) {
+  const tplOptions = templates.map((t) =>
+    `<option value="${t.id}">${escapeHtml(t.name)} v${t.version} · ${t.nodes.length} 个节点</option>`).join('');
+  const epOptions = episodes.map((e) => `<label class="season-ep">
+      <input type="checkbox" value="${e.id}" checked>
+      <span>第 ${e.seq} 集 · ${escapeHtml(e.title)}</span>
+      <span class="t-desc">${e.shot_count} 镜</span>
+    </label>`).join('');
+  return `<div class="modal" id="season-modal" hidden role="dialog" aria-modal="true" aria-label="发起整季生产">
+    <div class="modal-box wide">
+      <div class="modal-head neutral">发起整季生产</div>
+      <div class="modal-body">
+        <label class="modal-label" for="season-name">批次名（可不填）</label>
+        <input class="ctl" id="season-name" maxlength="80" placeholder="例如：第一季 · 十二集">
+        <label class="modal-label" for="season-tpl" style="margin-top:10px">用哪个模板</label>
+        <select class="ctl" id="season-tpl">${tplOptions || '<option value="">没有可用模板</option>'}</select>
+        <label class="modal-label" for="season-max" style="margin-top:10px">同时推进几集</label>
+        <select class="ctl" id="season-max">
+          <option value="1">1 集（串行，默认）</option>
+          <option value="2">2 集</option>
+          <option value="3">3 集</option>
+          <option value="4">4 集</option>
+        </select>
+        <div class="season-ep-head"><span class="modal-label">排哪几集</span>
+          <button class="btn xs" type="button" data-season-all>全选／全不选</button></div>
+        <div class="season-eps" id="season-eps">${epOptions || '<p class="hint">本项目还没有集。</p>'}</div>
+        <p class="modal-meta">一次只按上限起新集；生成节点仍走平台默认模型轨，<b>不代发云端作业</b>。
+          同时推进几集还要看 worker 的资源类槽位——两个闸门都过才会真的并行。</p>
+        <p class="bar bad" id="season-modal-err" hidden></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" data-season-cancel-modal>取消</button>
+        <button class="btn primary" data-season-ok>开始整季</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindSeasons(root, refresh) {
+  root.querySelectorAll('[data-go-job]').forEach((btn) => {
+    btn.addEventListener('click', () => goto('generate', 0));
+  });
+  root.querySelectorAll('[data-open-run]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openRunId = Number(btn.dataset.openRun);
+      setSub('pipeline', 0);
+      refresh();
+    });
+  });
+  root.querySelectorAll('[data-open-season]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openSeasonId = Number(btn.dataset.openSeason);
+      refresh();
+    });
+  });
+
+  const act = async (label, fn, okText) => {
+    if (!(await run(label, fn))) return;
+    notice = okText;
+    noticeKey = `${store.current.id}:2`;
+    refresh();
+  };
+  root.querySelector('[data-season-pause]')?.addEventListener('click', () =>
+    act('暂停', () => api.pauseSeason(openSeasonId),
+      '已暂停排产：不再起新集，已经在跑的单集继续跑完。'));
+  root.querySelector('[data-season-resume]')?.addEventListener('click', () =>
+    act('恢复', () => api.resumeSeason(openSeasonId), '已恢复排产。'));
+  root.querySelector('[data-season-retry]')?.addEventListener('click', async () => {
+    if (!(await confirmDanger({
+      title: '继续失败集',
+      body: '只重试失败的节点、重排启动被拒的集；<b>已成功的镜头不会重新生成</b>。'
+        + '被驳回的审核节点不自动重试——那要人先决定重做哪一镜。',
+      okText: '继续失败集',
+      danger: false,
+    }))) return;
+    await act('继续失败集', () => api.retrySeasonFailed(openSeasonId),
+      '已重试失败节点并重排待开始的集；刷新后看每集结果。');
+  });
+  root.querySelector('[data-season-cancel]')?.addEventListener('click', async () => {
+    if (!(await confirmDanger({
+      title: '取消整季',
+      body: '还没开始的集不再排；已经在跑的单集会收到取消请求。'
+        + '已完成节点与已生成的产物<b>一个都不动</b>。',
+      okText: '取消整季',
+    }))) return;
+    await act('取消整季', () => api.cancelSeason(openSeasonId, '在产线中心取消整季'),
+      '这一季已取消。');
+  });
+
+  const modal = root.querySelector('#season-modal');
+  if (!modal) return;
+  let idemKey = '';
+  const openModal = () => {
+    const err = modal.querySelector('#season-modal-err');
+    err.hidden = true;
+    idemKey = (crypto.randomUUID?.() ?? `season-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    modal.hidden = false;
+  };
+  const closeModal = () => { modal.hidden = true; };
+  bindModalDismiss(modal, closeModal);
+  modal.querySelector('[data-season-cancel-modal]').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  root.querySelectorAll('[data-new-season]').forEach((b) => b.addEventListener('click', openModal));
+  modal.querySelector('[data-season-all]').addEventListener('click', () => {
+    const boxes = [...modal.querySelectorAll('#season-eps input[type="checkbox"]')];
+    const allOn = boxes.every((b) => b.checked);
+    boxes.forEach((b) => { b.checked = !allOn; });
+  });
+  modal.querySelector('[data-season-ok]').addEventListener('click', async () => {
+    const err = modal.querySelector('#season-modal-err');
+    const templateId = Number(modal.querySelector('#season-tpl').value);
+    const episodeIds = [...modal.querySelectorAll('#season-eps input[type="checkbox"]:checked')]
+      .map((b) => Number(b.value));
+    const maxActive = Number(modal.querySelector('#season-max').value) || 1;
+    const name = modal.querySelector('#season-name').value.trim();
+    if (!templateId) {
+      err.textContent = '先选一个模板。';
+      err.hidden = false;
+      return;
+    }
+    if (!episodeIds.length) {
+      err.textContent = '至少勾一集。';
+      err.hidden = false;
+      return;
+    }
+    try {
+      const view = await api.createSeason(store.current.id, {
+        template_id: templateId, episode_ids: episodeIds,
+        max_active_runs: maxActive, name, idempotency_key: idemKey,
+      });
+      idemKey = '';
+      openSeasonId = view.id;
+      closeModal();
+    } catch (e) {
+      err.textContent = e.message || '没发起成功。';
+      err.hidden = false;
+      return;
+    }
+    notice = '整季已排产：worker 会按上限逐集起运行；刷新看进度。';
+    noticeKey = `${store.current.id}:2`;
+    refresh();
+  });
+}
+
 export default {
   subIndex: 0,
 
@@ -220,11 +503,58 @@ export default {
     const tab = currentTab();
     const key = `${project.id}:${tab}`;
     if (noticeKey !== key) { notice = ''; noticeKey = ''; }
+    const HEAD_DESC = [
+      '单集生产的编排层：发起、看节点、暂停与重试',
+      '内置流程模板（这一版只读）',
+      '把一季的集排成批量：并发上限、失败恢复与 worker 状态',
+    ];
     const head = `<div class="page-head">
         <h1>产线中心</h1>
-        <p>${tab === 0 ? '单集生产的编排层：发起、看节点、暂停与重试' : '内置流程模板（这一版只读）'} · ${escapeHtml(project.name)}</p>
+        <p>${HEAD_DESC[tab] || HEAD_DESC[0]} · ${escapeHtml(project.name)}</p>
         <div class="row" style="gap:6px">${subChipRow(TABS, tab)}</div>
       </div>`;
+
+    if (tab === 2) {
+      let list = [];
+      let templates = [];
+      let episodes = [];
+      let detail = null;
+      let err = null;
+      try {
+        await store.loadWorker();
+        [list, templates, episodes] = await Promise.all([
+          api.seasons(project.id), api.pipelineTemplates(), api.episodes(project.id),
+        ]);
+        if (openSeasonId && !list.some((s) => s.id === openSeasonId)) openSeasonId = null;
+        if (openSeasonId) detail = await api.season(openSeasonId);
+      } catch (e) { err = e; }
+      const canSubmit = store.can('job:submit');
+      return `<section class="view on">
+        ${head}
+        ${notice ? `<div class="bar ok"><p>${escapeHtml(notice)}</p></div>` : ''}
+        ${err ? errorBox('整季生产', err) : ''}
+        ${workerPanel()}
+        <div class="card" style="margin-top:14px">
+          <div class="card-head"><h2>整季批次</h2>
+            <span class="sub">每集仍是一条单集运行；这一层只决定何时起下一集与失败怎么恢复</span>
+            <div class="right">
+              ${canSubmit ? '<button class="btn sm primary" data-new-season>发起整季</button>'
+                : '<span class="t-desc">发起整季需要 job:submit</span>'}
+            </div></div>
+          ${list.length ? `<div class="table-wrap"><table>
+            <thead><tr><th>批次</th><th>模板</th><th>状态</th><th>进度</th>
+              <th class="num">并发</th><th class="num">成本</th><th class="r">创建</th><th class="r"></th></tr></thead>
+            <tbody>${seasonRows(list)}</tbody></table></div>` : `<div class="empty">
+            <div class="empty-t">还没有整季批次</div>
+            <p>把一季的集一次排进来：按顺序起运行，失败只补失败的那几镜；
+              已成功的镜头不会被重新生成。</p>
+            ${canSubmit ? '<div class="empty-form"><button class="btn primary" data-new-season>发起整季</button></div>' : ''}
+          </div>`}
+        </div>
+        ${detail ? seasonDetailHtml(detail, canSubmit) : (openSeasonId ? '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读整季…</p></div></div>' : '')}
+        ${seasonModal(templates.filter((t) => t.enabled !== false), episodes)}
+      </section>`;
+    }
 
     if (tab === 1) {
       let templates = [];
@@ -325,6 +655,11 @@ export default {
     if (!store.current) return;
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('pipeline', i); refresh(); });
+
+    if (currentTab() === 2) {
+      bindSeasons(root, refresh);
+      return;
+    }
 
     const detailHost = root.querySelector('#pl-detail-host');
     // 错误卡片自带的「重试」：只重画这一页，不重新发起任何动作

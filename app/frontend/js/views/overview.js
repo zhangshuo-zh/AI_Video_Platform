@@ -21,6 +21,34 @@ function alertsBlock(w) {
 }
 
 /**
+ * 首页待办条：进来第一眼先看到"谁在等我"，而不是十张模块说明卡。
+ *
+ * 数字全部来自 `/api/workbench`——跨模块加总在服务端做，前端只读不拼口径。
+ * 一条待办都没有时整条不显示：四张 0 只会占掉第一屏。
+ * 用真 `<button>` 而不是 div：键盘能 Tab 到、Enter 能开，和模块卡不一样。
+ */
+function todoStrip(data) {
+  const c = data?.counts;
+  if (!c) return '';
+  const review = (c.review_documents || 0) + (c.review_artifacts || 0);
+  const items = [
+    { n: review, label: '待你签字', go: 'review',
+      sub: `文档 ${c.review_documents || 0} ／ 产物 ${c.review_artifacts || 0}` },
+    { n: c.jobs_failed || 0, label: '失败作业', go: 'generate', tone: 'bad',
+      sub: '点进去看是哪一条' },
+    { n: c.needs_attention || 0, label: '待核对账单', go: 'generate', tone: 'warn',
+      sub: '云端结果等人判' },
+    { n: c.runs_active || 0, label: '进行中的运行', go: 'pipeline',
+      sub: '还没收尾的产线' },
+  ];
+  if (!items.some((it) => it.n > 0)) return '';
+  return `<div class="wb-grid">${items.map((it) => `
+    <button type="button" class="wb-card ${it.tone || ''}" data-go="${it.go}">
+      <b>${it.n}</b><span>${it.label}</span><em>${it.sub}</em>
+    </button>`).join('')}</div>`;
+}
+
+/**
  * 首页 = 模块地图 + 九实体说明 + 本机状态。
  * 本机状态里只放后端真报回来的数字；worker / 队列还没接，就老实写"未接入"。
  */
@@ -31,9 +59,16 @@ export default {
     await store.loadWorker();
     let dash = null;
     let dashErr = null;
-    if (store.current) {
-      try { dash = await api.dashboard(store.current.id); } catch (e) { dashErr = e; }
-    }
+    // 待办与看板各拉各的：一个接口失败不该把首页整页弄没。
+    // 待办失败就整条不显示——比摆一排 0 更诚实。
+    let todo = null;
+    const [dashResult, todoResult] = await Promise.allSettled([
+      store.current ? api.dashboard(store.current.id) : Promise.resolve(null),
+      api.workbench(),
+    ]);
+    if (dashResult.status === 'fulfilled') dash = dashResult.value;
+    else dashErr = dashResult.reason;
+    if (todoResult.status === 'fulfilled') todo = todoResult.value;
     const w = store.worker;
     const q = w?.queue || { queued: 0, running: 0 };
     const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility).map((m) => `
@@ -54,6 +89,8 @@ export default {
         <p>平台只编排，不生成；生成全靠适配器调现有脚本</p>
         <div class="right"><span class="chip plain">已接后端：项目 / 类型</span></div>
       </div>
+
+      ${todoStrip(todo)}
 
       <div class="mods">
         ${cards}

@@ -31,6 +31,7 @@ import json
 import os
 import select
 import resource
+import shutil
 import signal
 import socket
 import subprocess
@@ -44,14 +45,24 @@ from pathlib import Path
 import adapters
 import jobfiles
 import pipeline
+import seasons
+from composition import ffmpeg_runner
+from composition.service import record_success as record_composition
+from composition.validators import MediaInvalid
 import runners
 import validations
-from config import (ALLOW_MOCK, WORKER_LEASE_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
-                    WORKER_POLL)
+from config import (ALLOW_MOCK, JOBS_DIR, RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
+                    WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE,
+                    WORKER_MAX_RUNTIME_SECONDS, WORKER_POLL)
 from paths import describe as describe_path
 from repositories.jobs import jobs
 
 STOP = False
+
+# `_node_resources()` 的差分基准。初值取进程启动这一刻，所以第一次心跳给的是
+# "从启动到现在"的均值，之后每次只算这一段——不然跑完一条大作业后，
+# 面板上的占用会拖着整个生命周期的平均值不放，看着像还在忙。
+_NODE_SAMPLE = (0.0, time.monotonic())
 
 # 云端调用结果未知的那批错误码：供应商任务可能已经建立、甚至已经计费。
 # 这些不能落 failed——failed 的默认建议是"重试"，而对一笔可能已扣钱的调用，
@@ -135,6 +146,52 @@ def _resources(cpu_start: float, elapsed_ms: int,
     return out
 
 
+def _node_resources() -> dict:
+    """这个 worker 进程现在占了多少机器——写进 `worker_node.resources_json`。
+
+    为什么要有这一栏：阶段 E 允许一个进程领一条视频、另一个领一条合成，
+    而"这台机器扛不扛得住再多开一个"只有当场读数能回答。上限是人声明的意愿，
+    占用是机器的实况——**面板必须两个都给**，否则出问题时人只会去调上限。
+
+    口径三条，都是踩过坑才定死的：
+      * `cpu_pct` 是**两次心跳之间**的均值（不是进程启动至今的均值），
+        所以长时间空转后刚跑完一条作业，读数会立刻掉下来，不会拖着一个旧高值；
+      * 内存取 `ru_maxrss`（生命周期峰值），系统没有"当前 RSS"的标准库读法，
+        拿峰值不撒谎，但字段名写清是 peak；
+      * 磁盘读 `JOBS_DIR` 所在卷——产物全落那儿，那里满了合成与生成都会失败。
+
+    只用标准库，不引 psutil（§不引入未经确认的新依赖）。
+    """
+    global _NODE_SAMPLE
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    child = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu_now = (usage.ru_utime + usage.ru_stime + child.ru_utime + child.ru_stime)
+    wall_now = time.monotonic()
+    prev_cpu, prev_wall = _NODE_SAMPLE
+    interval = wall_now - prev_wall
+    cpu_pct = round((cpu_now - prev_cpu) / interval * 100, 1) if interval > 0.5 else 0.0
+    _NODE_SAMPLE = (cpu_now, wall_now)
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except OSError:          # 极老的 Unix/容器不给负载；给空而不是整个心跳失败
+        load1 = load5 = load15 = 0.0
+    try:
+        free, total = shutil.disk_usage(JOBS_DIR).free, shutil.disk_usage(JOBS_DIR).total
+    except OSError:          # 目录还没建（首次启动前）也要能报心跳
+        free = total = 0
+    return {
+        "cores": os.cpu_count() or 0,
+        "load1": round(load1, 2), "load5": round(load5, 2), "load15": round(load15, 2),
+        "cpu_pct": cpu_pct,
+        "cpu_ms_since_last": int(max(0.0, cpu_now - prev_cpu) * 1000),
+        "rss_peak_mb": round(_rss_kb(usage.ru_maxrss) / 1024, 1),
+        "child_rss_peak_mb": round(_rss_kb(child.ru_maxrss) / 1024, 1),
+        "disk_free_gb": round(free / 1024 ** 3, 2),
+        "disk_total_gb": round(total / 1024 ** 3, 2),
+        "measure": "getrusage+self+children/getloadavg/disk_usage(JOBS_DIR)",
+    }
+
+
 def _params(job) -> dict:
     try:
         value = json.loads(job["params_json"] or "{}")
@@ -161,6 +218,16 @@ def _validate(job, outputs: Path) -> tuple[dict, runners.RunSpec | None]:
         if errors:
             raise JobFailure("bad_params", "；".join(errors))
         return params, None
+
+    # 成片合成不是模型适配器：provider=ffmpeg 的作业由 composition 包构造命令。
+    # 它同样走这一条 Job 链路（领取、租约、取消、日志、产物），只是 argv 不同。
+    if job["provider_code"] == "ffmpeg":
+        try:
+            return params, ffmpeg_runner.build(job, params, outputs)
+        except ffmpeg_runner.CompositionJobInvalid as exc:
+            raise JobFailure("bad_params", str(exc)) from exc
+        except MediaInvalid as exc:
+            raise JobFailure("bad_params", exc.message) from exc
 
     adapter = adapters.find(job["capability"], job["execution_mode"], job["provider_code"])
     if adapter is None:
@@ -377,6 +444,13 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
         # 供应商侧任务可能已经计过费。把请求 ID 一起带出去。
         raise JobFailure("empty_output", exc.message, return_code,
                          provider_request_id=request_id) from exc
+    if spec.runner == "ffmpeg":
+        # 退出码 0 只说明进程没报错，不说明文件能播：再用 ffprobe 复核
+        # 分辨率、编码、时长与音轨；不通过就按失败收尾，不写 succeeded。
+        try:
+            ffmpeg_runner.post_check(spec)
+        except MediaInvalid as exc:
+            raise JobFailure("invalid_output", exc.message, return_code) from exc
     _write(log, "产物：" + "、".join(jobfiles.relative(p) for p in paths))
     return [jobfiles.relative(p) for p in paths], elapsed, request_id
 
@@ -404,7 +478,7 @@ def _internal_error_message(exc: BaseException) -> str:
             else f"worker 内部错误：{type(exc).__name__}")
 
 
-def process(job, wid: str) -> None:
+def process(job, wid: str, limits: dict | None = None) -> None:
     """跑一条已领取的作业：校验 → 执行 → 落状态。异常全部归一成失败或待核对。"""
     logs, outputs = jobfiles.ensure_dirs(job["id"])
     log_path = logs / "run.log"
@@ -416,7 +490,8 @@ def process(job, wid: str) -> None:
     with log_path.open("a", encoding="utf-8") as log:
         _write(log, f"job #{job['id']} {job['capability']}/{job['execution_mode']} "
                     f"{job['provider_code']}/{job['model_code']} worker={wid}")
-        jobs.heartbeat(wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION)
+        jobs.heartbeat(wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION,
+                       limits=limits, resources=_node_resources())
         try:
             jobs.set_running(job["id"], wid)
             if jobs.status_of(job["id"]) == "cancel_requested":
@@ -435,6 +510,15 @@ def process(job, wid: str) -> None:
                                               child_cpu_start, extra=extra),
                          provider_request_id=request_id)
             _write(log, "状态：succeeded")
+            # 合成作业成功后把最终文件、sha256 与媒体信息抄回成片行。
+            # 抄写失败不能把已经成功的作业改回失败——整段吞掉只写日志，
+            # 读取成片时会再补一次（composition/service.view 里那条懒回填）。
+            if job["provider_code"] == "ffmpeg":
+                try:
+                    record_composition(job)
+                    _write(log, "成片记录：最终产物与 sha256 已回填")
+                except Exception as exc:
+                    _write(log, f"成片回填未写入：{exc}")
             # 成功的真实作业顺手成为该槽位的"真实调用"凭据。mock 会被 from_job 拒掉，
             # 记录失败也绝不能把已经成功的作业改回失败——所以整段吞掉只写日志。
             if job["execution_mode"] != "mock" and job["provider_code"] != "mock":
@@ -500,16 +584,20 @@ def process(job, wid: str) -> None:
                       resources=_resources(cpu_start, elapsed,
                                            child_cpu_start, extra=extra))
         finally:
-            jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION)
+            jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
+                           resources=_node_resources())
 
 
-def run_once(wid: str | None = None) -> int | None:
-    """领取并跑完一条；没有可领的返回 None。测试直接调这个函数。"""
+def run_once(wid: str | None = None, limits: dict | None = None) -> int | None:
+    """领取并跑完一条；没有可领的返回 None。测试直接调这个函数。
+
+    `limits` 只影响"现在能不能领"，不影响作业本身；一个进程仍是一次一条。
+    """
     wid = wid or worker_id()
-    job = jobs.claim_next(wid, WORKER_LEASE_SECONDS)
+    job = jobs.claim_next(wid, WORKER_LEASE_SECONDS, limits=limits)
     if job is None:
         return None
-    process(job, wid)
+    process(job, wid, limits=limits)
     return job["id"]
 
 
@@ -521,22 +609,49 @@ def _install_signals() -> None:
     signal.signal(signal.SIGTERM, _stop)
 
 
+def _limits_from_args(args) -> dict:
+    """CLI 覆盖项 → 领取用的上限。没在命令行给的类沿用配置文件默认值。
+
+    默认仍是全局 1／每类 1：并发是 operator 明确抬上限并多开进程才发生的事，
+    不会因为升级代码就悄悄在 16GB 机器上同时跑两条视频。
+    """
+    per = {}
+    for name in RESOURCE_CLASSES:
+        value = getattr(args, f"max_{name}", None)
+        if value is not None:
+            per[name] = max(0, int(value))
+    global_max = (args.max_global if args.max_global is not None
+                  else WORKER_MAX_GLOBAL)
+    return {"global": max(0, int(global_max)), "per": per}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成队列 worker（独立进程）")
     parser.add_argument("--once", action="store_true", help="只跑一条就退出（测试用）")
     parser.add_argument("--poll", type=float, default=WORKER_POLL, help="空闲轮询秒数")
+    parser.add_argument("--max-global", type=int, default=None,
+                        help=f"本机同时在跑的作业上限（默认 {WORKER_MAX_GLOBAL}）")
+    for name in RESOURCE_CLASSES:
+        parser.add_argument(
+            f"--max-{name}", type=int, default=None, dest=f"max_{name}",
+            help=f"{name} 类同时在跑的上限"
+                 f"（默认 {WORKER_MAX_PER_RESOURCE.get(name, 1)}）")
     args = parser.parse_args(argv)
 
     _install_signals()
     wid = worker_id()
+    limits = _limits_from_args(args)
     # 模板表补齐：worker 可能比 API 进程先起来（比如只跑 worker 做批处理），
     # 那时候产线运行照样要能推进，所以两边都调一次；重复调用是空操作。
     pipeline.ensure_builtin_templates()
     recovered = jobs.recover_stale()
     if recovered["failed"] or recovered["cancelled"]:
         print(f"启动恢复：failed={recovered['failed']} cancelled={recovered['cancelled']}")
-    jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION)
-    print(f"worker {wid} 启动；waiting for jobs ...")
+    jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
+                   limits=limits, resources=_node_resources())
+    cap = ", ".join(f"{k}={v}" for k, v in sorted(limits["per"].items())) or "默认"
+    print(f"worker {wid} 启动；并发 全局={limits['global']} {cap}；"
+          f"waiting for jobs ...")
     while not STOP:
         # 每轮都收一次"上一个 worker 没来得及收尾"的作业：只在启动时收的话，
         # 崩溃后立刻重启会看到租约还没过期，于是一条作业会永远挂在 running。
@@ -546,12 +661,20 @@ def main(argv: list[str] | None = None) -> int:
         # 顺序反过来也能工作（下一轮补上），只是白等一个轮询周期。
         # 这里出异常不能让 worker 整个退出——一条产线的定义有问题，
         # 不该把队列里其它正常作业一起拖死。
+        # 整季排产：先把到点的下一集立成单集运行，再由 pipeline.tick 推进它。
+        # 顺序反过来只是白等一个轮询周期；两个 try 分开，一季的配置有问题
+        # 不该把已存在的单集运行也停掉。
+        try:
+            seasons.tick()
+        except Exception as exc:
+            print(f"[整季] 排产失败，本轮跳过：{type(exc).__name__}: {exc}")
         try:
             pipeline.tick()
         except Exception as exc:
             print(f"[产线] 推进失败，本轮跳过：{type(exc).__name__}: {exc}")
-        did = run_once(wid)
-        jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION)
+        did = run_once(wid, limits=limits)
+        jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
+                       limits=limits, resources=_node_resources())
         if args.once:
             break
         if did is None:

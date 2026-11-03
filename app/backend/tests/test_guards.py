@@ -129,6 +129,9 @@ ROUTES = [
     ("GET", "/api/projects/{p}/dashboard", None, 404),
     ("GET", "/api/projects/{p}/export/shots.csv", None, 404),
     ("GET", "/api/projects/{p}/export/shots.md", None, 404),
+    # 首页工作台跨项目聚合：editor 有 project:read 就能调，但里面只会出现
+    # 他看得见的项目（别人的项目在服务端就筛掉了，所以是 200 而不是 404）
+    ("GET", "/api/workbench", None, 200),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
     ("POST", "/api/users", {"username": "zz_probe", "display_name": "", "password": "123456"}, 403),
@@ -172,6 +175,22 @@ ROUTES = [
     ("POST", "/api/pipeline/runs/{x}/pause", None, 404),
     ("POST", "/api/pipeline/runs/{x}/resume", None, 404),
     ("POST", "/api/pipeline/runs/{x}/cancel", {"reason": "越权探测"}, 404),
+    ("GET", "/api/projects/{p}/compositions", None, 404),
+    ("POST", "/api/projects/{p}/compositions",
+     {"episode_id": 1}, 404),
+    ("GET", "/api/compositions/{x}", None, 404),
+    # 字幕：文件不进库，但同样要登录、要看得见项目
+    ("GET", "/api/projects/{p}/composition-subtitles", None, 404),
+    ("POST", "/api/projects/{p}/composition-subtitles", "FILE", 404),
+    ("DELETE", "/api/projects/{p}/composition-subtitles?path=x", None, 404),
+    # ---------- 整季生产（阶段 E） ----------
+    ("GET", "/api/projects/{p}/seasons", None, 404),
+    ("POST", "/api/projects/{p}/seasons", {"template_id": 1}, 404),
+    ("GET", "/api/seasons/{s}", None, 404),
+    ("POST", "/api/seasons/{s}/pause", None, 404),
+    ("POST", "/api/seasons/{s}/resume", None, 404),
+    ("POST", "/api/seasons/{s}/cancel", {"reason": "越权探测"}, 404),
+    ("POST", "/api/seasons/{s}/retry-failed", None, 404),
     ("POST", "/api/pipeline/nodes/{x}/retry", None, 404),
     # ---------- 参数模板（W08） ----------
     ("GET", "/api/generation-profiles", None, 200),

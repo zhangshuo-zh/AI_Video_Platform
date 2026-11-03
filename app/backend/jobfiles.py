@@ -128,7 +128,94 @@ def artifact_at(result_paths_json: str, index: int) -> Path | None:
     return target if target.is_file() else None
 
 
+def resolve_artifact(rel_path: str) -> Path | None:
+    """把库里的 Job 相对路径换成真实路径；越界或不存在返回 None。
+
+    合成要读别的作业的产物，但**不能**让调用方自己拼绝对路径：跨作业读文件
+    同样走这一道边界，和读日志、列产物是同一条规则。
+    """
+    try:
+        target = _resolve(str(rel_path))
+    except JobPathError:
+        return None
+    return target if target.is_file() else None
+
+
 def remove_job(job_id: int) -> None:
     """删作业目录。只给服务端清理用（删项目），不暴露成接口。"""
     import shutil
     shutil.rmtree(job_dir(job_id), ignore_errors=True)
+
+
+# ---------- 成片字幕（阶段 D 的补口） ----------
+#
+# 为什么不建表也不进 Git 工作区：字幕是"喂给一次合成的输入"，和音频素材不同，
+# 它没有台账语义（没人要在界面上改它、查它被谁引用）。落在 JOBS_DIR 里，
+# 备份跟着作业目录一起走，路径规则也沿用同一道边界，不必再加一套。
+
+SUBTITLE_EXTS = (".srt", ".vtt")
+
+
+def subtitle_dir(project_id: int) -> Path:
+    return JOBS_DIR / "subtitles" / str(int(project_id))
+
+
+def save_subtitle(project_id: int, content: bytes, suffix: str) -> str:
+    """落一份字幕文件，返回库里用的相对路径（`subtitles/<项目>/<uuid>.srt`）。
+
+    先写临时文件再 `os.replace`：半个字幕被 FFmpeg 读到，会得到一条
+    "解析失败"的合成作业，而真实原因（写一半崩了）根本看不出来。
+    """
+    import uuid
+    d = subtitle_dir(project_id)
+    d.mkdir(parents=True, exist_ok=True)
+    name = f"{uuid.uuid4().hex}{suffix}"
+    tmp = d / f".{name}.part"
+    target = d / name
+    try:
+        tmp.write_bytes(content)
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()      # 只清这一条临时文件，不碰目录里的正式字幕
+    return relative(target)
+
+
+def resolve_subtitle(project_id: int, rel_path: str) -> Path | None:
+    """删字幕时用：只认本项目字幕目录里真实存在的那份。
+
+    不这么收窄的话，`path=../../<别人的项目>/x.srt` 这种写法就是一条
+    跨项目删除的通道；库里的相对路径永远当不可信输入处理，这条也一样。
+    """
+    target = subtitle_dir(project_id)
+    try:
+        real = _resolve(str(rel_path))
+    except JobPathError:
+        return None
+    if not str(real).startswith(str(target.resolve()) + os.sep):
+        return None
+    return real if real.is_file() else None
+
+
+def list_subtitles(project_id: int) -> list[dict]:
+    """本项目已有的字幕，按最近改动排在前面。目录不存在就是没传过。"""
+    d = subtitle_dir(project_id)
+    if not d.is_dir():
+        return []
+    rows = [{"path": relative(p), "bytes": p.stat().st_size,
+             "name": p.name,
+             "modified_at": datetime.fromtimestamp(p.stat().st_mtime)
+             .strftime("%Y-%m-%d %H:%M")}
+            for p in d.iterdir() if p.is_file() and not p.name.startswith(".")]
+    return sorted(rows, key=lambda r: r["modified_at"], reverse=True)
+
+
+def remove_project_subtitles(project_id: int) -> int:
+    """删项目时清掉它的字幕。返回删掉的份数，给"清了几个"那句实话用。"""
+    import shutil
+    d = subtitle_dir(project_id)
+    if not d.is_dir():
+        return 0
+    count = sum(1 for p in d.iterdir() if p.is_file())
+    shutil.rmtree(d, ignore_errors=True)
+    return count

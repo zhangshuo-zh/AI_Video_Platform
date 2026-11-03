@@ -69,7 +69,7 @@ def list_templates(user=Depends(require_permission("job:read"))
                    ) -> list[PipelineTemplateOut]:
     """内置模板清单。第一版只读——拖拽式流程编辑器不在这一阶段。"""
     return [PipelineTemplateOut(**pipeline.template_view(row))
-            for row in pipeline_repo.list_templates()]
+            for row in pipeline_repo.latest_templates()]
 
 
 @router.get("/pipeline/templates/{template_id}", response_model=PipelineTemplateOut)

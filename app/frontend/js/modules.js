@@ -42,10 +42,19 @@ export const MODULES = [
     // v0.90 阶段 C：编排层，排在生成中心之后——它读的是生成中心的事实。
     // perms 是进入门槛：job:read 就够了（viewer 也能看进度，签字与发起另按点卡）
     id: 'pipeline', label: '产线中心', icon: 'ic-pipeline',
-    subs: ['运行', '模板'],
+    subs: ['运行', '模板', '整季'],
     perms: ['job:read'],
-    desc: '单集生产的编排层：模板、运行、节点与事件。干活仍交给生成中心那一个队列，签字仍归审核中心。',
-    ents: 'PipelineRun · PipelineNode',
+    desc: '单集编排与整季排产：模板、运行、节点、事件、批次与 worker 状态。干活仍交给生成中心那一个队列，签字仍归审核中心。',
+    ents: 'PipelineRun · PipelineNode · SeasonRun',
+  },
+  {
+    // v0.91 阶段 D：成片是产线的下游，读者先看"这一集什么时候能出片"。
+    // 它同样只读 Job 的事实：视频、sha256、时长都来自那条合成作业。
+    id: 'composition', label: '成片中心', icon: 'ic-composition',
+    subs: ['成片'],
+    perms: ['job:read'],
+    desc: '把已审核的镜头按顺序合成一集：时间线快照、成片版本、sha256 与回放。合成走同一个 Job 队列。',
+    ents: 'Composition',
   },
   {
     id: 'audio', label: '音频中心', icon: 'ic-audio',

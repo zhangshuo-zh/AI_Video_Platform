@@ -40,6 +40,7 @@ from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from repositories.providers import providers as provider_repo
 from repositories.validation import validations as validation_repo
+from repositories.workbench import workbench as workbench_repo
 from workspace import PathError
 from workspace import atomic_write, path_of, plan_rel_path, read as read_file
 from workspace import unapplied_dir
@@ -141,6 +142,9 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     # 作业日志与产物整目录摘掉；Job 行已随项目外键 CASCADE 消失
     for job_id in job_ids:
         jobfiles.remove_job(job_id)
+    # 字幕不在某个 Job 名下，是按项目存的，得单独收——不然删掉项目后
+    # data/jobs/subtitles/<旧项目id>/ 会永远留在盘上，备份越背越重还没人能看见它
+    jobfiles.remove_project_subtitles(project_id)
 
 
 # ---------- 文档正文这条链（W05） ----------
@@ -936,7 +940,7 @@ def review_sign(doc, payload, user) -> dict:
     except ValueError:
         findings = []
     anchors = {f.get("anchor") for f in findings}
-    if payload.anchor not in anchors and payload.anchor != "document":
+    if payload.anchor not in anchors and payload.anchor != WHOLE_DOC_ANCHOR:
         raise reviewgate.ReviewInvalid("这个锚点不在本次报告里")
     reviews.upsert_sign(
         project_id=doc["project_id"], target_kind=reviews.DOCUMENT,
@@ -1001,6 +1005,8 @@ class ReviewNotReviewable(Exception):
 
 
 ARTIFACT_ANCHOR = "artifact"
+# 整篇签字的锚点。它不在 gate 报告里，是文档那一档的"整份通过"。
+WHOLE_DOC_ANCHOR = "document"
 
 
 def artifact_version(job) -> str:
@@ -1117,6 +1123,97 @@ def job_review_sign(job, payload, user) -> dict:
         gate_id=None, base_version=version, anchor=payload.anchor,
         decision=payload.decision, note=payload.note, user_id=user["id"])
     return job_review_state(job, can_sign=True)
+
+
+# ---------- 首页工作台：跨模块待办聚合 ----------
+
+# 产物待签只看最近这一批可审作业：与审核中心产物队列同一个窗口
+# （`reviews.job_queue` 的 limit 也是 200）。数字是"这 200 条里还剩几条没签"，
+# 不是全库历史欠账——全量扫会把首页拖慢，而且几年前的作业也不该算进"今天该干什么"。
+WORKBENCH_ARTIFACT_WINDOW = 200
+
+
+def _pending_documents(project_id: int) -> int:
+    """当前正文版本上还没整篇签字的文档数。
+
+    版本令牌用 `read_content` 现算，和审核中心同一处定义——不在库里另存一份
+    正文哈希，否则"文件被手改过、库没跟上"就成了两套事实。
+    读不到正文（文件被人手工删了）不算待办：宁可少报一条，
+    也不拿一个点进去就 404 的数字催人。
+    """
+    rows = docs.list_by_project(project_id)
+    if not rows:
+        return 0
+    signs = reviews.signs_for_documents(project_id, [int(r["id"]) for r in rows])
+    by_doc: dict[int, list] = {}
+    for sign in signs:
+        by_doc.setdefault(int(sign["target_id"]), []).append(sign)
+    pending = 0
+    for doc in rows:
+        try:
+            version = read_content(doc)["version"]
+        except Exception:
+            continue
+        if not any(s["anchor"] == WHOLE_DOC_ANCHOR and s["base_version"] == version
+                   for s in by_doc.get(int(doc["id"]), [])):
+            pending += 1
+    return pending
+
+
+def _pending_artifacts(project_id: int) -> int:
+    """最近这批可审作业里，当前产物清单上还没整条签字的条数。
+
+    产物摘要（`artifact_version`）每次现算：文件被清理或被顶掉，摘要就变，
+    旧签字自然不算数——首页不会把"产物早就没了、页面上还挂着通过"算成已签。
+    """
+    rows = reviews.job_queue(project_id, limit=WORKBENCH_ARTIFACT_WINDOW)
+    if not rows:
+        return 0
+    signs = reviews.signs_for_jobs(project_id, [int(r["job_id"]) for r in rows])
+    by_job: dict[int, list] = {}
+    for sign in signs:
+        by_job.setdefault(int(sign["target_id"]), []).append(sign)
+    pending = 0
+    for job in rows:
+        version = artifact_version(job)
+        if not any(s["anchor"] == ARTIFACT_ANCHOR and s["base_version"] == version
+                   for s in by_job.get(int(job["job_id"]), [])):
+            pending += 1
+    return pending
+
+
+def workbench(user) -> dict:
+    """首页工作台：按"我看得见的在产项目"聚合待办。只读，不写任何状态。
+
+    每个数字只有一个定义处：
+    - `review_documents`／`review_artifacts`：见上面两个函数（版本对不上就不算签过）；
+    - `jobs_failed`／`needs_attention`：`job.status` 原值，不做窗口裁剪；
+    - `runs_active`：还没收尾、也没被取消的产线运行。
+    归档项目不计：归档的意思是"先不挡在眼前"，它不该出现在待办里。
+    """
+    rows = project_repo.list_visible(user["id"], access.is_manager(user), "active")
+    project_ids = [int(r["id"]) for r in rows]
+    status_counts = workbench_repo.job_status_counts(project_ids)
+    run_counts = workbench_repo.active_run_counts(project_ids)
+    projects = []
+    for row in rows:
+        pid = int(row["id"])
+        by_status = status_counts.get(pid, {})
+        projects.append({
+            "id": pid, "name": row["name"],
+            "review_documents": _pending_documents(pid),
+            "review_artifacts": _pending_artifacts(pid),
+            "jobs_failed": by_status.get("failed", 0),
+            "needs_attention": by_status.get("needs_attention", 0),
+            "runs_active": run_counts.get(pid, 0),
+        })
+    keys = ("review_documents", "review_artifacts", "jobs_failed",
+            "needs_attention", "runs_active")
+    return {
+        "counts": {key: sum(p[key] for p in projects) for key in keys},
+        "projects": projects,
+        "artifact_window": WORKBENCH_ARTIFACT_WINDOW,
+    }
 
 
 # ---------- 音频中心（W15） ----------
@@ -1523,6 +1620,8 @@ def worker_status(user=None) -> dict:
     """
     state = job_repo.worker_state()
     health = job_repo.queue_health(WORKER_MAX_RUNTIME_SECONDS)
+    nodes = job_repo.workers(WORKER_ONLINE_SECONDS)
+    by_resource = job_repo.queue_by_resource()
     if user is not None:
         from access import ensure as _ensure
         from fastapi import HTTPException as _HTTPException
@@ -1537,10 +1636,20 @@ def worker_status(user=None) -> dict:
     age = None
     online = False
     heartbeat = ""
-    if state is not None:
+    current_job_id = None
+    live = [w for w in nodes if w["online"]]
+    if live:
+        online = True
+        heartbeat = live[0]["heartbeat_at"] or ""
+        age = live[0]["age_seconds"]
+        current_job_id = next((w["current_job_id"] for w in live
+                               if w["current_job_id"]), None)
+    elif state is not None:
+        # 兼容只写过单行 worker_state 的旧库／旧进程：没有节点明细时退回单行判断
         heartbeat = state["heartbeat_at"] or ""
         age = _seconds_since(heartbeat)
         online = age is not None and age <= WORKER_ONLINE_SECONDS
+        current_job_id = state["current_job_id"] if online else None
 
     alerts: list[dict] = []
     if health["queued"] > 0 and not online:
@@ -1573,8 +1682,10 @@ def worker_status(user=None) -> dict:
 
     return {
         "online": online, "heartbeat_at": heartbeat, "age_seconds": age,
-        "current_job_id": (state["current_job_id"] if online and state is not None else None),
-        "queue": {"queued": health["queued"], "running": health["running"]},
+        "current_job_id": current_job_id,
+        "workers": nodes,
+        "queue": {"queued": health["queued"], "running": health["running"],
+                  "by_resource": by_resource},
         "alerts": alerts, "by_status": health["by_status"],
         "oldest_queued_seconds": health["oldest_queued_seconds"],
         "running_jobs": health["running_jobs"],

@@ -51,7 +51,10 @@ BLOCKERS = [
     ("配音 VoxCPM2 ／ 音乐 ACE-Step ／ 口型 Rhubarb", "运行时与权重未安装，提交会明确失败，不落假产物"),
     ("目标机基准（全部能力）", "M5 Ultra 目标机未到位；现有记录只有 M4 Air 的 FastMetal 一组"),
     ("设定中心", "只有入口与空态文案，没有表、接口与写路径"),
-    ("产线生成节点 真实模型跑通", "阶段 B／C 全走 mock 适配器与临时库；本机没有图像运行时，真跑一镜要装运行时或授权云端付费"),
+    ("产线生成节点 真实模型跑通", "阶段 B／C／E 全走 mock 适配器与临时库；本机没有图像运行时，真跑一镜要装运行时或授权云端付费"),
+    ("成片 用真实模型素材整集验收", "合成链路与 ffprobe 验收已真跑，但输入是本机临时构造的测试视频；真实模型出一整集还没跑过"),
+    ("成片 硬字幕", "后端有 `subtitle_path` 与 FFmpeg subtitles 滤镜，但没有测试覆盖、页面也没有入口，不算已完成能力"),
+    ("worker 资源占用记录", "`worker_node.resources_json` 仍是空对象；并发上限与心跳有，实际占用要接目标机基准一起补"),
 ]
 
 # 现算的"生产可用"口径，必须与 validations.summary_for 保持一致（那里是唯一定义处）：
@@ -276,6 +279,7 @@ def build_md(facts: dict) -> str:
     a(f"- 最近一次 Job 故障演练：{facts['drill_job']}")
     a(f"- 最近一次备份恢复演练：{facts['drill_backup']}")
     a(f"- 最近一次产线故障演练：{facts['drill_pipeline']}")
+    a(f"- 最近一次真浏览器验收：{facts['drill_browser']}")
     a("")
     return "\n".join(lines) + "\n"
 
@@ -336,7 +340,8 @@ def main() -> None:
              "matrix": validation_matrix(),
              "drill_job": preserve_baseline_line(r"Job 故障演练：(.+)$"),
              "drill_backup": preserve_baseline_line(r"备份恢复演练：(.+)$"),
-             "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$")}
+             "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$"),
+             "drill_browser": preserve_baseline_line(r"真浏览器验收：(.+)$")}
     if check:
         raise SystemExit(check_docs(facts))
     BASELINE.write_text(build_md(facts), encoding="utf-8")

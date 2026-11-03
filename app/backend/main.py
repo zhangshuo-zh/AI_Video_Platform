@@ -14,9 +14,10 @@ from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
-from routers import (audio, auth, content, dashboard, documents, extraction,
-                     files, jobs, pipeline as pipeline_api, profiles, projects,
-                     review, settings, system, users)
+from routers import (audio, auth, compositions, content, dashboard, documents,
+                     extraction, files, jobs, pipeline as pipeline_api,
+                     profiles, projects, review, seasons as seasons_api,
+                     settings, system, users, workbench)
 from services import ensure_workspace
 
 
@@ -51,8 +52,13 @@ def create_app() -> FastAPI:
     app.include_router(review.router)
     app.include_router(audio.router)
     app.include_router(dashboard.router)
+    # 首页工作台：跨模块待办聚合。放在 dashboard 旁边——两个都是只读聚合，
+    # 区别是 dashboard 按单个项目算，workbench 按"我看得见的项目"一起算
+    app.include_router(workbench.router)
     app.include_router(jobs.router)
     app.include_router(pipeline_api.router)
+    app.include_router(compositions.router)
+    app.include_router(seasons_api.router)
     app.include_router(profiles.router)
     app.include_router(projects.router)
     app.include_router(settings.router)

@@ -64,19 +64,25 @@ NODE_TYPE_LABELS = {
     "shot_review": "镜头审核",
     "audio_prepare": "音频准备检查",
     "export_prepare": "成片导出准备",
+    "export_compose": "成片合成",
+    "export_validate": "成片验收",
+    "export_review": "成片审核",
 }
 
 # 哪些节点要提交 Job（其余是内部检查或人工审核）
-JOB_NODES = {"image_generate": "image", "video_generate": "video"}
+JOB_NODES = {"image_generate": "image", "video_generate": "video",
+             # 成片合成也走 Job，但它由 composition 服务建单，不经过
+             # `submit_job` 的模型白名单；`_execute_node` 里有专门分支。
+             "export_compose": "video"}
 # 哪些节点要等人签字
-REVIEW_NODES = {"human_gate", "image_review", "shot_review"}
+REVIEW_NODES = {"human_gate", "image_review", "shot_review", "export_review"}
 # 哪些节点按镜头展开（一镜一个节点，互不影响：镜头 2 失败不该重跑镜头 1 和 3）
 FANOUT_TYPES = {"image_generate", "image_review", "video_generate",
                 "artifact_validate", "shot_review"}
 # 内部检查节点：调度器当场做完，不排队
 INTERNAL_NODES = {"project_input", "episode_input", "document_input",
                   "shot_validate", "asset_validate", "artifact_validate",
-                  "audio_prepare", "export_prepare"}
+                  "audio_prepare", "export_prepare", "export_validate"}
 
 NODE_STATUS_LABELS = {
     "blocked": "等待前置", "pending": "待执行", "ready": "可执行",
@@ -131,6 +137,20 @@ STANDARD_EPISODE = {
     ],
 }
 
+# v2（阶段 D）：在 v1 的"音频检查"之后接上真正的成片流程——合成走 Job，
+# 合成后自动验收，最后等一次成片审核。v1 保留：已经在跑的运行冻结在 v1，
+# 旧版本的行为（export_prepare 只占位 skipped）不能被新模板悄悄改写。
+STANDARD_EPISODE_V2 = {
+    "nodes": STANDARD_EPISODE["nodes"][:-1] + [
+        {"key": "compose", "type": "export_compose",
+         "depends_on": ["check_audio"]},
+        {"key": "check_composition", "type": "export_validate",
+         "depends_on": ["compose"]},
+        {"key": "review_composition", "type": "export_review",
+         "depends_on": ["check_composition"]},
+    ],
+}
+
 IMAGE_PREVIEW = {
     "nodes": [
         {"key": "read_project", "type": "project_input", "depends_on": []},
@@ -163,6 +183,10 @@ BUILTIN_TEMPLATES = [
      "项目 → 剧本 → 分镜 → 资产 → 人工确认 → 关键帧 → 关键帧验收 → 镜头视频 → "
      "产物检查 → 镜头审核 → 音频检查 → 成片准备。一镜一条支线，失败只重试那一镜。",
      STANDARD_EPISODE),
+    ("标准漫剧单集生产", 2,
+     "在 v1 的全流程之后接成片：音频检查 → FFmpeg 合成（走 Job）→ 成片验收 → "
+     "成片审核。合成前要求每镜视频已通过审核，缺片或未审会明确拒绝。",
+     STANDARD_EPISODE_V2),
     ("图片预览生产", 1, "只做关键帧：读项目与集、查分镜与资产，逐镜生成关键帧并等验收。",
      IMAGE_PREVIEW),
     ("视频生产", 1, "跳过关乎本帧：查完分镜直接逐镜生成视频、查产物、等镜头审核。",
@@ -683,7 +707,9 @@ def _dispatch_ready(run, nodes) -> int:
 
 def _execute_node(run, node: dict, by_key: dict) -> None:
     ntype = node["node_type"]
-    if ntype in JOB_NODES:
+    if ntype == "export_compose":
+        _submit_composition_node(run, node)
+    elif ntype in JOB_NODES:
         _submit_job_node(run, node, by_key)
     elif ntype in REVIEW_NODES:
         _arm_review_node(run, node, by_key)
@@ -816,6 +842,62 @@ def _submit_job_node(run, node: dict, by_key: dict) -> None:
         "job_id": job["id"], "capability": capability,
         "provider": job["provider_code"], "model": job["model_code"],
         "execution_mode": job["execution_mode"]})
+
+
+def _submit_composition_node(run, node: dict) -> None:
+    """成片合成节点：建时间线＋成片行＋Job，三步一个事务（在 composition 里）。
+
+    它和生成节点的区别只有"参数从哪来"：生成走模型白名单，合成走时间线。
+    幂等同样用 `pl-<run>-<key>-a<n>`：同一次运行重放不会排出两个版本。
+    """
+    if not pipeline_repo.try_begin(node["id"]):
+        return
+    from composition.service import (CompositionConflict, CompositionInvalid,
+                                     CompositionMissing, create as create_composition)
+
+    key = _idempotency_key(run, node)
+    existing = job_repo.by_key(key)
+    if existing is not None:
+        from repositories.compositions import compositions
+        row = compositions.by_job(existing["id"])
+        pipeline_repo.attach_job(node["id"], existing["id"])
+        pipeline_repo.add_event(run["id"], node["id"], "job_submitted", {
+            "job_id": existing["id"], "reused": True,
+            "composition_id": row["id"] if row is not None else None})
+        return
+    try:
+        view = create_composition(
+            run["project_id"], run["episode_id"], run["created_by"],
+            idempotency_key=key, pipeline_run_id=run["id"])
+    except CompositionInvalid as exc:
+        detail = "；".join(exc.reasons[:6]) if exc.reasons else exc.message
+        pipeline_repo.finish_node(
+            node["id"], NODE_FAILED, error_code="composition_precheck",
+            error_message=f"{exc.message} {detail}".strip()[:800])
+        pipeline_repo.add_event(run["id"], node["id"], "node_failed",
+                                {"reason": "composition_precheck",
+                                 "detail": detail[:200]})
+        return
+    except CompositionConflict as exc:
+        pipeline_repo.finish_node(
+            node["id"], NODE_FAILED, error_code="composition_conflict",
+            error_message=str(exc))
+        pipeline_repo.add_event(run["id"], node["id"], "node_failed",
+                                {"reason": "composition_conflict"})
+        return
+    except CompositionMissing as exc:
+        pipeline_repo.finish_node(
+            node["id"], NODE_FAILED, error_code="composition_missing",
+            error_message=str(exc))
+        pipeline_repo.add_event(run["id"], node["id"], "node_failed",
+                                {"reason": "composition_missing"})
+        return
+    job_id = view.get("job_id")
+    pipeline_repo.attach_job(node["id"], job_id)
+    pipeline_repo.add_event(run["id"], node["id"], "job_submitted", {
+        "job_id": job_id, "composition_id": view["id"], "version": view["version"],
+        "capability": "video", "provider": "ffmpeg", "model": "ffmpeg-compose-1",
+        "execution_mode": "local"})
 
 
 def _arm_review_node(run, node: dict, by_key: dict) -> None:
@@ -989,6 +1071,38 @@ def _run_internal_node(run, node: dict, by_key: dict) -> None:
                 "kinds": sorted({r["kind"] for r in rows}),
                 "note": ("本机音频路线还没配好；配音与音乐要到音频中心逐条提交"
                          if len(ready) < len(rows) else "")}
+        elif ntype == "export_validate":
+            # 合成后验收：worker 已经用 ffprobe 复核过一遍，这里再按**成片记录**
+            # 对一次（文件还在、大小与摘要对得上、分辨率与时长与记录一致）。
+            # 两道都过才算完成；任何一道不成立，节点明确失败，不记 skipped。
+            from composition import service as composition_service
+            from composition import validators
+            from repositories.compositions import compositions
+
+            job_id = _upstream_job(node, by_key)
+            if job_id is None:
+                raise _NodeFail("upstream_job_missing", "找不到要验收的合成作业")
+            row = compositions.by_job(job_id)
+            if row is None:
+                raise _NodeFail("composition_missing",
+                                f"作业 #{job_id} 没有对应的成片记录")
+            view = composition_service.view(row["id"])
+            if view["status"] != "succeeded":
+                raise _NodeFail("composition_not_ready",
+                                f"合成作业现在是「{view['status_label']}」，还不能验收")
+            if not view["output_path"]:
+                raise _NodeFail("output_missing", "成片记录里没有最终产物路径")
+            target = jobfiles.resolve_artifact(view["output_path"])
+            if target is None:
+                raise _NodeFail("output_missing", "最终成片文件不在了")
+            info = validators.inspect(target)
+            if info["bytes"] != view["bytes"]:
+                raise _NodeFail("output_changed", "最终成片的大小与记录不一致")
+            status, output = NODE_DONE, {
+                "composition_id": view["id"], "job_id": job_id,
+                "version": view["version"], "sha256": view["sha256"],
+                "duration_ms": info["duration_ms"], "width": info["width"],
+                "height": info["height"], "bytes": info["bytes"]}
         elif ntype == "export_prepare":
             # 成片中心是阶段 D。这里明确 skipped，不写 completed——
             # 没做的事不能记成做了（附件：不得把未验证能力标记为成功）。

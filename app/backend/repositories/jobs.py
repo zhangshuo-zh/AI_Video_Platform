@@ -12,6 +12,34 @@ import uuid
 from datetime import datetime
 
 from db import get_conn
+from config import (RESOURCE_CLASSES, WORKER_MAX_GLOBAL,
+                    WORKER_MAX_PER_RESOURCE)
+
+# 一条作业占哪一类资源。只在 SQL 与 Python 各写一份表达式，口径一致：
+#   * 成片合成不是模型：provider=ffmpeg 单独占 compose，不和视频模型抢显存；
+#   * tts/music 都算音频腿（同一块内存与同一类子进程）；
+#   * 其余按 capability 原样。
+RESOURCE_CLASS_SQL = (
+    "CASE WHEN provider_code = 'ffmpeg' THEN 'compose' "
+    "WHEN capability IN ('tts','music','audio') THEN 'audio' "
+    "ELSE capability END")
+
+
+def resource_class(capability: str, provider_code: str = "") -> str:
+    if (provider_code or "").lower() == "ffmpeg":
+        return "compose"
+    if capability in ("tts", "music", "audio"):
+        return "audio"
+    return capability or ""
+
+
+def _loads(text: str):
+    """读库里的 JSON 列；坏了就当空对象，不让一条坏行把整个面板打挂。"""
+    try:
+        value = json.loads(text or "null")
+        return value if isinstance(value, (dict, list)) else {}
+    except ValueError:
+        return {}
 
 # 字段清单集中在这里：建单、重试复制、测试断言都用同一份，免得漏一列
 COPY_FIELDS = (
@@ -139,29 +167,46 @@ class JobRepository:
                      ORDER BY j.id DESC LIMIT ?""", args).fetchall()
 
     # ---------- 领取与执行 ----------
-    def claim_next(self, worker_id: str, lease_seconds: int) -> sqlite3.Row | None:
-        """原子领取一条 queued。返回 None＝没有可领的，或已有本地作业在跑。
+    def claim_next(self, worker_id: str, lease_seconds: int,
+                   limits: dict | None = None) -> sqlite3.Row | None:
+        """原子领取一条 queued。返回 None＝没有可领的，或并发槽位都占着。
 
-        "已有本地作业在跑"也在这里挡：单 worker 是常态，但多开一个 worker
-        时不能让两个本地任务同时抢模型内存（规格 01-4.4 的硬要求）。
+        并发按**资源类**算，不按 worker 算：视频模型同时只跑一条（显存），
+        图像／文本／音频／成片各有一条槽。默认全局 1、每类 1，与单 worker
+        时代完全一致；要并行就在 `limits` 里抬上限，并且真的多开 worker
+        进程——一个进程仍然只跑一条作业，这一点没有被"并发"改掉。
+
+        `limits` = `{"global": 2, "per": {"video": 1, "image": 1, ...}}`。
+        没给的类沿用配置默认值；0 表示这一类暂时不接活。
         """
+        limits = limits or {}
+        max_global = max(0, int(limits.get("global", WORKER_MAX_GLOBAL)))
+        per = {**WORKER_MAX_PER_RESOURCE, **(limits.get("per") or {})}
         lease = f"+{int(lease_seconds)} seconds"
         with get_conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             # 这里**不看租约是否过期**：租约过期只说明"上一个 worker 大概没了"，
             # 不等于这条作业已经收尾。先让 recover_stale 把它收成 failed(worker_lost)，
-            # 再领下一条；否则会出现"过期但还挂着 running"的窗口里领进第二条本地作业，
-            # 同一时刻两个任务抢同一份模型内存——这条硬约束不能靠时间窗口赌。
-            active = conn.execute(
-                """SELECT 1 FROM job
-                    WHERE status IN ('starting','running') LIMIT 1"""
-            ).fetchone()
-            if active is not None:
+            # 再领下一条；否则会出现"过期但还挂着 running"的窗口里领进第二条同资源
+            # 作业，同一时刻两个任务抢同一份显存——这条硬约束不能靠时间窗口赌。
+            active_rows = conn.execute(
+                f"""SELECT {RESOURCE_CLASS_SQL} AS cls, COUNT(*) AS n
+                      FROM job
+                     WHERE status IN ('starting','running','cancel_requested')
+                     GROUP BY cls"""
+            ).fetchall()
+            active = {row["cls"]: int(row["n"]) for row in active_rows}
+            if sum(active.values()) >= max_global:
                 return None
-            row = conn.execute(
-                """SELECT id FROM job WHERE status = 'queued'
-                    ORDER BY priority DESC, queued_at, id LIMIT 1"""
-            ).fetchone()
+            candidates = conn.execute(
+                f"""SELECT id, {RESOURCE_CLASS_SQL} AS cls
+                      FROM job
+                     WHERE status = 'queued'
+                     ORDER BY priority DESC, queued_at, id"""
+            ).fetchall()
+            row = next((r for r in candidates
+                        if active.get(r["cls"], 0) < int(per.get(r["cls"], 1))),
+                       None)
             if row is None:
                 return None
             cur = conn.execute(
@@ -521,8 +566,41 @@ class JobRepository:
 
     # ---------- worker 心跳 ----------
     def heartbeat(self, worker_id: str, pid: int, current_job_id: int | None,
-                  version: str) -> None:
+                  version: str, *, limits: dict | None = None,
+                  resources: dict | None = None) -> None:
+        """写一份心跳：worker_node 记这个进程，worker_state 保留"最近一次"镜像。
+
+        `limits`/`resources` 只在启动时或作业收尾时给；中间续租传 None 时
+        保留上一份（COALESCE），别让槽位说明被空值擦掉。
+        """
+        limits_json = json.dumps(limits, ensure_ascii=False, sort_keys=True) if limits is not None else None
+        resources_json = json.dumps(resources, ensure_ascii=False, sort_keys=True) if resources is not None else None
+        host = (worker_id or "").split(":", 1)[0]
         with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO worker_node
+                       (worker_id, pid, host, started_at, heartbeat_at,
+                        current_job_id, version, limits_json, resources_json)
+                   VALUES (?, ?, ?, datetime('now','localtime'),
+                           datetime('now','localtime'), ?, ?, COALESCE(?, '{}'),
+                           COALESCE(?, '{}'))
+                   ON CONFLICT(worker_id) DO UPDATE SET
+                       pid = excluded.pid,
+                       heartbeat_at = excluded.heartbeat_at,
+                       current_job_id = excluded.current_job_id,
+                       version = excluded.version,
+                       limits_json = COALESCE(excluded.limits_json,
+                                              worker_node.limits_json),
+                       resources_json = COALESCE(excluded.resources_json,
+                                                 worker_node.resources_json)""",
+                (worker_id, pid, host, current_job_id, version,
+                 limits_json, resources_json),
+            )
+            # 面板只关心近几天的进程；删除久未心跳的行，不让表无限长
+            conn.execute(
+                """DELETE FROM worker_node
+                    WHERE heartbeat_at < datetime('now','localtime','-7 days')"""
+            )
             conn.execute(
                 """INSERT INTO worker_state (id, worker_id, pid, started_at,
                                              heartbeat_at, current_job_id, version)
@@ -539,6 +617,47 @@ class JobRepository:
                        version = excluded.version""",
                 (worker_id, pid, current_job_id, version),
             )
+
+    def workers(self, online_seconds: int) -> list[dict]:
+        """所有登记过的 worker 进程（最近的在前），带"现在还活着吗"。"""
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT worker_id, pid, host, started_at, heartbeat_at,
+                          current_job_id, version, limits_json, resources_json,
+                          CAST(strftime('%s','now','localtime')
+                               - strftime('%s', heartbeat_at) AS INTEGER)
+                              AS age_seconds
+                     FROM worker_node
+                    ORDER BY heartbeat_at DESC, id DESC"""
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            age = item.get("age_seconds")
+            item["online"] = age is not None and 0 <= age <= online_seconds
+            item["limits"] = _loads(item.pop("limits_json", "") or "{}")
+            item["resources"] = _loads(item.pop("resources_json", "") or "{}")
+            out.append(item)
+        return out
+
+    def queue_by_resource(self) -> dict:
+        """队列里排队／执行中各资源类几条——面板用来解释"为什么还没轮到我"。"""
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT {RESOURCE_CLASS_SQL} AS cls, status, COUNT(*) AS n
+                      FROM job
+                     WHERE status IN ('queued','starting','running',
+                                      'cancel_requested')
+                     GROUP BY cls, status"""
+            ).fetchall()
+        out = {name: {"queued": 0, "running": 0} for name in RESOURCE_CLASSES}
+        for row in rows:
+            bucket = out.setdefault(row["cls"], {"queued": 0, "running": 0})
+            if row["status"] == "queued":
+                bucket["queued"] += int(row["n"])
+            else:
+                bucket["running"] += int(row["n"])
+        return out
 
     def worker_state(self) -> sqlite3.Row | None:
         with get_conn() as conn:

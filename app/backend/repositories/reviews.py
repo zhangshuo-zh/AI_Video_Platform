@@ -143,20 +143,33 @@ class ReviewRepository:
                     LIMIT ?""",
                 (project_id, min(max(limit, 1), 200))).fetchall()
 
-    def signs_for_jobs(self, project_id: int, job_ids: list[int]) -> list[sqlite3.Row]:
-        """批量取这批作业的签字。空列表直接回空，不拼出 `IN ()` 那种语法错误。"""
-        if not job_ids:
+    def _signs_for(self, project_id: int, target_kind: str,
+                   target_ids: list[int]) -> list[sqlite3.Row]:
+        """批量取一批目标的签字。空列表直接回空，不拼出 `IN ()` 那种语法错误。
+
+        文档与产物两档共用这一条：两边的"当前版本有没有签"是同一套判定，
+        差别只在版本令牌怎么算（正文 sha256 / 产物清单摘要），那是 services 的事。
+        """
+        if not target_ids:
             return []
-        marks = ",".join("?" for _ in job_ids)
+        marks = ",".join("?" for _ in target_ids)
         with get_conn() as conn:
             return conn.execute(
                 f"""SELECT r.*, u.display_name AS signed_by_name
                       FROM review_item r
                       LEFT JOIN app_user u ON u.id = r.signed_by
-                     WHERE r.project_id = ? AND r.target_kind = 'job'
+                     WHERE r.project_id = ? AND r.target_kind = ?
                        AND r.target_id IN ({marks})
                      ORDER BY r.id""",
-                [project_id, *job_ids]).fetchall()
+                [project_id, target_kind, *target_ids]).fetchall()
+
+    def signs_for_jobs(self, project_id: int, job_ids: list[int]) -> list[sqlite3.Row]:
+        return self._signs_for(project_id, self.JOB, job_ids)
+
+    def signs_for_documents(self, project_id: int,
+                            doc_ids: list[int]) -> list[sqlite3.Row]:
+        """首页工作台要一次问清"这些文档里哪几份签过"，不能一份一份查。"""
+        return self._signs_for(project_id, self.DOCUMENT, doc_ids)
 
 
 reviews = ReviewRepository()

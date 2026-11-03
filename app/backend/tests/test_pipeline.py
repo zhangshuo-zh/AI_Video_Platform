@@ -888,3 +888,71 @@ def _count_jobs(prefix: str | None = None) -> int:
                 "SELECT COUNT(*) AS n FROM job WHERE idempotency_key LIKE ?",
                 (prefix + "%",)).fetchone()["n"]
         return conn.execute("SELECT COUNT(*) AS n FROM job").fetchone()["n"]
+
+
+# ---------- 阶段 D：成片节点（v2） ----------
+# 一份最小 v2：读输入 → 合成 → 成片验收 → 成片审核。
+# 合成不经过模型适配器（provider=ffmpeg），所以这份用例不切默认轨。
+V2_MINI = {"nodes": [
+    {"key": "read_project", "type": "project_input", "depends_on": []},
+    {"key": "read_episode", "type": "episode_input", "depends_on": ["read_project"]},
+    {"key": "compose", "type": "export_compose", "depends_on": ["read_episode"]},
+    {"key": "check_composition", "type": "export_validate", "depends_on": ["compose"]},
+    {"key": "review_composition", "type": "export_review",
+     "depends_on": ["check_composition"]},
+]}
+
+
+def test_v2成片节点从合成到验收到审核(people, clean_queue):
+    """成片节点是普通 Job：创建时冻结时间线，worker 用 FFmpeg 真跑，
+    验收按成片记录复核，审核等签字。三格各自失败都不会伪装成完成。"""
+    from test_composition import _clip
+
+    setup = _project(people, n_shots=1)
+    clip = _clip(setup["project_id"], setup["episode_id"], setup["shot_ids"][0],
+                 people["editor"]["id"], "purple")
+    _sign_job(clip["id"], setup, people)
+
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               _template(V2_MINI), people["editor"]["id"])
+    compose = _nodes(view)["compose"]
+    assert compose["status"] == "running"
+    assert compose["job_id"]
+
+    run = _pump(view["id"])
+    nodes = _nodes(run)
+    assert nodes["compose"]["status"] == "completed", nodes["compose"]["error_message"]
+    assert nodes["compose"]["output"]["provider"] == "ffmpeg"
+    assert nodes["check_composition"]["status"] == "completed"
+    out = nodes["check_composition"]["output"]
+    assert out["sha256"] and len(out["sha256"]) == 64
+    assert out["width"] == 1280 and out["height"] == 720
+    assert run["status"] == "waiting_review"
+    assert nodes["review_composition"]["status"] == "waiting_review"
+
+    # 成片审核签字后整条运行收尾
+    _sign_job(nodes["compose"]["job_id"], setup, people)
+    run = _pump(view["id"])
+    nodes = _nodes(run)
+    assert nodes["review_composition"]["status"] == "completed"
+    assert run["status"] == "completed", run["status_label"]
+
+
+def test_v2合成前置检查失败会点名并停在那格(people, clean_queue):
+    """有片但没签字时，合成节点明确失败，不提交 Job、不产出假成片。"""
+    from test_composition import _clip
+
+    setup = _project(people, n_shots=1)
+    _clip(setup["project_id"], setup["episode_id"], setup["shot_ids"][0],
+          people["editor"]["id"], "orange")
+    before = _count_jobs("pl-")
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               _template(V2_MINI), people["editor"]["id"])
+    nodes = _nodes(view)
+    assert nodes["compose"]["status"] == "failed"
+    assert nodes["compose"]["error_code"] == "composition_precheck"
+    assert "第 1 镜" in nodes["compose"]["error_message"]
+    assert "审核" in nodes["compose"]["error_message"]
+    assert nodes["check_composition"]["status"] == "blocked"
+    assert _count_jobs("pl-") == before     # 一条合成 Job 都没排
+    assert view["status"] == "failed"

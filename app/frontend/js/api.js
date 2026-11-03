@@ -327,6 +327,54 @@ export const api = {
   retryPipelineNode: (id) => fetch(`/api/pipeline/nodes/${id}/retry`,
     { method: 'POST' }).then(toJson),
 
+  // 成片中心（阶段 D）：每次合成是一条普通 Job，版本只增不改
+  compositions: (pid, params = {}) => fetch(
+    `/api/projects/${pid}/compositions?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
+  createComposition: (pid, body) => fetch(`/api/projects/${pid}/compositions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  composition: (id) => fetch(`/api/compositions/${id}`).then(toJson),
+  // 字幕是"喂给一次合成的输入文件"，不进库、不进 Git 工作区；
+  // 列表同时带回这台机器的 FFmpeg 能不能烧字幕，界面据此决定控件是可选还是禁用
+  compositionSubtitles: (pid) => fetch(
+    `/api/projects/${pid}/composition-subtitles`).then(toJson),
+  uploadCompositionSubtitle: (pid, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return fetch(`/api/projects/${pid}/composition-subtitles`, {
+      method: 'POST', body: form,
+    }).then(toJson);
+  },
+  deleteCompositionSubtitle: (pid, path) => fetch(
+    `/api/projects/${pid}/composition-subtitles?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE' }).then(toJson),
+
+  // 整季生产（阶段 E）：一季只是若干条单集运行的排产记录
+  seasons: (pid) => fetch(`/api/projects/${pid}/seasons`).then(toJson),
+  season: (id) => fetch(`/api/seasons/${id}`).then(toJson),
+  createSeason: (pid, body) => fetch(`/api/projects/${pid}/seasons`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  pauseSeason: (id) => fetch(`/api/seasons/${id}/pause`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(toJson),
+  resumeSeason: (id) => fetch(`/api/seasons/${id}/resume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(toJson),
+  cancelSeason: (id, reason = '') => fetch(`/api/seasons/${id}/cancel`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  }).then(toJson),
+  retrySeasonFailed: (id) => fetch(`/api/seasons/${id}/retry-failed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(toJson),
+
   // 音频中心（W15）：素材仍送生成中心的同一条队列
   audioClips: (pid, params = {}) => fetch(
     `/api/projects/${pid}/audio-clips?` + new URLSearchParams(
@@ -346,6 +394,10 @@ export const api = {
 
   // 项目看板（W16）：只读聚合；导出是纯下载，不写状态
   dashboard: (pid) => fetch(`/api/projects/${pid}/dashboard`).then(toJson),
+
+  // 首页工作台：跨模块待办聚合（审核待签、失败、待核对、进行中的运行）。
+  // 只读；服务端按"我看得见的在产项目"先筛过，前端不再自己过滤一遍。
+  workbench: () => fetch('/api/workbench').then(toJson),
 
   // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
   // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点

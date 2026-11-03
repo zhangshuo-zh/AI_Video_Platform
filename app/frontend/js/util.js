@@ -137,8 +137,10 @@ function hideDanger() {
  * 所以凡是有 subs 的模块都该在抬头摆一排：侧栏和这里读的是同一个 navstate 下标。
  */
 export function subChipRow(labels, current) {
+  // sub-chip 这个类只管宽窄屏的显隐（见 app.css 里的 .sub-chip）：
+  // 861px 起侧栏二级导航是展开的，页内再摆一排就是同一份状态的两个控件。
   return labels.map((l, i) => `
-    <button type="button" class="chip ${i === current ? 'blue' : 'plain'}"
+    <button type="button" class="chip sub-chip ${i === current ? 'blue' : 'plain'}"
             data-sub="${i}">${escapeHtml(l)}</button>`).join('');
 }
 
