@@ -72,9 +72,9 @@ class JobRepository:
                     params_json, input_refs_json, status, priority, idempotency_key,
                     user_confirmed_cloud, quantity, unit, unit_price_micros,
                     cost_micros, currency, pricing_snapshot_json, billable_status,
-                    created_by)
+                    source_version, created_by)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',
-                           ?,?,?,?,?,?,?,?,?,?,?)""",
+                           ?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (data["project_id"], data.get("episode_id"), data.get("shot_id"),
                  data["capability"], data["kind"], data["execution_mode"],
                  data["provider_code"], data["model_code"],
@@ -89,6 +89,7 @@ class JobRepository:
                  json.dumps(data["pricing_snapshot"], ensure_ascii=False, sort_keys=True)
                  if data.get("pricing_snapshot") else None,
                  data.get("billable_status", "not_billable"),
+                 data.get("source_version", ""),
                  data.get("created_by")),
             )
             return conn.execute("SELECT * FROM job WHERE id = ?",

@@ -400,6 +400,9 @@ class JobOut(BaseModel):
     status: str
     status_label: str
     prompt_preview: str
+    # 提交那一刻的源内容指纹（0031）。空串＝0031 之前落的作业或非分镜作业，
+    # 界面据此区分「没有指纹」与「指纹对不上」，不把两者混成"过期"。
+    source_version: str = ""
     queued_at: str
     started_at: str | None
     finished_at: str | None
@@ -451,6 +454,7 @@ class JobOut(BaseModel):
             status=row["status"],
             status_label=JOB_STATUSES.get(row["status"], row["status"]),
             prompt_preview=prompt[:120],
+            source_version=(row["source_version"] if "source_version" in keys else "") or "",
             queued_at=row["queued_at"], started_at=row["started_at"],
             finished_at=row["finished_at"], elapsed_ms=row["elapsed_ms"],
             retry_of_job_id=row["retry_of_job_id"],

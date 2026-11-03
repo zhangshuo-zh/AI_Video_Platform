@@ -31,7 +31,7 @@ from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from paths import describe as describe_path
 from paths import listdir_empty, resolve_within
 from repositories.audio import clips
-from repositories.content import assets
+from repositories.content import assets, shots
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
@@ -1466,6 +1466,57 @@ def job_kind(capability: str, execution_mode: str) -> str:
     return f"video_{execution_mode}" if capability == "video" else capability
 
 
+def shot_source_version(shot) -> str:
+    """这一镜"源内容"的指纹：内容、提示词、时长、引用资产及资产的版本信息。
+
+    为什么不覆盖模型与参数：换模型不改变"这一镜讲什么、引用谁"，那是 Job 参数
+    快照与成本账要回答的问题；把模型塞进指纹会让"换条便宜的轨"变成"素材过期"，
+    反而逼人重跑一遍已经能用的片子。
+
+    资产那边用 `updated_at`＋一致性提示词＋参考图清单：参考图被换掉、定妆描述被改，
+    都会让这一镜的画面依据变掉，旧视频就不该还挂着"已签"。
+    """
+    try:
+        ids = [int(x) for x in json.loads(shot["asset_ids"] or "[]")]
+    except (TypeError, ValueError):
+        ids = []
+    parts = {
+        "summary": shot["summary"],
+        "prompt": shot["prompt"],
+        "duration": round(float(shot["duration"] or 0), 3),
+        "assets": [],
+    }
+    for asset_id in ids:
+        row = assets.get(asset_id)
+        parts["assets"].append({
+            "id": asset_id,
+            "updated_at": row["updated_at"] if row else "",
+            "consistency_prompt": row["consistency_prompt"] if row else "",
+            "ref_images": row["ref_images"] if row else "",
+        })
+    blob = json.dumps(parts, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def job_source_stale(job) -> bool:
+    """这条作业的产物是不是基于**旧版**分镜／资产生的。
+
+    没有 `source_version` 的作业（0031 之前落的）一律不判过期：那时候平台确实
+    没记过源内容，硬判成过期会把历史作业全打成废纸，也会让已经签过字的片子凭空失效。
+    """
+    keys = job.keys()
+    version = job["source_version"] if "source_version" in keys else ""
+    if not version:
+        return False
+    shot_id = job["shot_id"] if "shot_id" in keys else None
+    if not shot_id:
+        return False
+    shot = shots.get(int(shot_id))
+    if shot is None:
+        return False
+    return shot_source_version(shot) != version
+
+
 def submit_job(payload, created_by: int | None) -> dict:
     """校验并写入 Job 行，返回 sqlite3.Row。**不触发执行**——执行是 worker 的事。
 
@@ -1524,6 +1575,14 @@ def submit_job(payload, created_by: int | None) -> dict:
 
     cost = _cost_of(payload, mode, created_by)
 
+    # 分镜作业记下"提交那一刻的源内容指纹"：改完剧本或资产之后，
+    # 成片／产线拿它和当前指纹一比就知道这条产物是不是过期了。
+    source_version = ""
+    if payload.shot_id:
+        shot = shots.get(int(payload.shot_id))
+        if shot is not None:
+            source_version = shot_source_version(shot)
+
     return job_repo.create({
         "project_id": payload.project_id,
         "episode_id": payload.episode_id,
@@ -1540,6 +1599,7 @@ def submit_job(payload, created_by: int | None) -> dict:
         "priority": payload.priority,
         "idempotency_key": payload.idempotency_key,
         "user_confirmed_cloud": payload.user_confirmed_cloud,
+        "source_version": source_version,
         "created_by": created_by,
         **cost,
     })

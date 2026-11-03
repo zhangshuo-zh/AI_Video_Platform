@@ -42,6 +42,7 @@ const TYPE_LABEL = {
 const FINISHED = ['completed', 'completed_with_errors', 'failed', 'cancelled'];
 const EVENT_LABEL = {
   run_created: '发起运行', run_started: '开始生产',
+  preflight_warning: '生产前检查提醒',
   job_submitted: '提交作业', node_completed: '节点完成',
   node_skipped: '节点跳过', node_failed: '节点失败',
   node_attention: '待人工核对', node_waiting_review: '等待签字',
@@ -92,6 +93,11 @@ function eventText(ev) {
   if (ev.event_type === 'node_failed') {
     const reason = p.reason || p.job_status;
     return `${who ? who + ' · ' : ''}${base}${reason ? ' · ' + reason : ''}`;
+  }
+  if (ev.event_type === 'preflight_warning') {
+    const list = (p.warnings || []).slice(0, 3);
+    const more = (p.warnings || []).length > list.length ? ' …' : '';
+    return `${base} · ${list.join('；')}${more}`;
   }
   if (ev.event_type === 'run_cancelled' && p.reason) return `${base} · ${p.reason}`;
   if (ev.event_type === 'run_completed' || ev.event_type === 'run_failed') {

@@ -1008,3 +1008,27 @@ def test_成片按产线签过的那条作业钉住(fresh_project, people):
     pipeline_repo.attach_job(nodes[f"shot_video#s{s1}"]["id"], real[0])
     pipeline_repo.attach_job(nodes[f"shot_video#s{s2}"]["id"], real[1])
     assert pipeline.compose_shot_jobs(run2) == {s1: real[0], s2: real[1]}
+
+
+def test_生产前检查_阻断与警告分开(fresh_project, people):
+    """预检只做确定性判断：缺资产是阻断，空提示词是警告。
+
+    这条用例同时钉住"预检结果真的会挡住发起"：blocking 不为空时 create_run 抛
+    PipelineInvalid，而不是先建运行再让第一格失败。
+    """
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    shots.create(eid, "第一镜", "有提示词", 1.0, [])
+    shots.create(eid, "第二镜", "", 1.0, [999999])
+    template = next(t for t in pipeline_repo.latest_templates()
+                    if t["name"] == "标准漫剧单集生产" and t["version"] == 2)
+
+    check = pipeline.preflight(pid, eid, template["id"])
+    assert any("资产 #999999 不存在" in item for item in check["blocking"])
+    assert any("第 2 镜没有提示词" in item for item in check["warnings"])
+    assert not any("第 1 镜没有提示词" in item for item in check["warnings"])
+    assert check["info"]["shots"] == 2
+
+    with pytest.raises(pipeline.PipelineInvalid) as exc:
+        pipeline.create_run(pid, eid, template["id"], people["editor"]["id"])
+    assert "生产前检查没过" in str(exc.value)

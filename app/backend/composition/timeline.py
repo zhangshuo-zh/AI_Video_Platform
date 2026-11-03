@@ -110,6 +110,13 @@ def build(project_id: int, episode_id: int, *,
         if video_job is None:
             reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
             continue
+        # 延迟导入：services 会反过来调本模块（artifact_version 在那边）
+        from services import job_source_stale
+        if job_source_stale(video_job):
+            reasons.append(
+                f"第 {shot['seq']} 镜的素材是旧版分镜／资产生成的（源内容已变），"
+                f"要重新生成并重新签字")
+            continue
         try:
             result_paths = json.loads(video_job["result_paths_json"] or "[]")
         except ValueError:

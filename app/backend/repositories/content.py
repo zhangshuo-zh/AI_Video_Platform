@@ -95,7 +95,9 @@ class ShotRepository:
             if conn.execute("SELECT 1 FROM shot WHERE id = ?", (shot_id,)).fetchone() is None:
                 return None
             conn.execute(
-                """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?
+                """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?,
+                          revision = revision + 1,
+                          updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (summary, prompt, duration, json.dumps(asset_ids), shot_id),
             )

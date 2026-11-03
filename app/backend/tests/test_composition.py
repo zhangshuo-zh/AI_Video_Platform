@@ -329,3 +329,62 @@ def test_钉住的作业没签或不属这一镜就点名拒绝(stage):
             params={"width": 640, "height": 360, "fps": 24},
             shot_jobs={shot1: job_b["id"], shot2: job_b["id"]})
     assert "不属于这一镜" in "；".join(exc.value.reasons)
+
+
+def test_改分镜后旧素材算过期(as_role, fresh_project, clean_queue, people):
+    """作业记下提交时的源指纹；分镜一改，旧素材就不许再拼进成片。
+
+    这是「改完剧本继续用旧片」那条缺口的反证：版本不是靠时间猜的，
+    而是拿提交那一刻的指纹和当前源内容比。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    sid = shots.create(eid, "开场", "雨夜石阶", 2.0, [])["id"]
+    job = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "video", "prompt": "雨夜石阶",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01},
+    }).json()
+    assert job["source_version"]      # 接口回显（JobOut 带这一列）
+    assert worker.run_once(f"w-src-{job['id']}") == job["id"]
+    c.post(f"/api/jobs/{job['id']}/review-sign",
+           json={"anchor": "artifact", "decision": "approved"})
+
+    # 改分镜：同一条作业还成功、签字也还对得上它的产物清单，但源内容变了
+    c.put(f"/api/shots/{sid}", json={
+        "summary": "改成白天石阶", "prompt": "白天石阶", "duration": 2.0,
+        "asset_ids": []})
+    from services import job_source_stale
+    assert job_source_stale(job_repo.get(job["id"])) is True
+
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        composition_service.create(pid, eid, people["editor"]["id"],
+                                   params={"width": 640, "height": 360, "fps": 24})
+    assert "源内容已变" in "；".join(exc.value.reasons)
+
+
+def test_改引用资产也算源内容变了(as_role, fresh_project, clean_queue, people):
+    """分镜没动，但引用的角色定妆描述改了：旧视频同样过期。"""
+    from repositories.content import assets as asset_repo
+    from services import job_source_stale
+
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    aid = asset_repo.create(pid, "character", "林默", "少年", "黑发", [])["id"]
+    sid = shots.create(eid, "开场", "林默提灯", 2.0, [aid])["id"]
+    job = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "video", "prompt": "林默提灯",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01},
+    }).json()
+    row = job_repo.get(job["id"])
+    assert job_source_stale(row) is False
+
+    asset_repo.update(aid, kind="character", name="林默", summary="少年",
+                      consistency_prompt="银发、灰斗篷", aliases=[], tags=[],
+                      project_id=pid)
+    assert job_source_stale(job_repo.get(job["id"])) is True
