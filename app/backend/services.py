@@ -1466,7 +1466,7 @@ def job_kind(capability: str, execution_mode: str) -> str:
     return f"video_{execution_mode}" if capability == "video" else capability
 
 
-def shot_source_version(shot) -> str:
+def shot_source_version(shot, loaded_assets: dict | None = None) -> str:
     """这一镜"源内容"的指纹：内容、提示词、时长、引用资产及资产的版本信息。
 
     为什么不覆盖模型与参数：换模型不改变"这一镜讲什么、引用谁"，那是 Job 参数
@@ -1475,6 +1475,11 @@ def shot_source_version(shot) -> str:
 
     资产那边用 `updated_at`＋一致性提示词＋参考图清单：参考图被换掉、定妆描述被改，
     都会让这一镜的画面依据变掉，旧视频就不该还挂着"已签"。
+
+    `loaded_assets` 是给"一集几十镜一起算"的调用方留的口子（分镜列表、生产前检查）：
+    它们本来就要把这一集的资产读一遍，逐镜再 `assets.get()` 会把一次列表打成
+    几十次回库。传了就只查这一份字典，没传就自己回库——单条作业提交那条路
+    只有几个资产，不值得为它多写一层。
     """
     try:
         ids = [int(x) for x in json.loads(shot["asset_ids"] or "[]")]
@@ -1486,8 +1491,10 @@ def shot_source_version(shot) -> str:
         "duration": round(float(shot["duration"] or 0), 3),
         "assets": [],
     }
+    if ids and loaded_assets is None:
+        loaded_assets = assets.get_many(ids)
     for asset_id in ids:
-        row = assets.get(asset_id)
+        row = (loaded_assets or {}).get(asset_id)
         parts["assets"].append({
             "id": asset_id,
             "updated_at": row["updated_at"] if row else "",
@@ -1499,24 +1506,46 @@ def shot_source_version(shot) -> str:
 
 
 def shots_view(episode_id: int) -> list[dict]:
-    """分镜列表 + 每镜「最新成功作业是否基于旧源内容」。
+    """分镜列表 + 每镜「成片会用到的那条视频作业是否基于旧源内容」。
 
     标记放在服务端算：前端拿不到分镜源指纹（它需要读引用资产的版本信息），
     让浏览器自己判断等于把口径复制一份到 JS 里。
+
+    回库次数是算过的：作业一条、分镜一条、这一集引用到的资产一条，共三次。
+    逐镜 `shots.get()` ＋逐资产 `assets.get()` 的老写法在 13 镜一集上是 20+ 次，
+    而创作中心每次打开一集都要走这条路。
     """
-    latest = job_repo.latest_succeeded_by_shot(episode_id)
+    rows = shots.list_by_episode(episode_id)
+    latest = job_repo.latest_succeeded_videos_by_shot(episode_id)
+    asset_ids: set[int] = set()
+    for row in rows:
+        if int(row["id"]) not in latest:
+            continue                      # 没有可用视频作业的镜头不判过期，省掉一批资产读
+        asset_ids |= shot_asset_ids(row)
+    loaded = assets.get_many(sorted(asset_ids)) if asset_ids else {}
     out = []
-    for row in shots.list_by_episode(episode_id):
+    for row in rows:
         job = latest.get(int(row["id"]))
-        out.append({"shot": row, "source_stale": bool(job and job_source_stale(job))})
+        stale = bool(job and job_source_stale(job, shot=row, loaded_assets=loaded))
+        out.append({"shot": row, "source_stale": stale})
     return out
 
 
-def job_source_stale(job) -> bool:
+def shot_asset_ids(shot) -> set[int]:
+    """镜头行里的 `asset_ids`（JSON 文本）→ 整数集合。坏数据当空清单。"""
+    try:
+        return {int(x) for x in json.loads(shot["asset_ids"] or "[]")}
+    except (TypeError, ValueError):
+        return set()
+
+
+def job_source_stale(job, shot=None, loaded_assets: dict | None = None) -> bool:
     """这条作业的产物是不是基于**旧版**分镜／资产生的。
 
     没有 `source_version` 的作业（0031 之前落的）一律不判过期：那时候平台确实
     没记过源内容，硬判成过期会把历史作业全打成废纸，也会让已经签过字的片子凭空失效。
+
+    `shot`／`loaded_assets` 是同一次列表里已经在手的行；不传就自己回库（单条检查那条路）。
     """
     keys = job.keys()
     version = job["source_version"] if "source_version" in keys else ""
@@ -1525,10 +1554,11 @@ def job_source_stale(job) -> bool:
     shot_id = job["shot_id"] if "shot_id" in keys else None
     if not shot_id:
         return False
-    shot = shots.get(int(shot_id))
+    if shot is None:
+        shot = shots.get(int(shot_id))
     if shot is None:
         return False
-    return shot_source_version(shot) != version
+    return shot_source_version(shot, loaded_assets) != version
 
 
 def submit_job(payload, created_by: int | None) -> dict:

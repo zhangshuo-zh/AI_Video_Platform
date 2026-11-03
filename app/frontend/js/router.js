@@ -5,6 +5,11 @@ import { MODULES } from './modules.js';
 
 let currentId = null;
 let firstPaint = true;
+// 每一次渲染的序号。`view.render()` 是 async 的（十几个视图里都有 await），
+// 快速切页时先发出的那一次可能后回来，把已经不该显示的旧页面盖回屏幕上——
+// 各视图自己判 `isConnected` 只能挡住"往死节点上写"，挡不住"晚到的整页覆盖新页"。
+// 这里是所有渲染的唯一入口，所以在这一处判一次，十四个视图一起受益。
+let renderSeq = 0;
 
 export function currentViewId() {
   return currentId;
@@ -22,6 +27,7 @@ export function closeDetail(viewId) {
 }
 
 export async function renderView(id) {
+  const seq = ++renderSeq;
   const view = views[id] || views.overview;
 
   // 换模块时把上一个模块的详情参数清掉：从资产详情跳去创作中心再跳回来，
@@ -45,7 +51,9 @@ export async function renderView(id) {
   root.classList.toggle('cold', firstPaint);
   firstPaint = false;
 
-  root.innerHTML = await view.render();
+  const html = await view.render();
+  if (seq !== renderSeq) return;      // 已经有一次更晚的导航在跑了，这份作废
+  root.innerHTML = html;
   view.mount?.(root);          // 视图自己绑事件，路由不掺和
 
   currentId = id;

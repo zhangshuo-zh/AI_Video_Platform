@@ -31,7 +31,6 @@ import json
 import os
 import select
 import resource
-import shutil
 import signal
 import socket
 import subprocess
@@ -51,7 +50,7 @@ from composition.service import record_success as record_composition
 from composition.validators import MediaInvalid
 import runners
 import validations
-from config import (ALLOW_MOCK, JOBS_DIR, RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
+from config import (ALLOW_MOCK, RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
                     WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE,
                     WORKER_MAX_RUNTIME_SECONDS, WORKER_POLL)
 from paths import describe as describe_path
@@ -176,13 +175,8 @@ def _node_resources() -> dict:
     except OSError:          # 极老的 Unix/容器不给负载；给空而不是整个心跳失败
         load1 = load5 = load15 = 0.0
     try:
-        # 目录可能还没建（首次启动、测试用临时库）。往上找到第一个真实存在的父级
-        # 再问卷——问的是"这块盘还剩多少"，与那一层目录在不在无关。
-        probe = JOBS_DIR
-        while not probe.exists() and probe != probe.parent:
-            probe = probe.parent
-        usage_disk = shutil.disk_usage(probe)
-        free, total = usage_disk.free, usage_disk.total
+        usage_disk = jobfiles.volume_usage()
+        free, total = ((usage_disk.free, usage_disk.total) if usage_disk else (0, 0))
     except OSError:          # 问不到就报 0，不拿一个猜的数冒充读数
         free = total = 0
     return {
@@ -194,7 +188,7 @@ def _node_resources() -> dict:
         "child_rss_peak_mb": round(_rss_kb(child.ru_maxrss) / 1024, 1),
         "disk_free_gb": round(free / 1024 ** 3, 2),
         "disk_total_gb": round(total / 1024 ** 3, 2),
-        "measure": "getrusage+self+children/getloadavg/disk_usage(JOBS_DIR)",
+        "measure": "getrusage+self+children/getloadavg/jobfiles.volume_usage",
     }
 
 

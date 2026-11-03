@@ -135,20 +135,42 @@ def view(composition_id: int, *, include_timeline: bool = True) -> dict:
     if row is None:
         raise CompositionMissing("成片记录不存在")
     job = job_repo.get(row["job_id"]) if row["job_id"] else None
-    # 崩在"Job 成功"与"回填成片"之间时，读的时候补一次；补不出来就如实空着
-    if job is not None and job["status"] == "succeeded" and not row["output_path"]:
-        try:
-            record_success(job)
-            row = compositions.get(composition_id) or row
-        except Exception:
-            pass
-    status = _status(job, row)
-    return _view(row, job, status, include_timeline=include_timeline)
+    row, job = _recover_if_needed(row, job)
+    return _view(row, job, _status(job, row), include_timeline=include_timeline)
+
+
+def _recover_if_needed(row, job):
+    """崩在"Job 成功"与"回填成片行"之间时，读的时候补一次；补不出来就如实空着。
+
+    这条路只在**真缺**的时候走：作业已成功、成片行却没有 output_path。
+    已经回填过的（正常情况）一个字段都不动，所以列表里逐行调用也不产生写入。
+    """
+    if job is None or job["status"] != "succeeded" or row["output_path"]:
+        return row, job
+    try:
+        record_success(job)
+    except Exception:
+        return row, job          # 补不上就照原样显示，不拿猜的值覆盖真相
+    return compositions.get(row["id"]) or row, job
 
 
 def list_for_project(project_id: int, episode_id: int | None = None) -> list[dict]:
-    return [view(row["id"], include_timeline=False)
-            for row in compositions.list_for_project(project_id, episode_id)]
+    """项目（可再按集）的成片列表。**不按行回库**：
+
+    原来这里逐条调 `view()`，每条两次查询（成片行 ＋ 它的 Job），列表越长越贵——
+    而仓储那条列表 SQL 本来就把成片行的每一列带回来了，只缺 Job。
+    现在是一趟成片列表 ＋ 一趟按 id 批量取 Job。
+    """
+    rows = compositions.list_for_project(project_id, episode_id)
+    if not rows:
+        return []
+    jobs_by_id = job_repo.get_many([row["job_id"] for row in rows], with_derived=False)
+    out = []
+    for row in rows:
+        job = jobs_by_id.get(int(row["job_id"])) if row["job_id"] else None
+        row, job = _recover_if_needed(row, job)
+        out.append(_view(row, job, _status(job, row), include_timeline=False))
+    return out
 
 
 def record_success(job) -> None:

@@ -93,19 +93,6 @@ class CompositionRepository:
                 (output_path, sha256, bytes_, duration_ms, width, height,
                  composition_id))
 
-    def latest_video_jobs(self, episode_id: int) -> dict[int, sqlite3.Row]:
-        """每一镜最新一条成功的视频作业。键是 shot_id。"""
-        with get_conn() as conn:
-            rows = conn.execute(
-                """SELECT j.* FROM job j
-                    JOIN (SELECT shot_id, MAX(id) AS mid
-                            FROM job
-                           WHERE episode_id = ? AND capability = 'video'
-                             AND shot_id IS NOT NULL AND status = 'succeeded'
-                           GROUP BY shot_id) t ON t.mid = j.id""",
-                (episode_id,)).fetchall()
-        return {int(row["shot_id"]): row for row in rows}
-
     def count_for_project(self, project_id: int) -> int:
         with get_conn() as conn:
             row = conn.execute(

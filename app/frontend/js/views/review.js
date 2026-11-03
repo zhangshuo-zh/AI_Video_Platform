@@ -163,9 +163,15 @@ export default {
     const detail = root.querySelector('#review-detail');
     if (!detail || !openDocId) return;
 
+    // 这份报告是异步来的：连点两份文档、或者中间切了页，旧响应回来时
+    // 既不能盖掉新打开那份的内容，也不能往已经离开文档的节点上写。
+    const wantedDoc = openDocId;
+    const stale = () => !detail.isConnected || openDocId !== wantedDoc;
+
     let gate = null;
     let err = null;
-    try { gate = await api.reviewGate(openDocId); } catch (e) { err = e; }
+    try { gate = await api.reviewGate(wantedDoc); } catch (e) { err = e; }
+    if (stale()) return;
     if (err) {
       detail.innerHTML = `<div class="card-body"><div class="bar bad">
         读不到报告：${escapeHtml(err.message)}</div></div>`;

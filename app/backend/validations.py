@@ -164,9 +164,16 @@ def _first_path(job) -> str:
     return str(paths[0]) if isinstance(paths, list) and paths else ""
 
 
-def summary_for(row) -> dict:
-    """某一槽位的五类 provenance 摘要。界面按这个决定敢不敢说"生产可用"。"""
-    latest = repo.latest_by_kind(row["capability"], row["backend"], row["provider"])
+def summary_for(row, latest: dict | None = None) -> dict:
+    """某一槽位的五类 provenance 摘要。界面按这个决定敢不敢说"生产可用"。
+
+    `latest` 是给"一整页槽位一起渲染"的调用方留的口子：传 `repo.latest_matrix()`
+    里那一格（`{(能力,后端,供应商): {档: 行}}`），五个槽位档就是一趟查询；
+    不传则自己按槽位读（单槽位调用，比如刚验证完只看这一条）。
+    判断规则只有一份，两种走法读的是同一批行。
+    """
+    if latest is None:
+        latest = repo.latest_by_kind(row["capability"], row["backend"], row["provider"])
 
     def brief(kind: str) -> dict:
         rec = latest.get(kind)

@@ -28,6 +28,15 @@ NODE_CANCELLED = "cancelled"
 # 终态：进了这几个状态就不再被调度
 NODE_FINAL = (NODE_DONE, NODE_FAILED, NODE_SKIPPED, NODE_CANCELLED)
 
+# 一份"每个状态都数过、当前都是零"的计数。列顺序固定，
+# 因为 `run_status`／进度条都按下标取值，缺一个键就是 KeyError。
+_NODE_STATUS_KEYS = (NODE_PENDING, NODE_RUNNING, NODE_REVIEW, NODE_ATTENTION,
+                     NODE_DONE, NODE_FAILED, NODE_SKIPPED, NODE_CANCELLED)
+
+
+def _zero_counts() -> dict:
+    return {key: 0 for key in _NODE_STATUS_KEYS}
+
 
 class PipelineRepository:
     # ---------- 模板 ----------
@@ -288,15 +297,46 @@ class PipelineRepository:
             return cur.rowcount == 1
 
     def counts_for_run(self, run_id: int) -> dict:
+        return self.counts_for_runs([run_id]).get(int(run_id), _zero_counts())
+
+    def counts_for_runs(self, run_ids: list[int] | set[int]) -> dict[int, dict]:
+        """一次把一组运行的节点状态计数全带回来，键是 run_id。
+
+        列表页原来逐条 `counts_for_run()`：N 条运行就是 N 趟 GROUP BY。
+        这里一条 `run_id IN (...) GROUP BY run_id, status` 打完，
+        没出现的运行补一份全零——调用方要的是"每条都有 counts"，
+        而不是"有节点才有"。
+        """
+        ids = sorted({int(i) for i in run_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
         with get_conn() as conn:
             rows = conn.execute(
-                """SELECT status, COUNT(*) AS n FROM pipeline_node_run
-                    WHERE run_id = ? GROUP BY status""", (run_id,)).fetchall()
-        out = {key: 0 for key in (NODE_PENDING, NODE_RUNNING, NODE_REVIEW,
-                                  NODE_ATTENTION, NODE_DONE, NODE_FAILED,
-                                  NODE_SKIPPED, NODE_CANCELLED)}
-        out.update({row["status"]: row["n"] for row in rows})
+                f"""SELECT run_id, status, COUNT(*) AS n FROM pipeline_node_run
+                     WHERE run_id IN ({marks}) GROUP BY run_id, status""", ids).fetchall()
+        out = {run_id: _zero_counts() for run_id in ids}
+        for row in rows:
+            if row["status"] in out[row["run_id"]]:
+                out[int(row["run_id"])][row["status"]] = int(row["n"])
         return out
+
+    def retried_run_ids(self, run_ids: list[int] | set[int]) -> set[int]:
+        """这一组运行里，哪些**至少有一个节点被重试过**。
+
+        给 `run_status` 判 `completed_with_errors` 用：它是"跑完了但路上返过工"
+        的第二个依据（另一个是 skipped 节点数，counts 里已经带了）。
+        逐条问就是每条运行多一趟查询，列表页不划算。
+        """
+        ids = sorted({int(i) for i in run_ids})
+        if not ids:
+            return set()
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT DISTINCT run_id FROM pipeline_node_run
+                     WHERE run_id IN ({marks}) AND retry_count > 0""", ids).fetchall()
+        return {int(row["run_id"]) for row in rows}
 
     # ---------- 事件 ----------
     def add_event(self, run_id: int, node_id: int | None, event_type: str,

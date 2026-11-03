@@ -27,8 +27,7 @@ from config import COMPOSE_MAX_SHOTS
 from composition import validators
 from models import JOB_STATUSES
 from repositories.audio import clips
-from repositories.compositions import compositions
-from repositories.content import episodes, shots
+from repositories.content import assets, episodes, shots
 from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
 
@@ -42,18 +41,22 @@ class CompositionInvalid(Exception):
         self.reasons = reasons or [message]
 
 
-def _shot_review(job) -> tuple[str, str]:
-    """返回 (结论, 给人看的原因)。结论：approved / rejected / missing。"""
-    from services import artifact_version  # 延迟导入：services 会反过来调本模块
+def _shot_review(job, signs: list, version: str) -> tuple[str, str]:
+    """返回 (结论, 给人看的原因)。结论：approved / rejected / missing。
 
-    version = artifact_version(job)
-    signs = reviews.signs(reviews.JOB, job["id"], version)
-    if not signs:
+    `signs` 是这次为**这一条作业**批量取回的签字行，`version` 是它当前的产物清单
+    摘要。判定只看"签的是不是这一版"，**锚点不参与筛选**——整条作业（anchor=`artifact`）
+    与单独一件产物（anchor=`artifact:0`）的签字都算数。这与改成批量之前那句
+    `reviews.signs(JOB, job_id, version)` 一模一样；按锚点另筛会把"只签了第一件产物"
+    的历史签字突然判成没签，那是行为回归，不是优化。
+    """
+    current = [s for s in signs if s["base_version"] == version]
+    if not current:
         return "missing", f"作业 #{job['id']} 的产物还没有审核签字"
-    for sign in signs:
+    for sign in current:
         if sign["decision"] == "approved":
             return "approved", f"作业 #{job['id']} 的产物已通过审核"
-    for sign in signs:
+    for sign in current:
         if sign["decision"] == "rejected":
             return "rejected", f"作业 #{job['id']} 的产物已被驳回"
     return "missing", f"作业 #{job['id']} 的产物没有有效签字"
@@ -84,15 +87,39 @@ def build(project_id: int, episode_id: int, *,
             f"{COMPOSE_MAX_SHOTS}；请先拆分成多集")
 
     pinned = shot_jobs if shot_jobs is not None else None
-    jobs_by_shot = None if pinned is not None else compositions.latest_video_jobs(episode_id)
+    # "这一镜用哪条视频"只有一个出处：与分镜列表那枚「源已变」共用同一条选择器，
+    # 否则界面说没事、这里却把这一镜拒掉（见 jobs.latest_succeeded_videos_by_shot）。
+    jobs_by_shot = None if pinned is not None else job_repo.latest_succeeded_videos_by_shot(
+        episode_id)
     reasons: list[str] = []
     timeline_shots: list[dict] = []
     total_ms = 0
+    # 这一集要用到的作业、签字、被引用的资产，先各一次读齐。
+    # 原来循环里逐镜 `job_repo.get()` ＋逐镜问签字 ＋判过期时逐资产回库：
+    # 13 镜一集就是几十趟回库，而"发起合成"是一天点几十次的动作。
+    # 读法换了，判定一个字没改（见 `_shot_review` 与 `services.job_source_stale`）。
+    # 延迟导入：services 会反过来调本模块（artifact_version 与签字判定在那边）。
+    from services import artifact_version, job_source_stale, shot_asset_ids
+
+    if pinned is not None:
+        wanted = sorted({int(v) for v in pinned.values() if v})
+        jobs_by_id = job_repo.get_many(wanted, with_derived=False)
+    else:
+        jobs_by_id = {int(job["id"]): job for job in jobs_by_shot.values()}
+        wanted = sorted(jobs_by_id)
+    signs_by_job: dict[int, list] = {}
+    for sign in reviews.signs_for_jobs(project_id, wanted):
+        signs_by_job.setdefault(int(sign["target_id"]), []).append(sign)
+    asset_ids: set[int] = set()
+    for shot in shot_rows:
+        asset_ids |= shot_asset_ids(shot)
+    loaded_assets = assets.get_many(sorted(asset_ids)) if asset_ids else {}
+
     for shot in shot_rows:
         shot_id = int(shot["id"])
         if pinned is not None:
             job_id = pinned.get(shot_id)
-            video_job = job_repo.get(int(job_id)) if job_id else None
+            video_job = jobs_by_id.get(int(job_id)) if job_id else None
             if video_job is None:
                 reasons.append(f"第 {shot['seq']} 镜没有产线签过的视频作业")
                 continue
@@ -110,9 +137,8 @@ def build(project_id: int, episode_id: int, *,
         if video_job is None:
             reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
             continue
-        # 延迟导入：services 会反过来调本模块（artifact_version 在那边）
-        from services import job_source_stale
-        if job_source_stale(video_job):
+        # 镜头行与资产都在手上了：判一次过期不该再回库读同一行、再逐个资产问一遍
+        if job_source_stale(video_job, shot, loaded_assets):
             reasons.append(
                 f"第 {shot['seq']} 镜的素材是旧版分镜／资产生成的（源内容已变），"
                 f"要重新生成并重新签字")
@@ -126,7 +152,9 @@ def build(project_id: int, episode_id: int, *,
         if target is None:
             reasons.append(f"第 {shot['seq']} 镜的视频产物不在了（作业 #{video_job['id']}）")
             continue
-        verdict, why = _shot_review(video_job)
+        verdict, why = _shot_review(
+            video_job, signs_by_job.get(int(video_job["id"]), []),
+            artifact_version(video_job))
         if require_approved and verdict != "approved":
             reasons.append(f"第 {shot['seq']} 镜{why}")
             continue
@@ -163,9 +191,8 @@ def build(project_id: int, episode_id: int, *,
             },
         })
 
-    if reasons:
-        raise CompositionInvalid("合成前检查没过：", reasons)
-
+    # 这里**不提前抛**：音频素材缺失与镜头缺片是同一次发起的两半，
+    # 分两次说等于让人改完一轮再撞第二轮。攒到下面一起报。
     audio_rows = clips.list(project_id, None, episode_id)
     audio: list[dict] = []
     starts = _shot_starts(timeline_shots)

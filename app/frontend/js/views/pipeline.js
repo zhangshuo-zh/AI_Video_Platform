@@ -162,13 +162,23 @@ function preflightHtml(data) {
       <b>可以发起，但要注意（${warn.length}）</b><ul>${items(warn, 'warn')}</ul></div>` : ''}`;
 }
 
+// 发起弹窗里生产前检查的请求序号：改集/改模板都会重问一次，先发的请求可能后到，不挡就会把上一集的阻断结果显示成这一集的，或者反过来——按钮的禁用状态必须跟着最后一次点击的判断走。
+let preReqId = 0;
+
 function nodeRows(detail, canSubmit) {
   const labelOf = {};
   detail.nodes.forEach((n) => { labelOf[n.node_key] = n.label; });
   return detail.nodes.map((n, i) => {
     const tone = NODE_TONE[n.status] || 'gray';
     const deps = (n.depends_on || []).map((d) => labelOf[d] || d).join('、');
-    const retryable = canSubmit && n.status === 'failed';
+    // 「能不能重试」是服务端的规则（`pipeline.retry_gate`），不是前端按状态猜的：
+    // 被驳回的审核节点 status 也是 failed，但那颗钮点了必吃 409。
+    // 老版本的响应里若没有这两个字段，退回原来的判法，不让页面报错。
+    // 权限这一半仍在前端：服务端那道 `job:submit` 已经拦在接口上，
+    // 这里只是不给只读账号摆一颗注定 403 的钮。
+    const retryable = canSubmit && ('retryable' in n
+      ? n.retryable : n.status === 'failed');
+    const retryHint = n.retry_hint || '只有失败的节点能重试';
     // 读项目／读集／读剧本这三格，类型名和节点名几乎一样（"读取项目"与"读项目"），
     // 再挂一枚类型 chip 只是噪音；从生成节点往后类型才是有用的信息
     const quietType = ['project_input', 'episode_input', 'document_input'].includes(n.node_type);
@@ -194,6 +204,9 @@ function nodeRows(detail, canSubmit) {
         ${retryable ? `<div class="row" style="gap:6px;margin-top:6px">
           <button class="btn sm" data-retry-node="${n.id}">重试这一格</button>
           <span class="t-desc">旧作业、旧产物、旧签字都留着，新作业另起一行</span></div>` : ''}
+        ${canSubmit && !retryable && n.status === 'failed'
+          ? `<p class="t-desc" style="margin-top:6px">${escapeHtml(n.retry_hint || retryHint)}</p>`
+          : ''}
       </div>
     </li>`;
   }).join('');
@@ -770,13 +783,16 @@ export default {
     const checkPreflight = async () => {
       const episodeId = Number(modal.querySelector('#pl-ep').value);
       const templateId = Number(modal.querySelector('#pl-tpl').value);
+      const req = ++preReqId;      // 连改两次集／模板：旧响应不许盖掉新的一次
       if (!episodeId || !templateId) { preBox.innerHTML = ''; okBtn.disabled = false; return; }
       preBox.innerHTML = '<p class="hint">正在做生产前检查…</p>';
       try {
         const data = await api.preflight(store.current.id, episodeId, templateId);
+        if (req !== preReqId || !preBox.isConnected) return;
         preBox.innerHTML = preflightHtml(data);
         okBtn.disabled = (data.blocking || []).length > 0;
       } catch (e) {
+        if (req !== preReqId || !preBox.isConnected) return;
         // 读不到预检不替人做决定：照常允许点，服务端发起时还会再挡一次
         preBox.innerHTML = `<p class="pl-err">读不到预检结果：${escapeHtml(e.message || e)}</p>`;
         okBtn.disabled = false;

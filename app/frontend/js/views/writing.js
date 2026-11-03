@@ -959,12 +959,18 @@ async function submitEx(root) {
 function pollEx(root) {
   if (!ex) return;
   ex.timer = setTimeout(async () => {
-    if (!ex || !ex.run) return;
+    // 弹窗还活着吗？离开创作中心（换页会重画 #view-root）或点了关闭之后，
+    // #ex-body 就不在页面里了——这时候必须自己停：原来只有 closeEx 会 clearTimeout，
+    // 而它只在人按"关闭"时才跑，于是抽取跑到一半去别的页看一眼再回来，
+    // 后台那条链还每隔几秒打一次 /api/extract/runs/{id}，谁也看不见它在打。
+    if (!ex || !ex.run || !root.querySelector('#ex-body')) { ex = null; return; }
     try {
       ex.run = await api.extractRun(ex.run.id);
+      if (!root.querySelector('#ex-body')) { ex = null; return; }   // 等的时候被切走了
       if (ex.run.status === 'pending') { paintEx(root); pollEx(root); return; }
       ex.items = await api.extractItems(ex.run.id);
     } catch (err) { ex.error = err.message; }
+    if (!root.querySelector('#ex-body')) { ex = null; return; }
     paintEx(root);
   }, EX_POLL_MS);
 }

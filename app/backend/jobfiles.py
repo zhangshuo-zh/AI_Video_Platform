@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,26 @@ class JobPathError(Exception):
 
 def job_dir(job_id: int) -> Path:
     return JOBS_DIR / str(int(job_id))
+
+
+def volume_usage():
+    """作业目录所在磁盘卷的用量（total/used/free），读不到就回 None。
+
+    为什么单独一个函数：worker 心跳里的「盘余」、生产前检查的「磁盘偏紧」这条警告，
+    问的是同一件事——产物全落 `JOBS_DIR`，那里满了生成与合成都会失败。两处原来各写
+    各的 `shutil.disk_usage(JOBS_DIR)`，而**目录可能还没建**（首次启动、临时库、
+    还没跑过任何作业）：那时 `disk_usage` 直接抛 OSError，worker 报 0、预检则
+    一句提醒都不给——"盘要满了"这句话恰恰在最该说的时候沉默。
+    往上找第一个真实存在的父级再问卷，问的就是"这块盘还剩多少"，
+    与那一层目录在不在无关。
+    """
+    probe = JOBS_DIR
+    try:
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        return shutil.disk_usage(probe)
+    except OSError:
+        return None
 
 
 def ensure_dirs(job_id: int) -> tuple[Path, Path]:

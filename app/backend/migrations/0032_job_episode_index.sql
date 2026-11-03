@@ -1,0 +1,24 @@
+-- 0032：给"按集读作业"补一条按集打头的索引
+--
+-- 为什么是这一条：有一句话问了两处，且都是高频读——
+--   ① 创作中心的分镜列表（`services.shots_view`）：这一集每镜最新一条成功的视频作业；
+--   ② 成片的前置检查（`composition.timeline.build`）：同一句问题、同一个答案。
+-- 它们的形状都是 `WHERE episode_id = ? AND status = 'succeeded' GROUP BY shot_id`。
+--
+-- 库里原有的索引没有一条按 `episode_id` 打头：`idx_job_queue(status, priority, queued_at, id)`
+-- 能被 `status = ?` 接住，于是 SQLite 的计划是"把**全库所有成功作业**扫一遍，再临时
+-- B 树按 shot_id 分组"。库小的时候看不出来，作业行数一上去，每次打开一集分镜都要
+-- 重扫一遍全库的成功作业——而这条路径是制作人员一天点几十次的。
+-- `EXPLAIN QUERY PLAN` 实测（24 集 × 13 镜 × 3 条成功作业＝936 行的合成库）：
+--   加索引前：SEARCH job USING INDEX idx_job_queue (status=?)；USE TEMP B-TREE FOR GROUP BY
+--   加索引后：SEARCH job USING COVERING INDEX idx_job_episode_status
+--             (episode_id=? AND status=? AND shot_id>?)
+-- 顺带把生成中心"按集筛作业"那条 `SCAN job`（全表扫）也接住了。
+--
+-- 写代价说清楚：job 表从此多一条索引，每次 INSERT 与每次状态流转的 UPDATE 都要
+-- 多维护一个 B 树。这个平台一集几十条作业、并发上限 1—2，写入侧根本不构成瓶颈；
+-- 而读侧是"每打开一集都全库扫"，两边不对称，所以该加。
+-- 没有顺手加别的索引：`WHERE project_id = ?` 那几条（看板、审核队列、工作台计数）
+-- 计划里已经走 `idx_job_project`，只是排序要临时 B 树——那是每项目几十行的事，
+-- 加一条 `(project_id, status)` 换不到什么，却再多一份写成本。
+CREATE INDEX IF NOT EXISTS idx_job_episode_status ON job(episode_id, status, shot_id);

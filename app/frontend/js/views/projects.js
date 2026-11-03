@@ -804,12 +804,17 @@ export default {
         else if (act === 'archive') archiveOne(id, name);
         else if (act === 'restore') restoreOne(id, name);
       });
-      // 点别处、按 Esc 都收起。监听挂在视图根上而不是 document：
-      // 每渲染一次加一对 document 监听会越攒越多，而菜单本来就活在这张页里。
-      root.addEventListener('click', (e) => {
+      // 点别处、按 Esc 都收起。**不能挂在 root（#view-root）上**：路由只换它的
+      // innerHTML，这个元素从开机活到关机，每进一次项目中心就往上叠一对监听，
+      // 而旧闭包里的 rowMenu 已经离开文档、`hidden` 却是 false——
+      // 结果是切到别的页之后，前一次留下的监听还在抢 Esc 与方向键。
+      // 挂在本视图自己渲染出来的 <section> 上：换页时它跟着 innerHTML 一起消失，
+      // 监听也就自然没有了，不需要谁去记得摘。
+      const viewEl = root.querySelector('section.view') || root;
+      viewEl.addEventListener('click', (e) => {
         if (!e.target.closest('#row-menu') && !e.target.closest('[data-more]')) closeRowMenu();
       });
-      root.addEventListener('keydown', (e) => {
+      viewEl.addEventListener('keydown', (e) => {
         if (rowMenu.hidden) return;
         if (e.key === 'Escape') { e.preventDefault(); closeRowMenu(true); return; }
         const items = [...rowMenu.querySelectorAll('[role="menuitem"]')];
@@ -1087,12 +1092,16 @@ export default {
 
     async function openMembers(id, name) {
       memId = id;
+      const wanted = id;            // 连开两个项目的成员弹窗时，旧响应不能盖掉新的
       root.querySelector('#mem-proj').textContent = name || '';
       memList.innerHTML = '<p class="t-dim">读取中…</p>';
       memModal.hidden = false;
       try {
-        renderMembers(await api.projectMembers(memId));
+        const rows = await api.projectMembers(wanted);
+        if (memId !== wanted) return;          // 已经切到别的项目／弹窗已关，丢掉这份
+        renderMembers(rows);
       } catch (err) {
+        if (memId !== wanted) return;
         memList.innerHTML = `<p class="t-bad">${escapeHtml(err.message)}</p>`;
       }
     }

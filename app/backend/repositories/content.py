@@ -162,6 +162,30 @@ class AssetRepository:
         with get_conn() as conn:
             return conn.execute(f"{self._SELECT} WHERE a.id = ?", (asset_id,)).fetchone()
 
+    # 指纹与预检只读这几列。用 `self._SELECT` 会顺手把 `tags` 与 `ref_shot_count`
+    # 两个相关子查询也跑一遍——那是资产中心卡片要显示的数，分镜列表与生产前检查
+    # 根本不碰，为一个不看的数字给每个资产多打两次 shot 表扫描不值当。
+    _PLAIN_COLUMNS = ("id", "name", "kind", "summary", "consistency_prompt",
+                      "ref_images", "updated_at")
+
+    def get_many(self, asset_ids: list[int] | set[int]) -> dict[int, sqlite3.Row]:
+        """一次读回一组资产（含全局资产），键是 id。
+
+        存在的理由就是一句 SQL 打完一遍，而不是循环里逐个 `get()`：
+        一集 13 镜、每镜两三个引用，逐资产回库就是三四十次；生产前检查与
+        分镜「源已变」都要读同一批资产，所以两处共用这一个出处。
+        查不到的 id 不会出现在返回的字典里——调用方本来就要区分"资产被删了"。
+        """
+        ids = sorted({int(i) for i in asset_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        columns = ", ".join(f"a.{c}" for c in self._PLAIN_COLUMNS)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT {columns} FROM asset a WHERE a.id IN ({marks})", ids).fetchall()
+        return {int(row["id"]): row for row in rows}
+
     def usable_ids(self, project_id: int, asset_ids: list[int]) -> set[int]:
         """这一组 id 里，哪些是当前项目**可以引用**的：自有或全局。
 

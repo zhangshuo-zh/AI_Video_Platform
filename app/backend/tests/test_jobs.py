@@ -59,11 +59,22 @@ def _put_video(c, local=None, cloud=None):
 
 def test_管理员不带任何筛选也能列作业(as_role, seeded):
     """管理员看全部时 project_ids=None、状态/能力也都没选，条件是空的。
-    W08 真浏览器第一轮就在这里撞到 "near ORDER: syntax error"。"""
-    r = as_role("admin").get("/api/jobs")
+    W08 真浏览器第一轮就在这里撞到 "near ORDER: syntax error"。
+
+    原来这一条还顺手断言"seeded 那条作业在返回里"——那靠的是"整个会话跑到这里
+    时作业总数没超过一页"，用例一加多就假红（测的是用例顺序，不是产品）。
+    现在把两件事分开：空条件能不能出 200 与一页数据（验那条 SQL 拼得对），
+    管理员能不能看见别人项目里具体某条作业（验权限）——后者用 project_id 定位，
+    不受分页影响。
+    """
+    admin = as_role("admin")
+    r = admin.get("/api/jobs")
     assert r.status_code == 200, r.text
-    assert any(row["id"] == seeded["job_id"] for row in r.json())
-    assert as_role("admin").get("/api/jobs?status=queued,running").status_code == 200
+    assert r.json(), "会话跑到这里库里必然有作业；空列表说明列表本身坏了"
+    pinned = admin.get(f"/api/jobs?project_id={seeded['project_id']}")
+    assert pinned.status_code == 200, pinned.text
+    assert any(row["id"] == seeded["job_id"] for row in pinned.json())
+    assert admin.get("/api/jobs?status=queued,running").status_code == 200
 
 
 def test_提交立刻返回_202_并冻结快照(as_role, clean_queue, seeded):

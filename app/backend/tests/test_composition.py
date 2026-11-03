@@ -23,6 +23,7 @@ from repositories.audio import clips as audio_repo
 from repositories.content import episodes, shots
 from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
+from db import get_conn
 from repositories.reviews import reviews
 
 WID = "compose-test-worker"
@@ -156,6 +157,28 @@ def test_缺片会一次说清是哪几镜(fresh_project, people, clean_queue):
         composition_service.create(project_id, eid, people["editor"]["id"])
     text = "；".join(exc.value.reasons)
     assert "第 1 镜" in text and "第 2 镜" in text
+
+
+def test_镜头与音频的问题同一次说完(fresh_project, people, clean_queue):
+    """缺片与"音频文件不在了"是同一次发起的两半，不许分两轮说。
+
+    原来时间线先抛镜头的问题，音频那条检查根本走不到：改完镜头再点发起，
+    才发现音频也没了——一次发起该把所有已经确定的原因一次摊开。
+    """
+    project_id = fresh_project("editor")
+    eid = episodes.create(project_id, f"混集_{uuid.uuid4().hex[:5]}")["id"]
+    sid = shots.create(eid, "唯一镜", "", 1.0, [])["id"]   # 故意不给它任何视频作业
+    clip = audio_repo.create(
+        project_id=project_id, episode_id=eid, shot_id=sid, kind="dialogue",
+        speaker="燧人", text="火。", created_by=people["editor"]["id"])
+    audio_repo.finish(clip["id"], status="ready", path="999999/outputs/gone.wav",
+                      duration_ms=800)
+
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        composition_service.create(project_id, eid, people["editor"]["id"])
+    text = "；".join(exc.value.reasons)
+    assert "第 1 镜没有成功的视频作业" in text, text
+    assert "音频素材" in text and "文件不在" in text, text
 
 
 def test_音频按镜头起点混入成片(stage):
@@ -391,7 +414,7 @@ def test_改引用资产也算源内容变了(as_role, fresh_project, clean_queu
 
 
 def test_分镜列表标出源已变(as_role, fresh_project, clean_queue):
-    """分镜行要能自己看出"这条产物已过期"，而不是等成片才报错。
+    """分镜行要能自己看出"这条素材已过期"，而不是等成片才报错。
 
     标记由服务端算：前端拿不到分镜源指纹（要读引用资产的版本信息），
     让浏览器自己判断等于把口径复制一份到 JS。
@@ -402,9 +425,9 @@ def test_分镜列表标出源已变(as_role, fresh_project, clean_queue):
     sid = shots.create(eid, "开场", "雨夜石阶", 2.0, [])["id"]
     job = c.post("/api/jobs", json={
         "project_id": pid, "episode_id": eid, "shot_id": sid,
-        "capability": "image", "prompt": "雨夜石阶",
+        "capability": "video", "prompt": "雨夜石阶",
         "provider_code": "mock", "model_code": "mock-1",
-        "execution_mode": "local", "params": {"sleep": 0.01, "text": "一帧"},
+        "execution_mode": "local", "params": {"sleep": 0.01},
     }).json()
     assert worker.run_once(f"w-shot-{job['id']}") == job["id"]
 
@@ -416,3 +439,99 @@ def test_分镜列表标出源已变(as_role, fresh_project, clean_queue):
         "asset_ids": []})
     rows = c.get(f"/api/episodes/{eid}/shots").json()
     assert rows[0]["source_stale"] is True
+
+
+def test_分镜的标记与成片用同一条视频作业(as_role, people, fresh_project, clean_queue):
+    """「源已变」必须说成片会说的那句话——两边选的是同一条作业。
+
+    这一条钉的是修掉的口径分叉：原来分镜看"每镜最新一条成功作业"（图像也算），
+    成片看"每镜最新一条成功的**视频**作业"。于是两种错法都会出现：
+
+    - 改完剧本后重抽一张关键帧（图像作业更新、视频作业仍旧）⇒ 分镜不贴标记，
+      点发起却被成片拒——"界面说没事"最坑人的一种；
+    - 视频是新的、图像是旧的 ⇒ 分镜贴了标记，成片却过得去——虚警。
+
+    现在两边都只认那条视频作业：重抽的关键帧不改变标记，成片也确实会拒。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    sid = shots.create(eid, "开场", "雨夜石阶", 2.0, [])["id"]
+    video = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "video", "prompt": "雨夜石阶",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01},
+    }).json()
+    assert worker.run_once(f"w-align-{video['id']}") == video["id"]
+
+    # 改分镜 ⇒ 那条视频过期
+    c.put(f"/api/shots/{sid}", json={
+        "summary": "改成白天石阶", "prompt": "白天石阶", "duration": 2.0,
+        "asset_ids": []})
+    # 再补一条**更新**的图像作业：它不能把视频那一镜的过期状态洗掉
+    image = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "image", "prompt": "白天石阶",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01, "text": "一帧"},
+    }).json()
+    assert worker.run_once(f"w-align-{image['id']}") == image["id"]
+
+    rows = c.get(f"/api/episodes/{eid}/shots").json()
+    assert rows[0]["source_stale"] is True
+
+    # 成片要先过"签字"这一关，才会走到"源内容已变"那一步：签上字再看它点名
+    sign = c.post(f"/api/jobs/{video['id']}/review-sign",
+                  json={"anchor": "artifact", "decision": "approved"})
+    assert sign.status_code == 200, sign.text
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        composition_service.create(pid, eid, people["editor"]["id"],
+                                   params={"width": 640, "height": 360, "fps": 24})
+    assert "源内容已变" in "；".join(exc.value.reasons)
+
+
+def test_重试不许把旧素材洗成新素材(as_role, fresh_project, clean_queue):
+    """`jobs.retry()` 复制的是**旧提示词快照**，源指纹必须跟着复制。
+
+    少带这一列的后果不是"缺个字段"，而是"过期被洗白"：新作业的
+    `source_version` 是空串，而空串按口径＝"旧作业，不判过期"——于是改完剧本
+    再去重试那条失败的视频作业，跑出来的新产物既不被分镜标「源已变」，
+    也能过成片的前置检查。一条用旧素材渲染的片子就这样进了成片。
+
+    重试的语义本来就是"同一枪再打一次"（提示词、参数、模型全照旧），
+    所以正确的做法是继承原作业的源指纹，而不是按当前分镜重算一个。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    sid = shots.create(eid, "开场", "雨夜石阶", 2.0, [])["id"]
+    first = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": sid,
+        "capability": "video", "prompt": "雨夜石阶",
+        "provider_code": "mock", "model_code": "mock-1",
+        "execution_mode": "local", "params": {"sleep": 0.01},
+    }).json()
+    assert first["source_version"]
+
+    # 先领走再让租约过期 ⇒ 收成 failed(worker_lost)，这条路能重试
+    claimed = job_repo.claim_next("w-dead-retry", 60)
+    assert claimed is not None and claimed["id"] == first["id"]
+    with get_conn() as conn:
+        conn.execute("""UPDATE job SET lease_until = datetime('now','localtime','-1 seconds')
+                        WHERE id = ?""", (first["id"],))
+    assert job_repo.recover_stale()["failed"] >= 1
+
+    # 改分镜：重试出来的那条仍然渲染旧提示词，所以它照样是过期素材
+    c.put(f"/api/shots/{sid}", json={
+        "summary": "改成白天石阶", "prompt": "白天石阶", "duration": 2.0,
+        "asset_ids": []})
+
+    again = c.post(f"/api/jobs/{first['id']}/retry")
+    assert again.status_code == 202, again.text
+    new = again.json()
+    assert new["source_version"] == first["source_version"]
+    # 复制的是旧提示词快照（JobOut 不回这一列，回库看）——渲染依据没变，
+    # 所以源指纹也必须跟着走，不能按当前分镜重算一个"新"的
+    assert job_repo.get(new["id"])["prompt_snapshot"] == "雨夜石阶"
+    assert services.job_source_stale(job_repo.get(new["id"])) is True

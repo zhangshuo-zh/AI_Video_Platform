@@ -59,6 +59,11 @@ COMPOSE_CRF = int(os.environ.get("FASTVIDEO_COMPOSE_CRF", "20"))
 COMPOSE_PRESET = os.environ.get("FASTVIDEO_COMPOSE_PRESET", "veryfast")
 # 防呆：一集几百镜还硬合成会把临时目录与内存拖死；超过就明确拒绝，不静默截断。
 COMPOSE_MAX_SHOTS = int(os.environ.get("FASTVIDEO_COMPOSE_MAX_SHOTS", "200"))
+# 生产前检查里"作业目录还剩多少"的提醒线。5GB 是拍的：一集 720p 成片的临时文件
+# 加逐镜产物大概在这个量级，但**没有按目标机实测标定过**（《发布基线》§3 挂着这条）。
+# 做成可改的环境变量而不是写死在检查里——换机器、换分辨率时调这一档，
+# 不用碰业务代码；它只产生一句提醒，不拦发起。
+DISK_MIN_FREE_GB = int(os.environ.get("FASTVIDEO_DISK_MIN_FREE_GB", "5"))
 
 # ---------- 并发与整季（阶段 E） ----------
 # 一条 worker 进程能领哪些资源类；默认全接，且全局只跑一条——与旧行为一致。

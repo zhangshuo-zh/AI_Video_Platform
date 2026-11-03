@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import jobfiles
 import services
-from config import COMPOSE_MAX_SHOTS, FFMPEG_BIN, FILES_DIR, JOBS_DIR
+from config import COMPOSE_MAX_SHOTS, DISK_MIN_FREE_GB, FFMPEG_BIN, FILES_DIR
 from db import get_conn, transaction
 from models import JOB_FINISHED, JOB_STATUSES
 from paths import describe as describe_path
@@ -375,7 +375,7 @@ def build_input_snapshot(project_id: int, episode_id: int) -> dict:
 
 
 def preflight(project_id: int, episode_id: int,
-              template_id: int | None = None) -> dict:
+              template_id: int | None = None, rows: dict | None = None) -> dict:
     """生产前检查：把"跑到一半才发现"的问题提前到按下开始之前。
 
     只做**确定性**判断——不跑模型、不发请求、不写任何状态，所以它可以被反复调用。
@@ -390,16 +390,22 @@ def preflight(project_id: int, episode_id: int,
     为什么 worker 与 ffmpeg 只算 warning：它们不改变"这次生产对不对"，只决定
     "跑到哪一步会停"。把它们做成阻断会让"先在配置齐全的机器上排队、稍后启动 worker"
     这种正常操作变得做不到。
+
+    `rows` 是给"同一次请求里已经把这些行读过一遍"的调用方留的口子（就是 `create_run`）：
+    它自己要做幂等与 409 那两道判断，已经把 template／episode／镜头／未结束运行
+    各读了一次，再让这里各读一次就是每按一次"开始生产"多打四趟库。
+    判断规则只有一份——传进来的就是同一批行，不另开一套口径。
     """
+    rows = rows or {}
     blocking: list[str] = []
     warnings: list[str] = []
     info: dict = {"checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-    episode = episodes.get(episode_id)
+    episode = rows["episode"] if "episode" in rows else episodes.get(episode_id)
     if episode is None or episode["project_id"] != project_id:
         return {"blocking": ["这一集不属于该项目"], "warnings": [], "info": info}
 
-    shot_rows = shots.list_by_episode(episode_id)
+    shot_rows = rows["shot_rows"] if "shot_rows" in rows else shots.list_by_episode(episode_id)
     info["shots"] = len(shot_rows)
     if not shot_rows:
         blocking.append("这一集还没有镜头；先去创作中心把分镜建起来")
@@ -407,37 +413,40 @@ def preflight(project_id: int, episode_id: int,
         blocking.append(
             f"这一集有 {len(shot_rows)} 个镜头，超过单次合成上限 {COMPOSE_MAX_SHOTS}；先拆集")
 
-    seen_assets: set[int] = set()
+    # 先把这一集的引用关系摊平：资产 id → 引用它的镜号。
+    # 原来这里是"逐镜 × 逐资产"各回一次库（13 镜一集、每镜两三个引用＝四十次上下），
+    # 而这条接口每次打开发起弹窗都要跑一遍；现在读一次、判一次。
+    referenced: dict[int, list[str]] = {}
     for shot in shot_rows:
-        try:
-            ids = [int(x) for x in json.loads(shot["asset_ids"] or "[]")]
-        except (TypeError, ValueError):
-            ids = []
         if not (shot["prompt"] or "").strip():
             warnings.append(f"第 {shot['seq']} 镜没有提示词，生成时会拿内容那一栏代替")
-        for asset_id in ids:
-            if asset_id in seen_assets:
-                continue
-            seen_assets.add(asset_id)
-            row = assets.get(asset_id)
-            if row is None:
-                blocking.append(f"第 {shot['seq']} 镜引用的资产 #{asset_id} 不存在")
-                continue
-            # `ref_images` 存的是 JSON 文本：空清单是 "[]"，非空字符串——
-            # 直接 `if not row["ref_images"]` 永远为真，「没有参考图」这条警告
-            # 就从来没说过话（v0.96 真浏览器验收时抓到）。先解析再判空。
-            try:
-                ref_images = json.loads(row["ref_images"] or "[]")
-            except ValueError:
-                ref_images = []
-            if not ref_images:
-                warnings.append(f"资产「{row['name']}」没有参考图，定妆一致性没有依据")
-            if not (row["consistency_prompt"] or "").strip():
-                warnings.append(f"资产「{row['name']}」没有一致性提示词")
-    info["assets"] = len(seen_assets)
+        for asset_id in services.shot_asset_ids(shot):
+            referenced.setdefault(asset_id, []).append(str(shot["seq"]))
+    loaded = assets.get_many(referenced)
+    for asset_id in sorted(referenced):
+        seqs = "／".join(referenced[asset_id])
+        row = loaded.get(asset_id)
+        if row is None:
+            # 说清"哪些镜还挂着这条引用"，比只点第一镜更有用：删了资产的人
+            # 下一步就是要去那几镜里改引用。
+            blocking.append(f"资产 #{asset_id} 不存在，第 {seqs} 镜还在引用它")
+            continue
+        # `ref_images` 存的是 JSON 文本：空清单是 "[]"，非空字符串——
+        # 直接 `if not row["ref_images"]` 永远为真，「没有参考图」这条警告
+        # 就从来没说过话（v0.96 真浏览器验收时抓到）。先解析再判空。
+        try:
+            ref_images = json.loads(row["ref_images"] or "[]")
+        except ValueError:
+            ref_images = []
+        if not ref_images:
+            warnings.append(f"资产「{row['name']}」没有参考图，定妆一致性没有依据")
+        if not (row["consistency_prompt"] or "").strip():
+            warnings.append(f"资产「{row['name']}」没有一致性提示词")
+    info["assets"] = len(referenced)
 
     if template_id:
-        template = pipeline_repo.get_template(template_id)
+        template = (rows["template"] if "template" in rows
+                    else pipeline_repo.get_template(template_id))
         if template is None:
             blocking.append("流程模板不存在")
         else:
@@ -455,7 +464,8 @@ def preflight(project_id: int, episode_id: int,
             if has_compose and shutil.which(FFMPEG_BIN) is None:
                 warnings.append(f"模板含成片节点，但这台机器找不到 {FFMPEG_BIN}")
 
-    busy = pipeline_repo.unfinished_for_episode(project_id, episode_id)
+    busy = (rows["busy"] if "busy" in rows
+            else pipeline_repo.unfinished_for_episode(project_id, episode_id))
     if busy is not None:
         blocking.append(
             f"这一集已有一条未结束的运行（#{busy['id']}）；先取消或等它跑完，别排两套镜头作业")
@@ -468,13 +478,19 @@ def preflight(project_id: int, episode_id: int,
     except Exception:                      # 读不到状态不该拖垮预检
         warnings.append("读不到 worker 状态")
 
-    try:
-        free = shutil.disk_usage(str(JOBS_DIR)).free
+    # 磁盘余量问的是同一个出处（jobfiles.volume_usage）：作业目录可能还没建，
+    # 那时直接 disk_usage 会抛 OSError——而"盘要满了"这句话恰恰在最该说的时候
+    # 最容易沉默。这里不再 catch 掉：读不到就当读不到，明说。
+    usage_disk = jobfiles.volume_usage()
+    if usage_disk is None:
+        warnings.append("读不到作业目录所在盘的余量，发起前自己确认一下空间")
+    else:
+        free = usage_disk.free
         info["free_bytes"] = free
-        if free < 5 * 1024 ** 3:
-            warnings.append(f"作业目录只剩 {free // (1024 ** 3)} GB；一集成片可能不够")
-    except OSError:
-        pass
+        info["min_free_gb"] = DISK_MIN_FREE_GB
+        if free < DISK_MIN_FREE_GB * 1024 ** 3:
+            warnings.append(f"作业目录只剩 {free // (1024 ** 3)} GB，低于提醒线 "
+                            f"{DISK_MIN_FREE_GB} GB；一集成片可能不够")
 
     return {"blocking": blocking, "warnings": list(dict.fromkeys(warnings)), "info": info}
 
@@ -503,7 +519,8 @@ def create_run(project_id: int, episode_id: int, template_id: int,
     episode = episodes.get(episode_id)
     if episode is None or episode["project_id"] != project_id:
         raise PipelineInvalid("这一集不属于该项目")
-    if not shots.list_by_episode(episode_id):
+    shot_rows = shots.list_by_episode(episode_id)
+    if not shot_rows:
         raise PipelineInvalid("这一集还没有镜头；先去创作中心把分镜建起来")
 
     # 云端节点这一版不代发：云端作业必须逐条确认预计费用（`submit_job` 强制），
@@ -530,7 +547,10 @@ def create_run(project_id: int, episode_id: int, template_id: int,
 
     # 预检的阻断项在这里一次性说完，别让人跑到第 3 镜才发现资产被删了。
     # 幂等重放已经在上面返回了，所以这一步只对"真的要新建"的运行生效。
-    check = preflight(project_id, episode_id, template_id)
+    # 上面为了幂等与 409 那两道判断已经读过的那几行，这里直接交给预检复用——
+    # 同一次"开始生产"不该把模板、集、镜头、未结束运行各问两遍（规则仍只有一份）。
+    check = preflight(project_id, episode_id, template_id, rows={
+        "episode": episode, "shot_rows": shot_rows, "busy": busy, "template": template})
     if check["blocking"]:
         raise PipelineInvalid("生产前检查没过：" + "；".join(check["blocking"]))
 
@@ -1203,7 +1223,7 @@ def _run_internal_node(run, node: dict, by_key: dict) -> None:
                 "total_duration": round(sum(float(r["duration"] or 0) for r in rows), 2)}
         elif ntype == "asset_validate":
             state = snapshot.get("assets") or _ref_image_state(
-                run["project_id"], _asset_ids_of(run["episode_id"]))
+                run["project_id"], episode_asset_ids(run["episode_id"]))
             if state.get("missing"):
                 names = ", ".join(str(a) for a in state["missing"][:8])
                 raise _NodeFail("assets_missing",
@@ -1307,7 +1327,7 @@ class _NodeFail(Exception):
         self.message = message
 
 
-def _asset_ids_of(episode_id: int) -> list[int]:
+def episode_asset_ids(episode_id: int) -> list[int]:
     ids: list[int] = []
     for row in shots.list_by_episode(episode_id):
         try:
@@ -1421,6 +1441,41 @@ def cancel_run(run_id: int, reason: str = "") -> dict:
     return run_view(run_id)
 
 
+RETRYABLE_JOB_STATUSES = ("failed", "cancelled", "needs_attention")
+
+
+def retry_gate(node, run, job=None) -> str:
+    """这一格现在能不能重试。空串＝可以；否则返回给人看的那句原话。
+
+    **一处判定，两处用**：`retry_node` 拿它决定抛不抛 409，`node_view` 拿它决定
+    界面上那枚「重试这一格」摆不摆。原来界面自己按 `status === 'failed'` 判，
+    而被驳回的审核节点（`error_code == 'review_rejected'`，服务端一律拒）在页面上
+    就永远挂着一颗点了必然报错的钮——按钮该不该在，是业务规则，不是前端样式。
+
+    `job` 传进来是为了让详情页一次批量取回作业后不再逐格回库；不传就按 `node["job_id"]`
+    自己读一次（单格重试那条路只有一条作业，不值得为它多写一层）。
+    """
+    if run["cancelled"]:
+        return "这条运行已经取消；重新起一条运行"
+    if node["status"] != NODE_FAILED:
+        return ("只有失败的节点能重试；这一格现在是"
+                f"「{NODE_STATUS_LABELS.get(node['status'], node['status'])}」")
+    if node["error_code"] == "review_rejected":
+        upstream = _deps_of(node)
+        return ("这一格是被驳回的，重试它没有意义：先重试上游生成节点"
+                f"{('（' + '、'.join(upstream) + '）') if upstream else ''}，"
+                "产出新产物之后这里会重新等签字。")
+    if node["node_type"] in JOB_NODES and node["job_id"]:
+        if job is None:
+            job = job_repo.get(node["job_id"])
+        if job is None:
+            return "关联的作业已经不在了，没法重试"
+        if job["status"] not in RETRYABLE_JOB_STATUSES:
+            return (f"作业 #{job['id']} 现在是「{JOB_STATUSES.get(job['status'], job['status'])}」，"
+                    f"只有失败、已取消或待核对的作业能重试")
+    return ""
+
+
 def retry_node(node_id: int, user_id: int | None) -> dict:
     """单独重试一个失败节点。旧 Job、旧产物、旧签字一个都不动。
 
@@ -1436,29 +1491,14 @@ def retry_node(node_id: int, user_id: int | None) -> dict:
     if node is None:
         raise PipelineMissing("节点不存在")
     run = _need_run(node["run_id"])
-    if run["cancelled"]:
-        raise PipelineConflict("这条运行已经取消；重新起一条运行")
-    if node["status"] != NODE_FAILED:
-        raise PipelineConflict(
-            f"只有失败的节点能重试；这一格现在是"
-            f"「{NODE_STATUS_LABELS.get(node['status'], node['status'])}」")
-    if node["error_code"] == "review_rejected":
-        upstream = _deps_of(node)
-        raise PipelineConflict(
-            f"这一格是被驳回的，重试它没有意义：先重试上游生成节点"
-            f"{('（' + '、'.join(upstream) + '）') if upstream else ''}，"
-            f"产出新产物之后这里会重新等签字。")
+    job = job_repo.get(node["job_id"]) if node["job_id"] else None
+    reason = retry_gate(node, run, job)
+    if reason:
+        raise PipelineConflict(reason)
 
     new_job_id = None
     new_status = NODE_PENDING
     if node["node_type"] in JOB_NODES and node["job_id"]:
-        job = job_repo.get(node["job_id"])
-        if job is None:
-            raise PipelineConflict("关联的作业已经不在了，没法重试")
-        if job["status"] not in ("failed", "cancelled", "needs_attention"):
-            raise PipelineConflict(
-                f"作业 #{job['id']} 现在是「{job['status']}」，"
-                f"只有失败、已取消或待核对的作业能重试")
         new_job_id = job_repo.retry(job, user_id)["id"]
         # 新作业已经排进队列了，节点直接跟着它走；回 pending 会让调度器再提交一条
         new_status = NODE_RUNNING
@@ -1482,18 +1522,22 @@ def _need_run(run_id: int):
 
 
 # ---------- 视图 ----------
-def run_status(run, counts: dict) -> str:
+def run_status(run, counts: dict, *, retried: bool | None = None) -> str:
     """运行状态**全部现算**，库里只存 paused／cancelled 两个外生意愿位。
 
     为什么不全存：状态存两份就要互相同步，而"忘记同步"正是 v0.86 修掉的
     那两个真 bug 的形状。现算慢一点，但永远不会自相矛盾。
+
+    `retried` 是"这条运行里有没有节点返过工"。单条详情自己问（一次查询无所谓），
+    列表页一次把整组问完再传进来——否则 N 条运行就是 N 趟额外查询。
     """
     if run["cancelled"]:
         return "cancelled"
     if run["finished_at"]:
         if counts[NODE_FAILED]:
             return "failed"
-        if counts[NODE_SKIPPED] or _has_retry(run["id"]):
+        if counts[NODE_SKIPPED] or (retried if retried is not None
+                                    else _has_retry(run["id"])):
             return "completed_with_errors"
         return "completed"
     if run["paused"]:
@@ -1530,14 +1574,24 @@ def _display_status(node: dict, by_key: dict) -> str:
     return "blocked"
 
 
-def node_view(row, by_key: dict) -> dict:
+def node_view(row, by_key: dict, run=None, job=None) -> dict:
+    """一格的对外视图。`job` 由 `run_view` 批量取好后传进来，不在这里逐格回库。
+
+    `retryable`／`retry_hint` 不是"给前端的便利字段"：能不能重试是业务规则，
+    规则写在 `retry_gate()` 一处，界面按它摆钮、接口按它拒 409——
+    两边各判一次，就会出现"按钮在、点了报错"。
+    """
     node = dict(row)
     display = _display_status(node, by_key)
-    job = job_repo.get(node["job_id"]) if node["job_id"] else None
+    if job is None:
+        job = job_repo.get(node["job_id"]) if node["job_id"] else None
     try:
         output = json.loads(node["output_json"] or "{}")
     except ValueError:
         output = {}
+    # 没有 run 就没有判定依据（取消位挂在 run 上）——这时宁可不摆钮，
+    # 也不给界面一个"看着能点、点了被接口拒"的字段。
+    hint = retry_gate(node, run, job) if run is not None else "读不到这条运行，先刷新页面"
     return {
         "id": node["id"], "run_id": node["run_id"], "node_key": node["node_key"],
         "label": node["label"], "node_type": node["node_type"],
@@ -1552,6 +1606,8 @@ def node_view(row, by_key: dict) -> dict:
                              if job else ""),
         "review_id": node["review_id"],
         "retry_count": int(node["retry_count"] or 0),
+        "retryable": not hint,
+        "retry_hint": hint,
         "error_code": node["error_code"], "error_message": node["error_message"],
         "output": output,
         "started_at": node["started_at"] or "", "finished_at": node["finished_at"] or "",
@@ -1570,6 +1626,8 @@ def run_view(run_id: int, *, with_events: bool = True) -> dict:
     total = len(rows)
     done = counts[NODE_DONE] + counts[NODE_SKIPPED]
     snapshot = _snapshot_of(run)
+    wanted = [row["job_id"] for row in rows if row["job_id"]]
+    jobs_by_id = job_repo.get_many(wanted) if wanted else {}
     return {
         "id": run["id"], "project_id": run["project_id"],
         "project_name": run["project_name"],
@@ -1587,7 +1645,11 @@ def run_view(run_id: int, *, with_events: bool = True) -> dict:
                      "percent": round(done * 100.0 / total, 1) if total else 0.0},
         "shots": len(snapshot.get("shots") or []),
         "document": snapshot.get("document"),
-        "nodes": [node_view(row, by_key) for row in rows],
+        # 一格一条 Job 是这条详情页最主要的浪费：16 节就是 16 趟回库，
+        # 而这一页是人盯着推进、会反复刷的那一页。一次按 id 批量取完再分发。
+        "nodes": [node_view(row, by_key, run,
+                            jobs_by_id.get(int(row["job_id"])) if row["job_id"] else None)
+                  for row in rows],
         "events": ([_event_view(e) for e in pipeline_repo.events_for_run(run_id)]
                    if with_events else []),
         "started_at": run["started_at"] or "", "finished_at": run["finished_at"] or "",
@@ -1607,12 +1669,23 @@ def _event_view(row) -> dict:
 
 
 def runs_for_project(project_id: int) -> list[dict]:
-    """项目里的运行记录。列表不带节点与事件——那是详情页的事。"""
+    """项目里的运行记录。列表不带节点与事件——那是详情页的事。
+
+    一共三趟查询，与运行条数无关：运行列表（`list_by_project` 带回的就是整行
+    `r.*` ＋ 模板名／集名／集号）、这组运行的节点状态计数、这组运行里哪些返过工。
+    原来每条运行再 `get_run()` 一遍是把**已经在手的同一行**又读一次，
+    counts 与 retry 也各问一遍——20 条运行就是六十趟。
+    """
+    rows = pipeline_repo.list_by_project(project_id)
+    if not rows:
+        return []
+    run_ids = [int(row["id"]) for row in rows]
+    counts_by_run = pipeline_repo.counts_for_runs(run_ids)
+    retried = pipeline_repo.retried_run_ids(run_ids)
     out = []
-    for row in pipeline_repo.list_by_project(project_id):
-        run = pipeline_repo.get_run(row["id"])
-        counts = pipeline_repo.counts_for_run(row["id"])
-        status = run_status(run, counts)
+    for row in rows:
+        counts = counts_by_run[int(row["id"])]
+        status = run_status(row, counts, retried=int(row["id"]) in retried)
         total = sum(counts.values())
         done = counts[NODE_DONE] + counts[NODE_SKIPPED]
         out.append({

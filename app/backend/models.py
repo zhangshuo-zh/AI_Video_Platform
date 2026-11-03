@@ -1367,6 +1367,11 @@ class PipelineNodeOut(BaseModel):
     job_status_label: str = ""
     review_id: int | None = None
     retry_count: int = 0
+    # 「这一格现在能不能重试」由服务端判（`pipeline.retry_gate`），界面按它摆钮。
+    # 让前端自己按 status==='failed' 猜，就会出现被驳回的审核节点挂着一颗
+    # 点了必吃 409 的按钮——按钮的有无是业务规则，不是样式。
+    retryable: bool = False
+    retry_hint: str = ""
     error_code: str = ""
     error_message: str = ""
     output: dict = {}

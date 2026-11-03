@@ -76,6 +76,28 @@ class ValidationRepository:
                 out[kind] = row
         return out
 
+    def latest_matrix(self) -> dict[tuple[str, str, str], dict[str, sqlite3.Row]]:
+        """全库一条查询：每个「能力×后端×供应商」槽位的五档最新验证。
+
+        为什么要有这一条：`summary_for` 每个槽位要读五档，槽位有十个就是五十趟
+        回库——而「模型与密钥」这一页一次就把十个槽位全渲染出来（连 `badge` 都要
+        再读一次同一批行）。窗口函数一次算完，槽位数不再乘进查询次数。
+        键是 (capability, backend, provider)，值是 {kind: 那一档最新的那条}。
+        """
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM (
+                        SELECT v.*, ROW_NUMBER() OVER (
+                                 PARTITION BY v.capability, v.backend, v.provider, v.kind
+                                 ORDER BY v.id DESC) AS rn
+                          FROM model_validation v
+                      ) WHERE rn = 1""").fetchall()
+        out: dict[tuple[str, str, str], dict[str, sqlite3.Row]] = {}
+        for row in rows:
+            out.setdefault((row["capability"], row["backend"], row["provider"]), {})[
+                row["kind"]] = row
+        return out
+
     def list_recent(self, limit: int = 50) -> list[sqlite3.Row]:
         with get_conn() as conn:
             return conn.execute(

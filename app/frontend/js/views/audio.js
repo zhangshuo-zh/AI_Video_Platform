@@ -26,6 +26,10 @@ let audioNotice = '';   // 提交失败的原话留在页面上，不弹 alert �
 // 不带这个键就会出现：在 A 项目配音页签报的"缺运行时"，切到 B 项目音乐页签还挂着，
 // 看上去像那边也失败了。键一对不上就丢掉——同一页签里再点一次别的行为也照旧能看见。
 let audioNoticeKey = '';
+// 换集时的镜头候选请求序号。下拉里显示哪一集的镜头，必须跟着**最后一次**点击走：
+// 连点两集时先发的那条往往后到，旧版本的列表就会盖掉新那一条——用户看到的是
+// 「第 2 集」的下拉里装着第 1 集的镜头，提交上去就挂错镜头。
+let shotReqId = 0;
 // 页签下标只在这里做一次兜底：地址里出现越界的 sub 时按第 0 个渲染，
 // 提示条也要落在同一个下标上，否则一边算 3、一边算 0，话刚写上去就被自己清掉。
 const currentTab = () => {
@@ -149,9 +153,24 @@ export default {
 
     // 换集时只换镜头候选；不整页重绘，刚写的文本还在输入框里
     root.querySelector('#audio-ep')?.addEventListener('change', async (e) => {
-      const shots = await api.shots(Number(e.target.value)).catch(() => []);
+      const wanted = Number(e.target.value);
+      const req = ++shotReqId;
+      let shots = [];
+      try {
+        shots = await api.shots(wanted);
+      } catch (err) {
+        // 读失败不演成"这一集没有镜头"：那会让人以为候选是空的
+        const box = root.querySelector('#audio-shot');
+        if (!box || req !== shotReqId || !box.isConnected) return;
+        box.innerHTML = '<option value="">不挂镜头</option>';
+        audioNotice = `这一集的镜头读不出来：${err.message || err}`;
+        // 与提交失败同一把 key：换页签/换项目就该收走，留在本页才看得见
+        audioNoticeKey = noticeKeyOf(store.currentId, currentTab());
+        return;
+      }
       const select = root.querySelector('#audio-shot');
-      if (!select) return;
+      // 页签/项目已经切走，或这条不是最后一次点击的响应 —— 丢掉，别盖掉新页面
+      if (!select || !select.isConnected || req !== shotReqId) return;
       select.innerHTML = '<option value="">不挂镜头</option>' + shots.map((s) =>
         `<option value="${s.id}">第 ${s.seq} 镜 · ${escapeHtml(s.summary.slice(0, 24))}</option>`).join('');
     });

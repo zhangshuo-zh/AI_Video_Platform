@@ -95,18 +95,24 @@ class JobRepository:
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
 
-    def latest_succeeded_by_shot(self, episode_id: int) -> dict[int, sqlite3.Row]:
-        """这一集里每镜最新一条**成功**的作业。键是 shot_id。
+    def latest_succeeded_videos_by_shot(self, episode_id: int) -> dict[int, sqlite3.Row]:
+        """这一集每一镜**最新一条成功的视频作业**。键是 shot_id。
 
-        只给分镜列表标「源已变」用：过期与否看的是"最新那条成功产物是不是基于旧源"，
-        失败的尝试不算——它本来就没产物可用。
+        这是"这一镜的素材是哪一条"的**唯一答案出处**：分镜列表的「源已变」和
+        成片的前置检查都读它，两边必须说同一件事。原来这里是两条各写各的 SQL
+        （分镜看"最新成功的任意作业"、成片看"最新成功的视频"），于是出现过
+        "改完剧本后重抽了一张关键帧 → 分镜那行不贴「源已变」，成片却把这一镜
+        拒了"——界面说没事、发起时才发现，正是这一列该避免的事。
+        图像／文本的作业再新也不算素材：能进成片的是视频。
+
+        失败的尝试不进来看——它本来就没有产物可用。
         """
         with get_conn() as conn:
             rows = conn.execute(
                 """SELECT j.* FROM job j
                     JOIN (SELECT shot_id, MAX(id) AS mid FROM job
-                           WHERE episode_id = ? AND shot_id IS NOT NULL
-                             AND status = 'succeeded'
+                           WHERE episode_id = ? AND capability = 'video'
+                             AND shot_id IS NOT NULL AND status = 'succeeded'
                            GROUP BY shot_id) t ON t.mid = j.id""",
                 (episode_id,)).fetchall()
         return {int(row["shot_id"]): row for row in rows}
@@ -120,6 +126,30 @@ class JobRepository:
                           (SELECT u.display_name FROM app_user u
                             WHERE u.id = j.reconciled_by) AS reconciled_by_name
                      FROM job j WHERE j.id = ?""", (job_id,)).fetchone()
+
+    def get_many(self, job_ids: list[int] | set[int], *, with_derived: bool = True
+                 ) -> dict[int, sqlite3.Row]:
+        """一次读回一组作业，键是 id。缺的 id 不出现在结果里。
+
+        列表类接口本来就攒好了一串 id（成片列表要每条的行内 Job、审核队列要
+        每条的作业行），逐条 `get()` 就是把一次列表打成 N 次回库。
+        `with_derived` 决定要不要带 `retry_count`／`reconciled_by_name` 那两个
+        相关子查询——它们是**给队列页显示的**，别的调用方（成片列表）用不上，
+        那就别为此多扫两趟。
+        """
+        ids = sorted({int(i) for i in job_ids if i is not None})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        derived = """(SELECT COUNT(*) FROM job r WHERE r.retry_of_job_id = j.id)
+                        AS retry_count,
+                     (SELECT u.display_name FROM app_user u
+                       WHERE u.id = j.reconciled_by) AS reconciled_by_name"""
+        select = (f"SELECT j.*, {derived} FROM job j" if with_derived
+                  else "SELECT j.* FROM job j")
+        with get_conn() as conn:
+            rows = conn.execute(f"{select} WHERE j.id IN ({marks})", ids).fetchall()
+        return {int(row["id"]): row for row in rows}
 
     def by_key(self, key: str) -> sqlite3.Row | None:
         with get_conn() as conn:
@@ -416,11 +446,16 @@ class JobRepository:
     def retry(self, original: sqlite3.Row, created_by: int | None) -> sqlite3.Row:
         """重试＝新建一行，原行的日志／成本／错误一个字段都不动。
 
-        两件事顺手补上（P0）：
+        三件事顺手补上（P0）：
         - `attempt` 终于写起来了。它不是执行次数计数器，而是"这一串里的第几枪"，
           界面上要能说出"这已经是第 4 次预计计费"，而不是摆 4 条互不相干的待核对。
         - 原行记下 `superseded_by_job_id`。没有这一位，重试链只能从新行往回找，
           人看成本账时看不出"哪几笔其实是同一件事"。
+        - **`source_version` 必须跟着继承**。这一列记的是"这条产物是按哪一版
+          分镜／资产渲染的"，而重试复制的正是原来那份提示词快照——渲染依据没变，
+          指纹却留成空串的话，`job_source_stale()` 按口径把空串当"旧作业，不判过期"，
+          改过剧本再重试就会把旧素材洗成新素材：分镜不贴「源已变」，成片前置检查
+          也放行。继承而不是按当前分镜重算，是因为重算出来的那个"新"根本没被用过。
         """
         key = "retry-" + uuid.uuid4().hex
         cloud = original["execution_mode"] == "cloud"
@@ -434,8 +469,8 @@ class JobRepository:
                     params_json, input_refs_json, status, priority, idempotency_key,
                     retry_of_job_id, attempt, user_confirmed_cloud, quantity, unit,
                     unit_price_micros, cost_micros, currency, pricing_snapshot_json,
-                    billable_status, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    billable_status, source_version, created_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (original["project_id"], original["episode_id"], original["shot_id"],
                  original["capability"], original["kind"], original["execution_mode"],
                  original["provider_code"], original["model_code"],
@@ -446,7 +481,9 @@ class JobRepository:
                  original["user_confirmed_cloud"], original["quantity"],
                  original["unit"], original["unit_price_micros"],
                  original["cost_micros"], original["currency"],
-                 original["pricing_snapshot_json"], billable, created_by),
+                 original["pricing_snapshot_json"], billable,
+                 original["source_version"] if "source_version" in original.keys() else "",
+                 created_by),
             )
             conn.execute(
                 """UPDATE job SET superseded_by_job_id = ?,

@@ -30,16 +30,25 @@ KEY_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROVIDER_RE = re.compile(r"^[A-Za-z0-9._-]*$")
 
 
-def _row_out(row) -> ProviderOut:
+def _slot_key(row) -> tuple[str, str, str]:
+    return (row["capability"], row["backend"], row["provider"])
+
+
+def _row_out(row, matrix: dict | None = None) -> ProviderOut:
     health = adapters.health(row)
     env = health["key_env"] if row["backend"] == "cloud" else ""
-    summary = validations.summary_for(row)
+    # matrix 给了就从里取（一整页一次批量读）；这一格不在矩阵里＝这个槽位从没验证过，
+    # 要传**空字典**而不是 None——传 None 会让 summary_for 自己再打五趟查询去确认"没有"。
+    latest = matrix.get(_slot_key(row), {}) if matrix is not None else None
+    summary = validations.summary_for(row, latest)
     return ProviderOut.from_row(row, has_key(row, env), env, health, summary)
 
 
 @router.get("/providers", response_model=list[ProviderOut])
 def list_providers(_=Depends(require_permission("system:config"))) -> list[ProviderOut]:
-    return [_row_out(row) for row in providers.all()]
+    # 十个槽位 × 五档 = 原来五十趟回库；现在一条窗口函数读完（模型与密钥页每次进都走这）
+    matrix = validation_repo.latest_matrix()
+    return [_row_out(row, matrix) for row in providers.all()]
 
 
 @router.get("/providers/manifest")
@@ -59,13 +68,15 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
     参数白名单跟着槽位一起回：界面按它渲染输入框，提交时后端再验一遍。
     这里不含 key_env、notes 与本地运行时目录——那些是系统配置那一页的事。
     """
+    matrix = validation_repo.latest_matrix()
     out: list[ProviderOptionOut] = []
     for row in providers.all():
         if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
         health = adapters.health(row)
-        badge, at = validations.badge(validations.summary_for(row))
+        badge, at = validations.badge(validations.summary_for(
+            row, matrix.get(_slot_key(row), {})))
         out.append(ProviderOptionOut(
             capability=row["capability"],
             capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
@@ -88,6 +99,7 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
     与密钥变量名，所以这里只回状态，不复用管理页那份带备注的对象。
     """
     defaults = {row["capability"]: row for row in providers.defaults()}
+    matrix = validation_repo.latest_matrix()
     out: list[CurrentProviderOut] = []
     for capability, label in CAPABILITIES.items():
         row = defaults.get(capability)
@@ -99,7 +111,8 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
                 health_detail="没有默认后端"))
             continue
         health = adapters.health(row)
-        badge, at = validations.badge(validations.summary_for(row))
+        badge, at = validations.badge(validations.summary_for(
+            row, matrix.get(_slot_key(row), {})))
         out.append(CurrentProviderOut(
             capability=capability, capability_label=label,
             backend=row["backend"], backend_label=BACKENDS.get(row["backend"], ""),
