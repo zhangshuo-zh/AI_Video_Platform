@@ -1,9 +1,9 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
+import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, subChipRow } from '../util.js';
 import { JOB_ACTIVE, jobTone, validationText } from '../validation.js';
 import { unitLabel } from '../enums.js';
-import { takeStudioTarget, workerChip } from './asset-workspaces.js';
+import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './asset-workspaces.js';
 
 /**
  * 资产创作工作区：文字设定 → 图像候选 → 存进资产。
@@ -203,6 +203,16 @@ function paramsFor(which, d) {
 // 收敛到 validation.js 的 JOB_ACTIVE（＝后端 queued + JOB_RUNNING 的口径）。
 const inflight = (job) => Boolean(job && JOB_ACTIVE.includes(job.status));
 
+/**
+ * 这一轨有没有选到**具体某一档**。没选到就不能提交。
+ *
+ * 2026-11-04 真浏览器实测踩到的：页面以前无条件把 `execution_mode` 发出去，
+ * 供应商与模型却是空的，服务端按"三件要么都不传、要么一起给"回一句 422——
+ * 那句话是内部载荷规则，不是人能照着做的下一步；而轨道面板明明写着
+ * "配好之前提交钮是灰的"。现在这颗钮真的会灰，理由由面板那句"还没选槽位"给。
+ */
+const slotMissing = (d, which) => !d[`${which}Provider`] || !d[`${which}Model`];
+
 /* ---------- 片段 ---------- */
 
 function jobChip(label, job) {
@@ -356,6 +366,7 @@ function textPanel(d) {
               placeholder="让模型怎么写这份设定；它与下面的视觉一致性提示词是两回事"
       >${escapeHtml(d.textPrompt)}</textarea>` : '';
   const busy = inflight(d.textJob) || d.busyText;
+  const blocked = busy || slotMissing(d, 'text');
   return `
     <div class="card">
       <div class="card-head"><h2>文字设定</h2>
@@ -378,10 +389,10 @@ function textPanel(d) {
         ${paramRows(d, 'text')}
         <div id="as-preview-slot">${d.preview ? previewPanel(d) : ''}</div>
         <div class="as-actions" style="margin-top:10px">
-          <button class="btn primary" id="as-gen-text" data-gen-text ${busy ? 'disabled' : ''}>
+          <button class="btn primary" id="as-gen-text" data-gen-text ${blocked ? 'disabled' : ''}>
             ${busy ? '排队中…' : '生成文字设定'}</button>
           <button class="btn" id="as-again-text" data-gen-text
-                  ${busy ? 'disabled' : ''}
+                  ${blocked ? 'disabled' : ''}
                   title="同样输入再跑一批：带一个新的幂等键，所以是真的第二条作业">换一批</button>
           <button class="btn" data-save-text>保存这份设定</button>
           <button class="btn ghost" data-clear-draft>清空草稿</button>
@@ -532,9 +543,11 @@ function imagePanel(d) {
         ${paramRows(d, 'image')}
         ${variantOpts}
         <div class="as-actions" style="margin-top:10px">
-          <button class="btn primary" id="as-gen-image" data-gen-image ${busy ? 'disabled' : ''}>
+          <button class="btn primary" id="as-gen-image" data-gen-image
+                  ${busy || slotMissing(d, 'image') ? 'disabled' : ''}>
             ${busy ? '排队中…' : '生成图像候选'}</button>
-          <button class="btn" id="as-again-image" data-gen-image ${busy ? 'disabled' : ''}
+          <button class="btn" id="as-again-image" data-gen-image
+                  ${busy || slotMissing(d, 'image') ? 'disabled' : ''}
                   title="同样输入再跑一批：带一个新的幂等键">换一批</button>
           <button class="btn ghost" data-drop-cands>收起这一屏候选</button>
         </div>
@@ -659,13 +672,16 @@ function patchStatus(root, d) {
   put('#as-jobchip-image', jobChip('图像', d.imageJob));
   put('#as-preview-slot', d.preview ? previewPanel(d) : '');
   put('#as-cands', candidatesHtml(d));
-  for (const [id, job, busy] of [['#as-gen-text', d.textJob, d.busyText],
-                                 ['#as-again-text', d.textJob, d.busyText],
-                                 ['#as-gen-image', d.imageJob, d.busyImage],
-                                 ['#as-again-image', d.imageJob, d.busyImage]]) {
+  // 每一项是 [钮, 哪一轨, 作业, 忙]：判"能不能点"要同时看**这一轨选到档没有**——
+  // 只 busy 会把"没选槽位"这种情况放开，点下去吃的是服务端那句载荷规则 422（见 slotMissing）
+  for (const [id, which, job, busy] of [
+    ['#as-gen-text', 'text', d.textJob, d.busyText],
+    ['#as-again-text', 'text', d.textJob, d.busyText],
+    ['#as-gen-image', 'image', d.imageJob, d.busyImage],
+    ['#as-again-image', 'image', d.imageJob, d.busyImage]]) {
     const el = root.querySelector(id);
     if (!el) continue;
-    el.disabled = inflight(job) || busy;
+    el.disabled = inflight(job) || busy || slotMissing(d, which);
   }
   bindLive(root, d);
 }
@@ -703,7 +719,8 @@ export default {
     if (wanted !== reqSeq) return '<section class="view on"></section>';
     if (err) {
       return `<section class="view on">
-        <div class="page-head"><h1>资产创作</h1></div>
+        <div class="page-head"><h1>资产创作</h1>
+          <div class="right">${subChipRow(WS_LABELS, wsIndex())}</div></div>
         ${statusBar()}
         <div class="card"><div class="empty err" style="padding:26px 20px">
           <div class="empty-t">读不到这一页</div><p>${escapeHtml(err)}</p>
@@ -778,6 +795,7 @@ export default {
     <section class="view on">
       <div class="page-head">
         <h1>资产创作</h1>
+        <div class="right">${subChipRow(WS_LABELS, wsIndex())}</div>
         <p>${escapeHtml(project.name)} · 文字与图像都排进生成中心那一个队列，成本与日志不在这里</p>
       </div>
       ${statusBar()}
@@ -798,10 +816,12 @@ export default {
 
     stopPoll();
     root.querySelector('[data-retry]')?.addEventListener('click', refresh);
-    root.querySelector('[data-dismiss-conflict]')?.addEventListener('click', () => {
-      d.conflict = '';
-      refresh();
-    });
+    // 页头那一排工作区 chip 必须在这里绑：≤860px 时侧栏二级导航整块隐藏，
+    // 而这三个工作区各有各的页头——以前只有「资产库」自己画了切换器，
+    // 人从资产库切进「资产创作」之后，窄屏上就再也回不去了（2026-11-04 实测）。
+    bindSubChips(root, (i) => { setWsIndex(i); refresh(); });
+    // 「知道了」不在这里绑：那颗钮在 #as-notice 里，而 #as-notice 每 tick 被重画一次，
+    // 绑在 mount 就等于"作业在飞时关不掉"。它住在 bindLive() 里（见那个函数末尾）。
 
     root.querySelectorAll('[data-kind]').forEach((el) => {
       el.addEventListener('click', () => { reKind(el.dataset.kind); refresh(); });
@@ -1140,6 +1160,13 @@ export default {
 function bindLive(root, d) {
   const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
   root.querySelectorAll('[data-confirm-img]').forEach((btn) => {
+    // bindLive 每 tick 都跑一遍，所以这里必须问一句"这颗绑过没有"。
+    // 被 patch 重画出来的节点是新对象，加了守卫照样会绑；**没被重画的那几格
+    // 是同一批节点**，不守卫就会按轮询次数累加——跑一条 60 秒的图像作业≈20 个
+    // tick，之后点一次「删这张」会连发 20 次 DELETE（后十几次 404 变成报错风暴）。
+    // 这一条与下面 dropBtn／fillBtn 用的是同一个写法，本轮补齐漏掉的两处。
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
       const i = Number(btn.dataset.confirmImg);
       const sel = root.querySelector(`[data-save-target="${i}"]`);
@@ -1166,6 +1193,8 @@ function bindLive(root, d) {
     });
   });
   root.querySelectorAll('[data-rm-vimg]').forEach((btn) => {
+    if (btn.dataset.bound) return;          // 同上：形态卡不在 patch 的槽里，节点不换
+    btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
       const [vid, path] = btn.dataset.rmVimg.split('|');
       if (!(await confirmDanger({
@@ -1201,8 +1230,17 @@ function bindLive(root, d) {
     });
   }
   root.querySelectorAll('[data-preview-img]').forEach((img) => {
+    if (img.dataset.bound) return;          // 候选区会被重画（新节点照绑），形态区不会（防累加）
+    img.dataset.bound = '1';
     img.addEventListener('click', () => window.open(img.dataset.previewImg, '_blank'));
   });
+  // 冲突横条住在 #as-notice 里，每 tick 被 put() 重画一次——所以它的关闭钮也只能
+  // 在这里绑。绑在 mount() 里等于"有作业在飞时冲突条关不掉"（本轮修的第二条）。
+  const dismissBtn = root.querySelector('[data-dismiss-conflict]');
+  if (dismissBtn && !dismissBtn.dataset.bound) {
+    dismissBtn.dataset.bound = '1';
+    dismissBtn.addEventListener('click', () => { d.conflict = ''; refresh(); });
+  }
 }
 
 /** 「换一批」用的显式新键：只在这一次点击有效，内容由服务端照原样记着。 */

@@ -1,6 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { confirmDanger, escapeHtml, run } from '../util.js';
+import { bindSubChips, confirmDanger, escapeHtml, run, subChipRow } from '../util.js';
+import { WS_LABELS, setWsIndex, wsIndex } from './asset-workspaces.js';
 
 /**
  * 文本提取补资产：把抽取出来的候选分诊成资产。
@@ -141,7 +142,8 @@ export default {
     if (wanted !== reqSeq) return '<section class="view on"></section>';
     if (err) {
       return `<section class="view on">
-        <div class="page-head"><h1>文本提取补资产</h1></div>
+        <div class="page-head"><h1>文本提取补资产</h1>
+          <div class="right">${subChipRow(WS_LABELS, wsIndex())}</div></div>
         <div class="card"><div class="empty err" style="padding:26px 20px">
           <div class="empty-t">读不到抽取记录</div><p>${escapeHtml(err)}</p>
           <p><button class="btn" data-retry>重试</button></p></div></div></section>`;
@@ -171,7 +173,8 @@ export default {
       <div class="page-head">
         <h1>文本提取补资产</h1>
         <p>${escapeHtml(project.name)} · 候选必须带逐字原文证据；接受与合并都只在这一页落资产</p>
-        <div class="right"><button class="btn" data-goto-extract>去创作中心发起抽取</button></div>
+        <div class="right">${subChipRow(WS_LABELS, wsIndex())}
+          <button class="btn" data-goto-extract>去创作中心发起抽取</button></div>
       </div>
       ${notice ? `<div class="card"><div class="bar bad">${escapeHtml(notice)}</div></div>` : ''}
 
@@ -226,6 +229,8 @@ export default {
     const clear = () => { notice = ''; };
 
     root.querySelector('[data-retry]')?.addEventListener('click', refresh);
+    // 与资产创作同一个理由：窄屏侧栏二级导航收起，这一排 chip 是唯一出口
+    bindSubChips(root, (i) => { setWsIndex(i); refresh(); });
     root.querySelector('[data-goto-extract]')?.addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('app:go', { detail: 'writing' }));
     });

@@ -316,6 +316,79 @@ def test_有二级页的模块页内也有切换器():
     assert "subChipRow" in (FRONTEND / "js" / "views" / "system-users.js").read_text()
 
 
+def test_页内切换器改完导航必须重渲染():
+    """上一条只查"有没有第二个入口"，这条查"这个入口按了有没有反应"。
+
+    2026-11-04 实测：assets.js 的工作区切换器写成 `bindSubChips(root, (i) => {
+    setWsIndex(i); })`——只写导航状态、不重渲染，而 ≤860px 时侧栏那一层整块隐藏，
+    这一排 chip 是唯一出口，于是"点了没反应、下次刷新莫名跳过去"。全仓八处调用
+    只有这一处漏，正是"同一个规矩八处各写一遍"的下场，所以钉成文件级判据。
+    """
+    bad = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        text = f.read_text()
+        for m in re.finditer(r"bindSubChips\(", text):
+            tail = text[m.start():m.start() + 300]      # 够看完一个箭头函数体
+            if not re.search(r"refresh\(\)|dispatchEvent", tail):
+                line_no = text[:m.start()].count("\n") + 1
+                bad.append(f"{f.name}:{line_no}")
+    assert not bad, f"这些页内切换器改完导航不重渲染：{bad}"
+
+
+def test_每个工作区都画得出切换器():
+    """窄屏里侧栏二级导航整块隐藏，页内那一排 chip 是**唯一**的跨工作区出口。
+
+    2026-11-04 实测到的：资产中心三个工作区里只有「资产库」自己画了切换器，
+    另外两个（资产创作／文本提取）各写各的页头——于是从资产库切进「资产创作」之后，
+    380px 上既回不去也换不到第三个工作区，等于把人关在一个页面里。
+    判据：三个视图文件里都要同时出现"渲染切换器"与"绑定切换器"两件事。
+    """
+    views = ("assets.js", "asset-studio.js", "asset-triage.js")
+    for name in views:
+        text = (FRONTEND / "js" / "views" / name).read_text()
+        assert "subChipRow(WS_LABELS" in text, f"{name} 没画工作区切换器"
+        assert "bindSubChips(root" in text, f"{name} 画了切换器但没绑——点了没反应"
+
+
+def test_bindLive_里的绑定都防重复():
+    """纪律：凡被 patch 重画出来的控件，绑定住在 `bindLive()`。
+
+    但这条纪律有个反面：**没被重画的那几格是同一批节点**，`bindLive` 每 tick
+    跑一遍就会按次数累加监听。2026-11-04 实测漏了两处——跑一条 60 秒的图像作业
+    ≈20 个 tick，之后点一次「删这张」连发 20 次 DELETE（后十几次 404 变报错风暴）。
+    判据：bindLive 函数体内每个 `querySelectorAll(...).forEach(` 后面 10 行里
+    必须出现 `dataset.bound`（同文件里 dropBtn／fillBtn 早就是这么写的）。
+    窗口给到 10 行而不是 3 行：这条纪律值得一句解释为什么，
+    而把注释压短换不来任何安全性——判据只看"这一处绑定有没有守卫"，不看文体。
+    """
+    text = (FRONTEND / "js" / "views" / "asset-studio.js").read_text()
+    start = text.index("function bindLive(")
+    body = text[start:text.index("\nfunction ", start + 10)]
+    lines = body.split("\n")
+    bad = []
+    for i, line in enumerate(lines):
+        if re.search(r"querySelectorAll\(.*\)\.forEach\(", line):
+            if "dataset.bound" not in "\n".join(lines[i:i + 10]):
+                bad.append(line.strip()[:64])
+    assert not bad, f"bindLive 里有没防重复的绑定：{bad}"
+
+
+def test_网格重画后辅助按钮重新绑上():
+    """空态与错误态里的「清除筛选」「重试」是 `paintGrid()` 画出来的**新节点**；
+    绑在 mount() 里等于首屏有结果时从没绑上（`querySelector` 拿到 null），
+    搜一个没命中的词之后点了没反应。2026-11-04 实测，改成 paintGrid 末尾统一绑。
+    """
+    text = (FRONTEND / "js" / "views" / "assets.js").read_text()
+    start = text.index("function paintGrid(")
+    body = text[start:text.index("\nfunction ", start + 10)]
+    assert "bindGridHelp(root)" in body, "paintGrid 重画之后没有重绑网格里的辅助按钮"
+    # 一次性绑定必须已经撤掉：同一颗钮绑两处＝点一次跑两遍
+    assert len(re.findall(r"\[data-clear\][^;]*addEventListener", text)) == 1, \
+        "[data-clear] 不止绑了一处"
+    assert len(re.findall(r"\[data-retry\][^;]*addEventListener", text)) == 1, \
+        "[data-retry] 不止绑了一处"
+
+
 def test_模型中心的二级页与模块清单一致():
     """modules.js 的 subs 与视图里的 SUBS 必须是同一个数组。
 

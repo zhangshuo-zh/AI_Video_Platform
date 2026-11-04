@@ -142,6 +142,25 @@ function paintGrid(root, list) {
   const count = root.querySelector('#asset-count');
   if (count) count.textContent = `${shown.length} / ${list.length} 条`;
   bindCards(root);
+  bindGridHelp(root);
+}
+
+/**
+ * 空态与错误态里的两颗钮。
+ *
+ * 它们**只能在这里绑**：这两颗是 paintGrid 刚画出来的新节点，而 mount 跑的时候
+ * 网格里还是首屏那一批（有结果时压根没有这两颗），`querySelector` 拿到 null 等于
+ * 从来没绑上——于是"搜一个没命中的词之后点『清除筛选』没反应"（本轮修的第三条）。
+ * 每次重画都是新节点，所以这里不需要防重复绑定。
+ */
+function bindGridHelp(root) {
+  const reload = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  root.querySelector('#asset-grid-box [data-retry]')?.addEventListener('click', reload);
+  root.querySelector('#asset-grid-box [data-clear]')?.addEventListener('click', () => {
+    // 清除的是"这一页所有筛选条件"，包括类型与范围——不然按钮名不副实
+    keyword = ''; complete = ''; scope = 'all'; kind = '';
+    reload();
+  });
 }
 
 function sortShown(list) {
@@ -307,8 +326,11 @@ export default {
     if (wsIndex() === 1) return studio.mount(root);
     if (wsIndex() === 2) return triage.mount(root);
 
-    // 工作区切换器（窄屏才可见）：它改的是二级导航，与侧栏同一个值
-    bindSubChips(root, (i) => { setWsIndex(i); });
+    // 工作区切换器（窄屏才可见）：它改的是二级导航，与侧栏同一个值。
+    // **必须带 refresh()**：≤860px 时侧栏那一层整块隐藏（app.css 的 .nav-sub），
+    // 这一排 chip 是唯一的出口；只写 setWsIndex 就是"点了没反应、下次刷新莫名跳过去"
+    // ——全仓八处 bindSubChips 只有这一处漏了（本轮修的第四条）。
+    bindSubChips(root, (i) => { setWsIndex(i); window.dispatchEvent(new CustomEvent('app:refresh')); });
 
     const toDetail = root.querySelector('#assets-topick');
     toDetail?.addEventListener('click', () => {
@@ -330,11 +352,8 @@ export default {
       sortBy = e.target.value;
       paintGrid(root, lastList);
     });
-    root.querySelector('[data-retry]')?.addEventListener('click', refresh);
-    root.querySelector('[data-clear]')?.addEventListener('click', () => {
-      // 清除的是"这一页所有筛选条件"，包括类型与范围——不然按钮名不副实
-      keyword = ''; complete = ''; scope = 'all'; kind = ''; refresh();
-    });
+    // 「重试」「清除筛选」不在这里绑——它们是网格里的节点，随每次重画换新，
+    // 绑定住在 paintGrid 末尾（见 bindGridHelp 那段注释）
 
     // 类型只是本页的查询条件，不进侧栏：侧栏那一层现在是工作区。
     // 范围与状态同理，三个都留在模块变量里，切页回来还在。

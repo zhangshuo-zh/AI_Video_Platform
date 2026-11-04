@@ -259,7 +259,7 @@ export async function renderDetail(id) {
                   <a class="btn xs" href="#generate/0">生成中心</a>
                 </div>`).join('')
                 : '<p class="t-dim">这个项目里还没有针对它的生成记录。'
-                  + '成功的图像作业产物**不会自动进资产**——要逐张预览后显式存入。</p>'}
+                  + '成功的图像作业产物「不会自动进资产」——要逐张预览后显式存入。</p>'}
             </div>
           </div>
 
