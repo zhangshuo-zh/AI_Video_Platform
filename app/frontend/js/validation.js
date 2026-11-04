@@ -86,3 +86,27 @@ export function jobTone(status) {
 export function jobLabel(status, label) {
   return label || (JOB_STATUS[status] || [null, ''])[1] || String(status || '');
 }
+
+/**
+ * 队列告警的中文短标签。**英文 code 只用于样式分档，不往界面上端。**
+ *
+ * 这一份原来在三处各写一遍：生成中心叫 `ALERT_CODE`、首页叫 `ALERT_LABEL`
+ * （还自带一句"与生成中心同一套口径"的注释）、模型中心的运行监控则干脆没写，
+ * 于是同一句告警在生成中心是「待核对」、在模型中心是 `needs_attention`。
+ *
+ * 取值本身就是后端 `services.queue_health()` 里 `{"code": ...}` 那一串，
+ * 由 `tests/test_infra.py::test_告警标签和后端告警码对齐` 钉住。
+ */
+export const ALERT_LABEL = {
+  worker_offline: 'worker 离线',
+  queue_stalled: '队列停滞',
+  lease_expired: '租约过期',
+  run_timeout: '运行超时',
+  log_silent: '日志静默',
+  needs_attention: '待核对',
+};
+
+/** 告警那句中文；认不出来的 code 原样回（不会变成空白）。 */
+export function alertLabel(code) {
+  return ALERT_LABEL[code] || String(code || '');
+}

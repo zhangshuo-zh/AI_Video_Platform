@@ -1933,7 +1933,9 @@ class ModelRegistrationIn(BaseModel):
     provider: str
     model_code: str
     display_name: str = ""
-    source: str = "local"
+    # 空串＝"跟着 backend 走"。默认写死 "local" 会让云端登记在仓库页显示成
+    # 本地——界面只传 backend，source 是给人看的第二口径，不该和它打架。
+    source: str = ""
     engine_code: str = ""
     version: str = ""
     artifact_path: str = ""

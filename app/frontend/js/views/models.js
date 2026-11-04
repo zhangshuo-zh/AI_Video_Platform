@@ -4,7 +4,7 @@ import {
   bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
-import { HEALTH, VAL_BADGE } from '../validation.js';
+import { HEALTH, VAL_BADGE, alertLabel } from '../validation.js';
 import { REG_SOURCES } from '../enums.js';
 
 /**
@@ -585,7 +585,7 @@ function pageMonitor() {
     `<span class="chip plain">${escapeHtml(k)} ${v}</span>`).join('') || '<span class="t-dim">—</span>';
 
   const alerts = (w.alerts || []).map((a) => `<li>
-      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(a.code)}</span>
+      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(alertLabel(a.code))}</span>
       ${escapeHtml(a.text)}</li>`).join('');
 
   return `
@@ -1010,9 +1010,13 @@ function openForm(regId, preset) {
     .map((t) => t.tag).join(', '));
   set('#mf-note', preset?.note);
   modal.querySelector('#mf-enabled').checked = preset ? !!preset.enabled : true;
-  // 编辑时 provider/模型标识是登记行的键，改键等于换一档模型——那应该是撤了再登记
+  // 编辑时能力／运行位置／provider／模型标识是登记行的键，改键等于换一档——
+  // 那应该是撤了再登记。只禁用而不在提交里删字段是不够的：用户会以为改了，
+  // 保存后却什么都没变。后端 PATCH 也不收 backend/capability，口径两边一致。
   modal.querySelector('#mf-prov').disabled = !!regId;
   modal.querySelector('#mf-model').disabled = !!regId;
+  modal.querySelector('#mf-cap').disabled = !!regId;
+  modal.querySelector('#mf-be').disabled = !!regId;
   modal.hidden = false;
 
   const submit = modal.querySelector('#mf-submit');
@@ -1027,7 +1031,10 @@ function openForm(regId, preset) {
     const caps = modal.querySelector('#mf-caps').value.split(/[,，]/)
       .map((s) => s.trim()).filter(Boolean);
     const body = {
+      // source 是"运行位置"的人话口径，必须和这次选的后端一起提交：
+      // 后端字段默认空串会跟 backend 走，但显式带上更不容易再漂。
       capability: capSel.value, backend: modal.querySelector('#mf-be').value,
+      source: modal.querySelector('#mf-be').value,
       provider, model_code: modelCode,
       display_name: modal.querySelector('#mf-name').value.trim(),
       version: modal.querySelector('#mf-ver').value.trim(),
@@ -1042,6 +1049,9 @@ function openForm(regId, preset) {
       const patch = { ...body };
       delete patch.provider; delete patch.model_code;
       delete patch.capability; delete patch.backend;
+      // source 跟着这四个键一起固定：界面没有独立的"人话运行位置"输入，
+      // 放它进 patch 会把接口侧手工标的 remote 静默改回本地。
+      delete patch.source;
       ok = await run('保存登记', () => api.patchModel(regId, patch));
     } else {
       ok = await run('登记', () => api.createModel(body));
@@ -1122,15 +1132,27 @@ function mountEngines(root) {
   });
 
   saveBtn.addEventListener('click', async () => {
-    const rows = [...root.querySelectorAll('tr.slot')].map((tr) => {
-      const id = Number(tr.dataset.id);
-      const detail = root.querySelector(`tr.mc-detail[data-detail-for="${id}"]`);
-      // 折起来的行没有细节输入框。这时候必须回读服务端那份原值——
-      // 写死空串等于"把人没展开的行的备注和密钥名悄悄抹掉"，
-      // 而整批保存看起来完全成功，这种数据丢失最难被发现。
-      const saved = rowsCache.find((r) => r.id === id) || {};
+    // 必须以**服务端那十行**为骨架，不能只扫 DOM 里的 tr.slot：
+    // 密度收口之后，没填 provider 的槽位折成 tr.mc-collapsed（不带输入框），
+    // 只扫 tr.slot 就只提交 3 行，而 PUT /api/providers 要求"每类能力恰好一个默认"
+    // ——图像／配音／音乐三类的默认行恰好都在折叠行里，于是整批被拒：
+    // 「每类能力都要选一个默认后端：图像、配音、音乐」。按钮点了没反应，
+    // 界面只会弹一句像是自己填错的话。
+    const rows = (rowsCache.length ? rowsCache : cache.providers).map((saved) => {
+      const tr = root.querySelector(`tr.slot[data-id="${saved.id}"]`);
+      const detail = root.querySelector(`tr.mc-detail[data-detail-for="${saved.id}"]`);
+      if (!tr) {
+        // 折叠行：原样回读服务端那份。把这一槽的 provider／model／启用／默认
+        // 一起丢了，等于"整批保存成功、顺带把没展开的槽位清空"
+        return {
+          id: saved.id, provider: saved.provider, model: saved.model,
+          enabled: saved.enabled, is_default: saved.is_default,
+          key_env: saved.key_env_custom ?? saved.key_env ?? '',
+          notes: saved.notes ?? '',
+        };
+      }
       return {
-        id,
+        id: saved.id,
         provider: tr.querySelector('[data-f="provider"]').value,
         model: tr.querySelector('[data-f="model"]').value,
         enabled: tr.querySelector('[data-f="enabled"]').checked,

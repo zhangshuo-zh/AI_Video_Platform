@@ -149,6 +149,21 @@ def test_新增登记后目录里那一行变成已登记(as_admin, clean_regist
     assert item["display_name"] == "预览用的 1.3B"
 
 
+def test_登记不传source时运行位置跟随backend(as_admin, clean_registrations):
+    """界面只传 backend；source 是"运行位置"的人话口径，不能默认成本地。
+
+    默认写死 "local" 会让云端登记在仓库页显示成"本地"——用户选的与看到的
+    是两个位置。这里钉住：不传 source 就照 backend 走，云端就是云端。
+    """
+    assert as_admin.post("/api/models", json={
+        "capability": "image", "backend": "cloud", "provider": "sdxl-api",
+        "model_code": "sdxl-source"}).status_code == 201
+    item = _item_of(as_admin.get("/api/models").json()["items"],
+                    "sdxl-api", "sdxl-source")
+    assert item["backend"] == "cloud"
+    assert item["source"] == "cloud"
+
+
 def test_同一档重复登记被拒而不是静默覆盖(as_admin, clean_registrations):
     body = {"capability": "video", "backend": "local", "provider": "fastmetal",
             "model_code": "fastmetal-5b-qad"}

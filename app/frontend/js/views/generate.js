@@ -10,7 +10,7 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
-import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, jobLabel, jobTone }
+import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone }
   from '../validation.js';
 import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
 import { takeJobPrefill } from '../navstate.js';
@@ -21,12 +21,6 @@ import { takeJobPrefill } from '../navstate.js';
 // 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词。
 // 译名从 js/validation.js 取——模型中心与这一页共用一份，
 // 别让同一个 ok 在两屏一个叫"就绪"一个叫"可用"。
-// 队列告警的中文短标签。英文 code 只用于样式分档，不往界面上端。
-const ALERT_CODE = {
-  worker_offline: 'worker 离线', queue_stalled: '队列停滞', lease_expired: '租约过期',
-  run_timeout: '运行超时', log_silent: '日志静默', needs_attention: '待核对',
-};
-
 // 筛选条件和模块级状态放在外面：轮询重画、切走再回来都还在
 const state = {
   projectId: '', status: '', capability: '', mode: '', q: '',
@@ -179,7 +173,7 @@ function alertsHtml() {
   if (!alerts.length) return '';
   return `<div class="gen-alerts">${alerts.map((a) => `
     <div class="gen-alert ${a.level === 'bad' ? 'bad' : 'warn'}">
-      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(ALERT_CODE[a.code] || a.code)}</span>
+      <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(alertLabel(a.code))}</span>
       <span>${escapeHtml(a.text)}</span>
     </div>`).join('')}</div>`;
 }

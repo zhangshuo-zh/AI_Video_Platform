@@ -176,6 +176,23 @@ def main():
         check("验证记录弹窗能打开", P.has(cdp, "#val-modal:not([hidden])"))
         P.click(cdp, "#val-close")
 
+        # 一字不改地点「保存能力轨」必须成功。
+        # 这一条是密度收口之后补的：没填 provider 的槽位折成 tr.mc-collapsed（不带
+        # 输入框），保存只扫 tr.slot 时就只提交已配置的几行，而 PUT /api/providers
+        # 要求"每类能力恰好一个默认"——图像／配音／音乐的默认行全在折叠行里，
+        # 于是整批 422「每类能力都要选一个默认后端」。按钮点了没反应，界面上只弹一句
+        # 像是自己填错的话，而人其实什么都没改。
+        before = P.eval_js(cdp, "document.querySelectorAll('tr.slot').length")
+        P.click(cdp, "#save-providers")
+        time.sleep(1.2)
+        saved_chip = P.eval_js(
+            cdp, "(() => { const e = document.querySelector('#save-state');"
+                 "return e && !e.hidden ? e.textContent.trim() : ''; })()")
+        check("不改任何字段也能保存能力轨（折叠行没被当成空行提交）",
+              saved_chip == "已保存",
+              f"已配置 {before} 行／折叠后在册 10 行；保存回执「{saved_chip}」"
+              f"／弹窗 {cdp.dialogs[-1:] if cdp.dialogs else '无'}")
+
         # 工作区 2：调用策略
         go(cdp, f"{BASE}/#models/2")
         check("调用策略有九个场景",

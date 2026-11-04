@@ -561,3 +561,27 @@ def test_建单路径只有这一份清单():
     # composition 一处：合成建单，它带自己的幂等键与事务。
     assert hits == {"services.py": 3, "composition/service.py": 1}, (
         f"建单点与本表不符，新增旁路前先想清楚它过不过三条闸门：{hits}")
+
+
+def test_告警标签和后端告警码对齐():
+    """队列告警的中文名只有一份，且必须覆盖后端真会发出的那些 code。
+
+    原来这一张表在两个视图里各有一份（生成中心叫 ALERT_CODE、首页叫 ALERT_LABEL），
+    模型中心的运行监控干脆没写——同一句告警在生成中心是「待核对」、
+    在模型中心是 `needs_attention`。英文 code 只该用于样式分档。
+    """
+    import re as _re
+
+    js = (FRONTEND / "js" / "validation.js").read_text()
+    table = _js_object_literal(js, "ALERT_LABEL =")
+    # 后端唯一出处：services.queue_health() 里 alerts.append({"code": ...}) 那几行
+    services_src = (BACKEND / "services.py").read_text()
+    backend = set(_re.findall(r'\{"level": "(?:bad|warn)", "code": "([a-z_]+)"', services_src))
+    assert backend, "没在后端找到告警码，说明这条测试的取样方式过期了"
+    assert set(table) == backend, f"前端 {sorted(table)} ≠ 后端 {sorted(backend)}"
+    # 三个视图都不许再自带一份
+    for name in ("generate.js", "overview.js", "models.js"):
+        src = (FRONTEND / "js" / "views" / name).read_text()
+        assert "alertLabel(" in src, f"{name} 没走唯一出口"
+        assert "const ALERT_CODE" not in src and "const ALERT_LABEL" not in src, \
+            f"{name} 又抄了一份告警标签"
