@@ -16,6 +16,7 @@
 验的是 `runtime.probe` 真的按文件说话，不是按模型名说话。
 """
 import json
+from pathlib import Path
 import os
 import uuid
 
@@ -457,3 +458,31 @@ def _cap_of(provider: str) -> str:
         if a.code == provider:
             return a.capability
     raise AssertionError(f"清单里没有 {provider}")
+
+
+def test_枚举的说法只有一份出处(as_admin):
+    """运行位置／策略开关都从后端拿，界面与路由都不许再抄一份字面量。
+
+    三处原来是各抄各的：路由把 `("local","cloud","remote")` 写了三遍，
+    `/model-policies` 的响应把 `no_auto_fallback: True` 手抄成字面量，
+    前端 `models.js` 又硬写三个 `<option>`（标签还和后端差一个字：
+    "远程自建服务" vs "远程自建"）。抄的东西不会报错，只会在改的时候漏一处。
+    """
+    import adapters
+    from models import BACKENDS, CAPABILITIES, REG_SOURCES
+
+    body = as_admin.get("/api/models").json()
+    assert body["reg_sources"] == REG_SOURCES, "登记层的取值没跟着 models.REG_SOURCES"
+    assert body["backends"] == BACKENDS and body["capabilities"] == CAPABILITIES
+    # 选型层只有两档、登记层有三档：两把一起下发，界面才知道哪一栏该用哪一把
+    assert set(BACKENDS) < set(REG_SOURCES)
+
+    policies = as_admin.get("/api/model-policies").json()
+    assert policies["no_auto_fallback"] is adapters.POLICY["no_auto_fallback"]
+    # 权威在 adapters 那一份，不是路由里写死的 True：谁改了清单策略，
+    # 这一句必须跟着动，否则界面会替平台说一句已经不成立的话。
+    src = (Path(__file__).resolve().parents[1] / "routers" / "model_center.py").read_text()
+    assert 'no_auto_fallback": adapters.POLICY["no_auto_fallback"]' in src
+    assert '"no_auto_fallback": True' not in src, "路由里又出现了一份字面量 True"
+    # 运行位置的白名单也不许在这里再数一遍
+    assert '("local", "cloud", "remote")' not in src

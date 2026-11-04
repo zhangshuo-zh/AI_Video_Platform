@@ -178,6 +178,20 @@ class DocumentRepository:
                 "SELECT rel_path FROM document WHERE project_id = ?", (project_id,)
             ).fetchall()]
 
+    def paths_by_episode(self, episode_id: int) -> list[str]:
+        """删某一集时要从工作区摘掉的那些正文路径（口径同 paths_by_project）。
+
+        必须有这一条：`document.episode_id` 是 `ON DELETE CASCADE`（0013），
+        删集的 SQL 会把文档行带走，但**文件不在数据库里**——没有这份清单，
+        删完集工作区就剩下几份没人认领的 .md，而它们的路径已经查不回来了。
+        全项目共用的那几份（episode_id 为 NULL：总纲、人物小传）比不中，
+        正好是"删一集不能删掉全项目稿件"的落点。
+        """
+        with get_conn() as conn:
+            return [r["rel_path"] for r in conn.execute(
+                "SELECT rel_path FROM document WHERE episode_id = ?", (episode_id,)
+            ).fetchall()]
+
     # ---------- 编辑锁 ----------
 
     def lock_of(self, doc_id: int) -> sqlite3.Row | None:

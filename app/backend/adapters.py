@@ -605,14 +605,21 @@ def health(row) -> dict:
     return {**base, "state": checked.state, "detail": checked.detail}
 
 
+# 选路策略的**唯一出处**。原来这四行写在 `manifest_payload()` 的函数体里，
+# 于是任何想在别处念一句"到底会不会自动切"的代码都只能自己再写一遍字面量——
+# 模型中心的路由就这么抄了一份 `"no_auto_fallback": True`，两份一起漂移的可能
+# 恰恰存在于这种"看着不像配置、其实是口径"的地方。
+POLICY = {
+    "local_default_capabilities": ["image", "video", "tts", "music"],
+    "video_cloud_must_be_explicit": True,
+    "no_auto_fallback": True,
+    "note": "云端视频只能逐镜头显式选择；本地失败不会自动转云端。",
+}
+
+
 def manifest_payload() -> dict:
     """给界面和 W07 的唯一清单出口。"""
     return {
-        "policy": {
-            "local_default_capabilities": ["image", "video", "tts", "music"],
-            "video_cloud_must_be_explicit": True,
-            "no_auto_fallback": True,
-            "note": "云端视频只能逐镜头显式选择；本地失败不会自动转云端。",
-        },
+        "policy": POLICY,
         "adapters": [a.as_dict() for a in ADAPTERS],
     }

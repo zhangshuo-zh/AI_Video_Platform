@@ -41,6 +41,26 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      # 合成与产线的成片节点要真跑 FFmpeg 造产物、真合成、真验时长。
+      # runner 默认不带 ffmpeg，所以这两条自 v0.93 起在 CI 上一直红、在开发机上一直绿
+      # ——红得"合理"反而把门禁本身废掉了：谁都不再看那条红线。
+      - name: FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+          ffmpeg -hide_banner -version | head -1
+          # 这两行是"给测试铺的路"，不是打印好看：滤镜列表走 stdout（本机实测 489 行、
+          # stderr 空），数到 0 就说明这包 ffmpeg 没带 libass，那"真烧字幕 + PSNR 对照"
+          # 那一档会静悄悄少跑一条——本机 Homebrew 正是这档从来没被执行过。
+          # 宁可在这里红，别让它变成测试日志里一个没人看的 skip。
+          test "$(ffmpeg -hide_banner -filters | grep -c ' subtitles ')" -ge 1
+          # fc-list 属于 fontconfig 的命令行包，runner 上不一定装了，所以只在有时确认一次
+          # 中文字体在不在；用例烧的是「火／取火」，缺字就什么都不落画，PSNR 变 inf，
+          # 红出来会像是"字幕没生效"——那其实是没字体。
+          if command -v fc-list >/dev/null 2>&1; then
+            test -n "$(fc-list :lang=zh family | head -1)"
+          fi
+
       - name: 全量测试
         # shell: bash 才有 pipefail——默认那层不置管道退出码，pytest 挂了会被 tee 盖成成功
         shell: bash

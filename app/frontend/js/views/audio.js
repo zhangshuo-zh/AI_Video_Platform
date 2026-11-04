@@ -9,6 +9,7 @@ import { api } from '../api.js';
 import { getSub, setSub } from '../navstate.js';
 import { store } from '../store.js';
 import { bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow } from '../util.js';
+import { jobLabel } from '../validation.js';
 
 const TABS = [
   { key: 'voice', label: '配音', kinds: ['dialogue', 'narration'],
@@ -81,7 +82,7 @@ export default {
         <td><div class="audio-text">${escapeHtml(c.text)}</div>
           ${c.notes ? `<span class="t-desc">${escapeHtml(c.notes)}</span>` : ''}</td>
         <td><span class="chip ${tone}">${escapeHtml(label)}</span>
-          ${c.job_id ? `<span class="t-desc">作业 #${c.job_id}${c.job_status ? ' · ' + escapeHtml(c.job_status) : ''}</span>` : ''}
+          ${c.job_id ? `<span class="t-desc">作业 #${c.job_id}${c.job_status ? ' · ' + escapeHtml(jobLabel(c.job_status)) : ''}</span>` : ''}
           ${c.job_error ? `<span class="t-desc t-bad">${escapeHtml(c.job_error)}</span>` : ''}</td>
         <td>${tab === 2 ? (c.visemes.length ? `${c.visemes.length} 段` : '<span class="t-dim">未生成</span>')
           : (playable ? `<audio controls preload="none" style="height:30px;max-width:230px"

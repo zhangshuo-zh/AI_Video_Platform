@@ -29,6 +29,12 @@ from repositories.pipeline import pipeline_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 
+# 合成节点那两条要真跑 FFmpeg 造产物。守卫**只能挂在那两条上，不能写成本文件的
+# pytestmark**——这一份有 30 多条测试，绝大多数与 ffmpeg 无关，
+# 模块级跳过等于在没有 ffmpeg 的机器上把整条产线回归悄悄关掉。
+# `_has_ffmpeg` 复用 test_composition 里那一个定义，不在这里再数一遍 PATH。
+from test_composition import _has_ffmpeg
+
 FAST = {"sleep": 0.01}          # 假适配器的睡眠秒数：够走完分支，不拖慢测试
 
 
@@ -903,6 +909,7 @@ V2_MINI = {"nodes": [
 ]}
 
 
+@pytest.mark.skipif(not _has_ffmpeg(), reason="合成节点要真跑 FFmpeg，这台机器上没有")
 def test_v2成片节点从合成到验收到审核(people, clean_queue):
     """成片节点是普通 Job：创建时冻结时间线，worker 用 FFmpeg 真跑，
     验收按成片记录复核，审核等签字。三格各自失败都不会伪装成完成。"""
@@ -938,6 +945,7 @@ def test_v2成片节点从合成到验收到审核(people, clean_queue):
     assert run["status"] == "completed", run["status_label"]
 
 
+@pytest.mark.skipif(not _has_ffmpeg(), reason="合成前置检查要真造一条产物，靠 FFmpeg 出片")
 def test_v2合成前置检查失败会点名并停在那格(people, clean_queue):
     """有片但没签字时，合成节点明确失败，不提交 Job、不产出假成片。"""
     from test_composition import _clip

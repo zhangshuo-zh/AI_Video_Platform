@@ -3,6 +3,7 @@
 这一份的重点不是"功能多"，而是**每一条都能证伪**：
 断言都写具体值或具体集合，不写 `assert r.status_code < 500` 这种永远绿的。
 """
+import ast
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -333,3 +334,157 @@ def test_模型中心的二级页与模块清单一致():
     listed = re.findall(r"'([^']+)'", block.group(1))
     declared = re.findall(r"'([^']+)'", re.search(r"const SUBS = \[([^\]]*)\]", view).group(1))
     assert listed == declared, f"侧栏写的是 {listed}，页内切换器是 {declared}"
+
+
+# ---------------------------------------------------------------- 口径单一来源
+def _js_object_literal(src: str, name: str) -> dict[str, str]:
+    """从 JS 源码里取出 `const NAME = { ... };` 的键与**值原文**（不执行 JS）。
+
+    机器上没有 node，也不打算为一条测试装一个 JS 解析器：这里只按"一行一个键"
+    的字面量形状取，取不到就报错让写测试的人改写法。刻意不做完整解析——
+    真解析 JS 的话，这条守卫本身就成了第二个容易出错的前端。
+    """
+    start = src.find(name)
+    assert start >= 0, f"源码里找不到 {name}"
+    brace = src.find("{", start)
+    assert brace >= 0, f"{name} 后面没有对象字面量"
+    depth, end = 0, brace
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    body = src[brace + 1:end]
+    # 一行可能写好几对（enums.js 的 CAPS 就是紧凑写法），所以整段扫而不是逐行 split
+    body = re.sub(r"(?m)^\s*(//.*|/\*.*?\*/)$", "", body)
+    pairs = re.findall(r"([A-Za-z_][\w]*):\s*(\[[^\]]*\]|'[^']*'|\{[^}]*\})", body)
+    return {k: v.strip() for k, v in pairs}
+
+
+def _js_array(src: str, name: str) -> list[str]:
+    """取 `export const NAME = ['a', 'b'];` 的字符串元素。"""
+    m = re.search(re.escape(name) + r"\s*=\s*\[([^\]]*)\]", src)
+    assert m, f"源码里找不到数组 {name}"
+    return re.findall(r"'([^']*)'", m.group(1))
+
+
+def test_前端作业状态表和后端枚举对齐():
+    """job.status 的说法与配色只有一份，且必须真的跟着后端。
+
+    这一条是本轮体检的落点：同一张表原来在五个视图文件里各写一遍，
+    其中 asset-studio 与 asset-detail 那份**漏了 cancel_requested**——
+    "取消中"的作业还在进程里跑，那一页却当它已经结束，于是轮询停掉、按钮放开。
+    少一个值不会报错，只会让界面骗人，所以必须机器对。
+    """
+    import models
+    from repositories.ordering import capability_order
+    js = (FRONTEND / "js" / "validation.js").read_text()
+    table = _js_object_literal(js, "JOB_STATUS =")
+    assert list(table) == list(models.JOB_STATUSES), (
+        f"前端 {list(table)} ≠ 后端 {list(models.JOB_STATUSES)}")
+    # 后端字典里的中文必须和前端兜底文案逐字一致
+    for code, raw in table.items():
+        inner = raw.strip().lstrip("[").rstrip("]").split(",")
+        assert len(inner) == 2, f"JOB_STATUS.{code} 形状不是 [配色, 文案]：{raw}"
+        assert inner[1].strip().strip("'") == models.JOB_STATUSES[code], (
+            f"{code} 的文案前端「{inner[1]}」／后端「{models.JOB_STATUSES[code]}」")
+    # 在飞／终态两个集合：前者＝queued + JOB_RUNNING，后者＝JOB_FINISHED
+    assert _js_array(js, "JOB_ACTIVE") == ["queued", *models.JOB_RUNNING]
+    assert _js_array(js, "JOB_TERMINAL") == list(models.JOB_FINISHED)
+    # 顺序的权威也在这里：能力与运行位置的 CASE 由 models 的键序现推，
+    # 库里躺着认不出来的值时它排最后，不冒充"最常用的那一档"
+    assert "'text' THEN 1" in capability_order()
+    assert capability_order().count("WHEN") == len(models.CAPABILITIES)
+
+
+def test_前端枚举表和后端枚举对齐():
+    """能力／运行位置／计费单位在界面上只有一份中文叫法。
+
+    原来抄出过真事故：`writing.js` 把 character 写成「千字」，
+    后端 models.UNITS 是「字符」；`models.js` 把 million_token 写成「百万 token」。
+    同一张价格卡在两屏上是两种单位说法，而单位恰恰是给人对账用的。
+    """
+    import models
+    js = (FRONTEND / "js" / "enums.js").read_text()
+    for name, source in (("CAPS =", models.CAPABILITIES),
+                         ("MODES =", models.BACKENDS),
+                         ("UNITS =", models.UNITS),
+                         ("REG_SOURCES =", models.REG_SOURCES)):
+        table = _js_object_literal(js, name)
+        assert table == {k: f"'{v}'" for k, v in source.items()}, (
+            f"{name} 与后端不一致：前端 {table}／后端 {source}")
+
+
+def test_视图不再自己写第二份状态字典():
+    """`views/*.js` 里不许再出现 job 状态字面量的第二份表。
+
+    上一轮是"复制一份字典"，这一轮起是"import 那一份"。守的是复制这个动作，
+    所以扫描整个目录而不是点某几个文件——新页面也会犯同样的错。
+    """
+    offenders = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            if re.match(r"\s*(queued|starting|needs_attention|cancel_requested):"                          r"\s*(\[|'|\{)", line):
+                offenders.append(f"{f.name}:{n}")
+    assert not offenders, f"这些行又在视图里抄了一份作业状态表：{offenders}"
+
+
+def test_样式表花括号配平():
+    """app.css 必须括号配平，且不能出现"没有选择器的规则体"。
+
+    为什么写成一条测试：删死规则时按行数删，连着两次把隔壁的规则啃掉半截——
+    一次吃了还在用的 `.t-dim{}`，一次吃了 `.modal{` 的头两行，
+    还有一处更早的删除留下了没有选择器的声明体。CSS 坏规则浏览器不报错，
+    它只是整条丢掉，于是界面"有点不对"但没人能指出哪里不对，也没有任何测试会红。
+    """
+    text = (FRONTEND / "css" / "app.css").read_text()
+    depth = 0
+    for n, line in enumerate(text.splitlines(), 1):
+        depth += line.count("{") - line.count("}")
+        assert depth >= 0, f"app.css:{n} 多出来一个 }}（上一轮删规则删坏了）"
+    assert depth == 0, f"app.css 结尾还差 {depth} 个 }}"
+    # 没有选择器的规则体：注释块刚结束就出现"缩进的声明行"
+    lines = text.splitlines()
+    depth = 0
+    for n, line in enumerate(lines, 1):
+        # 注释写在规则**体外**（depth 为 0）之后紧接一条声明，就是上一轮那种
+        # "选择器被删了、声明体留着"的坏规则；写在规则体内是正常的解释，不报。
+        if depth == 0 and n > 1 and lines[n - 2].strip().endswith("*/") \
+                and re.match(r"\s+[\w-]+\s*:", line):
+            raise AssertionError(f"app.css:{n} 是一条没有选择器的规则体：{line.strip()}")
+        depth += line.count("{") - line.count("}")
+        depth = max(depth, 0)
+
+
+def test_建单路径只有这一份清单():
+    """`job_repo.create` 的直调点必须还是这四个，第五个一冒头就红。
+
+    `services.submit_job()` 的文档写着"业务提交都走这里"，实际有三条旁路
+    （文档 AI／抽取／合成）——那三条各有各的闸门，但不能没人数着。
+    这条测试不替它们辩护，只是把"旁路不许再长"钉住；
+    要新增一条，就得同时在这里说清它的闸门是什么。
+    """
+    # 用 AST 数真调用，不按文本数：asset_studio.py 的模块注释里写着
+    # "`job_repo.create()` 建过作业"，文本计数会把一句解释当成一条旁路。
+    hits: dict[str, int] = {}
+    for f in sorted(BACKEND.rglob("*.py")):
+        if ".venv" in str(f) or "/tests/" in str(f):
+            continue
+        n = 0
+        for node in ast.walk(ast.parse(f.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "create":
+                base = func.value
+                if isinstance(base, ast.Name) and base.id == "job_repo":
+                    n += 1
+        if n:
+            hits[str(f.relative_to(BACKEND))] = n
+    # services.py 三处：submit_job（唯一入口）／文档 AI／抽取；
+    # composition 一处：合成建单，它带自己的幂等键与事务。
+    assert hits == {"services.py": 3, "composition/service.py": 1}, (
+        f"建单点与本表不符，新增旁路前先想清楚它过不过三条闸门：{hits}")

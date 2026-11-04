@@ -10,27 +10,14 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
-import { HEALTH_LABEL } from '../validation.js';
+import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, jobLabel, jobTone }
+  from '../validation.js';
+import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
 import { takeJobPrefill } from '../navstate.js';
 
-const STATUS = {
-  queued: { label: '排队中', cls: 'gray' },
-  starting: { label: '启动中', cls: 'blue' },
-  running: { label: '运行中', cls: 'blue' },
-  succeeded: { label: '成功', cls: 'green' },
-  failed: { label: '失败', cls: 'red' },
-  cancel_requested: { label: '取消中', cls: 'amber' },
-  cancelled: { label: '已取消', cls: 'gray' },
-  needs_attention: { label: '待核对', cls: 'amber' },
-};
-const CAPS = { text: '文本', image: '图像', video: '视频', tts: '配音', music: '音乐' };
-const MODES = { local: '本地', cloud: '云端' };
-const UNITS = {
-  second: '秒', minute: '分钟', request: '次', token: 'Token',
-  million_token: '百万 Token', image: '张', character: '字符',
-};
-const ACTIVE = ['queued', 'starting', 'running', 'cancel_requested'];
-const FINISHED_BAD = ['failed', 'cancelled', 'needs_attention'];
+// 作业状态的说法与配色在 js/validation.js，能力／运行位置／计费单位在 js/enums.js。
+// 原来这两套字典在本文件里各有一份（其中 STATUS 与 writing.js 那份逐字相同），
+// 后端加一个终态时这里会安静地把它染成"还在跑"。
 // 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词。
 // 译名从 js/validation.js 取——模型中心与这一页共用一份，
 // 别让同一个 ok 在两屏一个叫"就绪"一个叫"可用"。
@@ -90,8 +77,7 @@ function timeText(value) {
 }
 
 function statusChip(status, label) {
-  const meta = STATUS[status] || { label: label || status, cls: 'gray' };
-  return `<span class="chip ${meta.cls}">${escapeHtml(label || meta.label)}</span>`;
+  return `<span class="chip ${jobTone(status)}">${escapeHtml(jobLabel(status, label))}</span>`;
 }
 
 function rowHtml(job) {
@@ -102,9 +88,9 @@ function rowHtml(job) {
   // 就能出这一行，不隐的话只读的人每行都挂着三个点了必 403 的钮。
   const canCancel = store.can('job:cancel');
   const canAct = store.can('job:submit');
-  const actionCancel = ACTIVE.includes(job.status) && canCancel
+  const actionCancel = JOB_ACTIVE.includes(job.status) && canCancel
     ? `<button class="btn xs" data-cancel="${job.id}">取消</button>` : '';
-  const actionRetry = FINISHED_BAD.includes(job.status) && canAct
+  const actionRetry = JOB_FINISHED_BAD.includes(job.status) && canAct
     ? `<button class="btn xs" data-retry="${job.id}">重试</button>` : '';
   // 待核对的云端作业先核对再谈重试：那笔钱可能已经花了，默认重试是最坏的建议
   const actionReconcile = job.status === 'needs_attention' && canAct
@@ -425,6 +411,7 @@ export default {
     let drawerBusy = false;
     let profileProjectId = null;
     let refreshing = false;
+    let pendingRefresh = false;   // "在飞期间又有人要过一次数据"，一轮结束补发
     // 分镜带过来的关联；只对这一次提交生效，关掉弹窗就清
     let linked = null;
 
@@ -475,8 +462,12 @@ export default {
     }
 
     async function refresh({ quiet = false } = {}) {
-      // 轮询 3 秒一次，慢请求会叠在一起；后回来的旧结果会把新结果盖掉
-      if (refreshing) return;
+      // 轮询 3 秒一次，慢请求会叠在一起；后回来的旧结果会把新结果盖掉，
+      // 所以同一时刻只允许一轮在飞。但**丢请求比叠请求更糟**：在飞的那一轮里
+      // 人改了筛选或按了「重试」，原来这里直接 return，那一次意图就永远不会再发——
+      // 列表停在旧筛选上，最长要等下一次轮询（3 秒）才像"自己好了"。
+      // 改成补一轮：只记"还欠一次"，不排队滚出一串请求。
+      if (refreshing) { pendingRefresh = true; return; }
       refreshing = true;
       try {
         const [jobs, costs, worker] = await Promise.all([
@@ -508,6 +499,10 @@ export default {
         paint();
       } finally {
         refreshing = false;
+        if (pendingRefresh) {
+          pendingRefresh = false;
+          if (alive()) refresh();     // 切走了就别再补这一轮
+        }
       }
     }
 
@@ -580,7 +575,7 @@ export default {
     function drawerHtml(job, logs, arts) {
       const res = job.resources || {};
       const price = job.unit_price_micros == null ? '—'
-        : `${money(job.unit_price_micros, job.currency)} / ${UNITS[job.unit] || job.unit || '单位'}`;
+        : `${money(job.unit_price_micros, job.currency)} / ${unitLabel(job.unit)}`;
       const cloudCost = job.execution_mode === 'cloud' ? `
         ${kv('预计记账', job.cost_micros == null ? '待补价' : money(job.cost_micros, job.currency))}
         ${kv('账单状态', `<span class="chip ${job.billable_status === 'pending_reconciliation'
@@ -591,7 +586,7 @@ export default {
         ${job.reconciled_at ? kv('核对人 / 时间',
           `${escapeHtml(job.reconciled_by_name || '—')} · ${escapeHtml(String(job.reconciled_at).slice(0, 16))}`) : ''}
         ${job.reconcile_note ? kv('核对备注', escapeHtml(job.reconcile_note)) : ''}
-        ${kv('数量', `${job.quantity ?? '—'} ${UNITS[job.unit] || job.unit || ''}`)}
+        ${kv('数量', `${job.quantity ?? '—'} ${unitLabel(job.unit)}`)}
         ${kv('提交时单价', price)}
         ${kv('币种', escapeHtml(job.currency || '—'))}
         ${kv('定价来源', escapeHtml(job.pricing_snapshot?.source || '—'))}
@@ -618,11 +613,11 @@ export default {
       const canCancel = store.can('job:cancel');
       const canAct = store.can('job:submit');
       const actions = [
-        ACTIVE.includes(job.status) && canCancel
+        JOB_ACTIVE.includes(job.status) && canCancel
           ? `<button class="btn" data-cancel="${job.id}">取消作业</button>` : '',
         job.status === 'needs_attention' && canAct
           ? `<button class="btn primary" data-reconcile="${job.id}">核对账单</button>` : '',
-        FINISHED_BAD.includes(job.status) && canAct
+        JOB_FINISHED_BAD.includes(job.status) && canAct
           ? `<button class="btn" data-retry="${job.id}">重试（新建一行）</button>` : '',
         canMarkAttention && canAct
           ? `<button class="btn" data-attention="${job.id}">标记待核对</button>` : '',
@@ -630,8 +625,8 @@ export default {
       // 动作区空着有两种原因，不能拿同一句话糊过去：一种是"这条已经跑完了"，
       // 另一种是"你能看，但这个档位不让你动"。后者不写出来，人只会对着空白反复点。
       const blocked = !actions && (
-        (ACTIVE.includes(job.status) && !canCancel)
-        || ((FINISHED_BAD.includes(job.status) || job.status === 'needs_attention') && !canAct));
+        (JOB_ACTIVE.includes(job.status) && !canCancel)
+        || ((JOB_FINISHED_BAD.includes(job.status) || job.status === 'needs_attention') && !canAct));
       const actionsHint = blocked
         ? '这里没有你能按的钮：取消要 job:cancel，重试／核对要 job:submit。'
         : '已结束，可关闭。';

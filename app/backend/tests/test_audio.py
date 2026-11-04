@@ -100,3 +100,30 @@ def test_关联校验与权限(as_role, seeded, audio_route, people, fresh_proje
 
     clip = _make_clip(c, pid, ep, sid).json()
     assert c.delete(f"/api/audio-clips/{clip['id']}").status_code == 204
+
+
+def test_作业成功但产物抄不到时不许写成已就绪(as_role, seeded, audio_route, clean_queue):
+    """`audio_sync` 原来只看"作业成没成功"，不看**抄没抄到路径**。
+
+    于是 `job_repo.get()` 回 None（作业行被收掉）或 `result_paths_json` 是空数组时，
+    素材照样转成 `status=ready, path=null`——列表里出现一条"已就绪但点不开"的配音，
+    而界面已经替平台说了"这条能用"。这一档必须落 failed 并让人重跑。
+    """
+    c = as_role("editor")
+    pid, ep, sid = seeded["project_id"], seeded["episode_id"], seeded["shot_id"]
+    clip = _make_clip(c, pid, ep, sid, text="这一条产物是空的。").json()
+    sent = c.post(f"/api/audio-clips/{clip['id']}/submit").json()
+    job_id = sent["job_id"]
+
+    claimed = job_repo.claim_next("w15-empty", 60)
+    assert claimed is not None and claimed["id"] == job_id
+    job_repo.succeed(job_id, "w15-empty", "", [], 0, return_code=0)   # 成功，但没有产物
+
+    rows = c.get(f"/api/projects/{pid}/audio-clips").json()
+    row = next(x for x in rows if x["id"] == clip["id"])
+    assert row["status"] == "failed", f"没有产物却报 ready：{row['status']}"
+    assert row["path"] is None
+    # failed 之后还能改文本重走一遍：这一档不是死状态
+    assert c.patch(f"/api/audio-clips/{clip['id']}", json={
+        "kind": "dialogue", "speaker": "掌灯人", "text": "换个说法再来一次",
+        "notes": ""}).status_code == 200

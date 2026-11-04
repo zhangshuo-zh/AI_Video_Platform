@@ -16,12 +16,11 @@ import json
 import sqlite3
 
 from db import get_conn
+from repositories.ordering import backend_order, capability_order
 
-# 顺序和 provider_config 那条一样按能力排，界面不用二次排序
-_ORDER = """CASE capability
-               WHEN 'text' THEN 1 WHEN 'image' THEN 2 WHEN 'video' THEN 3
-               WHEN 'tts'  THEN 4 ELSE 5 END,
-             CASE backend WHEN 'local' THEN 1 WHEN 'cloud' THEN 2 ELSE 3 END"""
+# 顺序和 provider_config 那条一样按能力排，界面不用二次排序。
+# CASE 片段只在 repositories/ordering.py 里有一份，这里拼一次给两处用。
+_ORDER = f"{capability_order()}, {backend_order()}"
 
 
 class RegistrationError(ValueError):
@@ -124,10 +123,10 @@ class ModelCenterRepository:
 
     def policies(self) -> list[sqlite3.Row]:
         with get_conn() as conn:
+            # 策略表没有 backend 列，所以只按能力排（同一个出处的那半边）
             return conn.execute(
-                "SELECT * FROM model_policy ORDER BY CASE capability "
-                "WHEN 'text' THEN 1 WHEN 'image' THEN 2 WHEN 'video' THEN 3 "
-                "WHEN 'tts' THEN 4 ELSE 5 END, id").fetchall()
+                f"SELECT * FROM model_policy ORDER BY {capability_order()}, id"
+            ).fetchall()
 
     def save_policies(self, items: list[dict]) -> int:
         """整批保存，一个事务：策略之间要互相看（同一能力两个场景抢同一默认轨不报错，

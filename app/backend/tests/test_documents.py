@@ -590,3 +590,41 @@ def test_删项目带走文档元数据与文件(as_role, fresh_project):
                             (doc["id"],)).fetchone() is None, "项目没了，锁还挂着"
     # 历史里那条删除记录还在：那一稿没真的从世界上消失
     assert _run_in_repo(["log", "--oneline", "--", rel]).strip()
+
+
+# ---------- 删集这一档（级联到文件） ----------
+
+def _episode(client, pid: int, title: str = "第一集") -> int:
+    r = client.post(f"/api/projects/{pid}/episodes", json={"title": title})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_删集会把它名下的稿件从工作区一起摘掉(as_role, fresh_project):
+    """`document.episode_id` 是 ON DELETE CASCADE，但正文是文件，不在数据库里。
+
+    原来 `DELETE /api/episodes/{id}` 只删行：行一没，`rel_path` 也查不回来了，
+    工作区里留下几份没人认领的 .md——而删项目那条链（`delete_project_cascade`）
+    早就为同一件事写过清理，唯独删集没有走。
+    这里要钉三件事：行没了、文件没了、而且**别的集的稿件一根手指头都没碰**。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    ep_a, ep_b = _episode(c, pid, "燧人取火"), _episode(c, pid, "神农尝草")
+    doc_a = _create(c, pid, title="第一章", episode_id=ep_a)
+    doc_b = _create(c, pid, title="全项目总纲", episode_id=None)
+    doc_c = _create(c, pid, title="第二章", episode_id=ep_b)
+    file_a = WORKSPACE_DIR / doc_a["rel_path"]
+    assert file_a.is_file()
+
+    assert c.delete(f"/api/episodes/{ep_a}").status_code == 204
+    with get_conn() as conn:
+        assert conn.execute("SELECT 1 FROM document WHERE id = ?", (doc_a["id"],)).fetchone() is None
+    assert not file_a.exists(), "行删了、正文留在工作区＝下一稿会在同一个路径上盖上去"
+    # 另一集的稿件与"全项目共用"那份都不该被牵连
+    assert (WORKSPACE_DIR / doc_b["rel_path"]).is_file()
+    assert (WORKSPACE_DIR / doc_c["rel_path"]).is_file()
+    # 摘下来的那一稿进了 Git 历史，不是从磁盘上抹掉就完事
+    log = gitrepo.history(doc_a["rel_path"])
+    assert any("删除创作单元" in item["subject"] for item in log), \
+        f"正文要能追回：历史里没有那一笔删除提交 {[i['subject'] for i in log[:2]]}"

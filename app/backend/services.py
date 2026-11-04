@@ -32,7 +32,7 @@ from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from paths import describe as describe_path
 from paths import listdir_empty, resolve_within
 from repositories.audio import clips
-from repositories.content import assets, profiles, shots, variants
+from repositories.content import assets, episodes as episode_repo, profiles, shots, variants
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
@@ -148,6 +148,46 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     # 字幕不在某个 Job 名下，是按项目存的，得单独收——不然删掉项目后
     # data/jobs/subtitles/<旧项目id>/ 会永远留在盘上，备份越背越重还没人能看见它
     jobfiles.remove_project_subtitles(project_id)
+
+
+def delete_episode_cascade(episode_id: int, actor: str = "平台") -> bool:
+    """删一集，并把它名下稿件的正文从工作区一起摘掉。
+
+    为什么不让路由直接 `episodes.delete()` 就完事：`document.episode_id` 是
+    `ON DELETE CASCADE`（0013），那条 SQL 会连文档行一起带走，可正文是文件系统里
+    的 `.md`——行一没，路径就查不回来了，工作区只剩几份没人认领的孤儿稿。
+    删项目那条链（上面的 `delete_project_cascade`）为同一件事已经写过一次清理，
+    这里沿用同一套做法与同一个顺序：**先记路径 → 再删行 → 最后落一次 git 提交**。
+    走 `git rm` 而不是直接 `unlink`：删一集是创作中心里最重的动作之一，
+    正文进了历史就还在，谁想找回那一稿都有路，不必去翻备份。
+
+    作业与产物**不在**删除范围里，这是有意的：`job.episode_id` 是
+    `ON DELETE SET NULL`（0015），片子和日志本来就挂在项目上。删一集不该把
+    别集也看得见的产物抹掉，也不该让"这一集跑过什么"变成查无此事。
+    """
+    doc_paths = docs.paths_by_episode(episode_id)
+    if not episode_repo.delete(episode_id):
+        return False
+    for rel in doc_paths:
+        try:
+            gitrepo.remove_file(rel, f"删除创作单元 {episode_id} 的稿件：{rel}", actor)
+        except gitrepo.GitError:
+            pass          # 历史记不上不该挡住删集；下面的 unlink 会把文件本身收掉
+        try:
+            target = path_of(rel)
+            if target.is_file():
+                target.unlink()
+        except PathError:
+            pass          # 库里躺着一条越界路径是脏数据，正好不在我们的删除范围里
+    # 这一集的文件目录空了顺手收掉，工作区不会攒出一堆空壳（同删项目那一档）
+    for rel in doc_paths:
+        try:
+            folder = path_of(rel).parent
+            if listdir_empty(folder):
+                folder.rmdir()
+        except PathError:
+            pass
+    return True
 
 
 # ---------- 文档正文这条链（W05） ----------
@@ -572,9 +612,21 @@ def _extract_run_materialize(run) -> None:
     if run["status"] != "pending":
         return
     if run["job_status"] != "succeeded":
+        # 只认**已经停下来**的终态。queued/starting/running/cancel_requested
+        # 那几档要原样 return——作业还在飞，抽取页显示"抽取中"是对的。
+        # 原来连 needs_attention 也没格子：作业早停下来等人核对了，这一行还是
+        # 直接 return，于是运行永远挂在 pending，界面上一直"抽取中"，
+        # 而错误被吞得干干净净。status 的取值只有 pending|done|failed|parse_failed
+        # （0017 的 CHECK），"待核对"没有自己的格子，那就落成 failed 并把真实原因
+        # 写进去——失败的原因原话比一个猜出来的状态有用。
         if run["job_status"] in ("failed", "cancelled"):
             extraction_runs.set_status(run["id"], "failed",
                                        run["error_message"] or "作业没有成功结束")
+        elif run["job_status"] == "needs_attention":
+            extraction_runs.set_status(
+                run["id"], "failed",
+                "作业停在「待核对」：产物在，但还没人签。抽取候选只在作业成功结束时落，"
+                "先去那一格核对完，再重新发起一次抽取。")
         return
     job = job_repo.get(run["job_id"])
     if job is None:
@@ -1273,11 +1325,22 @@ def audio_sync(clip):
             except ValueError:
                 paths = []
             path = paths[0] if paths else None
+        if path is None:
+            # 作业报成功但产物路径抄不到（job 行已被收掉／result_paths_json 是空的）：
+            # 原来这一格照样写 ready，于是界面上出现一条"状态=已就绪、path=null"的
+            # 素材——点它什么也不会发生。"没拿到的东西不假装拿到"是这套平台的红线，
+            # 所以这里落 failed 并把原因说清，宁可让人重跑一次。
+            clips.finish(clip["id"], status="failed", path=None, duration_ms=None)
+            return clips.get(clip["id"]) or clip
         clips.finish(clip["id"], status="ready", path=path,
                      duration_ms=clip["duration_ms"])
     elif clip["job_status"] in ("failed", "cancelled"):
         clips.finish(clip["id"], status="failed", path=None,
                      duration_ms=None)
+    # needs_attention 不落到上面任何一档：素材的 status 只有
+    # draft|queued|ready|failed 四个取值（0019 的 CHECK），而"待核对"既不是失败
+    # 也不是就绪。硬塞成 failed 是替人下结论，塞成 ready 是撒谎，所以留 queued，
+    # 由音频中心那一列直接把作业状态念出来（audio_clip_view 带 job_status）。
     return clips.get(clip["id"]) or clip
 
 
@@ -1615,9 +1678,23 @@ def submit_job(payload, created_by: int | None) -> dict:
     云端视频的人工确认。任何一条不过就抛 JobInvalid，绝不落一条"看起来能跑"的空作业。
 
     第四条是**幂等复用**，收在这一层而不是只收在 `POST /api/jobs` 里：
-    那条路由查过键（还要查权限、要把 202 改成 200），但资产中心、文档 AI 这些
+    那条路由查过键（还要查权限、要把 202 改成 200），但资产中心这些
     经由本函数建单的路径如果各自再查一遍，就是第四、第五份判断。现在只有一个
     出处，代价是任何调用方都白拿同一条语义。
+
+    走本函数的四条业务提交路：生成中心（`routers/jobs.py`）、资产中心
+    （`asset_studio._submit_job`）、单集产线的节点（`pipeline._dispatch_ready`）、
+    音频中心（本文件 `audio_submit`）。
+
+    **另有三条旁路直接 `job_repo.create`，别把它们也说成"唯一入口"**（上一版这一句
+    写的是"资产中心、文档 AI 这些经由本函数建单"，文档 AI 其实不走，读代码的人会被
+    带偏）：文档 AI（本文件 `submit_doc_ai_job`）、抽取（`extraction_submit`）、
+    合成（`composition/service.py`）。三条各有自己的闸门，但都不是全套：
+    抽取带 25 小时同文复用、合成带幂等键与事务、**文档 AI 两样都没有**——
+    这是已知开口，记在 `tests/test_guards.py::test_建单路径只有这一份清单` 的注释里。
+    为什么不一并收进本函数：这三条要冻的东西不一样（选区与 base_version、
+    抽取 run 行、时间线快照），且 route 走的是 `text_ai_route()` 而不是默认轨，
+    硬塞进来会让"唯一入口"变成"什么都塞"。守卫测试钉的是**旁路数量不许再长**。
     """
     if payload.idempotency_key:
         existing = job_repo.by_key(payload.idempotency_key)

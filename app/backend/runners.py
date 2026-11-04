@@ -9,8 +9,10 @@
    都只是普通字符；`shell=False` 是这里的默认，也是唯一写法。
 2. 每条命令必须能解释清楚"为什么这么填"：参数来自 adapters.py 的白名单，
    路径来自 runtime.py 的探测，产物落在 `data/jobs/<id>/outputs/`。
-3. 输入图只能来自 Job 自己的目录，或一个显式配置的本地路径；不接受
-   "界面随手填一个 /etc/passwd"——I2V 的真实资产选择器在 W12。
+3. 输入图两档：相对路径只认 Job 自己的目录；绝对路径只认平台自己产的作业产物
+   （`data/jobs/<作业号>/…`，见 `_is_platform_artifact`）。产线会把上游关键帧
+   注入进来，那一档必须放行，否则 video 节点自己人被自己的闸门挡住；
+   但依然不接受"界面随手填一个 /etc/passwd"——I2V 的真实资产选择器在 W12。
 4. 产物要验真：mp4 看 ftyp、png 看魔数、文件非空。进程返回 0 不代表
    它真的写了东西（磁盘满、脚本提前 return 都会留下 0 字节文件）。
 """
@@ -107,6 +109,33 @@ def _fastmetal(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
               "metrics_path": str(metrics)})
 
 
+def _job_dir_root(job_id) -> Path:
+    """本作业目录（绝对、已 resolve）。"""
+    return (JOBS_DIR / str(job_id)).resolve()
+
+
+def _is_platform_artifact(target: Path) -> bool:
+    """这个绝对路径是不是**平台自己产出来的作业产物**。
+
+    判据只有两条，都不查库：落在 `data/jobs/` 底下，且第一层目录名是作业号
+    （纯数字）。够挡住"界面随手填一个 /etc/passwd"，也够挡住有人往
+    `data/jobs/` 旁边丢一个目录再引用它。
+
+    为什么需要这第二档：产线会把上游关键帧的产物注入 `image` 参数
+    （`pipeline._upstream_image`），那个文件在**别的作业目录**里。原来只认
+    "本作业目录"，于是本机接上 mlx-video 之后，每个要条件图的 video 节点
+    都会在起跑前被判"条件图路径越出作业目录"——不是权限问题，是自己人
+    被自己的闸门挡住。跨项目读产物比读全盘文件低两个量级，而 W12 的资产
+    选择器接上之后这一档会再收一次（届时的判据是"这个 job_id 属于本项目"，
+    那要查库，不归这一层）。
+    """
+    try:
+        rel = target.relative_to(JOBS_DIR.resolve())
+    except ValueError:
+        return False
+    return bool(rel.parts) and rel.parts[0].isdigit()
+
+
 def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     probe = runtime.probe_mlx_video()
     _need_runtime(probe)
@@ -115,7 +144,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     if not image:
         raise RunnerUnavailable("I2V 需要条件图；资产选择器接上之前不能从界面提交")
     image_path = Path(image).expanduser()
-    root = (JOBS_DIR / str(job["id"])).resolve()
+    root = _job_dir_root(job["id"])
     if image_path.is_absolute():
         # 绝对路径以前直接放行——文件头的第 3 条硬约束写的是"不接受界面随手填
         # 一个 /etc/passwd"，代码却没执行它。绝对路径照样要过边界：worker 是拿
@@ -125,7 +154,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
         # 相对路径只允许落在本作业目录里；resolve 之后再做一次边界比对，
         # 挡住 ../ 和符号链接绕出去。
         target = resolve_within(root, str(image_path))
-    if target is None or not within(root, target):
+    if target is None or not (within(root, target) or _is_platform_artifact(target)):
         raise RunnerUnavailable("条件图路径越出作业目录")
     if not target.is_file():
         raise RunnerUnavailable(f"条件图不存在：{target.name}")

@@ -342,3 +342,27 @@ def test_建运行那一步崩了不会留下孤儿付费作业(as_role, text_ai
     body = r.json()
     assert body["deduped"] is False and body["job_id"], body
     assert count_jobs() == before + 1
+
+
+def test_作业停在待核对时抽取运行不许永远显示抽取中(as_role, text_ai, fresh_project, clean_queue):
+    """`_extract_run_materialize` 原来只认 failed/cancelled 两个终态。
+
+    作业转成 `needs_attention`（产物在、要人核对）时它直接 return，于是这条抽取
+    运行永远挂在 pending，界面上一直"抽取中"，而那条作业其实早就停下来了——
+    人等到最后只会以为平台卡住，看不到"先去核对"这句真话。
+    """
+    doc, _data, pid = _make_doc(fresh_project)
+    c = as_role("editor")
+    run = _submit(c, pid, doc["id"]).json()
+
+    claimed = job_repo.claim_next("w13-attention", 60)
+    assert claimed is not None and claimed["id"] == run["job_id"]
+    job_repo.needs_attention(run["job_id"], "w13-attention", "output_unverified",
+                             "产物要人先看一眼", reason="云端结果可疑，等人工核对")
+
+    view = c.get(f"/api/extract/runs/{run['id']}").json()
+    assert view["status"] == "failed", f"还挂在 {view['status']}，界面会继续显示抽取中"
+    # 原因写在 run 自己的 note 里（set_status 的第三个参数），
+    # error_message 那一列来自联表的 job 行——两份都要能看见，各说各的事
+    assert "待核对" in view["note"], view["note"]
+    assert view["error_message"] == "产物要人先看一眼"

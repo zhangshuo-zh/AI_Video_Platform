@@ -1,10 +1,12 @@
 /**
- * 「这一槽位凭什么算已验证」的唯一出口。
+ * 「同一个东西在界面上只有一种说法」的唯一出口：验证出处、健康、作业状态。
  *
  * 为什么要单独一个文件：系统设置页（配置的那位）与资产创作页（用槽位干活的这位）
  * 都要给同一枚 `validation_state` 起名字。两边各写一份字典的结果是——
  * 配置页说"真实调用已验证"、创作页说"跑过一次"，而人看到的**是同一个徽章**；
  * 口径事故就出在这种"同一个东西两个说法"上（P0 那轮外部评审点名的正是它）。
+ * 同一批道理后来也适用于作业状态（见下面的 JOB_STATUS）：它原来在五个视图文件里
+ * 各写了一遍，所以这个文件的名字按"说法的出口"理解，不按字面的"验证"理解。
  *
  * 可信度从高到低：目标机 > 产物验收 > 真实调用 > 模拟 > 环境检查 > 从未。
  * 环境检查通过永远不能冒充真实调用。
@@ -44,10 +46,43 @@ export function validationText(state) {
 }
 
 /**
- * 这一槽位**能不能提交**：只有健康 `ok` 才算能。
- * 验证状态不参与这道判断——"环境齐但从没真跑过"是可用的，只是不能吹成
- * "生产已验证"。两件事混成一条，人就会以为平台在替他担保。
+ * 作业（job）状态的配色与兜底文案，同样只留一份。
+ *
+ * 原来这一份在五个文件里各写了一遍（生成中心、创作中心的镜头列、资产创作页、
+ * 资产详情、产线页），其中前两份**逐字相同**。重复的代价不是行数，是"改一处漏四处"：
+ * 后端加一个终态，四屏里有三屏还把它染成蓝色当"还在跑"。
+ *
+ * 文案优先用后端随每行下发的 `status_label`（那才是权威说法），这张表里的 label
+ * 只在响应没带 label 时兜底；**配色必须在这儿定一次**——色板是界面的事，后端不管。
+ * 取值集合由 `tests/test_infra.py::test_前端作业状态表和后端枚举对齐` 钉住。
  */
-export function submittable(option) {
-  return !!option && option.health_state === 'ok';
+export const JOB_STATUS = {
+  queued: ['gray', '排队中'],
+  starting: ['blue', '启动中'],
+  running: ['blue', '运行中'],
+  succeeded: ['green', '成功'],
+  failed: ['red', '失败'],
+  cancel_requested: ['amber', '取消中'],
+  cancelled: ['gray', '已取消'],
+  needs_attention: ['amber', '待核对'],
+};
+
+/** 还在飞的作业：能取消、该继续轮询、按钮要按住。＝ queued + 后端的 JOB_RUNNING。 */
+export const JOB_ACTIVE = ['queued', 'starting', 'running', 'cancel_requested'];
+
+/** 已经停下来的作业：不再轮询。取值照抄后端的 JOB_FINISHED。 */
+export const JOB_TERMINAL = ['succeeded', 'failed', 'cancelled', 'needs_attention'];
+
+/** 停下来且结果不干净的——列表里用来算"这一批有没有要处理的"。 */
+export const JOB_FINISHED_BAD = ['failed', 'cancelled', 'needs_attention'];
+
+/** 配色：认不出来的状态一律 gray，绝不猜成 blue（猜成蓝就是在说"它还在跑"）。 */
+export function jobTone(status) {
+  const hit = JOB_STATUS[status];
+  return hit ? hit[0] : 'gray';
+}
+
+/** 文案：后端给的 label 优先，没有就用这张表，再没有就原样念状态码。 */
+export function jobLabel(status, label) {
+  return label || (JOB_STATUS[status] || [null, ''])[1] || String(status || '');
 }

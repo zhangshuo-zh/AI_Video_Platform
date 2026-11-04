@@ -8,6 +8,7 @@ import sqlite3
 
 import adapters
 from db import get_conn
+from repositories.ordering import backend_order, capability_order
 
 
 def key_env_name(provider: str) -> str:
@@ -34,13 +35,11 @@ def has_key(row, env_name: str = "") -> bool:
 class ProviderRepository:
     def all(self) -> list[sqlite3.Row]:
         with get_conn() as conn:
-            # 顺序固定成 能力 → 本地在前云端在后，前端不用再排
+            # 顺序固定成 能力 → 本地在前云端在后，前端不用再排。
+            # CASE 片段来自 repositories/ordering.py，不在这里手抄。
             return conn.execute(
-                """SELECT * FROM provider_config
-                    ORDER BY CASE capability
-                               WHEN 'text' THEN 1 WHEN 'image' THEN 2 WHEN 'video' THEN 3
-                               WHEN 'tts'  THEN 4 ELSE 5 END,
-                             CASE backend WHEN 'local' THEN 1 ELSE 2 END"""
+                f"SELECT * FROM provider_config"
+                f" ORDER BY {capability_order()}, {backend_order()}"
             ).fetchall()
 
     def defaults(self) -> list[sqlite3.Row]:
@@ -50,10 +49,8 @@ class ProviderRepository:
         """
         with get_conn() as conn:
             return conn.execute(
-                """SELECT * FROM provider_config WHERE is_default = 1
-                    ORDER BY CASE capability
-                               WHEN 'text' THEN 1 WHEN 'image' THEN 2 WHEN 'video' THEN 3
-                               WHEN 'tts'  THEN 4 ELSE 5 END"""
+                f"SELECT * FROM provider_config WHERE is_default = 1"
+                f" ORDER BY {capability_order()}"
             ).fetchall()
 
     def slot(self, capability: str, backend: str) -> sqlite3.Row | None:

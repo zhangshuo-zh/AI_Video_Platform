@@ -1,6 +1,8 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
+import { JOB_TERMINAL, jobLabel, jobTone } from '../validation.js';
+import { unitLabel } from '../enums.js';
 import { getParam, getSub, setJobPrefill, setParam, setSub } from '../navstate.js';
 import { closeDetail, openDetail } from '../router.js';
 
@@ -67,21 +69,11 @@ const AI_OPS = {
   scriptify: { label: '剧本化', scope: 'any', hint: '把小说段落改成场景／动作／对白的剧本格式。' },
   prompt: { label: '提示词', scope: 'any', hint: '从正文提炼镜头提示词，每镜一行。' },
 };
-const AI_TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'needs_attention']);
-
-// 分镜表「作业」那一列的口径。状态本身由 Job 表说了算，镜头行只是读。
+// 作业状态的取值与配色在 js/validation.js（这一页原来是第二份，且与生成中心那份
+// 逐字相同）。分镜表「作业」那一列的口径不变：状态本身由 Job 表说了算，镜头行只是读。
 // `shot.status` 那一个候选（0004 带来的 todo|queued|done|failed）没有写入方，
 // 拿它显示等于让界面说谎——0023 已经把它从表里摘掉了，这里也就只有一个真相源。
-const SHOT_JOB_STATUS = {
-  queued: { label: '排队中', cls: 'gray' },
-  starting: { label: '启动中', cls: 'blue' },
-  running: { label: '运行中', cls: 'blue' },
-  succeeded: { label: '成功', cls: 'green' },
-  failed: { label: '失败', cls: 'red' },
-  cancel_requested: { label: '取消中', cls: 'amber' },
-  cancelled: { label: '已取消', cls: 'gray' },
-  needs_attention: { label: '待核对', cls: 'amber' },
-};
+const isAiTerminal = (status) => JOB_TERMINAL.includes(status);
 
 // 集状态。这一列 0004 建表时就有，但一直没有写入口；项目中心的
 // "已定稿 N/M 集"就是它的聚合，所以入口放在这里——集的东家是创作中心
@@ -208,7 +200,7 @@ async function renderDocs(tab, subRow) {
   });
 
   const docRow = (d) => {
-    const [label, tone] = DOC_STATUS[d.status] || [d.status, 'gray'];
+    const [label, tone] = DOC_STATUS[d.status] || [escapeHtml(d.status), 'gray'];
     return `
       <div class="t ${d.id === pickedDocId ? 'on' : ''}" data-doc="${d.id}">
         ${escapeHtml(d.title)}
@@ -256,7 +248,7 @@ async function renderDocs(tab, subRow) {
 function editorHtml(doc) {
   const canWrite = store.can('doc:write');
   const heldByOther = doc.lock_holder_name && doc.lock_holder_id !== store.user?.id;
-  const [label] = DOC_STATUS[doc.status] || [doc.status];
+  const [label] = DOC_STATUS[doc.status] || [escapeHtml(doc.status)];
   return `
   <div class="card">
     <div class="card-head">
@@ -588,7 +580,9 @@ function mountDocs(root, tab) {
     }).then((sure) => {
       if (!sure) return;
       draft = serverCopy;
-      api.docContent(docId).then((d) => { draftVersion = d.version; }).catch(() => {});
+      api.docContent(docId)
+        .then((d) => { if (pickedDocId === docId) draftVersion = d.version; })
+        .catch(() => {});   // 令牌没换成：下次保存照样撞 409，那一屏会教人怎么补救
       serverCopy = null;
       setDirty(false);
       refresh();
@@ -598,6 +592,7 @@ function mountDocs(root, tab) {
     // 只换令牌，不换文本：等于"我对照过了，确认用我这份覆盖"
     const d = await api.docContent(docId).catch(() => null);
     if (!d) return;
+    if (pickedDocId !== docId) return;   // 等的期间切走了：别把旧文档的令牌写到新文档上
     draftVersion = d.version;
     serverCopy = null;
     notice = '版本令牌已更新。再点「保存」会用你这边这份覆盖盘上那份。';
@@ -717,12 +712,15 @@ const EX_FIELDS = {
 
 async function loadExOptions(root) {
   if (!ex) return;
+  const target = ex;                 // 抓住这一次的对象，别在 await 之后再读全局
   try {
-    ex.options = await api.extractOptions(ex.pid, ex.docId);
-    ex.assets = await api.assets(ex.pid);
+    target.options = await api.extractOptions(target.pid, target.docId);
+    target.assets = await api.assets(target.pid);
   } catch (err) {
-    ex.error = err.message;
+    target.error = err.message;
   }
+  // 关弹窗会把 ex 置 null；这时候这一轮的结果已经没有归宿了，paint 也就不用再画
+  if (ex !== target) return;
   paintEx(root);
 }
 
@@ -863,10 +861,10 @@ function exCard(item, root) {
   return `
     <div class="ex-card">
       <div class="row" style="justify-content:space-between;gap:8px">
-        <div><span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${item.kind_label}</span>
+        <div><span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${escapeHtml(item.kind_label)}</span>
           <b>${escapeHtml(title)}</b>
           ${item.confidence != null ? `<span class="t-desc">把握 ${item.confidence}</span>` : ''}</div>
-        <span class="chip ${item.status === 'pending' ? 'gray' : 'green'}">${item.status_label}</span>
+        <span class="chip ${item.status === 'pending' ? 'gray' : 'green'}">${escapeHtml(item.status_label)}</span>
       </div>
       <div class="ex-fields">${fields}</div>
       ${evidence.quote ? `<blockquote class="ex-quote">${escapeHtml(evidence.quote)}
@@ -1100,7 +1098,7 @@ async function loadAiOptions(root) {
 }
 
 function aiPriceHtml(o) {
-  const unit = { million_token: '百万 Token', token: 'Token', character: '千字' }[o.unit] || o.unit;
+  const unit = escapeHtml(unitLabel(o.unit));
   const priceYuan = (o.unit_price_micros / 1_000_000).toFixed(2);
   const costMicros = Math.round(o.estimated_quantity * o.unit_price_micros);
   const costYuan = (costMicros / 1_000_000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
@@ -1179,7 +1177,7 @@ function paintAiPreview(root) {
   if (!body || !actions || !ai) return;
   const p = ai.preview || {};
   const done = p.status === 'succeeded';
-  const terminal = AI_TERMINAL.has(p.status);
+  const terminal = isAiTerminal(p.status);
   if (head) head.textContent = `AI ${p.operation_label || AI_OPS[ai.operation]?.label || '改写'} · 作业 #${ai.jobId}`;
 
   const tone = p.status === 'succeeded' ? 'green'
@@ -1225,7 +1223,7 @@ async function pollAi(root, docId, jobId) {
     if (!ai || ai.jobId !== jobId) return;
     ai.preview = data;
     paintAiPreview(root);
-    if (!AI_TERMINAL.has(data.status)) {
+    if (!isAiTerminal(data.status)) {
       ai.timer = setTimeout(() => pollAi(root, docId, jobId), AI_POLL_MS);
     }
   } catch (err) {
@@ -1376,7 +1374,7 @@ async function renderShots(tab, subRow) {
     shotCache = { episodeId: current.id, shots, assets, jobs: jobRows };
 
     const epList = episodes.map((e) => {
-      const [label, tone] = EP_STATUS[e.status] || [e.status, 'gray'];
+      const [label, tone] = EP_STATUS[e.status] || [escapeHtml(e.status), 'gray'];
       return `
       <div class="t ${e.id === pickedEpisodeId ? 'on' : ''}" data-pick="${e.id}">
         第 ${e.seq} 集 · ${escapeHtml(e.title)}
@@ -1404,11 +1402,13 @@ async function renderShots(tab, subRow) {
     const jobCell = (list, sourceStale) => {
       if (!list.length) return '<span class="chip gray">未提交</span>';
       const latest = list[0];
-      const meta = SHOT_JOB_STATUS[latest.status] || { label: latest.status, cls: 'gray' };
+      // 认不出来的状态原样念 code，但**必须转义**：这一列的 status 是库里的字符串，
+      // 未转义插进 innerHTML 等于给脏值开一条进 DOM 的路（同库正确写法见 generate.js）
       const detail = list.map((j) => `#${j.id} ${j.status_label}`).join('；');
-      return `<span class="chip ${meta.cls}" title="${escapeHtml(detail)}">${meta.label}</span>
-              ${sourceStale ? '<span class="chip amber" title="分镜或引用资产改过，这条产物已过期；要重新生成并重新签字">源已变</span>' : ''}
-              <span class="t-desc" title="${escapeHtml(detail)}">${list.length} 条 · #${latest.id}</span>`;
+      return `<span class="chip ${jobTone(latest.status)}" title="${escapeHtml(detail)}">`
+             + `${escapeHtml(jobLabel(latest.status, latest.status_label))}</span>`
+             + `${sourceStale ? '<span class="chip amber" title="分镜或引用资产改过，这条产物已过期；要重新生成并重新签字">源已变</span>' : ''}`
+             + `<span class="t-desc" title="${escapeHtml(detail)}">${list.length} 条 · #${latest.id}</span>`;
     };
 
     const shotRows = shots.map((s) => `
@@ -1571,8 +1571,13 @@ function mountShots(root) {
         // 长得一模一样。危险操作统一走自绘弹窗（util.confirmDanger）
         const sure = await confirmDanger({
           title: '删除创作单元',
+          // 这一集带走的不止镜头：挂在它名下的稿件（正文会从工作区摘掉，
+          // 但**留在 Git 历史里**）、合成记录与产线运行一起没。
+          // 作业与产物不跟着删（job.episode_id 是 SET NULL），别集看得见的片子还在。
           body: `确定删除 <b>${escapeHtml(btn.dataset.label)}</b>？`
-              + `它下面 <b>${n}</b> 条镜头会一起没，此操作不可撤销。`,
+              + `它下面 <b>${n}</b> 条镜头、这一集的稿件、合成与产线运行会一起没，`
+              + `此操作不可撤销。稿件正文会从工作区摘掉，历史里还找得回；`
+              + `已跑的作业与产物留在项目里。`,
           okText: '删除',
         });
         if (!sure) return;

@@ -5,6 +5,7 @@ import {
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
 import { HEALTH, VAL_BADGE } from '../validation.js';
+import { REG_SOURCES } from '../enums.js';
 
 /**
  * 模型中心（v0.99，0035）。四个工作区：
@@ -63,9 +64,24 @@ function adapterOf(manifest, cap, backend, provider) {
       || (a.aliases || []).some((x) => norm(x) === norm(provider))));
 }
 
-/* ================= 顶部概览 ================= */
-const SOURCE_LABEL = { local: '本地', cloud: '云端', remote: '远程自建' };
+/**
+ * 运行位置（登记层）的中文名。权威在后端 `models.REG_SOURCES`，随
+ * `GET /api/models` 的 `reg_sources` 下发；`enums.js` 那份只用在"清单还没回来"
+ * 的那一瞬。原来这里是一份独立的字典，标签还和后端差过一个字（"远程自建服务"
+ * vs "远程自建"），两屏上同一档模型两种叫法。
+ */
+function sourceLabels() {
+  const fromApi = cache.catalog && cache.catalog.reg_sources;
+  return fromApi && Object.keys(fromApi).length ? fromApi : REG_SOURCES;
+}
 
+/** 一行的运行位置说法：接口那份优先，认不出来就原样念 code（不猜近义档）。 */
+function sourceLabel(code) {
+  return sourceLabels()[code] || String(code || '');
+}
+
+
+/* ================= 顶部概览 ================= */
 /**
  * 顶部四数收成一条带。
  *
@@ -162,7 +178,7 @@ function pageRepo() {
         <div class="hint mono">${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}</div></td>
       <td>${escapeHtml(cache.catalog.capabilities[it.capability] || it.capability)}
         <div class="param-chips">${tagChips(it.tags)}</div></td>
-      <td><span class="chip ${it.backend === 'local' ? 'plain' : 'blue'}">${escapeHtml(SOURCE_LABEL[it.source] || it.source)}</span></td>
+      <td><span class="chip ${it.backend === 'local' ? 'plain' : 'blue'}">${escapeHtml(sourceLabel(it.source))}</span></td>
       <td>${escapeHtml(it.engine_label || it.engine_code || '—')}</td>
       <td>${statusHealthChips(it)}</td>
       <td>${it.registration_id
@@ -296,6 +312,7 @@ function statusCell(r) {
 
 /* 展开态记在模块级：切走再切回来不该把人打开的行全关上，
    但也不写进地址——这不是"你在看哪一条"，只是临时视图状态。 */
+let resolveSeq = 0;         // 场景候选弹窗的请求序号（只认最后一次）
 const slotOpen = new Set();
 const emptyOpen = new Set();
 
@@ -657,9 +674,7 @@ const MODALS = `
           <label for="mf-cap" class="top">能力</label>
           <select id="mf-cap" class="ctl"></select>
           <label for="mf-be" class="top">运行位置</label>
-          <select id="mf-be" class="ctl">
-            <option value="local">本地</option><option value="cloud">云端</option>
-            <option value="remote">远程自建服务</option></select>
+          <select id="mf-be" class="ctl"></select>
           <label for="mf-prov">Provider</label>
           <input id="mf-prov" class="ctl" maxlength="60" placeholder="清单里的 provider code">
           <label for="mf-model">模型标识</label>
@@ -915,7 +930,7 @@ function openDetail(root, it) {
         <span class="t-desc">${escapeHtml(it.status_detail || '')}</span></dd></div>
       <div class="kv"><dt>健康</dt><dd>${healthChip(it.health)}
         <span class="t-desc">${escapeHtml(it.health?.detail || '')}</span></dd></div>
-      <div class="kv"><dt>运行位置</dt><dd>${escapeHtml(SOURCE_LABEL[it.source] || it.source)} ·
+      <div class="kv"><dt>运行位置</dt><dd>${escapeHtml(sourceLabel(it.source))} ·
         ${escapeHtml(it.engine_label || it.engine_code || '—')}</dd></div>
       <div class="kv"><dt>版本</dt><dd>${escapeHtml(it.version || '未填')}</dd></div>
       <div class="kv"><dt>权重路径</dt><dd class="mono">${escapeHtml(it.artifact_path || '未填')}</dd></div>
@@ -980,7 +995,11 @@ function openForm(regId, preset) {
   modal.querySelector('#mc-form-title').textContent = regId ? '编辑登记' : '登记模型';
   const capSel = modal.querySelector('#mf-cap');
   capSel.innerHTML = Object.entries(cache.catalog.capabilities)
-    .map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+    .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('');
+  // 运行位置的取值也来自接口：登记层比选型层多一档 remote，
+  // 原来这里硬写三个 option，后端加第四档时界面永远不会知道
+  modal.querySelector('#mf-be').innerHTML = Object.entries(sourceLabels())
+    .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('');
   const set = (id, value) => { modal.querySelector(id).value = value ?? ''; };
   capSel.value = preset?.capability || 'image';
   modal.querySelector('#mf-be').value = preset?.backend || 'local';
@@ -1335,11 +1354,18 @@ function mountPolicies(root) {
     const body = root.querySelector('#mc-resolve-body');
     modal.hidden = false;
     body.innerHTML = '<p class="hint">正在按能力匹配……</p>';
+    // 请求序号：连点两行时两条候选都会回来，**后到的那条覆盖先到的**——
+    // 而"后到"未必是"后点的"（同屏两个请求，一个走缓存一个不走）。
+    // 音频中心与产线页的同场景早就加了这道闸（audio.js:157／pipeline.js:790），
+    // 这一处是漏的那个。
+    const wanted = ++resolveSeq;
     let out;
     try { out = await api.resolveScene(b.dataset.resolve); } catch (err) {
+      if (wanted !== resolveSeq) return;
       body.innerHTML = `<p class="t-bad">候选读不到：${escapeHtml(err.message)}</p>`;
       return;
     }
+    if (wanted !== resolveSeq) return;   // 已经被更新的一次点击接管了
     const cand = out.candidates.map((c) => `<tr>
       <td><b>${escapeHtml(c.label)}</b><div class="hint mono">${escapeHtml(c.provider)}/${escapeHtml(c.model_code)}</div></td>
       <td><span class="chip ${c.role === 'fallback' ? 'blue' : 'plain'}">${c.role === 'fallback' ? '备用轨' : '建议轨'}</span></td>

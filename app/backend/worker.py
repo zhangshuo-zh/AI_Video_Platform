@@ -656,7 +656,10 @@ def main(argv: list[str] | None = None) -> int:
         # 每轮都收一次"上一个 worker 没来得及收尾"的作业：只在启动时收的话，
         # 崩溃后立刻重启会看到租约还没过期，于是一条作业会永远挂在 running。
         # 正常跑着的作业每 0.2 秒续租，不会被这里误判。
-        jobs.recover_stale()
+        try:
+            jobs.recover_stale()
+        except Exception as exc:
+            print(f"[队列] 收 stale 失败，本轮跳过：{type(exc).__name__}: {exc}")
         # 产线节拍：先把该派的节点派成 Job，再往下走 run_once 领取。
         # 顺序反过来也能工作（下一轮补上），只是白等一个轮询周期。
         # 这里出异常不能让 worker 整个退出——一条产线的定义有问题，
@@ -672,9 +675,24 @@ def main(argv: list[str] | None = None) -> int:
             pipeline.tick()
         except Exception as exc:
             print(f"[产线] 推进失败，本轮跳过：{type(exc).__name__}: {exc}")
-        did = run_once(wid, limits=limits)
-        jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
-                       limits=limits, resources=_node_resources())
+        # 下面两步原来是没有 try 的，而这条链上恰恰最容易撞库锁：
+        # `advance_run` 在 BEGIN IMMEDIATE 事务里要跑 ffprobe 验成片（最长 30 秒），
+        # 另一条连接等 5 秒（db.py 的 timeout）就抛 "database is locked"。
+        # 一句锁冲突不该把整个队列关掉——`run.sh worker` 是 `exec` 起来的独立进程，
+        # 没有 supervise 重启，一旦退出就没人领作业了，界面上只剩"worker 离线"，
+        # 而那一条正在跑的作业会被下一轮的 recover_stale 收成 failed（云端可能已计费）。
+        # 兜住的后果和"让它崩"是一样的（作业靠租约回收、下一轮重来），
+        # 区别只是队列不停。
+        did = None
+        try:
+            did = run_once(wid, limits=limits)
+        except Exception as exc:
+            print(f"[作业] 这一轮跑砸了，下一轮继续：{type(exc).__name__}: {exc}")
+        try:
+            jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
+                           limits=limits, resources=_node_resources())
+        except Exception as exc:
+            print(f"[心跳] 这一轮没写上：{type(exc).__name__}: {exc}")
         if args.once:
             break
         if did is None:

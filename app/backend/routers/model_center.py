@@ -19,7 +19,8 @@ import model_center as mc
 import validations
 from deps import require_permission, require_user
 from models import (BACKENDS, CAPABILITIES, ModelPolicyIn, ModelRegistrationIn,
-                    ModelRegistrationPatch, POLICY_PREFERENCES, ValidationOut)
+                    ModelRegistrationPatch, POLICY_PREFERENCES, REG_SOURCES,
+                    ValidationOut)
 from repositories.model_center import RegistrationError, model_center
 
 router = APIRouter(prefix="/api", tags=["model-center"])
@@ -63,6 +64,11 @@ def list_models(_=Depends(require_permission("system:config"))) -> dict:
     return {"manifest_version": adapters.MANIFEST_VERSION,
             "status_labels": mc.STATUS_LABEL,
             "capabilities": CAPABILITIES, "backends": BACKENDS,
+            # backends 是**选型层**的取值（provider_config 只有本地／云端两轨），
+            # reg_sources 是**登记层**的取值（0035 多了一档远程自建）。两把放一起给，
+            # 界面就不必再自己硬写第三个 option——原来 models.js 硬写过一份，
+            # 标签还和后端不一样（"远程自建服务" vs "远程自建"）。
+            "reg_sources": REG_SOURCES,
             "unintegrated_engines": mc.UNINTEGRATED_ENGINES,
             "items": mc.catalog()}
 
@@ -83,8 +89,9 @@ def create_model(payload: ModelRegistrationIn,
     if capability not in CAPABILITIES:
         raise HTTPException(status_code=422,
                             detail=f"能力只能是 {'、'.join(CAPABILITIES)}，不是「{capability}」")
-    if backend not in ("local", "cloud", "remote"):
-        raise HTTPException(status_code=422, detail="运行位置只能是 本地／云端／远程自建")
+    if backend not in REG_SOURCES:
+        raise HTTPException(status_code=422,
+                            detail=f"运行位置只能是 {'、'.join(REG_SOURCES.values())}")
     if not provider or not model_code:
         raise HTTPException(status_code=422, detail="provider 与模型标识都不能空")
 
@@ -96,7 +103,7 @@ def create_model(payload: ModelRegistrationIn,
         row = model_center.create({
             "capability": capability, "backend": backend, "provider": provider,
             "model_code": model_code, "display_name": payload.display_name,
-            "source": payload.source if payload.source in ("local", "cloud", "remote") else backend,
+            "source": payload.source if payload.source in REG_SOURCES else backend,
             "engine_code": payload.engine_code or (adapter.code if adapter else provider),
             "version": payload.version, "artifact_path": payload.artifact_path,
             "remote_model_id": payload.remote_model_id,
@@ -116,8 +123,9 @@ def patch_model(reg_id: int, payload: ModelRegistrationPatch,
                 _=Depends(require_permission("system:config"))) -> dict:
     _row_or_404(reg_id)
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if "source" in patch and patch["source"] not in ("local", "cloud", "remote"):
-        raise HTTPException(status_code=422, detail="运行位置只能是 本地／云端／远程自建")
+    if "source" in patch and patch["source"] not in REG_SOURCES:
+        raise HTTPException(status_code=422,
+                            detail=f"运行位置只能是 {'、'.join(REG_SOURCES.values())}")
     try:
         model_center.update(reg_id, patch)
     except RegistrationError as exc:
@@ -183,9 +191,10 @@ def list_policies(_=Depends(require_permission("system:config"))) -> dict:
             "enabled": bool(d["enabled"]), "updated_at": d["updated_at"],
         })
     return {"manifest_version": adapters.MANIFEST_VERSION,
-            # 这一句和 adapters.manifest_payload().policy.no_auto_fallback 同一口径，
-            # 界面拿它决定"备用轨"那一栏要不要写成"可改选"而不是"自动切"
-            "no_auto_fallback": True,
+            # 这一句从 adapters.POLICY 读，不在这里重抄字面量：清单里那条
+            # `policy.no_auto_fallback` 才是权威，界面拿它决定"备用轨"那一栏
+            # 要不要写成"可改选"而不是"自动切"。抄一份就等于埋第二把会漂移的口径。
+            "no_auto_fallback": adapters.POLICY["no_auto_fallback"],
             "preference_labels": POLICY_PREFERENCES,
             "items": items}
 
@@ -230,7 +239,10 @@ def save_policies(payload: list[ModelPolicyIn],
 def resolve(scene_key: str, _=Depends(require_user)) -> dict:
     """场景 → 候选与挡路原因。只读，登录即可（与 /providers/available 同一档）。"""
     out = mc.resolve_scene(scene_key)
-    out["auto_switch"] = False
+    # 跟着清单里的策略走，而不是在这里写死一个字面量：今天没人自动切是因为
+    # `no_auto_fallback` 为真，将来谁把那条策略改了，这一句必须跟着变——
+    # 界面据此说"要不要替你顶上"，说错比不说更糟。
+    out["auto_switch"] = not adapters.POLICY["no_auto_fallback"]
     return out
 
 

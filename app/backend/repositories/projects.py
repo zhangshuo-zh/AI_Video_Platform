@@ -101,7 +101,15 @@ class ProjectRepository:
 
     def list_visible(self, user_id: int, everything: bool,
                      status: str = "all") -> list[sqlite3.Row]:
-        conds = [self._STATUS_COND.get(status, "1")]
+        # 认不出来的 status 一律报错，不再兜成"1"（＝查看全部）：
+        # 路由层有 Literal 挡着，但这一层是给 worker／脚本用的，
+        # 一个拼错的参数静默变成"列出所有项目"是最坏的组合——调用方以为筛过了，
+        # 实际什么都没筛。宁可当场炸，也不要"看着像成功"。
+        cond = self._STATUS_COND.get(status)
+        if cond is None:
+            raise ValueError(
+                f"项目状态筛选只认 {'、'.join(self._STATUS_COND)}，不是「{status}」")
+        conds = [cond]
         args: list = []
         if not everything:
             conds.append(self._VISIBLE)

@@ -1,7 +1,8 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { confirmDanger, escapeHtml, run } from '../util.js';
-import { validationText } from '../validation.js';
+import { confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
+import { JOB_ACTIVE, jobTone, validationText } from '../validation.js';
+import { unitLabel } from '../enums.js';
 import { takeStudioTarget, workerChip } from './asset-workspaces.js';
 
 /**
@@ -73,8 +74,6 @@ const FIELD_LABEL = {
   biography: '履历', personality: '性格', growth_arc: '成长过程',
   summary: '说明', consistency_prompt: '一致性提示词', text_prompt: '文字设定提示词',
 };
-
-const INFLIGHT = ['pending', 'queued', 'starting', 'running'];
 
 /* 模块级草稿：切页回来还在同一个目标上，也保住没保存的文字。
    换项目就作废——旧项目里的资产 id 到新项目里是另一条东西。 */
@@ -168,8 +167,11 @@ function refInputsOf(option, modelCode) {
   return (model && model.image_inputs) || [];
 }
 
-function fmtMoney(micros) {
-  return `¥${(Number(micros || 0) / 1e6).toFixed(4)}`;
+function fmtMoney(micros, currency) {
+  // 原来这一格自己写死 `¥${…toFixed(4)}`：清单里换成美元计价时，界面照样发一个 ¥，
+  // 而那笔钱到底按什么币种扣是供应商那边说了算——对账的数不能靠界面猜币种。
+  // util.formatMoney 才是唯一出口：币种从数据里来，小数位按金额大小自适应。
+  return formatMoney(micros, currency);
 }
 
 /** 云端确认单：数量与单价都取清单默认那一档，页面不自己算价。 */
@@ -193,16 +195,21 @@ function paramsFor(which, d) {
   return out;
 }
 
-const inflight = (job) => Boolean(job && INFLIGHT.includes(job.status));
+// 在飞的判定以前在这里另列了一份：['pending','queued','starting','running']。
+// 两个问题：`pending` 不是 job.status 的取值（0015 的 CHECK 只有八个值，
+// 没有它），多写一条没人发现；而 **cancel_requested 漏了**——一条"取消中"的作业
+// 还在进程里跑，这一页却当它已经结束：轮询停掉、按钮放开，人接着提第二条，
+// 服务端回一句"这一槽位还有作业在跑"，看起来像是平台在刁难人。
+// 收敛到 validation.js 的 JOB_ACTIVE（＝后端 queued + JOB_RUNNING 的口径）。
+const inflight = (job) => Boolean(job && JOB_ACTIVE.includes(job.status));
 
 /* ---------- 片段 ---------- */
 
 function jobChip(label, job) {
   if (!job) return '';
-  const tone = { succeeded: 'green', failed: 'red', needs_attention: 'amber',
-                 running: 'blue', starting: 'blue', queued: 'gray', pending: 'gray' }[job.status]
-    || 'gray';
-  return `<span class="chip ${tone}" title="作业 #${job.job_id}；状态与成本在生成中心">
+  // 配色走 validation.js 的唯一那份（原来这里第五份，还多认了一个
+  // 不存在的 pending、少认了 cancel_requested）
+  return `<span class="chip ${jobTone(job.status)}" title="作业 #${job.job_id}；状态与成本在生成中心">
     ${escapeHtml(label)}·${escapeHtml(job.status_label || job.status)}</span>`;
 }
 
@@ -251,9 +258,10 @@ function trackPanel(d, which) {
     : (list.length ? '<p class="t-dim">还没选槽位；上面灰掉的那些不可选，原因写在括号里。</p>' : '');
   const cost = d[`${which}Track`] === 'cloud'
     ? (price
-      ? `<p class="t-dim">单价 ${fmtMoney(price.amount_micros)} / ${escapeHtml(price.unit)}`
-        + `｜预计 ${price.default_quantity ?? '—'} ${escapeHtml(price.unit)}`
-        + ` ≈ ${fmtMoney((price.default_quantity || 0) * price.amount_micros)}`
+      ? `<p class="t-dim">单价 ${fmtMoney(price.amount_micros, price.currency)}`
+        + ` / ${escapeHtml(unitLabel(price.unit))}`
+        + `｜预计 ${price.default_quantity ?? '—'} ${escapeHtml(unitLabel(price.unit))}`
+        + ` ≈ ${fmtMoney((price.default_quantity || 0) * price.amount_micros, price.currency)}`
         + `｜出处：${escapeHtml(price.source)}</p>`
       : `<p class="t-desc">这一档没登记计价，不能提交云端计费作业。</p>`)
     : '';
@@ -449,7 +457,7 @@ function candidatesHtml(d) {
   const head = `<p class="t-dim">作业 #${cand.job_id}｜${escapeHtml(
     `${meta.execution_mode_label || ''} ${meta.provider_code || ''}/${meta.model_code || ''}`.trim())
     || '档位未知'}｜完成 ${escapeHtml(meta.finished_at || '—')}`
-    + `${meta.cost_micros ? `｜成本 ${fmtMoney(meta.cost_micros)} ${escapeHtml(meta.currency || '')}` : ''}`
+    + `${meta.cost_micros ? `｜成本 ${fmtMoney(meta.cost_micros, meta.currency)}` : ''}`
     + `｜<a href="#generate/0" class="plain">到生成中心看这条作业</a></p>`;
   const canSave = d.targetId > 0;
   const grid = items.map((a, i) => `

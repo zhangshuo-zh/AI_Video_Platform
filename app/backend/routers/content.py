@@ -15,7 +15,7 @@ import asset_studio
 from access import ensure, ensure_asset, ensure_by, is_manager
 from config import FILES_DIR
 from db import transaction
-from deps import require_permission
+from deps import actor_name, require_permission
 from imagetypes import ALLOWED_TYPES, MAX_IMAGE_BYTES, is_heic, looks_like
 
 from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetGenIn, AssetGenOut,
@@ -27,7 +27,8 @@ from paths import listdir_empty, resolve_within
 from repositories.content import assets, episodes, shots
 from repositories.content import profiles as profile_repo
 from repositories.content import variants as variant_repo
-from services import (JobInvalid, NoRoute, clean_tags, shot_variant_ids, shots_view)
+from services import (JobInvalid, NoRoute, clean_tags, delete_episode_cascade,
+                      shot_variant_ids, shots_view)
 
 router = APIRouter(prefix="/api", tags=["content"])
 
@@ -84,7 +85,9 @@ def set_episode_status(episode_id: int, payload: EpisodeStatusIn,
 def delete_episode(episode_id: int,
                    user=Depends(require_permission("doc:write"))) -> None:
     ensure_by("episode", episode_id, user, "write", "创作单元")
-    if not episodes.delete(episode_id):
+    # 走 services 的那一条而不是直接 episodes.delete()：文档行是 SQL 级联带走的，
+    # 正文文件不在数据库里，行一删路径就查不回来了（详见 delete_episode_cascade）。
+    if not delete_episode_cascade(episode_id, actor=actor_name(user)):
         raise HTTPException(status_code=404, detail="创作单元不存在")
 
 

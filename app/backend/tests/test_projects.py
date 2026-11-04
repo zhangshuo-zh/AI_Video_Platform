@@ -131,3 +131,19 @@ def test_标签装得下一半时报清楚加了哪个(app, people, as_role):
                json={"ids": [pid], "action": "tag", "tags": ["挤进来", "挤不进"]})
     note = r.json()["notes"][0]["note"]
     assert "只加上 挤进来" in note and "未追加：挤不进" in note, note
+
+
+def test_未知项目状态筛选直接报错而不是列出全部(people):
+    """`list_visible(status=...)` 原来把认不出来的值兜成 `1`（＝查看全部）。
+
+    路由层有 Literal 挡着，所以 HTTP 上碰不到；但 worker 与脚本是直接从这一层调的，
+    一个拼错的参数会静默变成"没筛"——调用方以为筛过了，实际什么都没筛，
+    这是最难被发现的一类错。宁可当场抛。
+    """
+    uid = people["editor"]["id"]
+    # 三个合法值照旧能用
+    for status in ("all", "active", "archived"):
+        prepo.list_visible(uid, False, status)
+    with pytest.raises(ValueError) as bad:
+        prepo.list_visible(uid, False, "archved")     # 少一个 r
+    assert "archved" in str(bad.value)

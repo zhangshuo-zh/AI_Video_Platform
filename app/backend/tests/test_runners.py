@@ -133,17 +133,27 @@ def test_mflux_只认_cli_不猜权重(tmp_path, monkeypatch):
     assert spec.media == "image"
 
 
-def test_mlx_video_条件图只能落在作业目录里(tmp_path, monkeypatch):
-    home = tmp_path / "mlx-video"
+def _fake_mlx_home(root: Path, monkeypatch) -> Path:
+    """搭一个能过 `runtime.probe_mlx_video` 的假运行时：解释器 + 包目录 + 模型 config。
+
+    只喂探测要的那几样，不起进程、不加载权重——这一份测试钉的是**边界**，
+    不是模型能不能跑（真产物由 W09 的验收作业负责）。
+    """
+    home = root / "mlx-video"
     (home / ".venv" / "bin").mkdir(parents=True)
     (home / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
     (home / ".venv" / "bin" / "python").chmod(0o755)
     (home / "mlx_video").mkdir()
-    model = tmp_path / "wan22-i2v"
+    model = root / "wan22-i2v"
     model.mkdir()
     (model / "config.json").write_text("{}")
     monkeypatch.setenv("FASTVIDEO_MLX_VIDEO_HOME", str(home))
     monkeypatch.setenv("FASTVIDEO_MLX_VIDEO_MODEL", str(model))
+    return home
+
+
+def test_mlx_video_条件图只能落在作业目录里(tmp_path, monkeypatch):
+    _fake_mlx_home(tmp_path, monkeypatch)
 
     job_dir = config.JOBS_DIR / "7" / "inputs"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +191,47 @@ def test_mlx_video_条件图只能落在作业目录里(tmp_path, monkeypatch):
     with pytest.raises(runners.RunnerUnavailable):
         runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
                       {"image": "inputs/evil.png"}, outputs)
+
+
+def test_mlx_video_认得产线注入的上游产物(tmp_path, monkeypatch):
+    """别的作业目录里的关键帧必须放行，但只认"平台自己产的那一类路径"。
+
+    这一条补的是上一轮的实测缺陷：`pipeline._upstream_image` 会把上游关键帧的
+    产物**绝对路径**注入 `image` 参数，那个文件在 `data/jobs/<上游作业>/outputs/`
+    下，而边界只认"本作业目录"。结果本机接上 mlx-video 之后，每个要条件图的
+    video 节点都在起跑前被判"条件图路径越出作业目录"——不是越权，是自己人
+    被自己的闸门挡住。原来的测试只递本作业目录里的图，所以一直看不见这一档。
+    """
+    _fake_mlx_home(tmp_path, monkeypatch)
+
+    job_dir = config.JOBS_DIR / "7" / "outputs"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    outputs = tmp_path / "out"
+    outputs.mkdir()
+
+    # ① 上游作业的产物：同一种"平台产的文件"，只是不在本作业名下
+    sibling = config.JOBS_DIR / "3" / "outputs"
+    sibling.mkdir(parents=True, exist_ok=True)
+    art = sibling / "keyframe.png"
+    art.write_bytes(b"\x89PNG\r\n\x1a\n")
+    spec = runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                         {"image": str(art)}, outputs)
+    assert spec.argv[spec.argv.index("--image") + 1] == str(art.resolve())
+
+    # ② 但"在 data/jobs 下面"不是万能钥匙：第一层目录名必须是作业号（纯数字）。
+    #    谁往 data/jobs/ 里丢一个随手命名的目录，不能因此变成合法输入图。
+    side = config.JOBS_DIR / "scratch"
+    side.mkdir(parents=True, exist_ok=True)
+    (side / "note.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": str(side / "note.png")}, outputs)
+
+    # ③ 软链接伪装成作业目录里的文件：resolve 之后在圈外，照旧拒
+    (sibling / "link.png").symlink_to("/etc/passwd")
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": str(sibling / "link.png")}, outputs)
 
 
 def test_产物必须验魔数与非空(tmp_path):

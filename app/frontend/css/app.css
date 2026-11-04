@@ -537,13 +537,6 @@ td.r,th.r{text-align:right}
 td.c,th.c{text-align:center}
 td.mono{font-family:var(--mono);font-size:11.5px}
 
-/* 模型中心·引擎管理的能力轨（v0.66 起在系统设置，v0.99 搬到模型中心）：
-   每个槽位下面跟一条备注带。
-   允许参数用一行小 chips，健康状态下面跟一句人话——两列都窄，
-   把长句塞进单元格会把整张表撑成两层楼。 */
-  padding-top:2px;padding-bottom:10px;border-bottom:1px solid var(--line);
-  color:var(--ink-3);font-size:11.5px;
-}
 /* 能力轨六列。旧版十列时 Provider／模型两个输入框被压到 80px，
    实际显示成 "deepse" "d"——看不清自己填了什么，比没填还糟。
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
@@ -559,8 +552,6 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .mc-acts{display:inline-flex;gap:4px}
 .param-chips{display:flex;flex-wrap:wrap;gap:4px;max-width:280px}
 .param-chips .chip{font-size:10.5px;padding:1px 6px}
-td.key-cell .hint{display:block;margin-top:3px;white-space:normal}
-td.key-cell code{font-family:var(--mono);font-size:11px}
 .t-dim{color:var(--ink-2)}
 /* 项目介绍跟在"N 集 · N 镜 · N 资产"下面一行，单行截断——
    项目中心那几列本来就窄，让介绍换行会把整表行高拉垮 */
@@ -584,8 +575,6 @@ td.key-cell code{font-family:var(--mono);font-size:11px}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .batch-bar .right{display:flex;gap:6px;align-items:center;flex:none}
-/* 批量结果（含被跳过的原因）说一句话，留在批量条下面，不弹 alert */
-.batch-msg{padding:9px 14px;border-bottom:1px solid var(--line)}
 /* 复选框一律做成圆的（行框点名要的样式）：appearance 干掉原生方块，圈和点自己画。
    input 上画不了伪元素，勾选点用径向渐变、半选用短横线，底色都走令牌换主题不漏。
    选择器覆盖所有 checkbox：只圈 .row-pick 的话，「用户与角色」的权限矩阵是方的、
@@ -962,31 +951,6 @@ textarea.ctl{line-height:1.65;resize:vertical;min-height:66px}
 input.ctl.sm{padding:4px 8px;font-size:11.5px;width:100%;max-width:300px}
 .row{display:flex;gap:8px;align-items:center}
 td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);cursor:pointer}
-
-/* ---------- 定妆图 ---------- */
-.imgs{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.img-wrap{position:relative;display:inline-block;line-height:0}
-.img-thumb{
-  width:48px;height:48px;object-fit:cover;border-radius:var(--r-ctl);border:1px solid var(--line);
-  cursor:zoom-in;background:var(--thumb);box-shadow:0 1px 2px rgba(0,0,0,.05);
-  transition:transform var(--fast) var(--ease),box-shadow var(--fast),border-color var(--fast);
-}
-.img-thumb:hover{transform:scale(1.06);box-shadow:var(--sh-2);border-color:transparent}
-.img-del{
-  position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;
-  border:1px solid var(--line-strong);background:var(--field);color:var(--ink-2);font-size:10px;
-  line-height:1;display:none;place-items:center;cursor:pointer;padding:0;
-  box-shadow:0 1px 3px rgba(0,0,0,.16);
-}
-.img-wrap:hover .img-del{display:grid}
-.img-del:hover{background:var(--bad);color:var(--danger-fg);border-color:transparent}
-.img-add{
-  width:48px;height:48px;border:1px dashed var(--line-strong);border-radius:var(--r-ctl);
-  display:grid;place-items:center;color:var(--ink-3);cursor:pointer;font-size:15px;
-  background:var(--field);transition:border-color var(--fast),color var(--fast),background var(--fast);
-}
-.img-add:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
-.img-add.wide{width:auto;padding:0 13px;font-size:11.5px;display:inline-flex;gap:4px}
 
 /* ---------- 危险操作弹窗 ---------- */
 .modal{

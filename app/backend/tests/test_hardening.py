@@ -6,6 +6,7 @@
 而不是只测正常路径能通。
 """
 import uuid
+from pathlib import Path
 from datetime import datetime, timedelta
 
 import pytest
@@ -167,3 +168,29 @@ def test_顶栏状态不摊别人项目的作业明细(app, as_role, people, see
 
     with get_conn() as conn:
         conn.execute("UPDATE job SET status = 'cancelled' WHERE id IN (?, ?)", (j_mine, j_theirs))
+
+
+def test_worker_一轮撞库锁不关掉整条队列(monkeypatch, seeded):
+    """`run_once` 与 `heartbeat` 原来没有 try，而这条链最容易撞 SQLITE_BUSY。
+
+    实测路径：`advance_run` 在 `BEGIN IMMEDIATE` 事务里要跑 ffprobe 验成片
+    （最长 30 秒），另一条连接按 db.py 的 timeout=5 等 5 秒就抛
+    "database is locked"。`run.sh worker` 是 `exec` 起来的独立进程、没人重启它，
+    一句锁冲突于是把整条队列关掉——界面只剩"worker 离线"，
+    而在跑的那条作业下一轮被 recover_stale 收成 failed（云端可能已经计了费）。
+    兜住的后果与"让它崩"相同（作业靠租约回收、下轮重来），区别只是队列不停。
+    """
+    import sqlite3
+
+    import worker
+
+    def boom(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(worker, "run_once", boom)
+    monkeypatch.setattr(worker.jobs, "heartbeat", lambda *a, **k: None)
+
+    assert worker.main(["--once"]) == 0, "撞一次锁就把 worker 进程退出＝队列整个停摆"
+    src = (Path(__file__).resolve().parents[1] / "worker.py").read_text()
+    assert "did = run_once(wid, limits=limits)" in src
+    assert '[作业] 这一轮跑砸了' in src, "退出路径又变回没有兜底的那一版了"
