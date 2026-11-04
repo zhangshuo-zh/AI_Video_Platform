@@ -305,6 +305,32 @@ body{
 .nav-sub .sub.on{color:var(--accent);font-weight:600;background:var(--nav-on)}
 .nav-sub .sub.on::before{height:13px}
 
+/* ---------- 模型中心：密度收口 ---------- */
+/* 概览收成一条带。原来是一整张卡（四个数各占一行＋一条口径说明），
+   四个工作区各重复一次，白吃掉首屏三分之一。 */
+.mc-strip{display:flex;flex-wrap:wrap;gap:6px 24px;align-items:baseline;padding:11px 16px}
+.mc-strip .st{display:flex;align-items:baseline;gap:7px;font-size:11.5px;color:var(--ink-3)}
+.mc-strip .st b{font-size:19px;font-weight:650;color:var(--ink);letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums}
+.mc-strip .st .chip{font-size:10.5px;padding:1px 7px}
+.mc-strip .st-caliber{flex:1 1 100%;font-size:11px;color:var(--ink-3);
+  border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+
+/* 能力轨：默认一槽一行，细节点开才看。
+   上一版每槽固定两行，备注带里又塞了清单、参数、备注、密钥四层——
+   十槽就是 20 行往上，一屏看不见四类能力。 */
+tr.mc-detail>td{padding:0 14px 12px;background:var(--hover-soft)}
+tr.mc-detail .form-grid{padding-top:10px}
+tr.mc-detail:hover{background:transparent}
+tr.mc-collapsed>td,tr.mc-offline>td{padding:7px 14px;color:var(--ink-3);font-size:11.5px}
+tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
+.mc-open{font:inherit;font-size:11.5px;color:var(--accent);background:none;border:0;
+  padding:0 2px;cursor:pointer;border-bottom:1px solid transparent}
+.mc-open:hover{border-bottom-color:var(--accent-line)}
+/* 主行只留徽章：健康那句长解释（"环境变量 X 没有值；改完要重启服务"）
+   inline 摆在徽章后面会把一行撑成三层楼，挪进展开态再说 */
+.mc-detail-actions{display:flex;gap:6px;align-self:center;flex-wrap:wrap}
+
 /* 命令面板 */
 .palette{
   position:fixed;inset:0;background:var(--scrim);
@@ -515,13 +541,9 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    每个槽位下面跟一条备注带。
    允许参数用一行小 chips，健康状态下面跟一句人话——两列都窄，
    把长句塞进单元格会把整张表撑成两层楼。 */
-tr.slot-note td{
   padding-top:2px;padding-bottom:10px;border-bottom:1px solid var(--line);
   color:var(--ink-3);font-size:11.5px;
 }
-tr.slot-note:hover{background:transparent}
-tr.slot-note .src{margin-right:10px;white-space:nowrap}
-tr.slot-note input.ctl{max-width:560px}
 /* 能力轨六列。旧版十列时 Provider／模型两个输入框被压到 80px，
    实际显示成 "deepse" "d"——看不清自己填了什么，比没填还糟。
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
@@ -530,10 +552,11 @@ tr.slot-note input.ctl{max-width:560px}
 .mc-picks input.ctl{flex:1 1 132px;min-width:132px}
 .mc-status{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
 .mc-health,.mc-validation{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
-.mc-health .hint{display:block;margin-top:3px;max-width:230px;white-space:normal}
+/* 健康那句长解释（"环境变量 X 没有值；改完要重启服务"）不在主行显示：
+   一句 30 字的话能把一行撑成三层楼，整表就废了。它出现在两处——
+   徽章的 title 里，以及点开这一槽后的细节行里。 */
+.mc-health .hint{display:none}
 .mc-acts{display:inline-flex;gap:4px}
-.mc-note-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px}
-.mc-note-line .params-cell{display:flex;flex-wrap:wrap;gap:4px}
 .param-chips{display:flex;flex-wrap:wrap;gap:4px;max-width:280px}
 .param-chips .chip{font-size:10.5px;padding:1px 6px}
 td.key-cell .hint{display:block;margin-top:3px;white-space:normal}

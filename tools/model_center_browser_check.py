@@ -118,7 +118,7 @@ def main():
               f"{P.eval_js(cdp, 'document.querySelectorAll(\"#repo-rows tr\").length')} 行")
 
         stats = cdp.eval("fetch('/api/models/stats').then(r=>r.json()).then(j=>j.registered_total)")
-        shown = P.eval_js(cdp, "document.querySelector('.dash-grid > div > b').textContent")
+        shown = P.eval_js(cdp, "document.querySelector('.mc-strip .st b').textContent")
         check("概览第一个数与服务端一致（不是写死的）", str(stats) == str(shown),
               f"接口 {stats} / 界面 {shown}")
 
@@ -153,14 +153,22 @@ def main():
 
         # 工作区 1：引擎管理
         go(cdp, f"{BASE}/#models/1")
-        check("引擎管理有十行能力轨",
-              P.eval_js(cdp, "document.querySelectorAll('tr.slot').length") == 10,
-              str(P.eval_js(cdp, "document.querySelectorAll('tr.slot').length")) + " 行")
-        check("未接入引擎卡没有可点的连接按钮",
-              P.eval_js(cdp, "(() => { const cards = [...document.querySelectorAll('.card')]"
-                             ".filter(c => c.textContent.includes('未接入'));"
-                             "return cards.length > 0 && cards.every(c => !c.querySelector('button'));"
-                             "})()"))
+        # 十行槽位 = 已配置的 tr.slot ＋ 折叠成一行灰字的 tr.mc-collapsed。
+        # 选择器不要用 .card:first-of-type：view-root 下第一个 div 是 .page-head，
+        # 那条 CSS 伪类按"同层同名元素的第一个"匹配，命中数会是 0——假故障。
+        b2 = P.eval_js(cdp, "document.querySelectorAll('tr.slot').length")
+        c2 = P.eval_js(cdp, "document.querySelectorAll('tr.mc-collapsed').length")
+        check("引擎管理十行槽位都在（未配置的折成一行）", (b2 or 0) + (c2 or 0) == 10,
+              f"已配置 {b2} ＋ 折叠 {c2}")
+        # 未接入的引擎：一行、有"未接入"徽章、且整行没有任何按钮
+        offline = P.eval_js(cdp, "document.querySelectorAll('tr.mc-offline').length")
+        check("未接入引擎成行列出且没有可点的连接按钮",
+              P.eval_js(cdp, "(() => { const rows = [...document.querySelectorAll('tr.mc-offline')];"
+                             "return rows.length >= 2 && rows.every(r =>"
+                             " r.textContent.includes('未接入') && !r.querySelector('button')); })()"),
+              f"未接入 {offline} 行")
+        cards = P.eval_js(cdp, "document.querySelectorAll('#view-root .card').length")
+        check("引擎收成一张表而不是 13 张卡", 0 < cards <= 3, f"整页 {cards} 张卡片")
         # 环境检查按钮（原系统设置那套功能没丢）
         check("能力轨每行仍带环境检查与验证记录",
               P.has(cdp, "[data-env-check]") and P.has(cdp, "[data-val-history]"))

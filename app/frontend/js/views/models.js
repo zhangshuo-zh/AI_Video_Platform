@@ -67,40 +67,37 @@ function adapterOf(manifest, cap, backend, provider) {
 const SOURCE_LABEL = { local: '本地', cloud: '云端', remote: '远程自建' };
 
 /**
- * 四个数全部来自 `GET /api/models/stats`（后端一处算，口径随返回值一起给）。
- * 为什么不让前端自己数：模型数、可用数、引擎数一旦在两处各算一遍，
- * 迟早会说出两句不一样的话——这正是外部评审点过的那类口径事故。
- * 结构照 overview.js 的项目看板：.dash-grid > div > .grp + b + .dash-chips。
+ * 顶部四数收成一条带。
+ *
+ * 数字仍然全部来自 `GET /api/models/stats`（后端一处算，口径随返回值一起给），
+ * 界面只念不算——模型数、可用数、引擎数一旦在两处各算一遍，迟早说出两句不一样的话。
+ * 口径那一行不再摊开成一段说明，压成带子末尾的一句小字；
+ * 每个数自己另带 title，鼠标停上去就是它自己的口径。
  */
 function overviewCard(s) {
   const cap = s.registered_by_capability || {};
-  const capChips = Object.entries(cap)
-    .map(([k, v]) => `<span class="chip plain">${escapeHtml(cache.catalog.capabilities[k] || k)} ${v}</span>`)
-    .join('') || '<span class="t-dim">还没有登记</span>';
+  const capText = Object.entries(cap)
+    .map(([k, v]) => `${cache.catalog.capabilities[k] || k} ${v}`).join(' · ');
   return `
-  <div class="card" style="margin-bottom:14px">
-    <div class="card-head">
-      <h2>概览</h2>
-      <span class="sub">数字现算，口径由服务端随数据一起给</span>
-    </div>
-    <div class="card-body dash-grid">
-      <div><span class="grp">已登记模型</span><b>${s.registered_total}</b>
-        <div class="dash-chips">${capChips}</div></div>
-      <div><span class="grp">可用模型</span><b>${s.available_total}</b>
-        <div class="dash-chips"><span class="chip ${s.needs_attention ? 'amber' : 'green'}">
-          ${s.needs_attention} 个需要看一眼</span></div></div>
-      <div><span class="grp">已接入引擎</span><b>${s.engine_total}</b>
-        <div class="dash-chips"><span class="chip plain">${s.engine_params_known} 个参数已核验</span>
-          <span class="chip gray">${s.unintegrated_engines.length} 个本机应用未接入</span></div></div>
-      <div><span class="grp">当前任务</span><b>${s.running + s.queued}</b>
-        <div class="dash-chips"><span class="chip blue">运行中 ${s.running}</span>
-          <span class="chip plain">队列中 ${s.queued}</span></div></div>
-    </div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" style="margin:0">
-        <b>口径</b>：可用＝已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收。
-        引擎在线不代表模型可用，模型文件在也不代表工作流依赖齐。
-      </p>
+  <div class="card" style="margin-bottom:12px">
+    <div class="mc-strip">
+      <span class="st" title="${escapeHtml(s.caliber.registered_total)}">已登记
+        <b>${s.registered_total}</b>
+        <span class="hint">${escapeHtml(capText || '还没有登记')}</span></span>
+      <span class="st" title="${escapeHtml(s.caliber.available_total)}">可用
+        <b>${s.available_total}</b>
+        ${s.needs_attention
+          ? `<span class="chip amber">${s.needs_attention} 个要看一眼</span>`
+          : '<span class="chip green">都齐了</span>'}</span>
+      <span class="st" title="${escapeHtml(s.caliber.engine_total)}">引擎
+        <b>${s.engine_total}</b>
+        <span class="hint">${s.engine_params_known} 个参数已核验 ·
+          ${s.unintegrated_engines.length} 个未接入</span></span>
+      <span class="st" title="与生成中心同一个口径：${escapeHtml(s.caliber.queued)}">任务
+        <b>${s.running + s.queued}</b>
+        <span class="hint">跑 ${s.running} · 等 ${s.queued}</span></span>
+      <span class="st-caliber">可用＝已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收。
+        引擎在线不代表模型可用，文件在也不代表依赖齐。</span>
     </div>
   </div>`;
 }
@@ -138,6 +135,20 @@ function statusChip(item, labels) {
   return `<span class="chip ${tone}" title="${escapeHtml(item.status_detail || '')}">${escapeHtml(label)}</span>`;
 }
 
+/**
+ * 状态＋健康两枚徽章。文字撞车时只留一枚——
+ * "未检查｜未检查"这种并排不是信息，是噪声；两枚各说各的时才并排。
+ * 撞车是常态而非例外：状态为 unchecked 的唯一来源就是健康探测返回 unknown，
+ * 两边都译成"未检查"。
+ */
+function statusHealthChips(item) {
+  const s = statusChip(item, cache.catalog.status_labels);
+  const h = healthChip(item.health);
+  const sLabel = (cache.catalog.status_labels[item.status] || item.status);
+  const hLabel = (HEALTH[item.health?.state] || ['gray', '未知'])[1];
+  return sLabel === hLabel ? s : `${s} ${h}`;
+}
+
 function pageRepo() {
   const items = cache.catalog.items;
   // 筛选条件留在模块级：切走再切回来不该把人筛的东西重置（和 sub 同一个道理）
@@ -153,15 +164,13 @@ function pageRepo() {
         <div class="param-chips">${tagChips(it.tags)}</div></td>
       <td><span class="chip ${it.backend === 'local' ? 'plain' : 'blue'}">${escapeHtml(SOURCE_LABEL[it.source] || it.source)}</span></td>
       <td>${escapeHtml(it.engine_label || it.engine_code || '—')}</td>
-      <td>${statusChip(it, cache.catalog.status_labels)} ${healthChip(it.health)}</td>
-      <td>
-        <button class="btn xs" data-detail="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}">详情</button>
-        ${it.registration_id
-          ? `<button class="btn xs" data-check="${it.registration_id}">检查</button>
-             <button class="btn xs" data-edit="${it.registration_id}">编辑</button>
-             <button class="btn xs" data-remove="${it.registration_id}">撤登记</button>`
-          : `<button class="btn xs" data-register="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}">登记</button>`}
-      </td>
+      <td>${statusHealthChips(it)}</td>
+      <td>${it.registration_id
+        // 一行只留一个入口。检查／编辑／撤登记收进详情面板底部：
+        // 那里有完整上下文（状态、健康、验证出处都在），做决定比在一排小按钮里点靠谱，
+        // 而撤登记这种破坏性操作多走一层本来就是对的。
+        ? `<button class="btn xs" data-detail="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}">详情</button>`
+        : `<button class="btn xs" data-register="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}">登记</button>`}</td>
     </tr>`;
   }).join('');
 
@@ -264,9 +273,11 @@ function validationCell(r) {
     const st = (VAL_STATE[item.state] || ['', item.state || '没有记录'])[1];
     return `${VAL_KIND_LABEL[k]}：${st}${item.at ? '（' + String(item.at).slice(5, 16) + '）' : ''}`;
   }).join('\n');
+  /* 生产可用与否用徽章而不是 hint：hint 会被状态列的密度收口藏掉，
+     而"未达生产可用"恰恰是最该常驻可见的那半句。 */
   const ready = v.production_ready
     ? '<span class="chip green">生产可用</span>'
-    : '<span class="hint">未达生产可用</span>';
+    : '<span class="chip gray">未达生产可用</span>';
   return `<span class="chip ${tone}" title="${escapeHtml(tip)}">${label}</span> ${ready}
     <span class="mc-acts">
       <button class="btn xs" data-env-check="${r.id}">环境检查</button>
@@ -283,13 +294,82 @@ function statusCell(r) {
     </div>`;
 }
 
-function keyCell(r) {
-  if (r.backend !== 'cloud') return '<span class="hint">本机运行时不需要密钥</span>';
-  const env = r.key_env || '';
-  return `<input class="ctl sm mono" data-f="key_env" value="${escapeHtml(r.key_env_custom)}"
-                 placeholder="${escapeHtml(env || 'FV_KEY_<PROVIDER>')}">
-          <span class="hint">实际读 <code>${escapeHtml(env || '按 provider 推')}</code>
-            · ${r.has_key ? '<b>已配置</b>' : '未配置'}</span>`;
+/* 展开态记在模块级：切走再切回来不该把人打开的行全关上，
+   但也不写进地址——这不是"你在看哪一条"，只是临时视图状态。 */
+const slotOpen = new Set();
+const emptyOpen = new Set();
+
+/* 展开态的细节行。两个按钮留在主行——"检查"是这一页最常用的动作，
+   不该藏两层；这里只补主行为了密度而藏起来的那句长解释。 */
+function slotDetail(r, adapter) {
+  const model = adapter?.models?.find((m) => m.code === r.model);
+  const params = model && model.params && model.params.length
+    ? `<div class="mc-params" style="display:flex;flex-wrap:wrap;gap:4px;align-self:center">
+         ${paramChips(model)}</div>`
+    : adapter && !adapter.params_known
+      ? '<span class="hint">参数未核验，平台不预填</span>'
+      : '<span class="hint">这一档没有可调参数</span>';
+  const keyLine = r.backend === 'cloud'
+    ? `<div class="mc-detail-actions" style="align-items:center;flex-wrap:wrap">
+         <input class="ctl sm mono" style="max-width:260px" data-f="key_env"
+                value="${escapeHtml(r.key_env_custom)}"
+                placeholder="${escapeHtml(r.key_env || 'FV_KEY_<PROVIDER>')}">
+         <span class="hint">实际读 <code>${escapeHtml(r.key_env || '按 provider 推')}</code> ·
+           ${r.has_key ? '<b>已配置</b>' : '未配置'}；值永远只从进程环境读</span></div>`
+    : `<span class="hint">本机运行时不需要密钥；权重目录走
+         <code>${escapeHtml((adapter && adapter.home_env) || 'FASTVIDEO_<CODE>_HOME')}</code></span>`;
+  return `<tr class="mc-detail" data-detail-for="${r.id}">
+    <td colspan="6"><div class="form-grid">
+      <label class="top">清单</label>
+      <span class="hint mc-src">${noteText(adapter, r.provider)}</span>
+      <label>允许参数</label>${params}
+      <label>密钥</label>${keyLine}
+      <label>健康说明</label><div class="mc-detail-actions">
+        <span class="hint">${escapeHtml(r.health.detail || '没有健康检查记录')}</span></div>
+      <label>备注</label><input class="ctl" data-n="notes" value="${escapeHtml(r.notes)}"
+        placeholder="为什么选它、计价出处、哪天核过">
+    </div></td></tr>`;
+}
+
+function slotRow(r, providerLists) {
+  const adapter = adapterOf(cache.manifest, r.capability, r.backend, r.provider);
+  const providerOptions = (providerLists[`${r.capability}|${r.backend}`] || [])
+    .map((a) => `<option value="${escapeHtml(a.code)}">${escapeHtml(a.label)}</option>`).join('');
+  const modelOptions = (adapter?.models || [])
+    .map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.label)}</option>`).join('');
+  const videoCloud = r.capability === 'video' && r.backend === 'cloud';
+  const main = `<tr class="slot"
+      data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
+    <td class="t-strong">${r.capability_label}</td>
+    <td><span class="chip ${r.backend === 'local' ? 'plain' : 'blue'}">${r.backend_label}</span></td>
+    <td><div class="mc-picks">
+        <input class="ctl sm" data-f="provider" list="prov-${r.id}"
+               value="${escapeHtml(r.provider)}" placeholder="provider 标识">
+        <input class="ctl sm" data-f="model" list="model-${r.id}"
+               value="${escapeHtml(r.model)}" placeholder="模型 ID">
+        <datalist id="prov-${r.id}">${providerOptions}</datalist>
+        <datalist id="model-${r.id}">${modelOptions}</datalist>
+      </div></td>
+    <td>${statusCell(r)}</td>
+    <td class="c"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}></td>
+    <td class="c"><input type="radio" name="def-${r.capability}" data-f="default"
+             ${r.is_default ? 'checked' : ''} ${videoCloud ? 'disabled' : ''}
+             ${videoCloud ? 'title="云端视频只能逐镜头显式选择，不能设为默认"' : ''}></td>
+  </tr>`;
+  return main + (slotOpen.has(r.id) ? slotDetail(r, adapter) : '');
+}
+
+/* 没填 provider 的轨折成一行灰字。十行里本机只填了三行，
+   剩下七行不该和已配置的等重——这是这一屏最大的噪声源。 */
+function slotCollapsed(r) {
+  if (emptyOpen.has(r.id)) return slotRow(r, {});
+  const marked = '';
+  return `<tr class="mc-collapsed" data-empty-for="${r.id}">
+    <td class="t-strong">${r.capability_label}</td>
+    <td><span class="chip gray">${r.backend_label}</span></td>
+    <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button>
+      ${marked}</td>
+  </tr>`;
 }
 
 function pageEngines() {
@@ -299,49 +379,15 @@ function pageEngines() {
     (providerLists[`${a.capability}|${a.backend}`] ||= []).push(a);
   });
 
-  const body = cache.providers.map((r) => {
-    const adapter = adapterOf(manifest, r.capability, r.backend, r.provider);
-    const providerOptions = (providerLists[`${r.capability}|${r.backend}`] || [])
-      .map((a) => `<option value="${escapeHtml(a.code)}">${escapeHtml(a.label)}</option>`).join('');
-    const modelOptions = (adapter?.models || [])
-      .map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.label)}</option>`).join('');
-    const videoCloud = r.capability === 'video' && r.backend === 'cloud';
-    /* 六列而不是原来的十列。搬过来的时候旧页两个毛病一起带过来了：
-       Provider／模型两个输入框被压到 80px，实际显示成 "deepse" "d"；
-       验证列里"未达生产可用"自己折成两行。健康与验证都是"这一轨现在算什么状态"，
-       并成一列就不挤了；允许参数与清单出处挪到备注带——那里横跨整表，放得下。 */
-    return `
-    <tr class="slot" data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
-      <td class="t-strong">${r.capability_label}</td>
-      <td><span class="chip ${r.backend === 'local' ? 'plain' : 'blue'}">${r.backend_label}</span></td>
-      <td><div class="mc-picks">
-          <input class="ctl sm" data-f="provider" list="prov-${r.id}"
-                 value="${escapeHtml(r.provider)}" placeholder="provider 标识">
-          <input class="ctl sm" data-f="model" list="model-${r.id}"
-                 value="${escapeHtml(r.model)}" placeholder="模型 ID">
-          <datalist id="prov-${r.id}">${providerOptions}</datalist>
-          <datalist id="model-${r.id}">${modelOptions}</datalist>
-        </div></td>
-      <td class="status-cell">${statusCell(r)}</td>
-      <td class="c"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}></td>
-      <td class="c"><input type="radio" name="def-${r.capability}" data-f="default"
-               ${r.is_default ? 'checked' : ''} ${videoCloud ? 'disabled' : ''}
-               ${videoCloud ? 'title="云端视频只能逐镜头显式选择，不能设为默认"' : ''}></td>
-    </tr>
-    <tr class="slot-note" data-note-for="${r.id}">
-      <td colspan="6">
-        <div class="mc-note-line">
-          <span class="src">${noteText(adapter, r.provider)}</span>
-          <span class="params-cell">${paramsCell(adapter, r.model, r.provider)}</span>
-          <input class="ctl sm" data-n="notes" value="${escapeHtml(r.notes)}"
-                 placeholder="备注：为什么选它、计价出处、哪天核过">
-        </div>
-        <div class="mc-note-line key-line">${keyCell(r)}</div>
-      </td>
-    </tr>`;
-  }).join('');
+  /* 一槽一行；没填 provider 的折成一行灰字，填过的点开才看细节。
+     上一版每槽固定两行、备注带里又塞四层，十槽 20 行往上，
+     一屏看不见四类能力——这是这一屏最大的噪声源。 */
+  const body = cache.providers.map((r) =>
+    (r.provider || slotOpen.has(r.id) || emptyOpen.has(r.id))
+      ? slotRow(r, providerLists) : slotCollapsed(r)).join('');
 
-  // 引擎卡：按 adapter code 去重，一个引擎一张；未接入的两张灰卡不给按钮
+  /* 引擎从 13 张卡收成一张表。13 行数据用"每项一行"的卡片是负资产：
+     整页 4582px，一屏看不见三张卡，比较"哪家参数核过"要靠滚动记忆。 */
   const byCode = {};
   (manifest?.adapters || []).forEach((a) => { (byCode[a.code] ||= []).push(a); });
   const lastCheck = {};
@@ -349,51 +395,45 @@ function pageEngines() {
     const key = v.adapter_code || v.provider;
     if (key && !lastCheck[key]) lastCheck[key] = v.created_at;
   });
-  const engineCards = Object.entries(byCode).map(([code, list]) => `
-    <div class="card">
-      <div class="card-head">
-        <h2>${escapeHtml(list[0].label)}</h2>
-        <span class="sub">${list.map((a) => a.capability).join(' · ')} · ${list.map((a) => a.backend).join(' · ')}</span>
-      </div>
-      <div class="card-body">
-        <div class="form-grid">
-          <span class="pf-label">位置</span>
-          <div>${list.map((a) => `<span class="chip ${a.backend === 'local' ? 'plain' : 'blue'}">${escapeHtml(a.backend)}</span>`).join(' ')}</div>
-          <span class="pf-label">标识</span><div><code>${escapeHtml(code)}</code></div>
-          <span class="pf-label">连接方式</span>
-          <div>${list.map((a) => a.home_env
-              ? `<code>${escapeHtml(a.home_env)}</code>`
-              : (a.key_env ? `<code>${escapeHtml(a.key_env)}</code>（变量名，不是值）` : '—')).join('<br>')}</div>
-          <span class="pf-label">相关模型</span>
-          <div>${list.reduce((n, a) => n + a.models.length, 0)} 档</div>
-          <span class="pf-label">参数核验</span>
-          <div>${list.every((a) => a.params_known)
-              ? '<span class="chip green">已按官方来源核过</span>'
-              : '<span class="chip amber">未核验，平台不预填</span>'}</div>
-          <span class="pf-label">最近检查</span>
-          <div class="hint">${escapeHtml(lastCheck[code] ? String(lastCheck[code]).slice(0, 16) : '没有记录')}</div>
-          <span class="pf-label">出处</span><div class="hint">${escapeHtml(list[0].source)}</div>
-        </div>
-      </div>
-    </div>`).join('');
+  const capLabel = cache.catalog.capabilities;
+  const engineRows = Object.entries(byCode).map(([code, list]) => {
+    const tiers = list.reduce((n, a) => n + a.models.length, 0);
+    const conn = [...new Set(list.map((a) => a.home_env || a.key_env).filter(Boolean))]
+      .map((v) => `<code>${escapeHtml(v)}</code>`).join(' ');
+    const checked = lastCheck[code] ? String(lastCheck[code]).slice(0, 16) : '';
+    return `<tr>
+      <td class="t-strong">${escapeHtml(list[0].label)}
+        <div class="hint mono">${escapeHtml(code)}</div></td>
+      <td>${list.map((a) => `<span class="chip ${a.backend === 'local' ? 'plain' : 'blue'}">${a.backend}</span>`).join(' ')}</td>
+      <td><span class="hint">${[...new Set(list.map((a) => capLabel[a.capability] || a.capability))].join(' · ')}</span></td>
+      <td class="c">${tiers || '<span class="chip amber">只登记名字</span>'}</td>
+      <td>${list.every((a) => a.params_known)
+          ? '<span class="chip green">已核验</span>'
+          : '<span class="chip amber">未核验</span>'}</td>
+      <td><span class="hint">${conn || '—'}</span></td>
+      <td class="t-dim">${escapeHtml(checked || '没有记录')}</td>
+    </tr>`;
+  }).join('');
 
-  const unintegrated = (cache.catalog.unintegrated_engines || []).map((e) => `
-    <div class="card">
-      <div class="card-head"><h2>${escapeHtml(e.label)}</h2>
-        <span class="sub">${escapeHtml(e.kind)}</span>
-        <span class="right"><span class="chip gray">未接入</span></span></div>
-      <div class="card-body"><p class="note" style="margin:0">${escapeHtml(e.note)}</p>
-        <p class="hint" style="margin-top:8px">这一张卡没有「测试连接」按钮：
-          平台里没有它的适配器，按钮点了也不会有真结果。要接它请另开工作包。</p></div>
-    </div>`).join('');
+  /* 未接入行与"能力轨折叠行"必须分两个类名：前者整行没有按钮，
+     后者带一个「去配置」。共用一个类的话，"未接入行没有可点按钮"这条断言
+     会被折叠行里的按钮判成假——上一轮就是这么撞上的。 */
+  const unintegrated = (cache.catalog.unintegrated_engines || []).map((e) => `<tr class="mc-offline">
+    <td class="t-strong">${escapeHtml(e.label)}<div class="hint mono">${escapeHtml(e.code)}</div></td>
+    <td><span class="chip gray">${escapeHtml(e.kind)}</span></td>
+    <td colspan="3"><span class="hint">${escapeHtml(e.note)}</span></td>
+    <td><span class="chip gray">未接入</span></td>
+    <td><span class="hint">没有连接检查：平台里没有它的适配器</span></td>
+  </tr>`).join('');
 
   return `
-  <div class="card" style="margin-bottom:14px">
+  <div class="card" style="margin-bottom:12px">
     <div class="card-head">
       <h2>能力轨</h2>
-      <span class="sub">每类能力两条轨；默认轨走打勾那条，云端视频只能逐镜头另选</span>
+      <span class="sub">默认轨走打勾那条；云端视频只能逐镜头另选</span>
       <span class="right">
         <span class="chip plain" id="save-state" hidden>已保存</span>
+        <button class="btn xs" id="slots-expand">${slotOpen.size ? '全部收起' : '展开全部细节'}</button>
         <button class="btn primary" id="save-providers">保存能力轨</button>
       </span>
     </div>
@@ -407,29 +447,26 @@ function pageEngines() {
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note"><b>怎么配</b>：密钥写进启动脚本或 <code>.env</code> 后重启服务。
-        变量名默认按 provider 拼（<code>volc</code> → <code>FV_KEY_VOLC</code>），
-        DeepSeek 这类已有名字的可以直接填 <code>DEEPSEEK_API_KEY</code>。
-        本地运行时用 <code>FASTVIDEO_&lt;CODE&gt;_HOME</code> 指目录，
-        平台只检查目录与文件在不在，不加载权重。</p>
-      <p class="note"><b>这一张表是默认轨的唯一来源</b>：调用策略页的"建议轨/备用轨"
-        只是提示，真正决定一次提交走哪条路的仍是这里的打勾。本地失败不会自动转云端。</p>
-      <p class="note"><b>验证与健康不是一回事</b>：健康只说环境齐不齐；「验证」列说这一档凭什么被认为真能产出。
-        环境检查不发请求、不加载权重，永远不能替代真实调用；
-        生产可用＝环境齐＋真实调用过＋产物验收通过，由服务端判定。</p>
+      <p class="note" style="margin:0"><b>点「能力」那一格展开细节</b>：清单出处、允许参数、
+        密钥变量名、环境检查与验证记录、备注都在展开里。
+        这一张表是默认轨的唯一来源——调用策略的建议轨与备用轨只是提示，本地失败不会自动转云端。
+        健康与验证也不是一回事：健康只说环境齐不齐，验证说凭什么认为真能产出。</p>
     </div>
   </div>
 
-  <div class="card" style="margin-bottom:14px">
-    <div class="card-body">
-      <p class="note" style="margin:0"><b>下面这些是平台真的接进去的引擎</b>
-        （= 清单 <code>${escapeHtml(cache.catalog.manifest_version || '')}</code> 里登记过的适配器）。
-        最后一排灰卡是<b>本机装了、但平台一行适配代码都没有</b>的应用——
-        它们没有「测试连接」按钮，因为点了也不会有真结果。</p>
+  <div class="card">
+    <div class="card-head"><h2>引擎</h2>
+      <span class="sub">清单里登记过的适配器；最后一排是本机装了但平台未接入的</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>引擎</th><th>位置</th><th>能力</th><th class="c">模型档</th>
+        <th>参数核验</th><th>连接方式（变量名）</th><th>最近检查</th></tr></thead>
+      <tbody>${engineRows}${unintegrated}</tbody>
+    </table></div>
+    <div class="card-body" style="border-top:1px solid var(--line)">
+      <p class="note" style="margin:0"><b>未接入那一排没有「测试连接」按钮</b>：
+        平台里没有它们的适配器，点了也不会有真结果。接 ComfyUI 是独立工作包。</p>
     </div>
-  </div>
-
-  <div class="grid g-2">${engineCards}${unintegrated}</div>`;
+  </div>`;
 }
 
 /* ================= 工作区 2 · 调用策略 ================= */
@@ -605,7 +642,10 @@ const MODALS = `
     <div class="modal-box wide">
       <div class="modal-head neutral" id="mc-detail-title">模型详情</div>
       <div class="modal-body"><div id="mc-detail-body"></div></div>
-      <div class="modal-actions"><button class="btn" data-close="mc-detail">关闭</button></div>
+      <div class="modal-actions">
+        <span id="mc-detail-acts" style="margin-right:auto"></span>
+        <button class="btn" data-close="mc-detail">关闭</button>
+      </div>
     </div>
   </div>
 
@@ -854,27 +894,8 @@ function mountRepo(root) {
     const it = findItem(b.dataset.register);
     if (it) openForm(null, it);
   }));
-  root.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
-    const it = cache.catalog.items.find((i) => String(i.registration_id) === b.dataset.edit);
-    if (it) openForm(it.registration_id, it);
-  }));
-  root.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', async () => {
-    b.disabled = true;
-    const ok = await run('检查', () => api.checkModel(Number(b.dataset.check)));
-    b.disabled = false;
-    if (ok) window.dispatchEvent(new CustomEvent('app:refresh'));
-  }));
-  root.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', async () => {
-    const yes = await confirmDanger({
-      title: '撤登记',
-      body: '这一步只删除这条登记：权重文件仍在盘上，历史作业与验证记录一律不动。'
-            + '要改默认轨请去「引擎管理」的能力轨表。',
-      okText: '撤登记',
-    });
-    if (!yes) return;
-    await run('撤登记', () => api.removeModel(Number(b.dataset.remove)));
-    window.dispatchEvent(new CustomEvent('app:refresh'));
-  }));
+  // 检查／编辑／撤登记三个动作搬进了详情面板底部（见 openDetail），
+  // 行内只留「详情」与「登记」两个入口。
 }
 
 function openDetail(root, it) {
@@ -909,6 +930,44 @@ function openDetail(root, it) {
       <div class="kv"><dt>备注</dt><dd class="t-desc">${escapeHtml(it.note || '无')}</dd></div>
     </div>
     ${params ? `<h3 class="drawer-h">允许参数（来自清单）</h3><div class="kv-grid">${params}</div>` : ''}`;
+
+  /* 动作跟着详情一起进来：这里看得见状态、健康、验证出处与路径，
+     做"撤登记"这种决定比在一排小按钮里点靠谱。
+     每次开面板都重绑——面板是同一个 DOM，但对应的行每次都可能不同。 */
+  const acts = root.querySelector('#mc-detail-acts');
+  if (!it.registration_id) {
+    acts.innerHTML = `<button class="btn" data-act-register="${escapeHtml(`${it.provider}/${it.model_code}`)}">登记这一档</button>`;
+  } else {
+    acts.innerHTML = `
+      <button class="btn" data-act-check="${it.registration_id}">环境检查</button>
+      <button class="btn" data-act-edit="${it.registration_id}">编辑登记</button>
+      <button class="btn danger" data-act-remove="${it.registration_id}">撤登记…</button>`;
+  }
+  const close = () => { root.querySelector('#mc-detail').hidden = true; };
+  acts.querySelector('[data-act-check]')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    const ok = await run('检查', () => api.checkModel(Number(e.target.dataset.actCheck)));
+    e.target.disabled = false;
+    if (ok) { close(); window.dispatchEvent(new CustomEvent('app:refresh')); }
+  });
+  acts.querySelector('[data-act-edit]')?.addEventListener('click', () => {
+    close(); openForm(it.registration_id, it);
+  });
+  acts.querySelector('[data-act-register]')?.addEventListener('click', () => {
+    close(); openForm(null, it);
+  });
+  acts.querySelector('[data-act-remove]')?.addEventListener('click', async () => {
+    const yes = await confirmDanger({
+      title: '撤登记',
+      body: '这一步只删除这条登记：权重文件仍在盘上，历史作业与验证记录一律不动。'
+            + '要改默认轨请去「引擎管理」的能力轨表。',
+      okText: '撤登记',
+    });
+    if (!yes) return;
+    close();
+    await run('撤登记', () => api.removeModel(it.registration_id));
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+  });
   root.querySelector('#mc-detail').hidden = false;
 }
 
@@ -973,11 +1032,41 @@ function openForm(regId, preset) {
   };
 }
 
-/* ================= 工作区 1 交互（能力轨，原样搬自系统设置） ================= */
+/* ================= 工作区 1 交互（能力轨，功能原样搬自系统设置） ================= */
 function mountEngines(root) {
   const saveBtn = root.querySelector('#save-providers');
   const saveStateChip = root.querySelector('#save-state');
   let rowsCache = cache.providers;
+
+  /* 展开/收起。整页重绘是唯一改 DOM 的路子，但会把正在输入的框和光标一起弄丢，
+     所以只在"展开态变了"时重绘；改 provider/model 走下面 refresh() 的局部更新。 */
+  /* 展开/收起要重画整页：这是全站切页与保存后共用的那一条路（app:refresh），
+     不另发明一套局部重绘。代价是此刻若有人正在输入框里打字会被打断——
+     所以只在"展开态变了"时走它，改 provider/model 走下面 refresh() 的局部更新。 */
+  const repaint = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  root.querySelectorAll('tr.slot td:first-child').forEach((td) => {
+    td.style.cursor = 'pointer';
+    td.title = '点开看清单出处、允许参数、密钥与验证动作';
+    td.addEventListener('click', () => {
+      const id = Number(td.closest('tr').dataset.id);
+      slotOpen.has(id) ? slotOpen.delete(id) : slotOpen.add(id);
+      repaint();
+    });
+  });
+  root.querySelectorAll('[data-open-empty]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    emptyOpen.add(Number(b.dataset.openEmpty));
+    slotOpen.add(Number(b.dataset.openEmpty));   // 去配置的人下一步就是要填细节
+    repaint();
+  }));
+  root.querySelector('#slots-expand')?.addEventListener('click', () => {
+    if (slotOpen.size) {
+      slotOpen.clear();
+    } else {
+      cache.providers.filter((r) => r.provider).forEach((r) => slotOpen.add(r.id));
+    }
+    repaint();
+  });
 
   root.querySelectorAll('input[data-f="default"]').forEach((radio) => {
     radio.addEventListener('change', () => {
@@ -991,16 +1080,19 @@ function mountEngines(root) {
       const provider = tr.querySelector('[data-f="provider"]').value;
       const model = tr.querySelector('[data-f="model"]').value;
       const adapter = adapterOf(cache.manifest, tr.dataset.cap, tr.dataset.backend, provider);
-      tr.querySelector('.params-cell').innerHTML = paramsCell(adapter, model, provider);
-      const src = tr.nextElementSibling?.querySelector('.src');
-      if (src) src.innerHTML = noteText(adapter, provider);
       const dl = tr.querySelector(`datalist[id="model-${tr.dataset.id}"]`);
       if (dl) {
         dl.innerHTML = (adapter?.models || [])
           .map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.label)}</option>`).join('');
       }
-      const keyInput = tr.nextElementSibling?.querySelector('[data-f="key_env"]');
-      if (keyInput) keyInput.placeholder = adapter?.key_env || 'FV_KEY_<PROVIDER>';
+      // 展开态才有细节行；没展开就只等下一次重绘
+      const detail = root.querySelector(`tr.mc-detail[data-detail-for="${tr.dataset.id}"]`);
+      if (detail) {
+        detail.querySelector('.mc-src').innerHTML = noteText(adapter, provider);
+        detail.querySelector('.mc-params').innerHTML = paramsCell(adapter, model, provider);
+        const keyInput = detail.querySelector('[data-f="key_env"]');
+        if (keyInput) keyInput.placeholder = adapter?.key_env || 'FV_KEY_<PROVIDER>';
+      }
       // 健康是服务端按"已保存的 provider"算的；这一行还没保存时先别摆旧结论，
       // 否则改完 provider 还亮着"未配置"，看着像输入没生效。
       tr.querySelector('.mc-health').innerHTML =
@@ -1012,17 +1104,22 @@ function mountEngines(root) {
 
   saveBtn.addEventListener('click', async () => {
     const rows = [...root.querySelectorAll('tr.slot')].map((tr) => {
-      // 备注带是这一行的"下一行"：密钥变量名与备注都挪到了那里，
-      // 主表只留六个会互相挤的列
-      const note = root.querySelector(`tr[data-note-for="${tr.dataset.id}"]`);
+      const id = Number(tr.dataset.id);
+      const detail = root.querySelector(`tr.mc-detail[data-detail-for="${id}"]`);
+      // 折起来的行没有细节输入框。这时候必须回读服务端那份原值——
+      // 写死空串等于"把人没展开的行的备注和密钥名悄悄抹掉"，
+      // 而整批保存看起来完全成功，这种数据丢失最难被发现。
+      const saved = rowsCache.find((r) => r.id === id) || {};
       return {
-        id: Number(tr.dataset.id),
+        id,
         provider: tr.querySelector('[data-f="provider"]').value,
         model: tr.querySelector('[data-f="model"]').value,
         enabled: tr.querySelector('[data-f="enabled"]').checked,
         is_default: tr.querySelector('[data-f="default"]').checked,
-        key_env: note?.querySelector('[data-f="key_env"]')?.value || '',
-        notes: note?.querySelector('[data-n="notes"]')?.value || '',
+        key_env: detail
+          ? detail.querySelector('[data-f="key_env"]').value
+          : (saved.key_env_custom ?? saved.key_env ?? ''),
+        notes: detail ? detail.querySelector('[data-n="notes"]').value : (saved.notes ?? ''),
       };
     });
     saveBtn.disabled = true;
