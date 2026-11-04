@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import adapters
 import validations
+from config import ALLOW_MOCK
 from deps import require_permission, require_user
 from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
                     ProviderOut, ProviderUpdate, ValidationIn, ValidationOut)
@@ -88,6 +89,25 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             validation_state=badge, validation_at=at,
             models=[m.as_dict() for m in adapter.models] if adapter else [],
         ))
+    if ALLOW_MOCK:
+        # 演示/自测开关（FASTVIDEO_ALLOW_MOCK=1，生产默认关闭）打开时，给每类能力补一条
+        # 身份写明"不执行模型"的假槽位。为什么非要它进这份清单：这台机器上文本轨被
+        # text_ai_route 强制走云端、云端图像档又没登记计价，于是"提交 → worker 领取 →
+        # 回稿 → 填表 → 保存"这条链在真浏览器里一步都走不通，只能退回 pytest 用假数据代跑。
+        # 它的产物是一段文本，所以拿它当"图像候选"时必然被导入端的格式校验挡下——
+        # 这条纪律也因此能在界面上被看见，而不是只在测试里断言一次。
+        for cap, cap_label in CAPABILITIES.items():
+            out.append(ProviderOptionOut(
+                capability=cap, capability_label=cap_label,
+                backend="local", backend_label=BACKENDS["local"],
+                provider="mock", model=adapters.MOCK_MODEL,
+                adapter_label="假适配器（不执行模型）",
+                health_state="ok",
+                health_detail="演示/自测专用：只在 FASTVIDEO_ALLOW_MOCK=1 时出现，不执行任何命令",
+                models=[{"code": adapters.MOCK_MODEL, "label": "mock-1（假适配器）",
+                         "params": [p.as_dict() for p in adapters.MOCK_PARAMS],
+                         "prices": [], "note": "只按参数睡一会儿，再写一段文本当产物"}],
+            ))
     return out
 
 

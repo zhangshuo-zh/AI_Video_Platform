@@ -10,6 +10,7 @@
 from db import get_conn
 from repositories.content import assets as asset_repo
 from repositories.content import episodes as episode_repo
+from repositories.jobs import jobs as job_repo
 
 
 def _episode(fresh_project, title="第 1 集"):
@@ -186,3 +187,132 @@ def test_改镜头不会改已提交作业的输入快照(as_role, clean_queue, 
     assert after["shot_id"] == created["id"]
     assert after["queued_at"] == before["queued_at"]
 
+
+
+
+# ---------- v0.99（迁移 0034）：镜头引用到"哪一套形态" ----------
+
+def _variant(client, aid, name="雨夜外套", variant_type="outfit"):
+    resp = client.post(f"/api/assets/{aid}/variants",
+                       json={"variant_type": variant_type, "name": name})
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def test_镜头引用形态会自动补上父资产(as_role, fresh_project):
+    """只勾衣服没勾人，是界面上最容易发生的手滑。
+
+    这里选择**补**而不是**拒**：拒了会让人以为"形态不能单独选"，
+    而补上的后果是删除保护、引用计数、资产库那格"关联 N 镜"三处永远一致。
+    悬空的形态引用（父资产不在 asset_ids 里）才是真麻烦——它算得到、看不见。
+    """
+    pid, eid = _episode(fresh_project)
+    c = as_role("editor")
+    aid = _asset(c, pid, "燧人")
+    vid = _variant(c, aid)
+
+    created = _shot(c, eid, summary="燧人穿上外套", asset_ids=[], variant_ids=[vid])
+    assert created["asset_ids"] == [aid]              # 父资产被补进来了
+    assert created["variant_ids"] == [vid]
+    assert created["variant_labels"][str(vid)] == "燧人 · 雨夜外套"
+
+    # 再更新一次，只留形态、资产列表清空：同样要补回来（不能靠前端记得）
+    again = _put(c, created["id"], asset_ids=[], variant_ids=[vid])
+    assert again.status_code == 200, again.text
+    assert again.json()["asset_ids"] == [aid]
+
+
+def test_形态引用不能指到别人的形态(as_role, fresh_project, people):
+    c = as_role("editor")
+    pid_a, eid_a = _episode(fresh_project, "A集")
+    aid = _asset(c, pid_a, "甲角色")
+    vid = _variant(c, aid)
+    pid_b = fresh_project("editor")
+    eid_b = episode_repo.create(pid_b, "B集")["id"]
+    resp = c.post(f"/api/episodes/{eid_b}/shots", json={
+        "summary": "越界引用", "prompt": "", "duration": 5,
+        "asset_ids": [], "variant_ids": [vid]})
+    assert resp.status_code == 422, resp.text
+    assert "形态" in resp.json()["detail"]
+
+
+def test_只留形态时父资产永远被一起写回(as_role, fresh_project):
+    """镜头编辑里"人没了、衣服还挂着"不该存在：服务端一次收敛，不靠前端自觉。"""
+    pid, eid = _episode(fresh_project)
+    c = as_role("editor")
+    aid = _asset(c, pid, "掌灯人")
+    vid = _variant(c, aid, "常服")
+    sid = _shot(c, eid, asset_ids=[aid], variant_ids=[vid])["id"]
+    body = _put(c, sid, asset_ids=[], variant_ids=[vid]).json()
+    assert body["asset_ids"] == [aid] and body["variant_ids"] == [vid]
+    cleared = _put(c, sid, asset_ids=[], variant_ids=[]).json()
+    assert cleared["asset_ids"] == [] and cleared["variant_ids"] == []
+
+
+def test_改形态会让这一镜标成源已变(as_role, fresh_project, clean_queue):
+    """任务书 §11.1「资产变化应正确参与现有源版本判断」里形态那一半。
+
+    反例是"改衣服不用重跑"：换衣服就是换画面依据，旧产物却还挂着已签，
+    成片把它拼进时间线时没人知道这一集里同一个人穿了两套衣服。
+    """
+    from repositories.content import variants as variant_repo
+    from services import job_source_stale
+
+    pid, eid = _episode(fresh_project)
+    c = as_role("editor")
+    aid = _asset(c, pid, "林默")
+    vid = _variant(c, aid, "常服")
+    import worker
+    sid = _shot(c, eid, summary="林默站在门口", asset_ids=[aid], variant_ids=[vid])["id"]
+    job = _submit(c, pid, eid, sid).json()
+    # 跑到成功才有"最新一条成功视频作业"可判——分镜列表那格只认这一条
+    assert worker.run_once(f"w-stale-{job['id']}") == job["id"]
+    assert not job_source_stale(job_repo.get(job["id"])), "刚生的不该就是过期的"
+
+    variant_repo.update(vid, variant_type="outfit", name="常服",
+                        prompt="袖口磨破了", sort_order=0)
+    assert job_source_stale(job_repo.get(job["id"])) is True
+    # 分镜列表那一格也要跟着说"源已变"，两处必须同一个答案
+    rows = c.get(f"/api/episodes/{eid}/shots").json()
+    assert [r["source_stale"] for r in rows if r["id"] == sid] == [True]
+
+
+def test_已提交作业的指纹不随镜头后续修改被改写(as_role, fresh_project, clean_queue):
+    """0034 加的这一列不许回头动历史作业：`source_version` 是提交那一刻冻住的字符串。"""
+    pid, eid = _episode(fresh_project)
+    c = as_role("editor")
+    aid = _asset(c, pid, "燧人")
+    vid = _variant(c, aid, "常服")
+    sid = _shot(c, eid, asset_ids=[aid], variant_ids=[vid])["id"]
+    job_id = _submit(c, pid, eid, sid).json()["id"]
+    before = c.get(f"/api/jobs/{job_id}").json()
+    assert before["source_version"]
+
+    _put(c, sid, summary="改过的内容", asset_ids=[aid], variant_ids=[])
+    after = c.get(f"/api/jobs/{job_id}").json()
+    assert after["source_version"] == before["source_version"]
+
+
+def test_老镜头没有形态列也照常读与判(as_role, fresh_project):
+    """兼容性底线：0034 不回填任何一行，读不到就是空清单。"""
+    import migrate
+    from repositories.content import shots as shot_repo
+
+    pid, eid = _episode(fresh_project)
+    c = as_role("editor")
+    sid = _shot(c, eid, summary="升级前那样的一镜")     # 请求体里根本没有 variant_ids
+    assert sid["variant_ids"] == []
+    assert sid["variant_labels"] == {}
+    # 仓储直接建的一镜（绕过接口，走的是默认 '[]'）也一样读得回来
+    raw = shot_repo.create(eid, "仓储建的", "提示词", 3.0, [])["id"]
+    rows = c.get(f"/api/episodes/{eid}/shots").json()
+    assert {r["id"] for r in rows} >= {sid["id"], raw}
+    assert all(r["variant_ids"] == [] for r in rows)
+    # 迁移可重跑且不会给老行塞出内容来
+    assert migrate.migrate(verbose=False) == 0
+    with get_conn() as conn:
+        # 只数这一集：会话共用的库里别的用例留了形态引用，数全表就是测环境不是测行为
+        n = conn.execute("SELECT COUNT(*) AS n FROM shot "
+                         "WHERE episode_id = ? AND variant_ids <> '[]'",
+                         (eid,)).fetchone()["n"]
+    assert n == 0

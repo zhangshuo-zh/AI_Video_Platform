@@ -10,6 +10,7 @@ import csv
 import hashlib
 import io
 import json
+import sqlite3
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -31,7 +32,7 @@ from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from paths import describe as describe_path
 from paths import listdir_empty, resolve_within
 from repositories.audio import clips
-from repositories.content import assets, shots
+from repositories.content import assets, profiles, shots, variants
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
@@ -100,7 +101,9 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     正文如果直接从磁盘上抹掉，出了事只能去备份里捞。走一次提交，
     工作区干净了、历史里还在，谁想把那一稿找回来都还有路。
     """
-    images = project_repo.asset_images(project_id)
+    # 两份图清单都要收：asset.ref_images 是基础参考图，形态的图存在 asset_variant
+    # 那一列里（0033）。只看前者删项目，形态图会变成没人认领的孤儿文件。
+    images = project_repo.asset_images(project_id) + variants.images_by_project(project_id)
     doc_paths = docs.paths_by_project(project_id)
     # Job 目录在删行之前记下来：行一删就查不到 id，日志与产物会变成孤儿
     job_ids = job_repo.ids_for_project(project_id)
@@ -1466,7 +1469,8 @@ def job_kind(capability: str, execution_mode: str) -> str:
     return f"video_{execution_mode}" if capability == "video" else capability
 
 
-def shot_source_version(shot, loaded_assets: dict | None = None) -> str:
+def shot_source_version(shot, loaded_assets: dict | None = None,
+                        loaded_variants: dict | None = None) -> str:
     """这一镜"源内容"的指纹：内容、提示词、时长、引用资产及资产的版本信息。
 
     为什么不覆盖模型与参数：换模型不改变"这一镜讲什么、引用谁"，那是 Job 参数
@@ -1476,20 +1480,31 @@ def shot_source_version(shot, loaded_assets: dict | None = None) -> str:
     资产那边用 `updated_at`＋一致性提示词＋参考图清单：参考图被换掉、定妆描述被改，
     都会让这一镜的画面依据变掉，旧视频就不该还挂着"已签"。
 
-    `loaded_assets` 是给"一集几十镜一起算"的调用方留的口子（分镜列表、生产前检查）：
-    它们本来就要把这一集的资产读一遍，逐镜再 `assets.get()` 会把一次列表打成
-    几十次回库。传了就只查这一份字典，没传就自己回库——单条作业提交那条路
-    只有几个资产，不值得为它多写一层。
+    0034 起再叠一层**形态**（这一镜用的是哪套衣服）：形态的描述与图同样是画面依据，
+    改了形态而不让旧产物过期，等于承认"改衣服不用重跑"——那正是任务书 §6.3
+    要防的"仅修改服装却意外改变人物身份"里的前半段。
+
+    `loaded_assets`／`loaded_variants` 是给"一集几十镜一起算"的调用方留的口子
+    （分镜列表、生产前检查）：它们本来就要把这一集的资产读一遍，逐镜再 `get()`
+    会把一次列表打成几十次回库。传了就只查这一份字典，没传就自己回库。
     """
     try:
         ids = [int(x) for x in json.loads(shot["asset_ids"] or "[]")]
     except (TypeError, ValueError):
         ids = []
+    try:
+        # 老库读出来的行可能还没有这一列（0034 未跑到的测试夹具）：按空清单处理，
+        # 不抛——指纹要能算，"没有形态引用"本来就是空清单的意思。
+        vids = ([int(x) for x in json.loads(shot["variant_ids"] or "[]")]
+                if "variant_ids" in shot.keys() else [])
+    except (TypeError, ValueError):
+        vids = []
     parts = {
         "summary": shot["summary"],
         "prompt": shot["prompt"],
         "duration": round(float(shot["duration"] or 0), 3),
         "assets": [],
+        "variants": [],
     }
     if ids and loaded_assets is None:
         loaded_assets = assets.get_many(ids)
@@ -1499,6 +1514,16 @@ def shot_source_version(shot, loaded_assets: dict | None = None) -> str:
             "id": asset_id,
             "updated_at": row["updated_at"] if row else "",
             "consistency_prompt": row["consistency_prompt"] if row else "",
+            "ref_images": row["ref_images"] if row else "",
+        })
+    if vids and loaded_variants is None:
+        loaded_variants = variants.get_many(vids)
+    for variant_id in vids:
+        row = (loaded_variants or {}).get(variant_id)
+        parts["variants"].append({
+            "id": variant_id,
+            "updated_at": row["updated_at"] if row else "",
+            "prompt": row["prompt"] if row else "",
             "ref_images": row["ref_images"] if row else "",
         })
     blob = json.dumps(parts, ensure_ascii=False, sort_keys=True)
@@ -1518,15 +1543,19 @@ def shots_view(episode_id: int) -> list[dict]:
     rows = shots.list_by_episode(episode_id)
     latest = job_repo.latest_succeeded_videos_by_shot(episode_id)
     asset_ids: set[int] = set()
+    variant_ids: set[int] = set()
     for row in rows:
         if int(row["id"]) not in latest:
             continue                      # 没有可用视频作业的镜头不判过期，省掉一批资产读
         asset_ids |= shot_asset_ids(row)
+        variant_ids |= shot_variant_ids(row)
     loaded = assets.get_many(sorted(asset_ids)) if asset_ids else {}
+    loaded_variants = variants.get_many(sorted(variant_ids)) if variant_ids else {}
     out = []
     for row in rows:
         job = latest.get(int(row["id"]))
-        stale = bool(job and job_source_stale(job, shot=row, loaded_assets=loaded))
+        stale = bool(job and job_source_stale(
+            job, shot=row, loaded_assets=loaded, loaded_variants=loaded_variants))
         out.append({"shot": row, "source_stale": stale})
     return out
 
@@ -1539,13 +1568,31 @@ def shot_asset_ids(shot) -> set[int]:
         return set()
 
 
-def job_source_stale(job, shot=None, loaded_assets: dict | None = None) -> bool:
+def shot_variant_ids(shot) -> set[int]:
+    """同上，读 `variant_ids`（0034）。列还不存在时当空清单，不抛。"""
+    try:
+        if "variant_ids" not in shot.keys():
+            return set()
+        return {int(x) for x in json.loads(shot["variant_ids"] or "[]")}
+    except (TypeError, ValueError):
+        return set()
+
+
+def job_source_stale(job, shot=None, loaded_assets: dict | None = None,
+                     loaded_variants: dict | None = None) -> bool:
     """这条作业的产物是不是基于**旧版**分镜／资产生的。
 
     没有 `source_version` 的作业（0031 之前落的）一律不判过期：那时候平台确实
     没记过源内容，硬判成过期会把历史作业全打成废纸，也会让已经签过字的片子凭空失效。
 
-    `shot`／`loaded_assets` 是同一次列表里已经在手的行；不传就自己回库（单条检查那条路）。
+    **0034 加形态列之后，旧作业的指纹仍然对不上**——那不是 bug，是事实：
+    那些产物确实是在"镜头没有形态引用"的世界里生的，而这一镜现在指到了某个形态上，
+    画面依据变了。要保住旧产物就得保住它当时的形态引用，而当时没记（记在
+    `source_version` 那个哈希里，反推不出来）。所以这里照实标过期，
+    由人决定重跑还是接受，而不是替平台编一个"应该还是可用的"。
+
+    `shot`／`loaded_assets`／`loaded_variants` 是同一次列表里已经在手的行；
+    不传就自己回库（单条检查那条路）。
     """
     keys = job.keys()
     version = job["source_version"] if "source_version" in keys else ""
@@ -1558,7 +1605,7 @@ def job_source_stale(job, shot=None, loaded_assets: dict | None = None) -> bool:
         shot = shots.get(int(shot_id))
     if shot is None:
         return False
-    return shot_source_version(shot, loaded_assets) != version
+    return shot_source_version(shot, loaded_assets, loaded_variants) != version
 
 
 def submit_job(payload, created_by: int | None) -> dict:
@@ -1566,7 +1613,21 @@ def submit_job(payload, created_by: int | None) -> dict:
 
     三条闸门在这里一次性过完：路线（默认轨或显式槽位）、参数白名单、
     云端视频的人工确认。任何一条不过就抛 JobInvalid，绝不落一条"看起来能跑"的空作业。
+
+    第四条是**幂等复用**，收在这一层而不是只收在 `POST /api/jobs` 里：
+    那条路由查过键（还要查权限、要把 202 改成 200），但资产中心、文档 AI 这些
+    经由本函数建单的路径如果各自再查一遍，就是第四、第五份判断。现在只有一个
+    出处，代价是任何调用方都白拿同一条语义。
     """
+    if payload.idempotency_key:
+        existing = job_repo.by_key(payload.idempotency_key)
+        if existing is not None:
+            # 键撞上了但项目不同＝有人把别人的键拿来用了。不能把那条作业回给他，
+            # 连 id 都不能回——那等于通过幂等键泄露了别的项目的作业号。
+            if existing["project_id"] != payload.project_id:
+                raise JobInvalid("这个幂等键已被别的作业占用")
+            return existing
+
     capability = payload.capability
     mode = payload.execution_mode
     provider = (payload.provider_code or "").strip()
@@ -1627,7 +1688,7 @@ def submit_job(payload, created_by: int | None) -> dict:
         if shot is not None:
             source_version = shot_source_version(shot)
 
-    return job_repo.create({
+    row = {
         "project_id": payload.project_id,
         "episode_id": payload.episode_id,
         "shot_id": payload.shot_id,
@@ -1646,7 +1707,19 @@ def submit_job(payload, created_by: int | None) -> dict:
         "source_version": source_version,
         "created_by": created_by,
         **cost,
-    })
+    }
+    try:
+        return job_repo.create(row)
+    except sqlite3.IntegrityError as exc:
+        # 竞态兜底：同一个幂等键的两条请求同时走到这里，后插入的那条撞
+        # `job.idempotency_key` 的 UNIQUE 约束。撞约束不是故障，是"另一边已经建好了"
+        # ——把那一条读回来当本次结果，用户看到的是同一个作业号，而不是 500。
+        # 没带键时不进这一支：NULL 在 UNIQUE 里互不相等，真撞上了就是别的约束，
+        # 那种情况必须照实抛出去，不能拿"幂等"当遮布。
+        existing = job_repo.by_key(payload.idempotency_key) if payload.idempotency_key else None
+        if existing is None:
+            raise exc
+        return existing
 
 
 def _cost_of(payload, mode: str, created_by: int | None) -> dict:

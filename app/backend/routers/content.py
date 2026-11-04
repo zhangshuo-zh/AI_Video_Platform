@@ -5,20 +5,29 @@
 """
 import json
 import uuid
+from functools import wraps
 from pathlib import Path
 
 from fastapi import (APIRouter, Depends, File, HTTPException, UploadFile,
                      status as http_status)
 
+import asset_studio
 from access import ensure, ensure_asset, ensure_by, is_manager
 from config import FILES_DIR
+from db import transaction
 from deps import require_permission
+from imagetypes import ALLOWED_TYPES, MAX_IMAGE_BYTES, is_heic, looks_like
 
-from models import (AssetCoverIn, AssetIn, AssetOut, AssetShotOut, EpisodeIn, EpisodeOut,
-                    EpisodeStatusIn, ShotIn, ShotOut)
+from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetGenIn, AssetGenOut,
+                    AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut,
+                    AssetIn, AssetOut, AssetProfileIn, AssetProfileOut, AssetShotOut,
+                    EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version, ShotIn,
+                    ShotOut, VariantIn, VariantOut, VariantUpdateIn)
 from paths import listdir_empty, resolve_within
 from repositories.content import assets, episodes, shots
-from services import clean_tags, shots_view
+from repositories.content import profiles as profile_repo
+from repositories.content import variants as variant_repo
+from services import (JobInvalid, NoRoute, clean_tags, shot_variant_ids, shots_view)
 
 router = APIRouter(prefix="/api", tags=["content"])
 
@@ -115,12 +124,84 @@ def _checked_asset_ids(project_id: int, raw: list[int]) -> list[int]:
     return ids
 
 
+def _checked_variant_ids(project_id: int, raw: list[int],
+                         asset_ids: list[int]) -> list[int]:
+    """把镜头引用的形态收敛成一串服务端认可的 id，并**顺带补齐父资产引用**。
+
+    三条纪律：
+    1. 形态必须可见（父资产是本项目的或全局池的）——`variants.usable_ids` 判的就是这个；
+    2. 引了形态就必须引它的父资产。这里不是"拒绝"而是**自动把父资产加进 asset_ids**：
+       只勾"雨夜外套"没勾"掌灯人"的人并非少数，而漏掉父资产会让删除保护、
+       引用计数、资产库那格"关联 N 镜"三处同时看不见这条引用——那是数据损坏，
+       不是用户的错。补上之后两个清单永远一致，界面上也不用多解释一句。
+    3. 去重保序，规则与 `_checked_asset_ids` 一样。
+    """
+    ids: list[int] = []
+    for value in raw:
+        try:
+            variant_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="形态 id 必须是整数") from exc
+        if variant_id <= 0:
+            raise HTTPException(status_code=422, detail="形态 id 必须是正整数")
+        if variant_id not in ids:
+            ids.append(variant_id)
+    if len(ids) > MAX_SHOT_ASSETS:
+        raise HTTPException(status_code=422,
+                            detail=f"一镜最多引用 {MAX_SHOT_ASSETS} 个形态")
+    if ids and variant_repo.usable_ids(project_id, ids) != set(ids):
+        raise HTTPException(
+            status_code=422,
+            detail="引用了不存在、或父资产不属于这个项目也不是全局资产的形态 id")
+    for variant_id in ids:
+        parent = variant_repo.parents_of([variant_id]).get(variant_id)
+        if parent is not None and parent not in asset_ids:
+            asset_ids.append(parent)
+    return ids
+
+
+def _variant_labels(rows: list[dict]) -> dict[int, dict[int, str]]:
+    """一批镜头行 → {shot_id: {形态 id: 「资产名 · 形态名」}}，一次读齐。
+
+    放在服务端而不是让分镜表逐个 id 回查：一集十几镜、每镜两三个形态，
+    浏览器去查就是几十趟请求，而且它还得先知道形态属于哪条资产才拼得出名字。
+    """
+    all_ids: set[int] = set()
+    per_shot: dict[int, list[int]] = {}
+    for row in rows:
+        ids = sorted(shot_variant_ids(row))
+        per_shot[int(row["id"])] = ids
+        all_ids |= set(ids)
+    if not all_ids:
+        return {}
+    got = variant_repo.get_many(sorted(all_ids))
+    owners = assets.get_many({row["asset_id"] for row in got.values()})
+    out: dict[int, dict[int, str]] = {}
+    for shot_id, ids in per_shot.items():
+        labels = {}
+        for variant_id in ids:
+            variant = got.get(variant_id)
+            if variant is None:
+                # 形态被删了但镜头还指着它：标签留 id，界面上看得见"这里断过"，
+                # 比凭空消失一条引用好查（同 `assetChip` 对悬空资产 id 的处理）。
+                labels[variant_id] = f"#{variant_id}（形态已删）"
+                continue
+            owner = owners.get(variant["asset_id"])
+            labels[variant_id] = (f"{owner['name']} · {variant['name']}" if owner
+                                  else f"{variant['name']}")
+        out[shot_id] = labels
+    return out
+
+
 @router.get("/episodes/{episode_id}/shots", response_model=list[ShotOut])
 def list_shots(episode_id: int,
                user=Depends(require_permission("doc:read"))) -> list[ShotOut]:
     ensure_by("episode", episode_id, user, "read", "创作单元")
-    return [ShotOut.from_row(item["shot"], source_stale=item["source_stale"])
-            for item in shots_view(episode_id)]
+    items = shots_view(episode_id)
+    labels = _variant_labels([item["shot"] for item in items])
+    return [ShotOut.from_row(item["shot"], source_stale=item["source_stale"],
+                             variant_labels=labels.get(int(item["shot"]["id"]), {}))
+            for item in items]
 
 
 @router.post("/episodes/{episode_id}/shots", response_model=ShotOut,
@@ -131,10 +212,14 @@ def create_shot(episode_id: int, payload: ShotIn,
     summary = payload.summary.strip()
     if not summary:
         raise HTTPException(status_code=422, detail="镜头描述不能为空")
+    asset_ids = _checked_asset_ids(project["id"], payload.asset_ids)
+    # 顺序有讲究：先收敛形态（它会往 asset_ids 里补父资产），再落库。
+    # 反过来的话"只勾了形态、没勾人"这条引用就进了库，而删除保护看不见它。
+    variant_ids = _checked_variant_ids(project["id"], payload.variant_ids, asset_ids)
     row = shots.create(episode_id, summary, payload.prompt.strip(),
-                       payload.duration,
-                       _checked_asset_ids(project["id"], payload.asset_ids))
-    return ShotOut.from_row(row)
+                       payload.duration, asset_ids, variant_ids)
+    # 回显带形态名字：新建那一行马上就会出现在分镜表里，界面不该先闪一下 #12
+    return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
 
 
 @router.put("/shots/{shot_id}", response_model=ShotOut)
@@ -150,12 +235,13 @@ def update_shot(shot_id: int, payload: ShotIn,
     summary = payload.summary.strip()
     if not summary:
         raise HTTPException(status_code=422, detail="镜头描述不能为空")
+    asset_ids = _checked_asset_ids(project["id"], payload.asset_ids)
+    variant_ids = _checked_variant_ids(project["id"], payload.variant_ids, asset_ids)
     row = shots.update(shot_id, summary, payload.prompt.strip(),
-                       payload.duration,
-                       _checked_asset_ids(project["id"], payload.asset_ids))
+                       payload.duration, asset_ids, variant_ids)
     if row is None:
         raise HTTPException(status_code=404, detail="镜头不存在")
-    return ShotOut.from_row(row)
+    return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
 
 
 
@@ -245,7 +331,9 @@ def update_asset(asset_id: int, payload: AssetIn,
     挪进一个项目等于让其他引用悬空——那是数据损坏，不是"改归属"。
     项目 → 全局是放行的（管理员）：id 不变，原有引用照旧有效。
     """
-    current = ensure_asset(asset_id, user, "write")
+    # 这里要的是**完整行**，不是 `ensure_asset` 那三列：弱版本闸要读 updated_at。
+    # 多花一次 SELECT 比去改那个被九条路由共用的 SELECT 稳（同 `_asset_for` 的理由）。
+    current = _asset_for(asset_id, user, "write")
     if payload.scope == "global" and current["project_id"] is None:
         pass                                   # 本来就是全局，范围没变
     elif payload.scope == "global":
@@ -257,6 +345,18 @@ def update_asset(asset_id: int, payload: AssetIn,
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="名称不能为空")
+    # 弱版本闸：界面带回"我看过的那一版"的令牌。只在这次带了才判
+    # （脚本与别的调用方不带＝行为不变），冲突回 409 而不是覆盖。
+    # 令牌为什么不用 `updated_at` 本身：那一列精度只到**秒**，两人同一秒内先后保存
+    # 时它一模一样，闸就成了摆设。见 `models.asset_version`。
+    seen = (payload.seen_version or "").strip()
+    now = asset_version(current)
+    if seen and seen != now:
+        raise HTTPException(
+            status_code=409,
+            detail="这条资产在你打开之后又被改过（库里这一版是 " + now + "）。"
+                   "这次没有保存，你写的字还在界面上；"
+                   "先刷新对一遍再决定要不要覆盖——确认要顶掉就留空这一格再保存一次")
     target = None if payload.scope == "global" else current["project_id"]
     if assets.exists_name(target, payload.kind, name, exclude_id=asset_id):
         raise HTTPException(status_code=409,
@@ -291,7 +391,16 @@ def asset_shots(asset_id: int,
     """
     ensure_asset(asset_id, user, "read")
     rows = _shots_visible(assets.referencing_shots(asset_id), user)
-    return [AssetShotOut(**{k: r[k] for k in AssetShotOut.model_fields}) for r in rows]
+    # 这一镜用的是这条资产的哪个形态：一次查好再按 shot_id 分桶，
+    # 不在上面那个循环里逐镜回库（引用清单最长可能几十条）。
+    names: dict[int, list[str]] = {}
+    for hit in variant_repo.referencing_shots(asset_id):
+        names.setdefault(int(hit["shot_id"]), []).append(hit["variant_name"])
+    out = []
+    for row in rows:
+        data = {k: row[k] for k in AssetShotOut.model_fields if k != "variant_names"}
+        out.append(AssetShotOut(**data, variant_names=names.get(int(row["shot_id"]), [])))
+    return out
 
 
 @router.delete("/assets/{asset_id}", status_code=http_status.HTTP_204_NO_CONTENT)
@@ -329,26 +438,8 @@ def delete_asset(asset_id: int,
 
 # ---------- 定妆图 ----------
 
-# 只收这三种。扩展名由服务端按类型定，不信客户端给的文件名
-ALLOWED_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
-MAX_IMAGE_BYTES = 20 * 1024 * 1024
-MAGIC = {
-    "image/png": b"\x89PNG\r\n\x1a\n",
-    "image/jpeg": b"\xff\xd8\xff",
-}
-
-
-def _is_heic(content_type: str, head: bytes) -> bool:
-    """iPhone 默认拍 HEIC，浏览器自己也显示不了，提前给人一句人话。"""
-    return content_type in ("image/heic", "image/heif") or b"ftypheic" in head or b"ftypheif" in head
-
-
-def _looks_like(content_type: str, head: bytes) -> bool:
-    """看文件头。content-type 是客户端嘴上说的，文件头才是它到底是什么。"""
-    if content_type == "image/webp":
-        return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
-    magic = MAGIC.get(content_type)
-    return bool(magic) and head.startswith(magic)
+# 类型表与文件头校验住在 imagetypes.py：从生成产物导入资产图那条路要的是反方向
+# （只有字节、没有客户端声明的 content-type），两处各握一份魔数表迟早对不上。
 
 
 @router.post("/assets/{asset_id}/images", response_model=AssetOut)
@@ -363,10 +454,10 @@ async def upload_asset_image(asset_id: int, file: UploadFile = File(...),
     data = await file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="图片不能超过 20MB")
-    if _is_heic(file.content_type, data[:32]):
+    if is_heic(file.content_type, data[:32]):
         raise HTTPException(status_code=415,
                             detail="iPhone 的 HEIC 浏览器显示不了，先转成 JPG 或 PNG 再传")
-    if not _looks_like(file.content_type, data[:12]):
+    if not looks_like(file.content_type, data[:12]):
         raise HTTPException(status_code=415, detail="文件内容和类型对不上")
 
     # 每个资产一个子目录，文件名用随机串：避免覆盖，也不用处理原始文件名里的怪字符
@@ -400,3 +491,204 @@ def delete_asset_image(asset_id: int, path: str,
     if target is not None and target.is_file():
         target.unlink()
     return AssetOut.from_row(row)
+
+
+# ---------- 资产增强：人物档案、命名形态、生成与产物导入（迁移 0033） ----------
+
+def studio_errors(fn):
+    """把 asset_studio 的领域异常换成 HTTP 状态码，映射只写这一处。
+
+    九条新路由各写一份 try/except 的话，第七个拷贝一定会和第一个不一致——
+    同一个错误在两个端点上回不同状态码，是接口最难查的那类漂移。
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except asset_studio.VariantMissing as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except asset_studio.ImportImageRejected as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except (asset_studio.VariantConflict, asset_studio.ImportUnusable) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (asset_studio.AssetGenInvalid, asset_studio.ProfileInvalid,
+                asset_studio.ImportArtifactBad) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # 提交作业那条路的校验异常必须在这一层接住：JobInvalid 一路冒到 FastAPI
+        # 就是 500 + "Internal Server Error"，人看不出是自己哪一步没填对，
+        # 日志里也只剩一条堆栈。它是"输入不成立"，不是"服务器坏了"。
+        except (JobInvalid, NoRoute) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return wrapper
+
+
+def _asset_for(asset_id: int, user, need: str):
+    """过 `access` 那道门，再把**完整行**取回来。
+
+    `ensure_asset` 只 SELECT id/project_id/name——够它自己判归属，不够我们读 `kind`。
+    多取一次行比去改那个函数的 SELECT 更稳：它被九条既有路由共用，加一列等于
+    给那九条各做一次回归。
+    """
+    ensure_asset(asset_id, user, need)
+    row = assets.get(asset_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return row
+
+
+@router.get("/assets/{asset_id}/character-profile", response_model=AssetProfileOut)
+@studio_errors
+def get_character_profile(asset_id: int,
+                          user=Depends(require_permission("asset:read"))) -> AssetProfileOut:
+    row = _asset_for(asset_id, user, "read")
+    if row["kind"] != "character":
+        # 明确说"这类资产没有档案这一层"，而不是回一份空档案让人以为数据丢了
+        raise asset_studio.ProfileInvalid(
+            f"只有人物资产有文字档案；这条是{ASSET_KINDS.get(row['kind'], row['kind'])}")
+    data = profile_repo.get(asset_id)
+    return AssetProfileOut(**data, version=profile_version(data))
+
+
+@router.put("/assets/{asset_id}/character-profile", response_model=AssetProfileOut)
+@studio_errors
+def put_character_profile(asset_id: int, payload: AssetProfileIn,
+                          user=Depends(require_permission("asset:write"))) -> AssetProfileOut:
+    _asset_for(asset_id, user, "write")     # 权限与"这条资产存在"在这一道判
+    # 令牌压的是"档案时间＋档案四段"（见 `models.profile_version`，那里写了为什么
+    # 不含资产时间）。判在路由而不是 `save_profile` 里：save_profile 还被别处复用，
+    # 把它改成"必须带令牌才能调"会连带挡住那些没有编辑界面的调用方。
+    seen = (payload.seen_version or "").strip()
+    current = profile_repo.get(asset_id)
+    if seen and seen != profile_version(current):
+        raise HTTPException(
+            status_code=409,
+            detail="这份人物档案在你打开之后又被改过。这次没有保存，"
+                   "你写的字还在界面上；先刷新把最新的一份读进来对一遍，"
+                   "确认要顶掉就留空这一格再保存一次")
+    out = asset_studio.save_profile(asset_id, payload)
+    return AssetProfileOut(**out, version=profile_version(out))
+
+
+@router.get("/assets/{asset_id}/variants", response_model=list[VariantOut])
+@studio_errors
+def list_variants(asset_id: int,
+                  user=Depends(require_permission("asset:read"))) -> list[VariantOut]:
+    # 可见性从资产继承：只校验"形态 id 查得到"等于任何人都能读别人的形态
+    _asset_for(asset_id, user, "read")
+    return [VariantOut.from_row(row) for row in variant_repo.list_by_asset(asset_id)]
+
+
+@router.post("/assets/{asset_id}/variants", response_model=VariantOut,
+             status_code=http_status.HTTP_201_CREATED)
+@studio_errors
+def create_variant(asset_id: int, payload: VariantIn,
+                   user=Depends(require_permission("asset:write"))) -> VariantOut:
+    asset = _asset_for(asset_id, user, "write")
+    return VariantOut.from_row(asset_studio.create_variant(asset, payload))
+
+
+@router.put("/asset-variants/{variant_id}", response_model=VariantOut)
+@studio_errors
+def update_variant(variant_id: int, payload: VariantUpdateIn,
+                   user=Depends(require_permission("asset:write"))) -> VariantOut:
+    row = variant_repo.get(variant_id)
+    if row is None:
+        raise asset_studio.VariantMissing("形态不存在")
+    ensure_asset(row["asset_id"], user, "write")
+    return VariantOut.from_row(asset_studio.update_variant(variant_id, payload))
+
+
+@router.delete("/asset-variants/{variant_id}", status_code=http_status.HTTP_204_NO_CONTENT)
+@studio_errors
+def delete_variant(variant_id: int,
+                   user=Depends(require_permission("asset:write"))) -> None:
+    row = variant_repo.get(variant_id)
+    if row is None:
+        raise asset_studio.VariantMissing("形态不存在")
+    ensure_asset(row["asset_id"], user, "write")
+    images = asset_studio.delete_variant(variant_id)
+    # 文件在库提交之后再清：事务里只做库内写（db.transaction 的边界），
+    # 反过来"文件没了、记录还在"会在画廊里留下一张打不开的图
+    for rel in images:
+        asset_studio.remove_imported_file(rel)
+
+
+@router.delete("/asset-variants/{variant_id}/images", response_model=VariantOut)
+@studio_errors
+def delete_variant_image(variant_id: int, path: str,
+                         user=Depends(require_permission("asset:write"))) -> VariantOut:
+    """从某个形态的图清单里摘掉一张，并清掉它在 `FILES_DIR` 里的那个文件。
+
+    这一条是本轮补上的**出口**：0033 有 `VariantRepository.remove_image`，
+    但没有任何接口能调它——结果形态的图只能进不能出，导错一张就得删整个形态
+    （连带把别的图也清了）。基础参考图从来都有删除入口，两边不对称就是缺一条路。
+
+    边界与资产删图同一条：`path` 来自调用方，但只有**已经登记在这个形态下**的路径
+    才摘得掉（`remove_image` 判），落盘删除再走 `resolve_within(FILES_DIR, …)`，
+    所以这里既删不掉别人的图，也删不掉目录外的文件。
+    """
+    row = variant_repo.get(variant_id)
+    if row is None:
+        raise asset_studio.VariantMissing("形态不存在")
+    ensure_asset(row["asset_id"], user, "write")
+    with transaction():
+        out, removed = variant_repo.remove_image(variant_id, path)
+    if out is None:
+        raise asset_studio.VariantMissing("形态不存在")
+    if not removed:
+        # 与"删资产的参考图"同一条口径：路径不在这一份清单里就回 404，
+        # 不能回一句"删好了"而实际什么都没动——那是最难查的一种假成功。
+        raise HTTPException(status_code=404, detail="这张图不在该形态下")
+    asset_studio.remove_imported_file(path)
+    return VariantOut.from_row(out)
+
+
+@router.post("/projects/{project_id}/asset-generations", response_model=AssetGenOut,
+             status_code=http_status.HTTP_202_ACCEPTED)
+@studio_errors
+def create_asset_generation(project_id: int, payload: AssetGenIn,
+                            user=Depends(require_permission("job:submit"))) -> AssetGenOut:
+    # 与 POST /api/jobs 同一条门：能读这个项目 + 有 job:submit 才能派活。
+    # 花钱的闸门不在这里，在 submit_job 里的云端确认与清单价格核对。
+    ensure(user, project_id, "read")
+    if payload.target_asset_id is not None:
+        ensure_asset(payload.target_asset_id, user, "read")
+    return AssetGenOut(**asset_studio.submit_generation(project_id, payload, user["id"]))
+
+
+@router.get("/projects/{project_id}/asset-generations", response_model=list[AssetGenOut])
+@studio_errors
+def list_asset_generations(project_id: int, target_asset_id: int | None = None,
+                           limit: int = 12,
+                           user=Depends(require_permission("job:read"))) -> list[AssetGenOut]:
+    """这个项目（可指定某条资产）最近的资产生成作业。
+
+    界面刷新后还要看得见"我刚生成的那批候选"——状态本来就在 job 表里，
+    读回来比在浏览器里攒一份副本诚实。
+    """
+    ensure(user, project_id, "read")
+    rows = asset_studio.recent_generations(
+        project_id, target_asset_id, min(max(int(limit), 1), 50))
+    return [AssetGenOut(**row) for row in rows]
+
+
+@router.get("/projects/{project_id}/asset-generations/{job_id}",
+            response_model=AssetGenPreviewOut)
+@studio_errors
+def get_asset_generation(project_id: int, job_id: int,
+                         user=Depends(require_permission("job:read"))) -> AssetGenPreviewOut:
+    ensure(user, project_id, "read")
+    return AssetGenPreviewOut(**asset_studio.generation_view(project_id, job_id))
+
+
+@router.post("/assets/{asset_id}/generated-images", response_model=AssetImageImportOut)
+@studio_errors
+def import_generated_image(asset_id: int, payload: AssetImageImportIn,
+                           user=Depends(require_permission("asset:write"))
+                           ) -> AssetImageImportOut:
+    asset = _asset_for(asset_id, user, "write")
+    # 一个事务：形态的图清单与资产的 ref_images 都是读-改-写，
+    # BEGIN IMMEDIATE 保证两个人同时存图不会互相覆盖那份 JSON
+    with transaction():
+        out = asset_studio.import_generated_image(asset, payload)
+    return AssetImageImportOut(**out)

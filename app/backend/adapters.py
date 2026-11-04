@@ -99,6 +99,11 @@ class ModelSpec:
         return {"code": self.code, "label": self.label,
                 "params": [p.as_dict() for p in self.params],
                 "prices": [p.as_dict() for p in self.prices],
+                # 这一档能吃什么类型的**输入**，只从已登记的参数表里数出来
+                # （type=="image" 就是它确实收一张图），不按模型名字猜：
+                # "Wan2.2 I2V" 这个名字不足以说明 mflux 那一档也能收参考图——它不能。
+                # 资产中心的图像面板据此老实说"这一档不接收参考图，一致性靠提示词文字"。
+                "image_inputs": [p.name for p in self.params if p.type == "image"],
                 "note": self.note}
 
 

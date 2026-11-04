@@ -1,21 +1,24 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, escapeHtml, run } from '../util.js';
-import { setParam } from '../navstate.js';
+import { setParam, setSub } from '../navstate.js';
 import { closeDetail } from '../router.js';
+import { setStudioTarget, missingOf } from './asset-workspaces.js';
 
 /**
  * 资产详情。由 assets.js 在地址带 `a<id>` 时调起来——它不是一个独立模块，
  * 所以不往 views/index.js 里注册，也不进侧栏。
  *
- * 四条口径：
+ * 五条口径：
  * - 基本信息一次整体提交（PUT），同一个字段不在两处各给一个编辑入口。
  * - 全局资产人人可读，只有管理员可改可删；界面上的按钮按这个显隐，
  *   真正的门在服务端（access.ensure_asset）。
  * - 关联分镜只读＋跳转，不在这里改镜头。
  * - 被引用的资产不给删。这里不藏这个事实：删除弹窗直接把引用数摆出来。
+ * - **这一页全是已保存的正式资料**。生成中的作业与还没导入的候选只**显示**，
+ *   要改设定、要存图，都跳到资产创作那一页——同一个字段不在两个地方各写一次。
  */
-let cache = null;          // 本次渲染拿到的资产与引用清单，mount 里复用，不再跑第二趟
+let cache = null;   // 本次渲染拿到的资产、引用、档案与形态，mount 里复用，不再跑第二趟
 let refs = [];
 
 const split = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
@@ -28,14 +31,40 @@ async function load(id) {
     return { error: err.message || '读不到这条资产', status: err.status };
   }
   let shots = [];
-  try { shots = await api.assetShots(id); } catch { shots = []; }
-  return { asset, shots };
+  let refsError = '';
+  try { shots = await api.assetShots(id); } catch (e) {
+    // 读失败不演成"没有镜头引用它"：那会让人以为这条资产可以放心删
+    refsError = e.message || String(e);
+  }
+  // 人物档案与命名形态是附属信息：读不到不挡住这一页，但原因要说出来
+  let profile = null;
+  let profileError = '';
+  if (asset.kind === 'character') {
+    try { profile = await api.assetProfile(id); } catch (e) { profileError = e.message || String(e); }
+  }
+  let variants = [];
+  let variantsError = '';
+  try { variants = await api.assetVariants(id); } catch (e) { variantsError = e.message || String(e); }
+  // 最近生成记录：刷新后"我刚跑的那两条"还要看得见，读的是 job 表而不是浏览器记忆。
+  // 全局资产的作业仍然属于某个项目，所以按当前项目过滤（换项目看到的是那个项目里
+  // 对这条资产的生成记录，这是事实而不是缺陷）。
+  let gens = [];
+  let gensError = '';
+  if (store.currentId) {
+    try {
+      gens = (await api.assetGenerations(store.currentId, id))
+        .filter((j) => j.target_asset_id === id);
+    } catch (e) { gensError = e.message || String(e); }
+  }
+  return { asset, shots, refsError, profile, profileError, variants, variantsError,
+           gens, gensError };
 }
 
 export async function renderDetail(id) {
   const data = await load(id);
   cache = data;
   refs = data.shots || [];
+  const variants = data.variants || [];
 
   if (data.error) {
     return `
@@ -114,6 +143,60 @@ export async function renderDetail(id) {
             </div>
           </div>
 
+          ${(() => {
+            const miss = missingOf(a, data.profile, variants);
+            return `<div class="card">
+            <div class="card-head"><h2>还缺什么</h2>
+              <span class="sub">${miss.length ? `${miss.length} 项` : '该有都有了'}</span></div>
+            <div class="card-body">
+              ${miss.length ? `<p class="note">${escapeHtml(miss.join('、'))}
+                  还没补上。缺哪一项就去资产创作补哪一项——这里只读，写只在创作那一页。</p>`
+                : '<p class="t-dim">基础资料齐了。齐不等于对：一致性提示词好不好用，'
+                  + '要看下一镜出来的画面，那要跑一次才知道。</p>'}
+            </div>
+          </div>`;
+          })()}
+
+          ${data.profileError ? `<div class="card"><div class="bar bad">
+            人物档案读不到：${escapeHtml(data.profileError)}</div></div>` : ''}
+          ${a.kind === 'character' && !data.profileError ? `
+          <div class="card">
+            <div class="card-head"><h2>人物档案</h2>
+              <span class="sub">${data.profile && data.profile.exists ? '最后改于 ' + escapeHtml(data.profile.updated_at) : '还没写过'}</span>
+              <div class="right"><button class="btn sm" data-goto-studio>去资产创作改</button></div></div>
+            <div class="card-body">
+              ${[['履历', 'biography'], ['性格', 'personality'], ['成长过程', 'growth_arc'],
+                 ['文字设定提示词', 'text_prompt']].map(([label, key]) => `
+                <p class="note"><b>${label}</b><br>
+                  ${escapeHtml((data.profile && data.profile[key]) || '—')}</p>`).join('')}
+              <p class="t-desc">档案与一致性提示词是两回事：这一份讲"这个人是怎么走到今天的"，
+                上面那一格讲"他画出来必须长什么样"。这里只读，改在资产创作。</p>
+            </div>
+          </div>` : ''}
+          ${data.variantsError ? `<div class="card"><div class="bar bad">
+            形态清单读不到：${escapeHtml(data.variantsError)}</div></div>` : ''}
+          ${!data.variantsError ? `
+          <div class="card">
+            <div class="card-head"><h2>命名形态</h2>
+              <span class="sub">${variants.length} 个 · 图跟着形态走</span>
+              <div class="right"><button class="btn sm" data-goto-studio>去资产创作加</button></div></div>
+            <div class="card-body">
+              ${variants.length ? variants.map((v) => `
+                <div class="as-variant">
+                  <div class="as-variant-head"><b>${escapeHtml(v.name)}</b>
+                    <span class="chip plain">${escapeHtml(v.variant_type_label)}</span>
+                    <span class="t-dim">${v.image_count} 图${v.source_job_id ? ` · 来源作业 #${v.source_job_id}` : ''}</span></div>
+                  ${v.prompt ? `<p class="t-desc">${escapeHtml(v.prompt)}</p>` : ''}
+                  ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((ip) => `
+                    <figure class="ad-img"><img src="/files/${ip}" alt="${escapeHtml(v.name)} 的图"
+                      data-preview="/files/${ip}"></figure>`).join('')}</div>`
+                    : '<p class="t-dim">这个形态还没有图。</p>'}
+                </div>`).join('')
+                : '<p class="t-dim">还没有形态。服饰、视角、形态各存各的图，'
+                  + '下游才不会被互相矛盾的服装带跑。</p>'}
+            </div>
+          </div>` : ''}
+
           <div class="card">
             <div class="card-head"><h2>一致性提示词怎么写</h2></div>
             <div class="card-body">
@@ -156,6 +239,33 @@ export async function renderDetail(id) {
           </div>
 
           <div class="card">
+            <div class="card-head"><h2>最近生成记录</h2>
+              <span class="sub">${(data.gens || []).length} 条 · 只读</span>
+              <div class="right"><button class="btn sm" data-goto-studio>去资产创作跑一条</button></div></div>
+            <div class="card-body">
+              ${data.gensError ? `<div class="bar bad">生成记录读不到：${escapeHtml(data.gensError)}</div>` : ''}
+              ${(data.gens || []).length ? (data.gens || []).map((j) => `
+                <div class="ad-ref">
+                  <div>
+                    <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
+                      <span class="chip ${j.status === 'succeeded' ? 'green'
+                          : j.status === 'failed' ? 'red'
+                          : ['queued', 'pending', 'starting', 'running'].includes(j.status)
+                            ? 'blue' : 'amber'}">${escapeHtml(j.status_label || j.status)}</span></div>
+                    <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
+                      (j.execution_mode === 'cloud' ? '云端' : '本地'))}
+                      ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}
+                      ${j.cost_micros ? `· ${escapeHtml(j.currency || '')} 预计 ${(j.cost_micros / 1e6).toFixed(4)}` : ''}
+                      ${j.target_variant_id ? `· 形态 #${j.target_variant_id}` : ''}</p>
+                  </div>
+                  <a class="btn xs" href="#generate/0">生成中心</a>
+                </div>`).join('')
+                : '<p class="t-dim">这个项目里还没有针对它的生成记录。'
+                  + '成功的图像作业产物**不会自动进资产**——要逐张预览后显式存入。</p>'}
+            </div>
+          </div>
+
+          <div class="card">
             <div class="card-head"><h2>被哪些镜头引用</h2>
               <span class="sub">${refs.length} 条 · 只读</span></div>
             <div class="card-body">
@@ -164,11 +274,15 @@ export async function renderDetail(id) {
                   <div>
                     <div class="t-strong">${escapeHtml(s.project_name)}
                       <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span></div>
-                    <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}</p>
+                    <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
+                      ${s.variant_names && s.variant_names.length
+                        ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
                   </div>
                   <button class="btn xs" data-goto-shot="${s.episode_id}">去创作中心</button>
                 </div>`).join('')
                 : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
+              ${cache.refsError ? `<div class="bar bad">引用清单读不到：${escapeHtml(cache.refsError)}
+                ——这一格先别当成"没有引用"，更别照着它决定删不删</div>` : ''}
             </div>
           </div>
         </div>
@@ -209,6 +323,17 @@ export function mountDetail(root, id) {
 
   // 跳创作中心并定位到那一集：只留一个"下一次进去看哪一集"的提示，
   // 不越界去改创作中心的状态
+  // 档案与形态的编辑入口只在资产创作那一页：同一个字段不留两个编辑面
+  root.querySelectorAll('[data-goto-studio]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      // 交棒而不是只切工作区：上一轮这里只把工作区切过去，创作页仍停在人
+      // 上一次留下的草稿上，看起来像"点了没反应"。
+      setStudioTarget(cache.asset.id);
+      setSub('assets', 1);
+      closeDetail('assets');   // 它自己就会重渲染，不再另发一次跳转事件
+    });
+  });
+
   root.querySelectorAll('[data-goto-shot]').forEach((btn) => {
     btn.addEventListener('click', () => {
       setParam('writing', Number(btn.dataset.gotoShot));
@@ -230,6 +355,10 @@ export function mountDetail(root, id) {
       tags: split(root.querySelector('#ad-tags').value),
       aliases: split(root.querySelector('#ad-aliases').value),
       scope: globalEl?.checked ? 'global' : 'project',
+      // 带回"我看过的那一版"的令牌：别人在这期间改过就回 409，不把他写的覆盖掉。
+      // 失败时 run() 把服务端的整句话弹出来，其中就写了"这次没有保存、下一步做什么"，
+      // 而弹窗不关、字段里的字都还在。
+      seen_version: a.version || '',
     }));
     saveBtn.disabled = false;
     if (ok) refresh();

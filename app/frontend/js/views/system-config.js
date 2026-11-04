@@ -3,6 +3,7 @@ import { store } from '../store.js';
 import { bindSubChips, escapeHtml, run, subChipRow, bindModalDismiss } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
 import usersPanel from './system-users.js';
+import { VAL_BADGE } from '../validation.js';
 
 /**
  * 系统设置：两个二级页。
@@ -27,17 +28,9 @@ const HEALTH = {
 };
 
 // P0：验证出处与健康是两件事。健康只回答"环境齐不齐"，验证回答"凭什么认为真能产出"。
-// 这枚标签按可信度从高到低取第一个 ok：目标机 > 产物验收 > 真实调用 > 模拟 > 环境检查。
-// 产物验收比真实调用多一道人眼，所以排更高；环境检查通过永远不能冒充真实调用——
-// 那正是外部评审点名的口径事故。
-const VAL_BADGE = {
-  target_machine: ['green', '目标机已验证'],
-  artifact_review: ['green', '产物验收通过'],
-  real_call: ['green', '真实调用已验证'],
-  mock: ['amber', '仅模拟验证'],
-  env_check: ['blue', '仅环境检查'],
-  never: ['gray', '未验证'],
-};
+// 这枚标签的字典搬到 js/validation.js 了：资产创作页也要给同一个
+// `validation_state` 起名字，两处各写一份迟早会说出不一样的一句话（外观纪律之外，
+// 这是口径纪律）。
 const VAL_KIND_LABEL = {
   env_check: '环境检查', mock: '模拟', real_call: '真实调用',
   target_machine: '目标机基准', artifact_review: '产物验收',

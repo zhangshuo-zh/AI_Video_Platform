@@ -1509,3 +1509,94 @@ td.shot-jobs .t-desc{max-width:180px}
   .season-err{max-width:none}
   .season-stats{grid-template-columns:1fr}
 }
+
+/* ---------- 资产中心增强（v0.98）：创作工作区、形态与候选分诊 ----------
+   只用既有令牌，不留第二套设计系统：颜色一律 var(--…)，宽度用 minmax(0,1fr)
+   而不是固定 px——固定宽度在 380px 上会把整页撑出横向滚动（阶段 C 踩过一次）。 */
+.as-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;
+  align-items:start}
+@media (max-width:1080px){.as-cols{grid-template-columns:minmax(0,1fr)}}
+.card.inner{margin-top:12px;box-shadow:none;background:var(--panel-2)}
+.card.inner .card-head{padding:10px 14px}
+.card.inner .card-head h3{margin:0;font-size:13px;font-weight:600}
+.card.inner .card-body{padding:12px 14px}
+
+.as-track{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:12px;
+  border:1px solid var(--line);border-radius:var(--r-card);background:var(--panel-2)}
+.as-track select{width:100%}
+.as-track p{margin:0;font-size:12px;line-height:1.6;color:var(--ink-3)}
+.as-params{margin-top:10px}
+/* 表单里的解释句要占控件那一列：不给它 grid-column 的话，它会当成第三列
+   把整张网格挤歪（`.ctl` 是 inline-block，混在 card-body 里还会串成一排）。 */
+.form-grid > .pf-hint{grid-column:2;justify-self:start;margin:0;
+  font-size:11.5px;line-height:1.6;color:var(--ink-3)}
+
+.as-cands{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+  gap:12px;margin-top:12px}
+.as-cand{margin:0;border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  overflow:hidden;background:var(--field)}
+.as-cand img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;cursor:zoom-in}
+.as-cand figcaption{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  padding:7px 8px;border-top:1px solid var(--line);font-size:12px}
+.as-cand select{max-width:130px}
+
+.as-variant{padding:10px 0;border-top:1px solid var(--line)}
+.as-variant:first-of-type{border-top:0;padding-top:2px}
+.as-variant-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.as-variant-head b{font-size:13px}
+.as-variant-head .t-dim{font-size:12px}
+
+.as-item{padding:12px 0;border-top:1px solid var(--line)}
+.as-item:first-of-type{border-top:0;padding-top:4px}
+.as-item-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.as-item-head b{font-size:13px}
+.as-item p{margin:5px 0 0;font-size:12.5px;line-height:1.6}
+/* 证据要一眼看出是"原文"而不是模型的转述：左边一道竖线，字号不缩 */
+.as-quote{margin:7px 0 0;padding:6px 10px;border-left:2px solid var(--accent-line);
+  background:var(--field);border-radius:0 var(--r-ctl) var(--r-ctl) 0;
+  font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+.as-quote .t-dim{margin-left:6px;font-size:12px}
+
+/* ---------- 窄屏收口（v0.98 的 380px 实测） ---------- *//* 表单控件的 min-width 默认是 auto：网格轨道按 minmax(0,1fr) 本来能收到 0，
+   可里面的 input/select 有自己的固有宽度（约 20 字符），于是整条轨道被顶住、
+   卡片被撑到 352px，380px 屏上整页横向溢出 50px。
+   这条是全局的：资产详情、创作工作区、形态编辑都靠 .form-grid 排版。 */
+.form-grid input,.form-grid select,.form-grid textarea{min-width:0}
+
+/* 动作行：按钮组在窄屏必须换行，不然最后一个按钮被推出屏幕外 */
+.as-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* 分诊页的两栏：280px 那一栏在窄屏改上下堆叠 */
+@media (max-width:820px){
+  .as-split{grid-template-columns:minmax(0,1fr)!important}
+}
+/* 卡片头右侧那一排筛选 chip：窄屏让它整行换到标题下面，不然五个 chip 排到 623px */
+@media (max-width:900px){
+  .card-head{flex-wrap:wrap}
+  .card-head .right{width:100%;justify-content:flex-start;flex-wrap:wrap}
+}
+
+/* ---------- 资产中心 v0.99：状态条、高级参数与形态选择 ----------
+   只用现成的变量与既有的圆角/字号刻度：这一轮是补流程断点，不是换视觉系统。
+   两套主题靠变量自动跟，日间与夜间都实测过（见《系统使用说明书》验收记录）。 */
+
+/* 页顶"现在能不能干活"那一横条：worker、槽位数量。数据全来自接口，一个都不写死。 */
+.as-status{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;
+  font-size:12.5px;color:var(--ink-2)}
+
+/* 高级参数默认折叠（任务书 §5.2「不要把所有配置细节同时展开」）。
+   summary 用现成的 12px 灰字，和系统设置那页的参数展开保持同一种控件语言。 */
+.as-advanced{margin-top:10px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:8px 10px;background:var(--field)}
+.as-advanced summary{cursor:pointer;font-size:12px;color:var(--ink-2)}
+.as-advanced[open] summary{margin-bottom:8px}
+.as-advanced .as-params{margin-top:2px}
+
+/* 候选网格里的"存进哪儿"下拉：窄屏一行装不下两个控件，让它自己换行且不撑破卡片 */
+.as-cand figcaption select{max-width:100%}
+.as-cand figcaption .btn{white-space:nowrap}
+
+/* 分镜弹窗里的形态块：与资产 chip 同一套层级，只是缩进一格表示"从属于上面那批资产" */
+.variant-pick{margin-top:8px;padding-left:10px;border-left:2px solid var(--line)}
+.variant-pick:empty{display:none}
+.variant-pick .pick-grp{margin-top:2px}

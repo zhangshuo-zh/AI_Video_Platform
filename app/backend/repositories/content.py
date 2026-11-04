@@ -1,6 +1,7 @@
-"""创作单元、分镜、资产的读写。
+"""创作单元、分镜、资产，以及资产的两张附属表（人物档案、命名形态）的读写。
 
-三个实体放在一个文件里，因为它们总是一起被用：进一集 → 看它的镜头 → 镜头引用资产。
+这几个实体放在一个文件里，因为它们总是一起被用：进一集 → 看它的镜头 → 镜头引用资产；
+而档案与形态只在"看这条资产"的时候才出现，离开资产没有独立意义。
 拆三个类没有意义，共用同样的连接与编号规则（序号都在事务里算）。
 """
 import json
@@ -69,23 +70,27 @@ class ShotRepository:
             ).fetchall()
 
     def create(self, episode_id: int, summary: str, prompt: str,
-               duration: float, asset_ids: list[int]) -> sqlite3.Row:
+               duration: float, asset_ids: list[int],
+               variant_ids: list[int] | None = None) -> sqlite3.Row:
         with get_conn() as conn:
             seq = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM shot WHERE episode_id = ?",
                 (episode_id,),
             ).fetchone()["n"]
             cursor = conn.execute(
-                """INSERT INTO shot (episode_id, seq, summary, prompt, duration, asset_ids)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids)),
+                """INSERT INTO shot (episode_id, seq, summary, prompt, duration,
+                                     asset_ids, variant_ids)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids),
+                 json.dumps(variant_ids or [])),
             )
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
 
     def update(self, shot_id: int, summary: str, prompt: str,
-               duration: float, asset_ids: list[int]) -> sqlite3.Row | None:
-        """整体改一镜的四个可编辑字段。
+               duration: float, asset_ids: list[int],
+               variant_ids: list[int] | None = None) -> sqlite3.Row | None:
+        """整体改一镜的四个可编辑字段（0034 起再加形态引用）。
 
         **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
         搬动它等于让"第 3 镜"在别的集里又出现一次；真要挪就删了重建。
@@ -96,10 +101,11 @@ class ShotRepository:
                 return None
             conn.execute(
                 """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?,
-                          revision = revision + 1,
+                          variant_ids = ?, revision = revision + 1,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
-                (summary, prompt, duration, json.dumps(asset_ids), shot_id),
+                (summary, prompt, duration, json.dumps(asset_ids),
+                 json.dumps(variant_ids or []), shot_id),
             )
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
@@ -352,6 +358,282 @@ class AssetRepository:
             ).fetchall()
 
 
+def _images_of(row) -> list[str]:
+    """`ref_images` 那一列的 JSON 文本 → 路径清单。坏数据当空清单，不猜。
+
+    和 v0.96 那条「资产没有参考图」的判空缺陷同一个教训：`"[]"` 是非空字符串，
+    `if not row["ref_images"]` 永远不成立，必须解析之后再看长度。
+    """
+    try:
+        raw = json.loads(row["ref_images"] or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [x for x in raw if isinstance(x, str) and x]
+
+
+class CharacterProfileRepository:
+    """人物的文字档案：履历／性格／成长过程／文字设定提示词。
+
+    一个资产最多一份，主键就是 `asset_id`——多一个自增 id 就多一个"同一人物两份档案"
+    的可能。读不到行回一份空档案：空档案是"还没写"，不是"缺数据"，所以老人物升级后
+    照样打得开，调用方不必为它编一条 404。
+
+    `text_prompt` 与 `asset.consistency_prompt` 必须一直是两列：前者是"让文本模型
+    怎么写这份设定"的输入，后者是"让图像模型画稳定"的输入。合成一列的结果是
+    改一次履历就把定妆图的依据也改了，而这两件事由不同的人在不同的页上做。
+    """
+
+    FIELDS = ("biography", "personality", "growth_arc", "text_prompt")
+
+    def get(self, asset_id: int) -> dict:
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM asset_character_profile WHERE asset_id = ?",
+                               (asset_id,)).fetchone()
+        if row is None:
+            out = {"asset_id": asset_id, "exists": False, "created_at": "", "updated_at": ""}
+            out.update({k: "" for k in self.FIELDS})
+            return out
+        out = {"asset_id": asset_id, "exists": True,
+               "created_at": row["created_at"], "updated_at": row["updated_at"]}
+        out.update({k: row[k] for k in self.FIELDS})
+        return out
+
+    def upsert(self, asset_id: int, *, biography: str, personality: str,
+               growth_arc: str, text_prompt: str) -> dict:
+        """整体提交，和 `PUT /api/assets/{id}` 同一个约定：不留部分更新的口子。
+
+        首次保存建行、之后改行，靠 `ON CONFLICT(asset_id) DO UPDATE`——
+        老人物没有档案行，"先查再决定 INSERT 还是 UPDATE"要读两趟还有竞态。
+        """
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO asset_character_profile
+                       (asset_id, biography, personality, growth_arc, text_prompt)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(asset_id) DO UPDATE SET
+                       biography = excluded.biography,
+                       personality = excluded.personality,
+                       growth_arc = excluded.growth_arc,
+                       text_prompt = excluded.text_prompt,
+                       updated_at = datetime('now','localtime')""",
+                (asset_id, biography, personality, growth_arc, text_prompt))
+            touch(conn, "asset", asset_id)
+        return self.get(asset_id)
+
+
+class VariantRepository:
+    """命名形态：人物的服饰、场景的视角、道具的形态。
+
+    图跟着形态走、不进 `asset.ref_images`，这是这张表存在的唯一理由：把"日常常服"
+    和"受伤状态"混进同一个数组，下游 I2V 会拿互相矛盾的服装当同一组参考图去生——
+    那比没有参考图更糟。基础参考图仍然留在 `asset.ref_images`，旧的生成流程照用。
+    """
+
+    TYPES = ("outfit", "scene_view", "prop_form", "other")
+
+    def list_by_asset(self, asset_id: int) -> list[sqlite3.Row]:
+        with get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM asset_variant WHERE asset_id = ? ORDER BY sort_order, id",
+                (asset_id,)).fetchall()
+
+    def get(self, variant_id: int) -> sqlite3.Row | None:
+        with get_conn() as conn:
+            return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                                (variant_id,)).fetchone()
+
+    def exists_name(self, asset_id: int, variant_type: str, name: str,
+                    exclude_id: int | None = None) -> bool:
+        """同一资产、同一类型下查重。撞名要回人可以改，不自动加序号。"""
+        sql = "SELECT 1 FROM asset_variant WHERE asset_id = ? AND variant_type = ? AND name = ?"
+        params: list = [asset_id, variant_type, name]
+        if exclude_id is not None:
+            sql += " AND id <> ?"
+            params.append(exclude_id)
+        with get_conn() as conn:
+            return conn.execute(sql, params).fetchone() is not None
+
+    def create(self, *, asset_id: int, variant_type: str, name: str, prompt: str = "",
+               source_job_id: int | None = None,
+               sort_order: int | None = None) -> sqlite3.Row:
+        """建一个形态。不给 sort_order 就排到最后——号在同一事务里数，
+        两个人同时建不会拿到同一个号（`episode.seq` 同一条纪律）。"""
+        with get_conn() as conn:
+            if sort_order is None:
+                sort_order = conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM asset_variant "
+                    "WHERE asset_id = ?", (asset_id,)).fetchone()["n"]
+            cur = conn.execute(
+                """INSERT INTO asset_variant
+                       (asset_id, variant_type, name, prompt, source_job_id, sort_order)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (asset_id, variant_type, name, prompt, source_job_id, sort_order))
+            touch(conn, "asset", asset_id)
+            return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                                (cur.lastrowid,)).fetchone()
+
+    def update(self, variant_id: int, *, variant_type: str, name: str, prompt: str,
+               sort_order: int) -> sqlite3.Row | None:
+        """整体改可编辑字段。**不接受 asset_id**：形态挂在哪个资产不是编辑项，
+        改一次就等于把某人的衣服挂到某个场景上，那是搬运不是修改。"""
+        with get_conn() as conn:
+            if conn.execute("SELECT 1 FROM asset_variant WHERE id = ?",
+                            (variant_id,)).fetchone() is None:
+                return None
+            conn.execute(
+                """UPDATE asset_variant SET variant_type = ?, name = ?, prompt = ?,
+                          sort_order = ?, updated_at = datetime('now','localtime')
+                    WHERE id = ?""",
+                (variant_type, name, prompt, sort_order, variant_id))
+            owner = conn.execute("SELECT asset_id FROM asset_variant WHERE id = ?",
+                                 (variant_id,)).fetchone()
+            touch(conn, "asset", owner["asset_id"])
+            return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                                (variant_id,)).fetchone()
+
+    def delete(self, variant_id: int) -> sqlite3.Row | None:
+        """删记录，并把被删的那行还回去。
+
+        调用方要拿它的路径去清磁盘上的图——行先没了就查不到路径，
+        文件会变成没人认领的孤儿（`delete_project_cascade` 踩过一次）。
+        """
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                               (variant_id,)).fetchone()
+            if row is None:
+                return None
+            touch(conn, "asset", row["asset_id"])
+            conn.execute("DELETE FROM asset_variant WHERE id = ?", (variant_id,))
+            return row
+
+    def add_image(self, variant_id: int, relative_path: str,
+                  source_job_id: int | None = None) -> sqlite3.Row | None:
+        """往形态的图清单里追加一张。
+
+        读-改-写在同一个连接里；上层（导入产物的服务函数）套 `transaction()`
+        时这里是 BEGIN IMMEDIATE，两个人同时往同一个形态存图不会互相覆盖那份 JSON。
+        `source_job_id` 用 COALESCE：追加图时可以顺带补来源，也可以不动原来的来源。
+        """
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                               (variant_id,)).fetchone()
+            if row is None:
+                return None
+            images = _images_of(row)
+            images.append(relative_path)
+            conn.execute(
+                """UPDATE asset_variant SET ref_images = ?,
+                          source_job_id = COALESCE(?, source_job_id),
+                          updated_at = datetime('now','localtime') WHERE id = ?""",
+                (json.dumps(images, ensure_ascii=False), source_job_id, variant_id))
+            touch(conn, "asset", row["asset_id"])
+            return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                                (variant_id,)).fetchone()
+
+    def remove_image(self, variant_id: int,
+                     relative_path: str) -> tuple[sqlite3.Row | None, bool]:
+        """摘掉一张图，返回 (形态行, 是否确实删掉了)。路径不在清单里不算失败，
+        但也不许假装删掉了——调用方据此决定要不要删磁盘上那个文件。"""
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                               (variant_id,)).fetchone()
+            if row is None:
+                return None, False
+            images = _images_of(row)
+            if relative_path not in images:
+                return self.get(variant_id), False
+            images.remove(relative_path)
+            conn.execute(
+                """UPDATE asset_variant SET ref_images = ?,
+                          updated_at = datetime('now','localtime') WHERE id = ?""",
+                (json.dumps(images, ensure_ascii=False), variant_id))
+            touch(conn, "asset", row["asset_id"])
+            return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
+                                (variant_id,)).fetchone(), True
+
+    def get_many(self, variant_ids: list[int] | set[int]) -> dict[int, sqlite3.Row]:
+        """一次读回一组形态（指纹与分镜标签都用它），键是 id。
+
+        和 `assets.get_many` 同一条理由：一集几十镜逐个 `get()` 会把一次列表打成
+        几十趟回库。查不到的 id 不出现在结果里——调用方要区分"形态被删了"。
+        """
+        ids = sorted({int(i) for i in variant_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM asset_variant WHERE id IN ({marks})", ids).fetchall()
+        return {int(row["id"]): row for row in rows}
+
+    def usable_ids(self, project_id: int, variant_ids: list[int]) -> set[int]:
+        """这一组形态 id 里，哪些是该项目**可以引用**的：父资产是自有或全局。
+
+        判的是父资产的归属，不是形态自己——形态没有独立的可见性（0033 的纪律）。
+        和 `assets.usable_ids` 一样只回 id：镜头保存时只需要"这组引用成不成立"。
+        """
+        ids = [int(i) for i in variant_ids]
+        if not ids:
+            return set()
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT v.id FROM asset_variant v
+                     JOIN asset a ON a.id = v.asset_id
+                     WHERE v.id IN ({marks})
+                       AND (a.project_id = ? OR a.project_id IS NULL)""",
+                [*ids, project_id],
+            ).fetchall()
+        return {row["id"] for row in rows}
+
+    def parents_of(self, variant_ids: list[int]) -> dict[int, int]:
+        """形态 → 父资产 id。镜头写入口用它把"引用了谁的形态"补进资产引用。"""
+        ids = [int(i) for i in variant_ids]
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, asset_id FROM asset_variant WHERE id IN ({marks})", ids).fetchall()
+        return {row["id"]: row["asset_id"] for row in rows}
+
+    def referencing_shots(self, asset_id: int) -> list[sqlite3.Row]:
+        """哪些镜头把这个资产的**某个形态**指到了分镜上（0034）。
+
+        与 `AssetRepository.referencing_shots` 同一写法：走 `json_each` 而不是 LIKE，
+        键带 shot_id 回去给调用方拼进那份引用清单。这里只查本资产的形态
+        （`v.asset_id = ?`），别的资产的形态不该出现在这条资产的引用清单里。
+        """
+        with get_conn() as conn:
+            return conn.execute(
+                """SELECT s.id AS shot_id, v.name AS variant_name
+                     FROM shot s
+                     JOIN json_each(s.variant_ids) j
+                     JOIN asset_variant v ON v.id = CAST(j.value AS INTEGER)
+                    WHERE json_valid(s.variant_ids) AND v.asset_id = ?
+                    ORDER BY s.id""",
+                (asset_id,),
+            ).fetchall()
+
+    def images_by_project(self, project_id: int) -> list[str]:
+        """这个项目下所有形态的图路径。
+
+        删项目时 `projects.asset_images()` 只看 `asset.ref_images`，不看这里
+        就会把形态图漏成孤儿文件——所以那两个清单必须一起交给清理流程。
+        """
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT v.ref_images FROM asset_variant v
+                     JOIN asset a ON a.id = v.asset_id WHERE a.project_id = ?""",
+                (project_id,)).fetchall()
+        out: list[str] = []
+        for row in rows:
+            out.extend(_images_of(row))
+        return out
+
+
 episodes = EpisodeRepository()
 shots = ShotRepository()
 assets = AssetRepository()
+profiles = CharacterProfileRepository()
+variants = VariantRepository()

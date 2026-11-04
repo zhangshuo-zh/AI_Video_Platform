@@ -27,7 +27,7 @@ from config import COMPOSE_MAX_SHOTS
 from composition import validators
 from models import JOB_STATUSES
 from repositories.audio import clips
-from repositories.content import assets, episodes, shots
+from repositories.content import assets, episodes, shots, variants
 from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
 
@@ -99,7 +99,8 @@ def build(project_id: int, episode_id: int, *,
     # 13 镜一集就是几十趟回库，而"发起合成"是一天点几十次的动作。
     # 读法换了，判定一个字没改（见 `_shot_review` 与 `services.job_source_stale`）。
     # 延迟导入：services 会反过来调本模块（artifact_version 与签字判定在那边）。
-    from services import artifact_version, job_source_stale, shot_asset_ids
+    from services import (artifact_version, job_source_stale, shot_asset_ids,
+                          shot_variant_ids)
 
     if pinned is not None:
         wanted = sorted({int(v) for v in pinned.values() if v})
@@ -111,9 +112,12 @@ def build(project_id: int, episode_id: int, *,
     for sign in reviews.signs_for_jobs(project_id, wanted):
         signs_by_job.setdefault(int(sign["target_id"]), []).append(sign)
     asset_ids: set[int] = set()
+    variant_ids: set[int] = set()
     for shot in shot_rows:
         asset_ids |= shot_asset_ids(shot)
+        variant_ids |= shot_variant_ids(shot)      # 0034：这一镜用的是哪套形态
     loaded_assets = assets.get_many(sorted(asset_ids)) if asset_ids else {}
+    loaded_variants = variants.get_many(sorted(variant_ids)) if variant_ids else {}
 
     for shot in shot_rows:
         shot_id = int(shot["id"])
@@ -138,7 +142,7 @@ def build(project_id: int, episode_id: int, *,
             reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
             continue
         # 镜头行与资产都在手上了：判一次过期不该再回库读同一行、再逐个资产问一遍
-        if job_source_stale(video_job, shot, loaded_assets):
+        if job_source_stale(video_job, shot, loaded_assets, loaded_variants):
             reasons.append(
                 f"第 {shot['seq']} 镜的素材是旧版分镜／资产生成的（源内容已变），"
                 f"要重新生成并重新签字")

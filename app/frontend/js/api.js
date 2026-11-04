@@ -433,4 +433,42 @@ export const api = {
   },
   deleteAssetImage: (id, path) => fetch(
     `/api/assets/${id}/images?path=${encodeURIComponent(path)}`, { method: 'DELETE' }).then(toJson),
+
+  // 资产增强（0033）：人物档案、命名形态、生成与产物导入。
+  // 视图里不散落裸 fetch——同一个接口的错误处理要只有一份。
+  assetProfile: (id) => fetch(`/api/assets/${id}/character-profile`).then(toJson),
+  saveAssetProfile: (id, body) => fetch(`/api/assets/${id}/character-profile`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  assetVariants: (id) => fetch(`/api/assets/${id}/variants`).then(toJson),
+  createAssetVariant: (id, body) => fetch(`/api/assets/${id}/variants`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  updateAssetVariant: (vid, body) => fetch(`/api/asset-variants/${vid}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 204 没有响应体，toJson 已经认这个情况（回 null）
+  deleteAssetVariant: (vid) => fetch(`/api/asset-variants/${vid}`, { method: 'DELETE' }).then(toJson),
+  // 摘掉形态名下的**一张**图（v0.99）。以前只有"删整个形态"这一个出口，
+  // 导错一张就得把其余的图一起扔了——基础参考图有这条删除路，形态也必须要有。
+  deleteAssetVariantImage: (vid, path) => fetch(
+    `/api/asset-variants/${vid}/images?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE' }).then(toJson),
+  assetGenerationSubmit: (pid, body) => fetch(`/api/projects/${pid}/asset-generations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  assetGeneration: (pid, jobId) => fetch(
+    `/api/projects/${pid}/asset-generations/${jobId}`).then(toJson),
+  // 刷新后把"我刚生成的那批"读回来：状态在 job 表里，不在浏览器里攒副本
+  assetGenerations: (pid, assetId) => fetch(`/api/projects/${pid}/asset-generations?`
+    + new URLSearchParams({ ...(assetId ? { target_asset_id: assetId } : {}), limit: 12 }))
+    .then(toJson),
+  assetImportImage: (id, body) => fetch(`/api/assets/${id}/generated-images`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
 };

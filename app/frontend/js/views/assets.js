@@ -1,14 +1,22 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, escapeHtml, run } from '../util.js';
-import { getParam, getSub, setSub } from '../navstate.js';
+import { getParam } from '../navstate.js';
 import { openDetail } from '../router.js';
+import { bindSubChips, subChipRow } from '../util.js';
 import { renderDetail, mountDetail } from './asset-detail.js';
+import studio from './asset-studio.js';
+import triage from './asset-triage.js';
+import { WS_LABELS, setWsIndex, workerChip, wsIndex } from './asset-workspaces.js';
 
 /**
- * 资产中心：角色／场景／道具的东家。
+ * 资产中心：角色／场景／道具的东家，也是三个工作区的调度者。
  *
- * 这一页同时是详情的入口：地址带 `a<id>` 时（#assets/1/a57）把渲染与绑事件
+ * 二级导航（`getSub('assets')`）从 v0.98 起表示**工作区**（资产库／资产创作／文本提取），
+ * 不再是类型；类型降为资产库页内的 chip。理由与创作中心、产线中心一样：
+ * 侧栏高亮和页面看到的必须是同一个值，而"按类型筛"是一个查询条件，不是一层去处。
+ *
+ * 这一页同时是详情的入口：地址带 `a<id>` 时（#assets/0/a57）把渲染与绑事件
  * 整个交给 asset-detail.js。分发放在这里而不是往路由注册表里再塞一个 id，
  * 因为"资产这一层的路由归谁"应该只有一个答案——侧栏高亮、二级标签、
  * 深链格式全都是它的私有细节，多一个注册 id 就多一处要和它们对齐的地方。
@@ -25,13 +33,15 @@ const COMPLETE_LABELS = { '': '全部状态', noimg: '缺参考图', noprompt: '
 
 // 筛选状态放模块级：切分类不清空搜索词（指令 §3.1-B 明写"保留搜索词与其他条件"），
 // 批量操作后整页重画也要还在。和项目中心 v0.57 同一条纪律。
+let kind = '';            // 类型：以前它住在二级导航里，现在只是本页的查询条件
 let keyword = '';
 let scope = 'all';
 let complete = '';
 let sortBy = 'updated';
 let lastError = '';
+let lastList = [];        // 本次渲染拿到的那一批资产：搜索只重画网格，不再回库
 
-const kindCode = () => (KINDS[getSub('assets') ?? 0] || KINDS[0]).code;
+const kindCode = () => kind;
 
 /** 完善状态：缺图／缺提示词。口径只在这里算一次，卡片与统计共用。 */
 function gaps(a) {
@@ -99,10 +109,65 @@ function cardHtml(a) {
     </div>`;
 }
 
+/**
+ * 网格与空态/错误态那一段。抽出来是因为搜索要**只重画这一段**：
+ * 原来每敲一个字都发一次 app:refresh，整页重渲染不但白打一次接口，
+ * 还会把焦点从搜索框上摘走——实际效果是一次只能输入一个字。
+ * 分镜弹窗的资产筛选（writing.js 的 `paintPicker`）早就是这个写法，这里跟上。
+ */
+function gridHtml(shown, total, filtering, canWrite) {
+  if (lastError) {
+    return `<div class="empty" style="padding:26px 20px">
+      <div class="empty-t">读不到资产</div>
+      <p>${escapeHtml(lastError)}</p>
+      <p><button class="btn" data-retry>重试</button></p></div>`;
+  }
+  if (shown.length) return `<div class="asset-grid">${shown.map(cardHtml).join('')}</div>`;
+  return `<div class="empty" style="padding:30px 20px">
+          <div class="empty-t">${filtering ? '没有符合筛选条件的资产' : '还没有资产'}</div>
+          <p>${filtering ? '换个关键词，或把类型／范围／状态调回全部。'
+              : (canWrite ? '点右上角「新建资产」登记第一个角色或场景；也可以从创作中心的正文里抽取候选再确认入库。'
+                          : '等项目里有人登记资产。')}</p>
+          ${filtering ? '<p><button class="btn ghost" data-clear>清除筛选</button></p>' : ''}
+        </div>`;
+}
+
+/** 只更新网格与那一格计数；搜索框、chip、焦点一概不碰。 */
+function paintGrid(root, list) {
+  const shown = sortShown(list);
+  const box = root.querySelector('#asset-grid-box');
+  const canWrite = store.can('asset:write');
+  const filtering = Boolean(keyword.trim() || complete || kindCode() || scope !== 'all');
+  if (box) box.innerHTML = gridHtml(shown, list.length, filtering, canWrite);
+  const count = root.querySelector('#asset-count');
+  if (count) count.textContent = `${shown.length} / ${list.length} 条`;
+  bindCards(root);
+}
+
+function sortShown(list) {
+  return list.filter(matches).sort((x, y) => (sortBy === 'name'
+    ? x.name.localeCompare(y.name, 'zh')
+    : (y.updated_at || '').localeCompare(x.updated_at || '')));
+}
+
+/** 卡片点开的绑定。网格重画后要再来一次，所以单独一条。 */
+function bindCards(root) {
+  root.querySelectorAll('[data-open]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('button') && e.target !== el) return;
+      openDetail('assets', Number(el.dataset.open));
+    });
+  });
+}
+
 export default {
   async render() {
     const detailId = getParam('assets');
     if (detailId) return renderDetail(detailId);
+    // 另外两个工作区各自成页：它们读的是同一批接口，但界面结构完全不同，
+    // 塞进这一张卡片里只会让两边的显隐条件互相打架
+    if (wsIndex() === 1) return studio.render();
+    if (wsIndex() === 2) return triage.render();
 
     const project = store.current;
     if (!project) {
@@ -124,9 +189,8 @@ export default {
       lastError = err.message || '未知错误';
       list = [];
     }
-    const shown = list.filter(matches).sort((x, y) => (sortBy === 'name'
-      ? x.name.localeCompare(y.name, 'zh')
-      : (y.updated_at || '').localeCompare(x.updated_at || '')));
+    const shown = sortShown(list);
+    lastList = list;
     const stats = {
       total: list.length,
       character: list.filter((a) => a.kind === 'character').length,
@@ -140,9 +204,9 @@ export default {
     // 只看关键词就把"场景里没有"说成"还没有资产"，人会以为数据丢了
     const filtering = Boolean(keyword.trim() || complete || kindCode() || scope !== 'all');
 
-    const chips = KINDS.map((k, i) => `
-      <button type="button" class="chip ${((getSub('assets') ?? 0) === i) ? 'blue' : 'plain'}"
-              data-kind="${i}">${k.label}</button>`).join('');
+    const chips = KINDS.map((k) => `
+      <button type="button" class="chip ${kind === k.code ? 'blue' : 'plain'}"
+              data-kind="${escapeHtml(k.code)}">${k.label}</button>`).join('');
     const scopeChips = Object.entries(SCOPE_LABELS).map(([key, label]) => `
       <button type="button" class="chip ${scope === key ? 'blue' : 'plain'}"
               data-scope="${key}">${label}</button>`).join('');
@@ -157,6 +221,7 @@ export default {
         <p>${escapeHtml(project.name)} · 定妆图与一致性提示词只在这里改，镜头只引用</p>
         <div class="right">
           ${canWrite ? '<button class="btn primary" id="btn-new-asset">新建资产</button>' : ''}
+          ${subChipRow(WS_LABELS, wsIndex())}
         </div>
       </div>
 
@@ -166,11 +231,12 @@ export default {
         <span class="t-dim">其中全局 ${stats.global}</span>
         ${stats.incomplete ? `<span class="chip amber">${stats.incomplete} 条待完善</span>`
                            : '<span class="chip green">都已完善</span>'}
+        ${workerChip()}
       </div>
 
       <div class="card">
         <div class="card-head">
-          <h2>资产</h2><span class="sub">${shown.length} / ${list.length} 条</span>
+          <h2>资产</h2><span class="sub" id="asset-count">${shown.length} / ${list.length} 条</span>
           <div class="right"><input id="asset-search" class="ctl sm" placeholder="搜名称、标签、别名、提示词"
                                     style="width:240px" value="${escapeHtml(keyword)}"></div>
         </div>
@@ -184,19 +250,9 @@ export default {
             <option value="name"${sortBy === 'name' ? ' selected' : ''}>名称</option>
           </select>
         </div>
-
-        ${lastError ? `<div class="empty" style="padding:26px 20px">
-          <div class="empty-t">读不到资产</div>
-          <p>${escapeHtml(lastError)}</p>
-          <p><button class="btn" data-retry>重试</button></p></div>`
-        : shown.length ? `<div class="asset-grid">${shown.map(cardHtml).join('')}</div>`
-        : `<div class="empty" style="padding:30px 20px">
-          <div class="empty-t">${filtering ? '没有符合筛选条件的资产' : '还没有资产'}</div>
-          <p>${filtering ? '换个关键词，或把类型／范围／状态调回全部。'
-              : (canWrite ? '点右上角「新建资产」登记第一个角色或场景；也可以从创作中心的正文里抽取候选再确认入库。'
-                          : '等项目里有人登记资产。')}</p>
-          ${filtering ? '<p><button class="btn ghost" data-clear>清除筛选</button></p>' : ''}
-        </div>`}
+        <div class="card-body" id="asset-grid-box">
+          ${gridHtml(shown, list.length, filtering, canWrite)}
+        </div>
       </div>
 
       <div class="modal" id="na-modal" hidden>
@@ -248,6 +304,11 @@ export default {
   mount(root) {
     const detailId = getParam('assets');
     if (detailId) return mountDetail(root, detailId);
+    if (wsIndex() === 1) return studio.mount(root);
+    if (wsIndex() === 2) return triage.mount(root);
+
+    // 工作区切换器（窄屏才可见）：它改的是二级导航，与侧栏同一个值
+    bindSubChips(root, (i) => { setWsIndex(i); });
 
     const toDetail = root.querySelector('#assets-topick');
     toDetail?.addEventListener('click', () => {
@@ -259,21 +320,27 @@ export default {
     const searchEl = root.querySelector('#asset-search');
     const filters = root.querySelector('#asset-filters');
 
-    searchEl?.addEventListener('input', () => { keyword = searchEl.value; refresh(); });
+    searchEl?.addEventListener('input', () => {
+      keyword = searchEl.value;
+      // 只重画网格：搜索词命中的是已经拿到手的那一批，回一次库、重渲染一次整页
+      // 都是白付的钱，而重渲染会把焦点从人正在敲的这一个框上摘走。
+      paintGrid(root, lastList);
+    });
     root.querySelector('#asset-sort')?.addEventListener('change', (e) => {
       sortBy = e.target.value;
-      refresh();
+      paintGrid(root, lastList);
     });
     root.querySelector('[data-retry]')?.addEventListener('click', refresh);
     root.querySelector('[data-clear]')?.addEventListener('click', () => {
       // 清除的是"这一页所有筛选条件"，包括类型与范围——不然按钮名不副实
-      keyword = ''; complete = ''; scope = 'all'; setSub('assets', 0); refresh();
+      keyword = ''; complete = ''; scope = 'all'; kind = ''; refresh();
     });
 
-    // 类型 chip 走 setSub：它同时是侧栏二级标签的状态，两处必须同一个值。
-    // 范围与状态只是本页的查询条件，不进侧栏，所以留在模块变量里。
+    // 类型只是本页的查询条件，不进侧栏：侧栏那一层现在是工作区。
+    // 范围与状态同理，三个都留在模块变量里，切页回来还在。
+    // 这三个要走整页刷新：范围与类型是**服务端**的过滤条件，不是本地筛筛就完事。
     filters?.querySelectorAll('[data-kind]').forEach((el) => {
-      el.addEventListener('click', () => { setSub('assets', Number(el.dataset.kind)); refresh(); });
+      el.addEventListener('click', () => { kind = el.dataset.kind; refresh(); });
     });
     filters?.querySelectorAll('[data-scope]').forEach((el) => {
       el.addEventListener('click', () => { scope = el.dataset.scope; refresh(); });
@@ -283,12 +350,7 @@ export default {
     });
 
     // 卡片：整块可点，标题是真按钮（键盘停得住）。卡内若有别的控件要记得 stopPropagation
-    root.querySelectorAll('[data-open]').forEach((el) => {
-      el.addEventListener('click', (e) => {
-        if (e.target.closest('button') && e.target !== el) return;
-        openDetail('assets', Number(el.dataset.open));
-      });
-    });
+    bindCards(root);
 
     /* ---------- 新建资产（弹窗，先选类型再填字段） ---------- */
     const modal = root.querySelector('#na-modal');
@@ -304,6 +366,7 @@ export default {
       root.querySelector('#na-aliases').value = '';
       const g = root.querySelector('#na-global'); if (g) g.checked = false;
       root.querySelector('#na-kind').value = kindCode() || 'character';
+      // 从"角色"那一栏点新建，默认就该是角色；选"全部"时才退回人物
       modal.hidden = false;
       nameEl.focus();
     });

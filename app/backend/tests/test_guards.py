@@ -61,6 +61,26 @@ ROUTES = [
     ("DELETE", "/api/assets/{a}", None, 404),
     ("POST", "/api/assets/{a}/images", "FILE", 404),
     ("DELETE", "/api/assets/{a}/images?path=x", None, 404),
+    # ---------- 资产增强（0033：人物档案、命名形态、生成与产物导入） ----------
+    # 全部 404：这些接口都挂在"某条资产"下面，看不见那条资产就不该知道它有没有档案。
+    # 形态那两条用 {v}=0（不存在的形态）——先撞"形态不存在"，同样是 404，
+    # "形态存在但父资产不可见"那一档在 test_asset_studio.py 里单独验。
+    ("GET", "/api/assets/{a}/character-profile", None, 404),
+    ("PUT", "/api/assets/{a}/character-profile",
+     {"biography": "越权改档案"}, 404),
+    ("GET", "/api/assets/{a}/variants", None, 404),
+    ("POST", "/api/assets/{a}/variants", {"variant_type": "outfit", "name": "越权形态"}, 404),
+    ("PUT", "/api/asset-variants/{v}",
+     {"variant_type": "outfit", "name": "改名", "prompt": "", "sort_order": 0}, 404),
+    ("DELETE", "/api/asset-variants/{v}", None, 404),
+    # v0.99：形态的图也要有删除出口（0033 只有"删整个形态"，导错一张就得全删）。
+    # 同样先撞"形态不存在"＝404，不因为多了个 query 参数就变成另一套显隐规则。
+    ("DELETE", "/api/asset-variants/{v}/images?path=x", None, 404),
+    ("POST", "/api/projects/{p}/asset-generations",
+     {"operation": "asset_image", "image_prompt": "越权提交"}, 404),
+    ("GET", "/api/projects/{p}/asset-generations", None, 404),
+    ("GET", "/api/projects/{p}/asset-generations/{j}", None, 404),
+    ("POST", "/api/assets/{a}/generated-images", {"job_id": "{j}", "artifact_index": 0}, 404),
     # ---------- 文档（W05：元数据在库、正文在工作区、历史在 Git） ----------
     # 全部 404：文档一定挂项目，别人看不见这个项目时连"这份文档存在"都不该知道。
     # 这里没有 403 的余地——资产才有全局池那档特例（见 access.ensure_asset）。
@@ -242,7 +262,10 @@ def ids(seeded, people):
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
             "d": seeded["document_id"], "c": seeded["commit"],
             "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0,
+            "v": 0,               # 不存在的形态 id：先撞"形态不存在"，也是 404
             "x": 0, "t": 0, "q": 0,
+            "m": 0,               # 不存在的模型登记行：外人先撞权限点，仍是 403
+            "sk": "character_bio",  # 真实场景键：resolve 只要登录就能读，200
             # /files 的整段相对路径（资产目录下一张不存在的图）：
             # 归属判定在文件存在性之前，所以外人拿到的还是 404
             "af": f"{seeded['asset_id']}/not-there.png"}

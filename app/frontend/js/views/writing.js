@@ -1421,6 +1421,10 @@ async function renderShots(tab, subRow) {
         </td>
         <td>${s.asset_ids.length
           ? s.asset_ids.map(assetChip).join(' ')
+            + (s.variant_ids && s.variant_ids.length
+              ? `<div class="t-dim">${escapeHtml(s.variant_ids
+                .map((vid) => (s.variant_labels || {})[vid] || `#${vid}`).join(' · '))}</div>`
+              : '')
           : '<span class="t-dim">—</span>'}</td>
         <td class="num">${s.duration}s</td>
         <td class="shot-jobs">${jobCell(jobsByShot.get(s.id) || [], s.source_stale)}</td>
@@ -1512,7 +1516,10 @@ function shotModalHtml() {
             <div class="shot-pick">
               <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
               <div id="sm-assets" class="asset-pick"></div>
-              <p class="hint" style="text-align:left">只选引用；角色／场景／道具的内容到资产中心改。</p>
+              <div id="sm-variants" class="variant-pick"></div>
+              <p class="hint" style="text-align:left">只选引用；角色／场景／道具的内容到资产中心改。
+                选中的是**哪一套形态**（0034）会记在这一镜上：换衣服不用另建一个人，
+                而旧素材会不会因此过期，分镜表那格「源已变」会告诉你。</p>
             </div>
           </div>
           <p class="modal-err" id="sm-error"></p>
@@ -1633,13 +1640,92 @@ function mountShots(root) {
           if (shotEdit.selected.has(id)) shotEdit.selected.delete(id);
           else shotEdit.selected.add(id);
           paintPicker();
+          paintVariants();     // 刚点的那个人有没有形态，要立刻在这一格里回答
         });
       });
       box.querySelectorAll('[data-unpick]').forEach((btn) => {
         btn.addEventListener('click', () => {
           shotEdit.selected.delete(Number(btn.dataset.unpick));
           paintPicker();
+          paintVariants();
         });
+      });
+    };
+
+    /**
+     * 形态选择（0034）。只有**已选中的资产**才有形态可挑，
+     * 所以形态清单是点开后按需拉的：一镜通常两三个引用，那就是两三个请求，
+     * 而不是把项目里每条资产的形态都读回来。
+     * 缓存挂在 shotEdit 上（弹窗一次生命周期），不模块级常驻——
+     * 形态在资产中心随时会被改名或删掉，跨次打开还拿旧缓存就会显示过期的名字。
+     */
+    const paintVariants = async () => {
+      const box = root.querySelector('#sm-variants');
+      if (!box || !shotEdit) return;
+      const chars = [...shotEdit.selected]
+        .map((id) => (shotCache.assets || []).find((a) => a.id === id))
+        .filter((a) => a && a.kind === 'character');
+      if (!chars.length) {
+        box.innerHTML = '';
+        return;
+      }
+      for (const a of chars) {
+        if (!shotEdit.variants[a.id]) {
+          try {
+            shotEdit.variants[a.id] = await api.assetVariants(a.id);
+          } catch (e) {
+            shotEdit.variants[a.id] = null;      // 读失败要在界面上说出来，不能当"没有形态"
+            shotEdit.variantError = shotEdit.variantError || {};
+            shotEdit.variantError[a.id] = e.message || String(e);
+          }
+        }
+      }
+      // 父资产被取消引用了，它名下的形态选择跟着清掉：留着就出现
+      // "镜头引了形态却没引这个资产"那种删除保护看不见的引用
+      const owners = new Set(chars.map((a) => a.id));
+      const all = [];
+      chars.forEach((a) => (shotEdit.variants[a.id] || []).forEach((v) => all.push(v)));
+      [...shotEdit.sel].forEach((vid) => {
+        const hit = all.find((v) => v.id === vid);
+        if (!hit || !owners.has(hit.asset_id)) shotEdit.sel.delete(vid);
+      });
+      box.innerHTML = chars.map((a) => {
+        const list = shotEdit.variants[a.id];
+        if (list === null) {
+          return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
+            <span class="t-desc">读不到：${escapeHtml(shotEdit.variantError?.[a.id] || '未知错误')}</span></div>`;
+        }
+        if (!list.length) {
+          return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
+            <span class="t-desc">这条人物还没有形态；到资产中心「资产创作」加一套衣服再回来。</span></div>`;
+        }
+        const chips = list.map((v) => `<button type="button" class="chip ${shotEdit.sel.has(v.id) ? 'blue' : 'plain'}"
+            data-pick-variant="${v.id}" title="${escapeHtml(v.prompt || '')}">
+            ${escapeHtml(v.name)}</button>`).join('');
+        return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
+          <div class="pick-row">${chips}</div></div>`;
+      }).join('') + (shotEdit.sel.size ? `
+        <div class="as-actions" style="margin-top:6px">
+          <button type="button" class="btn xs" data-merge-variant-prompt
+            title="把选中形态的提示词并进这一镜的提示词；并进的是文本，你还能改">
+            把形态描述并进提示词</button>
+          <span class="t-dim">已选 ${shotEdit.sel.size} 个形态</span>
+        </div>` : '');
+      box.querySelectorAll('[data-pick-variant]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = Number(btn.dataset.pickVariant);
+          if (shotEdit.sel.has(id)) shotEdit.sel.delete(id);
+          else shotEdit.sel.add(id);
+          paintVariants();
+        });
+      });
+      box.querySelector('[data-merge-variant-prompt]')?.addEventListener('click', () => {
+        const el = root.querySelector('#sm-prompt');
+        const lines = all.filter((v) => shotEdit.sel.has(v.id) && v.prompt)
+          .map((v) => `${v.name}：${v.prompt}`);
+        if (!lines.length) { el.focus(); return; }
+        const cur = el.value.trim();
+        el.value = [cur, ...lines].filter(Boolean).join('；');
       });
     };
 
@@ -1653,6 +1739,8 @@ function mountShots(root) {
       shotEdit = {
         id: shot ? shot.id : null,
         selected: new Set(shot ? shot.asset_ids : []),
+        sel: new Set(shot ? shot.variant_ids : []),
+        variants: {}, variantError: {},
         query: '',
       };
       root.querySelector('#shot-modal-title').textContent = shot
@@ -1665,6 +1753,7 @@ function mountShots(root) {
       qEl.oninput = () => { if (shotEdit) { shotEdit.query = qEl.value; paintPicker(); } };
       root.querySelector('#sm-error').textContent = '';
       paintPicker();
+      paintVariants();
       shotModal.hidden = false;
       root.querySelector('#sm-summary').focus();
     };
@@ -1684,6 +1773,8 @@ function mountShots(root) {
         prompt: root.querySelector('#sm-prompt').value.trim(),
         duration,
         asset_ids: [...shotEdit.selected],
+        // 服务端会保证父资产也在 asset_ids 里（只勾形态没勾人的那种手滑由它补上）
+        variant_ids: [...shotEdit.sel],
       };
       const saveBtn = root.querySelector('#sm-save');
       saveBtn.disabled = true;
@@ -1744,10 +1835,12 @@ function mountShots(root) {
     /* ---------- 资产引用：只读 chip，点它去资产详情 ---------- */
     root.querySelectorAll('[data-goto-asset]').forEach((chip) => {
       chip.addEventListener('click', () => {
+        // 这里曾经写的是 `setSub('assets', {character:1, scene:2, prop:3})`——
+        // 那是 v0.97 之前"二级导航＝类型"的写法。v0.98 起这一层是**工作区**
+        // （0 资产库／1 资产创作／2 文本提取），同一份下标两种含义的结果是：
+        // 点角色跳到资产创作、点道具被钳到文本提取，而人只想看这条资产是谁。
         const id = Number(chip.dataset.gotoAsset);
-        const asset = shotCache.assets.find((a) => a.id === id);
-        const sub = { character: 1, scene: 2, prop: 3 }[asset?.kind] ?? 0;
-        setSub('assets', sub);
+        setSub('assets', 0);
         setParam('assets', id);
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'assets' }));
       });
