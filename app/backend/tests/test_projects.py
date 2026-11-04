@@ -147,3 +147,107 @@ def test_未知项目状态筛选直接报错而不是列出全部(people):
     with pytest.raises(ValueError) as bad:
         prepo.list_visible(uid, False, "archved")     # 少一个 r
     assert "archved" in str(bad.value)
+
+
+# ---------- 协作人到底能做到哪一档（2026-11-04 恢复成员可写）----------
+# 为什么单独有一组：`access.ensure` 上一轮为了"未知级别不许默认放行"，
+# 把判据写成 `need != "read"` 就拒——顺手把 write 一起关在门外。
+# 结果协作人（成员）建不了集、登不了资产、改不动项目名，而 §1.3、§4 与
+# projects.js 的注释都还写着"成员能读能改"。三处口径各自说话，
+# 只有把每一条都钉成断言，下一次改这里才会被撞住。
+
+def _mate_in_project(app, people, as_role) -> tuple:
+    """editor 名下一个项目 ＋ 一个加进来的协作人（也是 editor）。"""
+    pid = _owned_editor(app, people)
+    mate = _mate()
+    assert as_role("editor").post(f"/api/projects/{pid}/members",
+                                  json={"user_id": mate}).status_code == 200
+    return pid, mate, _as(mate)
+
+
+def test_协作人能改项目能建集能登记资产(app, people, as_role):
+    """write 这一档是成员的正经工作范围——这是本轮要恢复的行为。"""
+    pid, mate, mc = _mate_in_project(app, people, as_role)
+
+    r = mc.put(f"/api/projects/{pid}",
+               json={"name": "协作人改的名", "description": "改过的介绍", "tags": []})
+    assert r.status_code == 200, f"协作人改项目名被拒：{r.status_code} {r.text}"
+
+    r2 = mc.post(f"/api/projects/{pid}/episodes", json={"title": "协作人建的集"})
+    assert r2.status_code == 201, f"协作人建一集被拒：{r2.status_code} {r2.text}"
+
+    r3 = mc.post(f"/api/projects/{pid}/assets",
+                 json={"kind": "character", "name": "协作人登的角色"})
+    assert r3.status_code == 201, f"协作人登记资产被拒：{r3.status_code} {r3.text}"
+
+    # 真写进去了才算数：只回 2xx 不查库，等于信了响应码
+    with get_conn() as conn:
+        assert conn.execute("SELECT name FROM project WHERE id=?", (pid,)).fetchone()["name"] \
+            == "协作人改的名"
+        assert conn.execute("SELECT COUNT(*) AS n FROM episode WHERE project_id=?",
+                            (pid,)).fetchone()["n"] == 1
+        assert conn.execute("SELECT COUNT(*) AS n FROM asset WHERE project_id=?",
+                            (pid,)).fetchone()["n"] == 1
+
+
+def test_协作人管不了成员也归档不了(app, people, as_role):
+    """放行了 write，另三档必须照旧拦着——否则这条修复就成了放水。"""
+    pid, mate, mc = _mate_in_project(app, people, as_role)
+
+    r = mc.post(f"/api/projects/{pid}/members", json={"user_id": people["viewer"]["id"]})
+    assert r.status_code == 403, f"协作人不该能加人，实得 {r.status_code}"
+    assert "管理协作人" in r.json()["detail"], r.json()
+
+    r2 = mc.request("PATCH", f"/api/projects/{pid}/status", json={"status": "archived"})
+    assert r2.status_code == 403 and "归档" in r2.json()["detail"], r2.json()
+
+
+def test_删项目只给管理员连所有人自己也要权限点(app, people, as_role):
+    """这是本轮顺手钉住的一条真口径：`project:delete` 只授给 admin 角色（0002），
+    所以 editor 即使是他自己名下的项目也删不掉——《使用说明书》§4 那句
+    「永久删除：所有人／管理员」原来写宽了。"""
+    pid = _owned_editor(app, people)
+    name = as_role("editor").get("/api/projects").json()
+    row = [p for p in name if p["id"] == pid][0]
+
+    r = as_role("editor").request("DELETE", f"/api/projects/{pid}",
+                                  params={"confirm": row["name"]})
+    assert r.status_code == 403, f"没有 project:delete 的所有人不该删得动，实得 {r.status_code}"
+
+    admin = as_role("admin")
+    r2 = admin.request("DELETE", f"/api/projects/{pid}", params={"confirm": row["name"]})
+    assert r2.status_code == 204, f"管理员删自己够得着的项目该成：{r2.status_code} {r2.text}"
+
+
+def test_只读账号加进成员也写不了(app, people, as_role):
+    """成员名单不赋权：全局权限点先拦，写这条路对只读始终是关的。"""
+    pid = _owned_editor(app, people)
+    viewer = people["viewer"]["id"]
+    as_role("editor").post(f"/api/projects/{pid}/members", json={"user_id": viewer})
+    vc = _as(viewer)
+    assert vc.get("/api/projects").status_code == 200        # 读没问题
+    r = vc.post(f"/api/projects/{pid}/episodes", json={"title": "只读想建集"})
+    assert r.status_code == 403, f"只读成员不该能建集，实得 {r.status_code}"
+
+
+def test_无关人员照样是看不见而不是看得见改不动(app, people, as_role):
+    """放行 write 不能顺手把外人变进来：不是成员就是 404，不是 403。"""
+    pid = _owned_editor(app, people)
+    oc = as_role("outsider")
+    assert pid not in [p["id"] for p in oc.get("/api/projects").json()], "外人列表里不该有它"
+    r = oc.post(f"/api/projects/{pid}/episodes", json={"title": "外人想建集"})
+    assert r.status_code == 404, f"外人该吃 404（藏起来），实得 {r.status_code}"
+
+
+def test_权限档位没有漏表白的(app):
+    """`NEEDS` 里每一档都必须在「成员可做」或「只归所有人」里有一句话。
+
+    上一轮的错就是这么埋的：加了 own 那一档、又把默认从放行改成拒绝，
+    结果 write 被顺手拒掉而没人被测试撞醒。这条不测行为，测"有没有人漏表态"。
+    """
+    import access
+
+    for need in access.NEEDS:
+        assert need in access._MEMBER_OK or need in access._OWNER_ONLY, \
+            f"{need} 既没进成员白名单也没写进只归所有人的原因表"
+    assert set(access._OWNER_ONLY) == {"own", "delete", "manage"}

@@ -53,6 +53,15 @@ _OWNER_ONLY = {
 # 权限判定里最坏的一种失败方式，错一个字母就少一道门
 NEEDS = ("read", "write", "own", "delete", "manage")
 
+# 协作人（项目成员）能做到哪一档：**白名单**，不是"除了 own/delete/manage 都行"。
+# 2026-11-04 修一件事：上一轮把"未知级别不默认放行"改成 `need != "read"` 就拒，
+# 顺手把 write 一起关在门外——协作人从此建不了集、登不了资产、改不动项目名，
+# 而 §1.3、§4 与 `projects.js` 的注释都还写着"成员能读能改"。三处口径对不上，
+# 以这一行为准：**读与写归成员，own／delete／manage 归所有人**。
+# 将来新加一档，既要登记进 NEEDS，也要在这里或 _OWNER_ONLY 里表态；
+# 两处都没表态的一律按拒处理（宁可少给一个动作，不少一道门）。
+_MEMBER_OK = ("read", "write")
+
 
 def ensure(user, project_id: int, need: str = "read"):
     """need：read 看 / write 改 / own 归档与恢复 / delete 删项目 / manage 管协作人。
@@ -75,9 +84,10 @@ def ensure(user, project_id: int, need: str = "read"):
 
     if member is None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if need != "read":
+    if need not in _MEMBER_OK:
         # 成员能读能改；own／delete／manage 三档都归所有人。
-        # 这里不再用 "need in _OWNER_ONLY" 判断：那样新加一档忘了登记就会静默放行
+        # 归档会改变别人眼前看到的是哪部剧，删与管人更是——所以这三档不放行，
+        # 而拦下来时用的是 _OWNER_ONLY 里那三句各说各的话，不是含糊的一句"没权限"
         raise HTTPException(status_code=403,
                             detail=_OWNER_ONLY.get(need, "只有项目所有人能做这件事"))
     return row
