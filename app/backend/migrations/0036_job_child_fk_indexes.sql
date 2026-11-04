@@ -1,0 +1,44 @@
+-- 0036：给"删一行作业"补上三条子表外键索引
+--
+-- 0033 当时明确写过一句"没顺手加 (source_job_id)：反查这次生成分散到了哪些形态是排障
+-- 动作，不是热路径"。那句判断只对**读**成立，漏了外键的另一半：
+--   `asset_variant.source_job_id`、`audio_clip.job_id`、`model_validation.job_id`
+--   三列都是 `REFERENCES job(id)`。db.py 每条连接都开 `PRAGMA foreign_keys=ON`，
+--   于是删**一行** job 之前，SQLite 必须先在每张子表里找到该置 NULL（或该级联掉）的
+--   子行。子表那侧没有索引时，这个查找是**整表扫**。
+--
+-- 于是"删一个项目"的账变成两段：项目 → 作业（`ON DELETE CASCADE`）→
+-- 每条作业再把几张子表各扫一遍。
+--
+-- 实测口径（这次是两次独立进程，**只差这三条索引**，不是同进程里"改前/改后"：
+-- 第一版就是那么量的，同一份库先删一次再建索引再删一次，页缓存与语句缓存把差
+-- 抹成了负数——66ms 变 156ms，照那个数写注释等于写反话）：
+--   同一份合成库：2400 行作业；子表 asset_variant 2000／audio_clip 3000／
+--   model_validation 400／extraction_run 200，合计 5600 行；删 1—2000 号作业，回滚。
+--   无索引：522.7 ms、528.6 ms（连跑两轮，稳定在 0.52s 上下）
+--   有索引： 71.0 ms、121.7 ms（第二轮偏高是页分配与缓存噪声，且已远低于无索引档）
+-- 机制上成立的是这一句：**每删一行作业要扫一遍 5600 行子表 → 变成每删一行做三次索引查找**。
+-- 毫秒只当参考，本机笔记本有调度噪声，不写成"提速 X%"。
+--
+-- 为什么现在才动手：删项目与删集都在写事务里跑（`delete_project_cascade`、
+-- `delete_episode_cascade`），半秒级的持锁时间对局域网 2—5 人就是"别人提交作业时
+-- 卡在 database is locked"。这一条不改任何业务语义，只做 DDL。
+--
+-- 谁没进来（写出来，别让下一个人以为漏了）：
+--   `extraction_run.job_id` 看着也缺，但它那一列是 `NOT NULL UNIQUE`（0017），
+--     SQLite 自己有一条唯一索引接住级联查找，再建一条只是重复；
+--   `worker_node.current_job_id` 也是 job 的子列，但一台 worker 一行（个位数行），
+--     整表扫的成本就是零；
+--   `job.retry_of_job_id`／`job.superseded_by_job_id`／`composition.job_id`／
+--     `pipeline_node_run.job_id` 早各有索引（0015／0020／0027／0028），本轮一个字没动。
+--
+-- 写代价：这三张表各多一条单列整数索引，每次 INSERT 多维护一棵 B 树。三张表都是
+-- "一条作业至多一行子行"的量级，与 0032 那条同一档判断。全部 `IF NOT EXISTS`，
+-- 重复执行不报错（跟 0033 的写法一致）。
+--
+-- 守卫：`tests/test_schema.py` 会把库里所有 `REFERENCES job(id)` 的子列数出来，
+-- 逐条问"有没有一条索引以它打头"，豁免名单只有 worker_node 且要写明理由。
+-- 下次再开一张挂作业的子表而忘了索引，测试当场红，不用等到有人在生产上删项目才发现卡。
+CREATE INDEX IF NOT EXISTS idx_asset_variant_job ON asset_variant(source_job_id);
+CREATE INDEX IF NOT EXISTS idx_audio_clip_job ON audio_clip(job_id);
+CREATE INDEX IF NOT EXISTS idx_model_validation_job ON model_validation(job_id);

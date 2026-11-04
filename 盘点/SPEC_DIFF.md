@@ -626,4 +626,20 @@ v0.102 后端读路径优化与去重：资产列表 SQL 从相关子查询改�
 
 **语义是怎么保住的**：新旧两版 SQL 在同一份数据上逐行比对 `(id, tags, ref_shot_count)`，数据里专门放了字符串 id、坏 JSON、`"[]"` 空清单。第一版**不一致**（600 行变 970 行）——`GROUP BY j.value` 把 `'12'` 与 `12` 分成两组，LEFT JOIN 就配出两行；改成先 `CAST(... AS INTEGER)` 归一、只保留「值等于自己整数形式」的行（与原式 `j.value = a.id` 同形）。判据留在 `test_assets.py::test_列表的引用数不区分数字与字符串写法`，不靠注释。
 
-**没排进来的两条**：迁移 0036（`asset_variant.source_job_id` 的配套索引，级联删 job 时实测 2000×3000 是 0.170s vs 0.007s）与提交回执复用 `generation_summary`（约 10 行内部去重）——前者要新迁移、会牵动基线号，留到下一次连着文档一起落；后者不影响行为。
+**没排进来的两条**：迁移 0036（`asset_variant.source_job_id` 的配套索引）与提交回执复用 `generation_summary`（约 10 行内部去重）。前者已在本轮紧接着的 §29 里落地——这里原先写的「2000×3000 是 0.170s vs 0.007s」是没跑过的估计数，§29 换成两次独立进程实测的 522.7／528.6 ms 对 71.0／121.7 ms。
+
+---
+
+## 29. 迁移 0036：删作业时子表那三跳补索引（2026-11-04，设计稿 v0.103）
+
+0036 只做 DDL：`asset_variant(source_job_id)`、`audio_clip(job_id)`、`model_validation(job_id)` 三条索引。它们**不是读路径**——0033 那句"反查这次生成分散到了哪些形态是排障动作"只对读成立。这三列都是 `REFERENCES job(id)`，`PRAGMA foreign_keys=ON` 下删**一行** job 之前，SQLite 必须先在每张子表里找到该置 NULL 的子行；子列没索引时这个查找是整表扫。
+
+**测量方法改了两次才可信**：第一版在同一进程、同一份库里"先删一次 → 建索引 → 再删一次"，结论**反过来**（无索引 66ms、有索引 156ms）——量到的是页缓存与语句缓存。最终版是两个独立进程、同一份合成库（2400 行作业；子表 2000／3000／400／200，合计 5600 行；删 1—2000 号作业再回滚），唯一差别是那三条索引在不在：**无索引 522.7／528.6 ms，有索引 71.0／121.7 ms**（连跑两轮各两次）。
+
+**为什么值得为半秒加索引**：删项目／删集都在写事务里跑（`delete_project_cascade`／`delete_episode_cascade`），半秒级持锁在局域网 2—5 人里就是别人提交作业时那句 `database is locked`。
+
+**两条看着缺、实际不该补的**：`extraction_run.job_id` 是 `NOT NULL UNIQUE`（0017），SQLite 自带唯一索引已经接住；`worker_node.current_job_id` 一台 worker 一行，整表扫的成本是零。
+
+**守卫**：新增 `tests/test_schema.py`，把库里所有 `REFERENCES job(id)` 的子列数出来逐条问"有没有一条索引以它打头"，豁免名单只有 `worker_node.current_job_id` 且写明了理由（第二条测试盯着名单本身：补了索引就必须把那一行删掉）。反证：HEAD 克隆（无 0036）里跑它，恰好红在 `asset_variant.source_job_id`／`audio_clip.job_id`／`model_validation.job_id` 三条上。
+
+**自己踩的坑**：这条守卫第一版把 `leading`（列名集合）跟 `(表名, 列名)` 元组比，八条"其实有索引"的子列全红，而报错文案看着完全像"这库真缺索引"——差一点就照着它补了五条根本不缺的索引。
