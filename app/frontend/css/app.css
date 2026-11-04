@@ -500,7 +500,10 @@ main{min-width:0;display:flex;flex-direction:column}
 .page-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:18px}
 .page-head h1{font-size:22px;font-weight:650;letter-spacing:-.022em;line-height:1.2}
 .page-head p{font-size:12.5px;color:var(--ink-2);margin-bottom:2px}
-.page-head .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+/* .right 里现在可能有三枚工作区 chip 加一颗按钮（资产中心三个工作区都是这个形状），
+   380px 下不换行就会把整页撑出横向滚动条（实测溢出 46px）。
+   窄屏那一段本来就把 .right 收成整行宽，这里只补"里面可以再折一行"。 */
+.page-head .right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 .card{
   background:var(--panel);border:1px solid var(--edge);border-radius:var(--r-card);

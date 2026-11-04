@@ -865,3 +865,57 @@ def test_清单说得出这一档能不能吃参考图():
 
     mflux = adapters.find("image", "local", "mflux")
     assert all(m.as_dict()["image_inputs"] == [] for m in mflux.models)
+
+
+# ---------- 取数窗口与脏数据（2026-11-04 优化轮补）----------
+
+def test_同项目作业再多也看得见刚生成的那几条(studio):
+    """`recent_generations` 的窗口以前是"取最近 48 条任意 kind 再筛"。
+
+    同项目里视频与文档 AI 作业一多，要的资产生成作业就整个落在窗口外面，
+    界面显示"还没有生成记录"——**假空态**：数据在库里，只是没被读出来。
+    现在过滤下推到 SQL（refs 以 `["op:` 开头的那些行），所以后面压多少条
+    别的 kind 都不影响这一页读到自己的历史。
+    """
+    pid, aid = studio["pid"], studio["aid"]
+    # 先放 3 条真的资产生成作业（文本，refs 由 build_refs 生成）
+    for _ in range(3):
+        _make_job(pid, "text", asset_studio.build_refs("character_profile", aid, None))
+    # 再压 60 条**不是资产生成**的作业（成片与产线那条路存的是路径数组，
+    # docai 存的是对象数组）——它们时间上都更新，旧写法会把上面 3 条挤出窗口
+    for _ in range(60):
+        _make_job(pid, "image", ["data/jobs/1/outputs/frame.png"])
+
+    out = asset_studio.recent_generations(pid, asset_id=aid, limit=12)
+    assert len(out) == 3, f"该读到自己的 3 条，实得 {len(out)} 条"
+    assert all(o["target_asset_id"] == aid for o in out), out
+
+    # 按别的资产筛仍然是空的：下推过滤只负责"是资产生成作业"，归属仍逐条判
+    assert asset_studio.recent_generations(pid, asset_id=999999, limit=12) == []
+
+
+def test_脏的图片清单不会把删除卡成半套(as_role, fresh_project, tmp_path):
+    """删资产时那份清单的解析必须走已有出处 `_images_of`。
+
+    原来路由里手写 `json.loads` + 一段 unlink 循环：`ref_images` 里混进非字符串
+    （或整列是坏 JSON）就会在"行已删、文件清一半"的中间态抛出来，
+    而这条资产之后再也删不掉。现在坏数据当空清单，越出目录的路径仍被
+    `resolve_within` 挡在外面——两件事都不能退。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    a = _new_asset(pid)
+    good = FILES_DIR / str(a) / "ok.png"
+    good.parent.mkdir(parents=True, exist_ok=True)
+    good.write_bytes(PNG)
+    outside = tmp_path / "外面的图.png"
+    outside.write_bytes(PNG)
+    with get_conn() as conn:
+        conn.execute("UPDATE asset SET ref_images = ? WHERE id = ?",
+                     (json.dumps([str(good.relative_to(FILES_DIR)), "../逃逸.png",
+                                  123, None, str(outside), "9999/不存在.png"]), a))
+
+    assert c.request("DELETE", f"/api/assets/{a}").status_code == 204
+    assert not good.exists(), "在本目录里的那张该跟着资产走"
+    assert outside.exists(), "越出 FILES_DIR 的路径不是本平台资产，动不得"
+    assert not (FILES_DIR / "逃逸.png").exists(), "上跳一层不能把文件落进上传目录"

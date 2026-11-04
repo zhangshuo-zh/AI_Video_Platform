@@ -24,7 +24,7 @@ from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetGenIn, AssetG
                     EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version, ShotIn,
                     ShotOut, VariantIn, VariantOut, VariantUpdateIn)
 from paths import listdir_empty, resolve_within
-from repositories.content import assets, episodes, shots
+from repositories.content import _images_of, assets, episodes, shots
 from repositories.content import profiles as profile_repo
 from repositories.content import variants as variant_repo
 from services import (JobInvalid, NoRoute, clean_tags, delete_episode_cascade,
@@ -156,8 +156,11 @@ def _checked_variant_ids(project_id: int, raw: list[int],
         raise HTTPException(
             status_code=422,
             detail="引用了不存在、或父资产不属于这个项目也不是全局资产的形态 id")
+    # 一次查齐父资产：`parents_of` 本来就收列表，逐 id 调等于把"一镜挂 N 个形态"
+    # 变成 N 趟库——而这条路径是分镜表每一镜保存时都要走的。
+    parents = variant_repo.parents_of(ids) if ids else {}
     for variant_id in ids:
-        parent = variant_repo.parents_of([variant_id]).get(variant_id)
+        parent = parents.get(variant_id)
         if parent is not None and parent not in asset_ids:
             asset_ids.append(parent)
     return ids
@@ -275,13 +278,26 @@ def _shots_visible(rows, user) -> list[dict]:
 
     详情页的引用列表与删除保护共用这一份判断，不然会出现
     "界面上看不到任何引用、删除却被 409 拦住"这种说不通的情况。
+
+    **判可见性按项目去重**：这条引用清单是按资产反查出来的，一条被 50 镜引用的资产
+    就有 50 行，而它们大概率只来自两三的项目。原来每行各调一次 `ensure`，
+    而 `ensure` 自己开一条连接、打两条 SELECT——于是"打开一条资产的详情页"
+    变成几十次建连（实测含建连约 0.2ms／行，看着不大，乘上引用数就不小了）。
     """
+    allowed: set[int] = set()
+    denied: set[int] = set()
     out = []
     for row in rows:
-        try:
-            ensure(user, row["project_id"], "read")
-        except HTTPException:
+        pid = row["project_id"]
+        if pid in denied:
             continue
+        if pid not in allowed:
+            try:
+                ensure(user, pid, "read")
+            except HTTPException:
+                denied.add(pid)
+                continue
+            allowed.add(pid)
         out.append(dict(row))
     return out
 
@@ -427,13 +443,16 @@ def delete_asset(asset_id: int,
     row = assets.get(asset_id)
     if row is None:
         raise HTTPException(status_code=404, detail="资产不存在")
-    images = json.loads(row["ref_images"] or "[]")
+    # 清单解析与"删文件只允许删 FILES_DIR 里面"这两件事都已有出处
+    # （`_images_of` 认坏 JSON、`remove_imported_file` 走 `resolve_within`）。
+    # 原来这里手写 `json.loads(...)` 加一段 unlink 循环：一条脏 `ref_images`
+    # （坏 JSON 或数组里混了非字符串）就会让资产行删掉、文件只清一半、
+    # 界面报 500，而且第二条再也删不掉——同一个教训在 v0.96 已经收过一次。
+    images = _images_of(row)
     assets.delete(asset_id)
 
     for rel in images:
-        target = resolve_within(FILES_DIR, rel)
-        if target is not None and target.is_file():
-            target.unlink()
+        asset_studio.remove_imported_file(rel)
     folder = (FILES_DIR / str(asset_id)).resolve()
     if listdir_empty(folder):
         folder.rmdir()

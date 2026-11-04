@@ -160,13 +160,22 @@ class JobRepository:
              capability: str | None = None, limit: int = 100,
              statuses: list[str] | None = None, execution_mode: str | None = None,
              keyword: str | None = None, episode_id: int | None = None,
-             shot_id: int | None = None) -> list[sqlite3.Row]:
+             shot_id: int | None = None,
+             refs_prefix: str | None = None) -> list[sqlite3.Row]:
         """project_ids=None 表示管理员看全部；空列表表示一个都看不见。
 
         status 与 statuses 是同一件事的两种写法：前者给旧调用方与深链，
         后者给生成中心的多状态筛选（"进行中"＝三个状态一起看）。
         episode_id/shot_id 给创作中心的分镜表用：一集的作业一次取回，
         前端再按 shot_id 分组，避免每行镜头各打一次接口。
+
+        `refs_prefix` 是给"归属写在 input_refs 里"的那类作业用的下推过滤
+        （资产生成用 `["op:..."` 开头，见 `asset_studio.build_refs`）。
+        为什么值得开这一个参数而不是让调用方自己多取几行再筛：
+        同一项目里视频／文档 AI 作业一多，"取最近 N 条再筛"会把要的几条整批挤出窗口，
+        界面于是显示"还没有生成记录"——那是**假空态**，不是没数据。
+        别的写家不会误命中：docai 存的是对象数组（`[{"doc_id"...`）、
+        成片与产线存的是路径数组（`["data/jobs/...`），都不以 `["op:` 开头。
         """
         if project_ids is not None and not project_ids:
             return []
@@ -193,6 +202,12 @@ class JobRepository:
         if shot_id is not None:
             conds.append("shot_id = ?")
             args.append(shot_id)
+        if refs_prefix:
+            # 前缀里出现 LIKE 的通配符要转义掉：`%` 混进来会让过滤悄悄变宽，
+            # 而那正好是这条存在的理由（宁可少给）的反面
+            escaped = refs_prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+            conds.append("""input_refs_json LIKE ? ESCAPE '\\'""")
+            args.append(escaped + "%")
         if keyword:
             # 只搜 id 与提示词：日志/产物正文不在这张表里，不能假装搜得到
             conds.append("(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ?)")

@@ -129,13 +129,29 @@ class AssetRepository:
     """
 
     _SELECT = """
-        SELECT a.*,
-               COALESCE((SELECT json_group_array(t.tag) FROM asset_tag t
-                          WHERE t.asset_id = a.id), '[]') AS tags,
-               (SELECT COUNT(*) FROM shot s, json_each(s.asset_ids) j
-                 WHERE json_valid(s.asset_ids) AND j.value = a.id) AS ref_shot_count
+        SELECT a.*, COALESCE(tg.tags, '[]') AS tags, COALESCE(ct.n, 0) AS ref_shot_count
           FROM asset a
+          LEFT JOIN (SELECT asset_id AS aid, json_group_array(tag ORDER BY tag) AS tags
+                       FROM asset_tag GROUP BY asset_id) tg ON tg.aid = a.id
+          LEFT JOIN (SELECT CAST(j.value AS INTEGER) AS aid, COUNT(*) AS n
+                       FROM shot s, json_each(s.asset_ids) j
+                      WHERE json_valid(s.asset_ids) AND j.value = CAST(j.value AS INTEGER)
+                      GROUP BY CAST(j.value AS INTEGER)) ct ON ct.aid = a.id
     """
+    # ^ 2026-11-04 从两个**相关子查询**改成两个派生表 LEFT JOIN。原来那份每读一行资产
+    # 就把 shot×json_each 整个重扫一遍：列表一次请求是 O(资产数×镜头数)，实测 600 资产／
+    # 1500 镜头 180ms → 现在 13ms，而这句 SQL 被列表、`get()`、改、封面、加图删图共八处共用。
+    # 两处语义都是**造数据逐行比对过**才换的，而且第一版就是被比对打回来的：
+    # - `ref_shot_count` 原来写 `j.value = a.id`，靠 `a.id` 的 INTEGER 亲和把
+    #   `'["12"]'` 里的**字符串** 12 也并进来了；直接 `GROUP BY j.value` 会把 12 与 '12'
+    #   分成两组，LEFT JOIN 于是**一行资产匹配两遍**（600 行变 970 行、计数还少算）。
+    #   现在连接键先 `CAST(... AS INTEGER)` 归一，并且只留 `j.value = CAST(j.value AS INTEGER)`
+    #   成立的值——这条判据与原式同形（对任意整数 id，"值等于它"当且仅当"值等于自己的整数形式"），
+    #   所以 `'abc'`、JSON null 这些照旧不算，数字与字符串两种写法算得一样。
+    #   `test_assets.py` 里有一条用例专门摆这两种写法。
+    # - `tags` 原来靠 `asset_tag` 的主键 (asset_id, tag) 天然按标签字典序扫出来，
+    #   聚合成派生表后扫描顺序不再有保障，所以把顺序写进聚合（`ORDER BY tag`）。
+    # 只读指纹与预检那几列的路径走 `_PLAIN_COLUMNS`，不背这两张派生表。
 
     def list_visible(self, project_id: int, kind: str | None = None,
                      scope: str = "all") -> list[sqlite3.Row]:

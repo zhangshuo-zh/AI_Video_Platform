@@ -438,9 +438,13 @@ def _cloud_estimate(capability: str, payload, model_code: str, provider_code: st
         source=price.source)
 
 
-def generation_summary(job) -> dict:
-    """一条生成作业的界面摘要。列表与提交回执共用这一份，别再写第二个映射。"""
-    ref = parse_refs(job)
+def generation_summary(job, ref: dict | None = None) -> dict:
+    """一条生成作业的界面摘要。列表与提交回执共用这一份，别再写第二个映射。
+
+    `ref` 让调用方把已经解析过的归属传进来（`recent_generations` 要先按它筛一遍），
+    不传就自己解一次——省的是同一行 `json.loads` 两遍。
+    """
+    ref = ref if ref is not None else parse_refs(job)
     return {
         "job_id": job["id"], "status": job["status"],
         "status_label": _status_label(job["status"]),
@@ -465,9 +469,14 @@ def recent_generations(project_id: int, asset_id: int | None = None,
     人刚生成的候选看不见，会以为没跑。状态本来就在 `job` 表里，
     把它读回来比在浏览器里攒一份副本诚实。
     归属信息住在 `input_refs` 里（job 表没有 asset_id 列，也不该为一类目标加一列），
-    所以先多取一些再按 refs 筛；limit 是给界面看的条数，不是扫描上限。
+    所以**过滤下推到 SQL**：只取 refs 以 `["op:` 开头的那些行。
+    以前是"取最近 40~48 条任意 kind 再在 Python 里筛"——同一个项目里视频与文档 AI
+    作业一多，要的 12 条就整个落在窗口外面，界面显示"还没有生成记录"，
+    而这是**假空态**（本轮评审点名的复发风险）。按目标资产再筛一遍仍是本地的，
+    窗口因此还留着，但挤出去的前提变成"同项目 160 条**资产生成**作业"，量级不同。
     """
-    rows = job_repo.list([project_id], limit=max(int(limit) * 4, 40))
+    rows = job_repo.list([project_id], limit=max(int(limit) * 4, 40),
+                         refs_prefix='["op:')
     out = []
     for row in rows:
         ref = parse_refs(row)
@@ -475,7 +484,7 @@ def recent_generations(project_id: int, asset_id: int | None = None,
             continue
         if asset_id is not None and ref["asset_id"] != int(asset_id):
             continue
-        out.append(generation_summary(row))
+        out.append(generation_summary(row, ref))
         if len(out) >= limit:
             break
     return out

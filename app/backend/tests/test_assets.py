@@ -241,3 +241,38 @@ def test_删资产只清它自己登记过的图(as_role, fresh_project):
     assert (FILES_DIR / str(a["id"])).is_dir(), "目录里还有别的东西就不该收掉目录"
     sibling.unlink()
     (FILES_DIR / str(a["id"])).rmdir()
+
+
+def test_列表的引用数不区分数字与字符串写法(as_role, fresh_project):
+    """`_SELECT` 从相关子查询换成派生表 LEFT JOIN 时的**语义钉**。
+
+    2026-11-04 换写法时被比对脚本打回来过一次：直接 `GROUP BY j.value` 会把
+    镜头里的 `asset_ids='["12"]'`（字符串）与 `'[12]'`（数字）分成两组，
+    LEFT JOIN 于是让一行资产匹配两遍——列表行数从 600 变 970、"关联 N 镜"还少算。
+    原来那句 `j.value = a.id` 靠 a.id 的 INTEGER 亲和把两种写法并成一个数。
+    这条用例就是把"两种写法算同一个资产、且不重复出行"钉死，
+    顺带钉住标签顺序（原来靠 (asset_id, tag) 主键扫出来，聚合后必须显式 ORDER BY）。
+    """
+    pid = fresh_project("editor")
+    c = as_role("editor")
+    a = _mk_asset(c, pid, tags=["灯", "A类", "夜戏"])
+    eid = c.post(f"/api/projects/{pid}/episodes", json={"title": "第 1 集"}).json()["id"]
+    c.post(f"/api/episodes/{eid}/shots", json={"summary": "数字写法", "asset_ids": [a["id"]]})
+
+    with get_conn() as conn:                    # 字符串写法只能直接写库：接口会转成 int
+        conn.execute("""INSERT INTO shot (episode_id, seq, summary, prompt, duration,
+                                          asset_ids, variant_ids)
+                        VALUES (?,?,'字符串写法','',3.0,?,'[]')""",
+                     (eid, 2, f'["{a["id"]}"]'))
+        conn.execute("""INSERT INTO shot (episode_id, seq, summary, prompt, duration,
+                                          asset_ids, variant_ids)
+                        VALUES (?,?,'坏 JSON','',3.0,?,'[]')""", (eid, 3, "not json"))
+
+    rows = c.get(f"/api/projects/{pid}/assets").json()
+    # 按 id 取，不假设列表里只有这一条：同文件里别的用例会往全局池里建资产，
+    # 断言"整个列表只有一行"会变成"看谁先跑"的假失败
+    mine = [r for r in rows if r["id"] == a["id"]]
+    assert len(mine) == 1, f"LEFT JOIN 把这条资产配成了多行：{len(mine)} 行"
+    hit = mine[0]
+    assert hit["ref_shot_count"] == 2, f"两种写法要算成同一个数，实得 {hit['ref_shot_count']}"
+    assert hit["tags"] == ["A类", "夜戏", "灯"], f"标签顺序变了：{hit['tags']}"
