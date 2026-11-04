@@ -643,3 +643,19 @@ v0.102 后端读路径优化与去重：资产列表 SQL 从相关子查询改�
 **守卫**：新增 `tests/test_schema.py`，把库里所有 `REFERENCES job(id)` 的子列数出来逐条问"有没有一条索引以它打头"，豁免名单只有 `worker_node.current_job_id` 且写明了理由（第二条测试盯着名单本身：补了索引就必须把那一行删掉）。反证：HEAD 克隆（无 0036）里跑它，恰好红在 `asset_variant.source_job_id`／`audio_clip.job_id`／`model_validation.job_id` 三条上。
 
 **自己踩的坑**：这条守卫第一版把 `leading`（列名集合）跟 `(表名, 列名)` 元组比，八条"其实有索引"的子列全红，而报错文案看着完全像"这库真缺索引"——差一点就照着它补了五条根本不缺的索引。
+
+---
+
+## 30. 页面设计与窄屏复量（2026-11-04，设计稿 v0.104）
+
+**怎么量的**：不开服务、不接数据，只把真样式表 `app.css` 链接进去，用 iframe 把布局视口压到 380／768／1440（headless 的窗口最小 500px，直接开 380 会把视口量成 500，所以走 iframe），读 `document.documentElement.scrollWidth - innerWidth` 与元素 `scrollWidth/clientWidth`。
+
+**测了什么**：长路径（`data/jobs/…png`，含 uuid 目录）在 `.card` 与 `.t-dim` 里；12 列宽表格放进 `.table-wrap`；`.modal-box` 里放长串；页头一排 6 个 `.chip`；`.chip` 里放整段 uuid；3／4／5 颗按钮与三颗长名按钮（「生成文字设定」「重新生成图像」「存进这个形态」）。结果：**全部 0px 溢出、无一处文字被裁**。
+
+**一个被我否掉的假设**：`.modal-box`（452px）、`.pal-box`（420px）、`.gate-card`（392px）都是定宽，直觉上 380px 视口一定撑破。实量 356／380／332——它们在 flex 容器里本来就带 shrink。**如果先写 `max-width:100%` 再去看，就会留下一条"修好了"的假记录**。这条负结果写在这里，比多一条"已优化"有用。
+
+**对比度与焦点**：`ink`／`ink-2`／`ink-3` 压在 `bg` 上——白天 15.71／5.85／5.11，夜间 16.05／8.07／5.32，全部过 AA 4.5；焦点环全站一条（`app.css:217`）。
+
+**真修的一件**：`.btn:disabled:hover` 仍会命中 `.btn:hover` 与 `.btn.primary:hover`——悬停时主按钮切到 `--accent-hi`，视觉上像"可以点"。而 v0.99 加 disabled 的正是「生成」两颗钮，禁用原因就是"没选到具体档位"。补 `.btn:disabled:hover`／`.btn.primary:disabled:hover`／`.btn.danger-solid:disabled:hover` 三条，挂在 `.btn:hover` 之后：前者靠顺序、后两者靠更高特异度接住。
+
+**没做的**：全站 87 条小于 12px 的规则（10—11.5px）属于既定的微字号刻度（徽章、元信息），本轮不动——那是重排，不是修 bug；触控目标尺寸（`.chip` 高约 20px）也没动，这个平台的主场景是桌面局域网，先记在开口里。

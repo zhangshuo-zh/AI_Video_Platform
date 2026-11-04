@@ -807,6 +807,13 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .btn.danger-solid:hover{background:var(--bad-hover)}
 .btn.danger-solid:disabled{background:var(--bad-off);color:var(--bad-off-fg);cursor:not-allowed;box-shadow:none}
 .btn:disabled{opacity:.55;cursor:not-allowed}
+/* 禁用之后悬停也不许有反应。v0.99 给「生成」那两颗钮加了 disabled，但 `.btn:hover`
+   照样换背景与边框，主按钮还会切到 `--accent-hi`——灰度压着却"看起来点得动"，
+   而这一颗禁用的原因正是"没选到具体档位"，点下去本来就什么都不该发生。
+   三条规则按变体各写一句，挂在 .btn:hover 之后，同特异度靠顺序接住。 */
+.btn:disabled:hover{background:var(--field);border-color:var(--line-strong)}
+.btn.primary:disabled:hover{background:var(--accent);box-shadow:var(--primary-sh)}
+.btn.danger-solid:disabled:hover{background:var(--bad-off);border-color:transparent}
 
 /* ---------- 总览卡片 ---------- */
 .mods{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
