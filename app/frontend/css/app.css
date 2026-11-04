@@ -274,15 +274,36 @@ body{
 }
 
 /* 二级导航：只在当前模块展开 */
-.nav-sub{display:none;padding:5px 0 7px 26px}
+.nav-sub{display:none;padding:5px 0 7px 32px}
 .nav-item.on + .nav-sub{display:grid;gap:3px}
-.sub{
-  font-size:12.5px;color:var(--ink-2);padding:5px 11px;border-radius:var(--capsule);cursor:pointer;
-  border-left:1px solid var(--line);margin-left:2px;width:max-content;
+/* 作用域必须写到 `.nav-sub .sub`。`.sub` 这个类名同时被 54 处卡片副标题用着
+   （`.card-head .sub` 只改了字号和颜色），裸写 `.sub` 等于让每一段说明文字
+   都长出 cursor:pointer 和一条左边框——不可点的东西看着像可点，
+   比反过来更难发现。 */
+.nav-sub .sub{
+  /* 小圆角 + 一枚短的直竖条当"当前"标记，和一级项同一套语言：
+     选中态要说"你在这儿"，不是说"点我"。
+     上一版是 border-left:1px 配 border-radius:980px——圆角把 1px 直边
+     画成一段弧线，未选中的项左边飘着半个括号；再加上整颗胶囊填色，
+     看着就是一排按钮贴在磨砂侧栏上，两层玻璃糊在一起。
+     改成 inset box-shadow 也不行：阴影会顺着圆角弯，一样是括号。
+     所以标记单独画一枚不受圆角影响的短竖条，未选中时高度为 0——
+     一排淡淡的竖tick本来也只是噪声。 */
+  position:relative;
+  font-size:12.5px;color:var(--ink-2);padding:4px 10px 4px 12px;
+  border-radius:7px;cursor:pointer;user-select:none;width:max-content;
   transition:color var(--fast),background var(--fast);
 }
-.sub:hover{color:var(--ink);background:var(--hover-soft)}
-.sub.on{color:var(--accent);font-weight:600;border-left-color:var(--accent);background:var(--accent-soft)}
+.nav-sub .sub::before{
+  content:"";position:absolute;left:2px;top:50%;width:2px;height:0;
+  border-radius:1px;background:var(--accent);transform:translateY(-50%);
+  transition:height var(--fast) var(--ease);
+}
+.nav-sub .sub:hover{color:var(--ink);background:var(--hover-soft)}
+/* 底色用一级项同一枚 --nav-on，不另开一档半透明主色：
+   侧栏里"选中"只该有一种表面，层级差交给主色文字与那枚短竖条。 */
+.nav-sub .sub.on{color:var(--accent);font-weight:600;background:var(--nav-on)}
+.nav-sub .sub.on::before{height:13px}
 
 /* 命令面板 */
 .palette{
