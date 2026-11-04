@@ -490,7 +490,8 @@ td.r,th.r{text-align:right}
 td.c,th.c{text-align:center}
 td.mono{font-family:var(--mono);font-size:11.5px}
 
-/* 系统设置·模型与密钥（v0.66）：每个槽位下面跟一条备注带。
+/* 模型中心·引擎管理的能力轨（v0.66 起在系统设置，v0.99 搬到模型中心）：
+   每个槽位下面跟一条备注带。
    允许参数用一行小 chips，健康状态下面跟一句人话——两列都窄，
    把长句塞进单元格会把整张表撑成两层楼。 */
 tr.slot-note td{
@@ -500,12 +501,20 @@ tr.slot-note td{
 tr.slot-note:hover{background:transparent}
 tr.slot-note .src{margin-right:10px;white-space:nowrap}
 tr.slot-note input.ctl{max-width:560px}
-td.params-cell{min-width:190px}
+/* 能力轨六列。旧版十列时 Provider／模型两个输入框被压到 80px，
+   实际显示成 "deepse" "d"——看不清自己填了什么，比没填还糟。
+   并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
+   全进横跨整表的备注带。 */
+.mc-picks{display:flex;gap:6px;flex-wrap:wrap}
+.mc-picks input.ctl{flex:1 1 132px;min-width:132px}
+.mc-status{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
+.mc-health,.mc-validation{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.mc-health .hint{display:block;margin-top:3px;max-width:230px;white-space:normal}
+.mc-acts{display:inline-flex;gap:4px}
+.mc-note-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px}
+.mc-note-line .params-cell{display:flex;flex-wrap:wrap;gap:4px}
 .param-chips{display:flex;flex-wrap:wrap;gap:4px;max-width:280px}
 .param-chips .chip{font-size:10.5px;padding:1px 6px}
-td.health-cell{min-width:170px}
-td.health-cell .hint{display:block;margin-top:3px;max-width:230px;white-space:normal}
-td.key-cell{min-width:180px}
 td.key-cell .hint{display:block;margin-top:3px;white-space:normal}
 td.key-cell code{font-family:var(--mono);font-size:11px}
 .t-dim{color:var(--ink-2)}
@@ -1389,10 +1398,11 @@ td.shot-jobs .t-desc{max-width:180px}
 .gen-alert.bad{background:var(--bad-soft);border-color:var(--bad-line)}
 .gen-alert.warn{background:var(--warn-soft);border-color:var(--warn-line)}
 
-/* 验证列：标签 + 生产可用判定 + 两个常驻入口。按钮竖排，窄列里也不挤。 */
-.validation-cell{min-width:132px}
-.val-actions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
-.val-actions .btn.xs{white-space:nowrap}
+/* 验证列：标签 + 生产可用判定 + 两个常驻入口。
+   入口按钮不许换行成竖排单字——所以状态列允许自己折行，而不是把按钮挤窄。 */
+.mc-validation{min-width:132px}
+.mc-acts{white-space:nowrap}
+.mc-acts .btn.xs{white-space:nowrap}
 
 /* 重试预览里的链路小表：只读，让人看清这一串已经计了多少。 */
 .retry-chain{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}

@@ -9,6 +9,7 @@ import composition from './composition.js';
 import audio from './audio.js';
 import review from './review.js';
 import knowledge from './knowledge.js';
+import models from './models.js';
 import systemConfig from './system-config.js';
 
-export default { overview, projects, assets, writing, generate, pipeline, composition, audio, review, knowledge, 'system-config': systemConfig };
+export default { overview, projects, assets, writing, generate, pipeline, composition, audio, review, knowledge, models, 'system-config': systemConfig };

@@ -10,6 +10,7 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
+import { HEALTH_LABEL } from '../validation.js';
 import { takeJobPrefill } from '../navstate.js';
 
 const STATUS = {
@@ -30,12 +31,9 @@ const UNITS = {
 };
 const ACTIVE = ['queued', 'starting', 'running', 'cancel_requested'];
 const FINISHED_BAD = ['failed', 'cancelled', 'needs_attention'];
-// 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词
-// 与系统设置页同一套中文，别让同一个 ok 在两页一个叫“可用”一个叫“就绪”
-const HEALTH = {
-  ok: '就绪', missing: '缺东西', unknown: '未检查',
-  unconfigured: '未配置', unregistered: '未登记',
-};
+// 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词。
+// 译名从 js/validation.js 取——模型中心与这一页共用一份，
+// 别让同一个 ok 在两屏一个叫"就绪"一个叫"可用"。
 // 队列告警的中文短标签。英文 code 只用于样式分档，不往界面上端。
 const ALERT_CODE = {
   worker_offline: 'worker 离线', queue_stalled: '队列停滞', lease_expired: '租约过期',
@@ -897,7 +895,7 @@ export default {
       } else {
         const opts = optionsFor(cap, mode);
         route.innerHTML = opts.length
-          ? opts.map((o, i) => `<option value="${i}">${escapeHtml(o.provider)} / ${escapeHtml(o.model)}（${HEALTH[o.health_state] || o.health_state}）</option>`).join('')
+          ? opts.map((o, i) => `<option value="${i}">${escapeHtml(o.provider)} / ${escapeHtml(o.model)}（${HEALTH_LABEL[o.health_state] || o.health_state}）</option>`).join('')
           : '<option value="">这一轨没有已启用的槽位</option>';
       }
       renderParams();
@@ -1155,7 +1153,7 @@ export default {
         // 这条失败比"界面上不让点"更容易查——但要把话说在前面。
         if (option.health_state !== 'ok') {
           root.querySelector('#jm-hint').textContent =
-            `提醒：这个槽位当前是「${HEALTH[option.health_state] || option.health_state}」——${option.health_detail}`;
+            `提醒：这个槽位当前是「${HEALTH_LABEL[option.health_state] || option.health_state}」——${option.health_detail}`;
         }
       }
 

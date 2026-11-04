@@ -15,9 +15,9 @@ from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
 from routers import (audio, auth, compositions, content, dashboard, documents,
-                     extraction, files, jobs, pipeline as pipeline_api,
-                     profiles, projects, review, seasons as seasons_api,
-                     settings, system, users, workbench)
+                     extraction, files, jobs, model_center as model_center_api,
+                     pipeline as pipeline_api, profiles, projects, review,
+                     seasons as seasons_api, settings, system, users, workbench)
 from services import ensure_workspace
 
 
@@ -61,6 +61,9 @@ def create_app() -> FastAPI:
     app.include_router(seasons_api.router)
     app.include_router(profiles.router)
     app.include_router(projects.router)
+    # 模型中心排在 settings 之前：两者都挂 system:config，但模型中心是"模型这件事的入口"，
+    # settings 只剩密钥与用户，读起来先具体后通用
+    app.include_router(model_center_api.router)
     app.include_router(settings.router)
     app.include_router(system.router)
     app.include_router(users.router)

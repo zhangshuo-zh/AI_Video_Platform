@@ -18,6 +18,25 @@ export const VAL_BADGE = {
   never: ['gray', '未验证'],
 };
 
+/**
+ * 健康状态的中文译名，同样只留一份。
+ *
+ * 原来生成中心与模型中心各写了一份 `HEALTH`：配置页把 ok 叫"就绪"、
+ * 队列页哪天改叫"可用"，同一个枚举就在两屏上成了两个意思。
+ * `HEALTH` 带配色（列表页的徽章用），`HEALTH_LABEL` 是纯文案（行内小字用）。
+ *
+ * unknown 用琥珀而不是红色——"平台查不了"不等于"坏了"。
+ */
+export const HEALTH = {
+  ok: ['green', '就绪'],
+  missing: ['red', '缺东西'],
+  unknown: ['amber', '未检查'],
+  unconfigured: ['gray', '未配置'],
+  unregistered: ['red', '未登记'],
+};
+export const HEALTH_LABEL = Object.fromEntries(
+  Object.entries(HEALTH).map(([k, [, label]]) => [k, label]));
+
 /** 一句括号里的短语，给"选模型"那种地方用；取不到的状态原样回状态码。 */
 export function validationText(state) {
   const badge = VAL_BADGE[state || 'never'];

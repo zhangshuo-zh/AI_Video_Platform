@@ -1913,3 +1913,59 @@ class SeasonOut(BaseModel):
     finished_at: str = ""
     created_at: str
     updated_at: str
+
+
+# ---------- 模型中心（0035） ----------
+# 读侧一律返回 dict：目录是"清单 × 登记"的联表，字段随清单走，
+# 套一层 Pydantic 只会让加一个清单字段要改两处（manifest 端点早就这么定了）。
+# 写侧必须有模型：校验发生在入库之前，不能让脏键名进库再靠界面挡。
+
+REG_SOURCES: dict[str, str] = {"local": "本地", "cloud": "云端", "remote": "远程自建"}
+POLICY_PREFERENCES: dict[str, str] = {"local": "优先本地", "cloud": "优先云端",
+                                      "remote": "优先远程自建", "any": "不限"}
+
+
+class ModelRegistrationIn(BaseModel):
+    """新增登记。provider/model_code 是**指向清单的键**，不是自由文本：
+    路由层会拿 adapters.find() 比一遍，清单里没有就要求显式确认。"""
+    capability: str
+    backend: str
+    provider: str
+    model_code: str
+    display_name: str = ""
+    source: str = "local"
+    engine_code: str = ""
+    version: str = ""
+    artifact_path: str = ""
+    remote_model_id: str = ""
+    capabilities: list[str] = []
+    enabled: bool = True
+    note: str = ""
+
+
+class ModelRegistrationPatch(BaseModel):
+    """逐字段更新：没出现的键不动。"""
+    display_name: str | None = None
+    source: str | None = None
+    engine_code: str | None = None
+    version: str | None = None
+    artifact_path: str | None = None
+    remote_model_id: str | None = None
+    capabilities: list[str] | None = None
+    enabled: bool | None = None
+    note: str | None = None
+
+
+class ModelPolicyIn(BaseModel):
+    scene_key: str
+    scene_label: str = ""
+    capability: str
+    required: list[str] = []
+    slot_provider: str = ""
+    slot_model: str = ""
+    preference: str = "any"
+    fallback_provider: str = ""
+    fallback_model: str = ""
+    resource_limit: dict = {}
+    cloud_confirm_required: bool = False
+    enabled: bool = False

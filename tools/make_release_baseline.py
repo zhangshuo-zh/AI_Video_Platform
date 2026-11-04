@@ -301,7 +301,7 @@ def build_md(facts: dict) -> str:
     a(f"> 槽位口径：`provider_config` 是固定十行（5 类能力 × 本地／云端），本表只列"
       f"**填了 provider 或留过验证记录**的槽位（当前 {len(facts['matrix'])} 行；"
       f"其中填了 provider 的 {facts['configured_slots']} / {facts['total_slots']} 行）。"
-      "没列出的槽位不是被这张表过滤，而是还没配置，在「系统设置 · 模型与密钥」里显示「未配置」。")
+      "没列出的槽位不是被这张表过滤，而是还没配置，在「模型中心 · 引擎管理」里显示「未配置」。")
     a("")
     a("## 3. 未验证能力与阻塞项")
     a("")

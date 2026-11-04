@@ -302,10 +302,34 @@ def test_会话过期有统一出口():
 def test_有二级页的模块页内也有切换器():
     """W02-d：窄屏侧栏二级标签会收起，页内没有第二个入口就等于把功能藏了。
 
-    只查"已经有真实内容的三个模块"；生成／音频／审核／设定四页的 subs 目前
+    只查"已经有真实内容的模块"；生成／音频／审核／设定四页的 subs 目前
     还是装饰，等接真功能时再纳入（那时这条测试要一起改）。
+
+    v0.99 起 system-config.js 不在名单里了：它只剩一个二级页，
+    整页转发给 system-users.js，页内切换器由后者画（最后一行查的就是它）。
+    模型中心四个工作区是新的多页模块，所以进名单。
     """
-    for name in ("assets.js", "writing.js", "system-config.js"):
+    for name in ("assets.js", "writing.js", "models.js"):
         text = (FRONTEND / "js" / "views" / name).read_text()
         assert "data-kind" in text or "subChipRow" in text, f"{name} 缺页内切换器"
     assert "subChipRow" in (FRONTEND / "js" / "views" / "system-users.js").read_text()
+
+
+def test_模型中心的二级页与模块清单一致():
+    """modules.js 的 subs 与视图里的 SUBS 必须是同一个数组。
+
+    这条不是洁癖：router 会把越界的二级下标钳回 0（router.js:39），
+    所以两处不一致的后果是"最后一个页签永远打不开"，
+    而且不报错——阶段 E 的整季页签就是这么悄悄哑掉的（产线中心有同类注释）。
+    只钉模型中心这一个模块：别的模块各用 WORKSPACES／TABS 等不同名字，
+    现在写一个通用解析器会比页面更容易错。
+    """
+    import re
+
+    modules = (FRONTEND / "js" / "modules.js").read_text()
+    view = (FRONTEND / "js" / "views" / "models.js").read_text()
+    block = re.search(r"id: 'models'.*?subs: \[([^\]]*)\]", modules, re.S)
+    assert block, "modules.js 里找不到模型中心的 subs"
+    listed = re.findall(r"'([^']+)'", block.group(1))
+    declared = re.findall(r"'([^']+)'", re.search(r"const SUBS = \[([^\]]*)\]", view).group(1))
+    assert listed == declared, f"侧栏写的是 {listed}，页内切换器是 {declared}"

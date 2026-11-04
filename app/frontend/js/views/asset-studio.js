@@ -236,7 +236,7 @@ function trackPanel(d, which) {
   }).join('');
   const hint = list.length === 0
     ? `<p class="t-desc">${d[`${which}Track`] === 'cloud' ? '云端' : '本地'}这一轨没有${
-        title}槽位。到系统设置 · 模型与密钥里配一条；配好之前提交钮是灰的，
+        title}槽位。到模型中心 · 引擎管理里配一条；配好之前提交钮是灰的，
         平台不会替你换一条轨发出去。</p>`
     : `<p class="t-desc">${d[`${which}Track`] === 'cloud'
         ? '云端：提交前展示清单登记的单价，并要单独勾一次计费确认。'

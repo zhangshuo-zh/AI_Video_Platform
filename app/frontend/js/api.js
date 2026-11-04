@@ -188,6 +188,30 @@ export const api = {
     body: JSON.stringify(body),
   }).then(toJson),
 
+  // 模型中心（0035）：登记层与策略层。
+  // 目录是"清单 × 登记"的联表，所以只有这一个读接口就够——前端不再自己拼第二套口径。
+  models: () => fetch('/api/models').then(toJson),
+  modelStats: () => fetch('/api/models/stats').then(toJson),
+  createModel: (body) => fetch('/api/models', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  patchModel: (id, body) => fetch(`/api/models/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 撤登记必须带 confirm：这一步只删登记行，权重文件与历史作业都不动
+  removeModel: (id) => fetch(`/api/models/${id}?confirm=${encodeURIComponent('撤登记')}`,
+    { method: 'DELETE' }).then(toJson),
+  checkModel: (id) => fetch(`/api/models/${id}/check`, { method: 'POST' }).then(toJson),
+  modelPolicies: () => fetch('/api/model-policies').then(toJson),
+  saveModelPolicies: (rows) => fetch('/api/model-policies', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rows),
+  }).then(toJson),
+  // 场景候选：只读、登录即可。返回里带 auto_switch=false——备用轨不会自动顶上。
+  resolveScene: (key) => fetch(`/api/model-policies/resolve/${encodeURIComponent(key)}`).then(toJson),
+
   // 创作单元 / 分镜 / 资产
   episodes: (pid) => fetch(`/api/projects/${pid}/episodes`).then(toJson),
   createEpisode: (pid, title) => fetch(`/api/projects/${pid}/episodes`, {

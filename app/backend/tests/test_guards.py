@@ -239,6 +239,22 @@ ROUTES = [
      {"capability": "text", "backend": "local", "kind": "env_check"}, 403),
     ("POST", "/api/providers/validate-job/{j}",
      {"capability": "text", "backend": "local", "kind": "real_call", "job_id": "{j}"}, 403),
+    # ---------- 模型中心（0035；editor 没有 system:config ⇒ 403） ----------
+    # resolve 与 /providers/available 同一档：有会话就能读候选，所以是 200。
+    # {m}=0 是不存在的登记行——外人先撞权限点那一层（会话→权限点→归属），
+    # 轮不到"这条不存在"，所以期望仍是 403。
+    ("GET", "/api/models", None, 403),
+    ("GET", "/api/models/stats", None, 403),
+    ("POST", "/api/models",
+     {"capability": "video", "backend": "local", "provider": "fastmetal",
+      "model_code": "fastmetal-5b-qad"}, 403),
+    ("PATCH", "/api/models/{m}", {"display_name": "越权改名"}, 403),
+    ("DELETE", "/api/models/{m}?confirm=撤登记", None, 403),
+    ("POST", "/api/models/{m}/check", None, 403),
+    ("GET", "/api/model-policies", None, 403),
+    ("PUT", "/api/model-policies",
+     [{"scene_key": "character_bio", "capability": "text"}], 403),
+    ("GET", "/api/model-policies/resolve/{sk}", None, 200),
 ]
 
 # auth 四条与 health 不参与"匿名 401"这张表，单独测

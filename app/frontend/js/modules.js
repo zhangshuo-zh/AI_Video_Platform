@@ -81,13 +81,25 @@ export const MODULES = [
     ents: 'Knowledge',
   },
   {
+    // v0.99 从系统设置里拆出来的一级菜单。放在 utility 分组、系统设置之前：
+    // 它和系统设置一样不是业务模块，但管的是"模型与引擎"这件具体的事。
+    // subs 的顺序必须与 views/models.js 的 SUBS 一字不差（router 会按这个下标钳位）。
+    // perms 沿用 system:config——不新增权限点，18 个权限点保持原样。
+    id: 'models', label: '模型中心', icon: 'ic-models',
+    subs: ['模型仓库', '引擎管理', '调用策略', '运行监控'], utility: true,
+    perms: ['system:config'],
+    desc: '模型登记、引擎健康、任务调用策略与运行概览的统一入口。'
+      + '规格仍以适配器清单为唯一来源；选路与排队仍归生成中心那一个队列，这里不开第二条路。',
+    ents: 'ModelRegistration · ModelPolicy',
+  },
+  {
     // 不是业务模块，是系统级配置；侧栏里单独放在最下面。
-    // perms 是"任一即可"的进入门槛：管理员看得到两个页，
-    // 只有 user:read 的人也能进来看用户与角色（模型配置那页会自己挡回去）
+    // v0.99 起模型那一页搬去「模型中心」，这里只剩用户与角色。
+    // perms 仍带 system:config：万一有人粘进旧地址，也要能落到"这一页已经搬走"的说明上
     id: 'system-config', label: '系统设置', icon: 'ic-system',
-    subs: ['模型与密钥', '用户与角色'], utility: true,
+    subs: ['用户与角色'], utility: true,
     perms: ['system:config', 'user:read'],
-    desc: '运行时配置：模型双轨、密钥状态、用户与角色权限。',
+    desc: '账号与权限：用户、角色、18 个权限点。模型与引擎的配置已搬到「模型中心」。',
     ents: '系统',
   },
 ];

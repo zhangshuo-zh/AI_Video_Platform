@@ -110,8 +110,10 @@ export default {
     <section class="view on">
       <div class="page-head">
         <h1>系统设置</h1>
-        <p>模型双轨与用户权限；密钥只显示配没配，值永远不出后端</p>
-        <div class="right">${subChipRow(['模型与密钥', '用户与角色'], 1)}</div>
+        <!-- v0.99：模型那一页搬去「模型中心」，这里只剩账号与权限。
+             副标题不再提"模型双轨"，否则人会以为系统设置里还能改模型。 -->
+        <p>账号与权限；密钥只显示配没配，值永远不出后端</p>
+        <div class="right">${subChipRow(['用户与角色'], 0)}</div>
       </div>
 
       <div class="card">
