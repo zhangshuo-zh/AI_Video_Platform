@@ -135,6 +135,17 @@ def _fastmetal(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         if _flag(params, "fast_spatial", job, model_code):
             argv.append("--fast-spatial")
 
+    # 这三项只在作业**显式给了值**时才下发：没给就沿用入口脚本自己的默认，
+    # 于是这道之前提交的作业 argv 一个字节都不变。
+    # 为什么不像 fast_spatial 那样回落清单默认：那个默认是 16GB 的 OOM 实测，
+    # 不回落会跑出崩掉的作业；而 fps／factor 的脚本默认本来就是可用值，
+    # 回落只会让老作业的 argv 凭空多出几个参数，把"旧作业可复现"这条弄脏。
+    for name, flag, cast in (("fps", "--fps", int),
+                             ("fast_factor", "--fast-factor", int),
+                             ("fast_sharpen", "--fast-sharpen", float)):
+        if params.get(name) is not None:
+            argv += [flag, str(cast(params[name]))]
+
     return RunSpec(
         runner="fastmetal", argv=argv, cwd=outputs, expected=[out], media="video",
         meta={"adapter": "fastmetal", "model": model_code,

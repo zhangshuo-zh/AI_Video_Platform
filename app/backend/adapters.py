@@ -170,6 +170,16 @@ _FASTMETAL = Adapter(
                 Param("fast", "bool", False),
                 Param("fast_spatial", "bool", True,
                       note="默认开：半分辨率去噪+解码后上采样；16GB 机器关掉会在 81 帧 OOM"),
+                # 下面三项的出处同样是本机那份入口脚本的 argparse 原文
+                # （`examples/inference/basic/mlx_wan_prompt_to_video.py`）：
+                # `--fps` 默认 16、`--fast-factor` 默认 2、`--fast-sharpen` 默认 0.6。
+                Param("fps", "int", 16, 1, 60,
+                      note="产物帧率。1.3B 出的默认是 16，成片侧默认按 24 出——"
+                           "这一档差值现在由导出前的 RIFE 补帧补，不再靠复制帧"),
+                Param("fast_factor", "int", 2, 1, 4,
+                      note="开 --fast 时少生成几倍帧（2＝生成一半再 RIFE 补满）"),
+                Param("fast_sharpen", "float", 0.6, 0, 2,
+                      note="补帧后的轻度 unsharp，抵消插帧的糊；0＝关"),
             ),
         ),
         ModelSpec(
@@ -185,6 +195,11 @@ _FASTMETAL = Adapter(
                 Param("fast_spatial", "bool", False),
                 Param("fast", "bool", False),
                 Param("refine", "bool", False),
+                # 出处：本机 `examples/inference/basic/mlx_wan22_generate.py`
+                # 的 argparse（--fps 默认 24、--fast-factor 默认 2、--fast-sharpen 默认 0.6）
+                Param("fps", "int", 24, 1, 60),
+                Param("fast_factor", "int", 2, 1, 4),
+                Param("fast_sharpen", "float", 0.6, 0, 2),
             ),
         ),
     ),
@@ -437,7 +452,9 @@ ADAPTERS: tuple[Adapter, ...] = (
 )
 
 # 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
-MANIFEST_VERSION = "2026-11-01.2"   # .2＝W10 补入 DeepSeek 与 Wan 2.7 的模型/参数/价格
+# 2026-11-05.1＝给 fastmetal 两档补上 fps／fast_factor／fast_sharpen，
+# 出处是本机入口脚本的 argparse 原文；同时成片侧多了导出前的一道 RIFE 补帧。
+MANIFEST_VERSION = "2026-11-05.1"
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以

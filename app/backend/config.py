@@ -59,6 +59,16 @@ COMPOSE_CRF = int(os.environ.get("FASTVIDEO_COMPOSE_CRF", "20"))
 COMPOSE_PRESET = os.environ.get("FASTVIDEO_COMPOSE_PRESET", "veryfast")
 # 防呆：一集几百镜还硬合成会把临时目录与内存拖死；超过就明确拒绝，不静默截断。
 COMPOSE_MAX_SHOTS = int(os.environ.get("FASTVIDEO_COMPOSE_MAX_SHOTS", "200"))
+
+# 导出前的一道 RIFE 补帧（2026-11-05 裁定＝开）。
+# 为什么要这道：FastMetal 1.3B 的产物实测是 16fps（`--fps` 默认 16），
+# 而成片按 24fps 出，`ffmpeg_runner` 只挂了一个 `-r 24`——那是**复制帧**的
+# 3:2 pulldown，动作会一顿一顿。补帧改成按时间轴合成中间帧，画质上是净收益。
+# 关掉它请显式设 FASTVIDEO_COMPOSE_INTERPOLATE=0；开着但运行时缺东西时
+# 这一道会**直接失败**，不会退回复制帧——"默默换了一种做法"是最难查的那类 bug。
+COMPOSE_INTERPOLATE = os.environ.get(
+    "FASTVIDEO_COMPOSE_INTERPOLATE", "1").strip().lower() not in ("0", "false", "no", "off")
+RIFE_MODEL_VERSION = os.environ.get("FASTVIDEO_RIFE_VERSION", "4.25")
 # 生产前检查里"作业目录还剩多少"的提醒线。5GB 是拍的：一集 720p 成片的临时文件
 # 加逐镜产物大概在这个量级，但**没有按目标机实测标定过**（《发布基线》§3 挂着这条）。
 # 做成可改的环境变量而不是写死在检查里——换机器、换分辨率时调这一档，

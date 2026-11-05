@@ -46,7 +46,7 @@ import adapters
 import jobfiles
 import pipeline
 import seasons
-from composition import ffmpeg_runner
+from composition import ffmpeg_runner, interpolate
 from composition.service import record_success as record_composition
 from composition.validators import MediaInvalid
 import runners
@@ -227,6 +227,10 @@ def _validate(job, outputs: Path) -> tuple[dict, runners.RunSpec | None]:
             return params, ffmpeg_runner.build(job, params, outputs)
         except ffmpeg_runner.CompositionJobInvalid as exc:
             raise JobFailure("bad_params", str(exc)) from exc
+        except interpolate.InterpolateUnavailable as exc:
+            # 补帧这道开着而运行时不齐：这是环境问题，不是参数不成立，
+            # 也不做"那就复制帧"的静默退让——点名缺什么，人决定补还是关。
+            raise JobFailure("interpolate_unavailable", str(exc)) from exc
         except MediaInvalid as exc:
             raise JobFailure("bad_params", exc.message) from exc
 
@@ -578,8 +582,27 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
         raise JobFailure("empty_output", exc.message, return_code,
                          provider_request_id=request_id) from exc
     if spec.runner == "ffmpeg":
+        # 补帧跑在 post_check 之前：验收要看的是最终那个文件的真实帧率，
+        # 不是补帧之前那一版的。没排到这一道（meta 里 interp 为空）时整段跳过，
+        # 行为与加这道之前逐字一致。
+        plan = spec.meta.get("interp")
+        if plan:
+            try:
+                metrics = interpolate.interpolate(
+                    spec.expected[0], spec.cwd, int(job["id"]),
+                    float(plan["to_fps"]), log=log)
+            except (interpolate.InterpolateUnavailable,
+                    runners.RunnerUnavailable) as exc:
+                raise JobFailure("interpolate_failed",
+                                 getattr(exc, "message", None) or str(exc),
+                                 return_code) from exc
+            if metrics.get("interp_s") is not None:
+                extra["interpolate"] = metrics
+            _write(log, "补帧：%s → %s（%s 帧 → %s 帧）" % (
+                metrics.get("source_fps"), metrics.get("target_fps"),
+                metrics.get("source_frames"), metrics.get("target_frames")))
         # 退出码 0 只说明进程没报错，不说明文件能播：再用 ffprobe 复核
-        # 分辨率、编码、时长与音轨；不通过就按失败收尾，不写 succeeded。
+        # 分辨率、编码、时长、帧率与音轨；不通过就按失败收尾，不写 succeeded。
         try:
             ffmpeg_runner.post_check(spec)
         except MediaInvalid as exc:

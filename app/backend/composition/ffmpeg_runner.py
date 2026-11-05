@@ -19,11 +19,11 @@ import os
 import shutil
 from pathlib import Path
 
-from config import (FFMPEG_BIN, COMPOSE_CRF, COMPOSE_PRESET)
+from config import (FFMPEG_BIN, COMPOSE_CRF, COMPOSE_INTERPOLATE, COMPOSE_PRESET)
 from jobfiles import resolve_artifact, resolve_subtitle
 from runners import RunSpec, RunnerUnavailable
 
-from composition import validators
+from composition import interpolate, validators
 from composition.validators import MediaInvalid
 
 
@@ -62,6 +62,36 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         raise CompositionJobInvalid(f"分辨率 {width}×{height} 不合法（宽高须为偶数）")
     if not (1 <= fps <= 60):
         raise CompositionJobInvalid(f"帧率 {fps} 不合法")
+
+    # 补帧开着时，这一次合成要按**源帧率**编码，把 16→24 那一步交给 RIFE。
+    # 为什么不能照旧编成 24fps：编成 24 就是复制帧，文件已经是 24fps 了，
+    # 后面那道补帧会被"源和目标同帧率"判成无事可做——那样等于这道根本没加。
+    # 决定在建命令时就做（`interpolate.plan`），不等跑完再判：编码帧率取决于它。
+    encode_fps: float = float(fps)
+    interp_plan: dict | None = None
+    decision = interpolate.plan(float(fps))
+    if decision.get("run"):
+        rates: list[tuple[int, float | None]] = []
+        for shot in shots:
+            shot_path = resolve_artifact((shot.get("video") or {}).get("path") or "")
+            if shot_path is None:
+                continue                     # verify_inputs 刚查过，这里是双保险
+            try:
+                rate, _frames = validators.probe_fps(shot_path)
+            except MediaInvalid as exc:
+                raise interpolate.InterpolateUnavailable(
+                    f"第 {shot.get('seq')} 镜读不出帧率，补帧不做：{exc.message}") from exc
+            rates.append((int(shot.get("seq") or 0), rate))
+        distinct = sorted({round(r, 3) for _s, r in rates if r})
+        if len(distinct) > 1:
+            raise interpolate.InterpolateUnavailable(
+                "镜头帧率不一致（现测 %s），补帧需要一个统一的源帧率；"
+                "要么把这批镜头统一到同一帧率，要么显式设 "
+                "FASTVIDEO_COMPOSE_INTERPOLATE=0 退回复制帧" % "、".join(map(str, distinct)))
+        if len(distinct) == 1 and abs(distinct[0] - float(fps)) > 0.01:
+            encode_fps = distinct[0]
+            interp_plan = {"from_fps": encode_fps, "to_fps": float(fps),
+                           "shots": len(rates)}
 
     try:
         validators.verify_inputs(timeline)
@@ -130,7 +160,9 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
     argv += [
         "-filter_complex", ";".join(chains), *maps,
         "-c:v", "libx264", "-preset", COMPOSE_PRESET, "-crf", str(COMPOSE_CRF),
-        "-pix_fmt", "yuv420p", "-r", str(fps), "-movflags", "+faststart",
+        # encode_fps 而不是 fps：补帧开着时这里要按源帧率编，把 16→24 交给 RIFE；
+        # 补帧关掉时 encode_fps 就等于 fps，行为与加这道之前逐字一致。
+        "-pix_fmt", "yuv420p", "-r", str(encode_fps), "-movflags", "+faststart",
         str(output),
     ]
 
@@ -143,7 +175,12 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
               "timeline_sha": hashlib.sha256(
                   json.dumps(timeline, ensure_ascii=False, sort_keys=True)
                   .encode("utf-8")).hexdigest(),
-              "inputs": len(shots), "audio_inputs": len(audio_inputs)},
+              "inputs": len(shots), "audio_inputs": len(audio_inputs),
+              # 补帧计划交给 worker：这一段跑在 ffmpeg 之后、post_check 之前。
+              # 不补帧时是 None，worker 那一步整个跳过，行为与加这道之前逐字一致。
+              "interp": interp_plan,
+              "interp_skip": None if interp_plan or not COMPOSE_INTERPOLATE
+                            else decision.get("reason")},
     )
 
 
@@ -154,8 +191,23 @@ def post_check(spec: RunSpec) -> dict:
         info = validators.verify_output(spec.expected[0], expected)
     except MediaInvalid as exc:
         raise MediaInvalid(f"合成结果没通过验收：{exc.message}") from exc
-    receipt = Path(spec.meta.get("compose_json") or "")
-    if str(receipt):
+    # 帧率这道以前没人查：只查分辨率、编码、时长与音轨，于是"声明 24fps、
+    # 实际是复制帧"一直过得去。加了补帧之后这一条就是它的验收闸门——
+    # 补没补上，看的是文件里真实的平均帧率，不是参数里写的那个。
+    want_fps = expected.get("fps")
+    got_fps, got_frames = validators.probe_fps(spec.expected[0])
+    if want_fps and (not got_fps or abs(float(want_fps) - got_fps) > 0.5):
+        raise MediaInvalid(
+            f"合成结果的平均帧率是 {got_fps or '读不出来'}，要求 {want_fps}；"
+            + ("补帧那一道没生效" if spec.meta.get("interp") else "编码帧率不对"))
+    info = {**info, "avg_fps": got_fps, "frames": got_frames}
+    # 注意这里先判原始字符串再构造 Path：`Path("")` 会变成 `.`，
+    # 于是 `if str(receipt)` 对空值也是真，接着 `.with_suffix(".json.tmp")`
+    # 就在根目录上炸成 ValueError。生产路径永远带回执，所以这颗雷一直埋着；
+    # 新加的帧率用例把它踩了出来。
+    raw_receipt = str(spec.meta.get("compose_json") or "").strip()
+    if raw_receipt:
+        receipt = Path(raw_receipt)
         payload = {
             "schema": 1,
             "composition_id": spec.meta.get("composition_id"),

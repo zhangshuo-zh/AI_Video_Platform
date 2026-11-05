@@ -154,6 +154,64 @@ def verify_output(path: Path, expected: dict) -> dict:
     return info
 
 
+def probe_fps(path: Path) -> tuple[float | None, int | None]:
+    """现读一个文件的**帧率与帧数**，给补帧那一道用。
+
+    为什么不塞进 `inspect()`：那个函数的返回形状被合成前后两处断言共用，
+    加键等于动别人的契约；而这一对数字只有补帧关心。
+    为什么信 `avg_frame_rate` 不信 `r_frame_rate`：后者是时间基的倒数，
+    对 VFR 素材会报出一个"看着像 24 其实不是"的值；补帧算的是帧数比例，
+    必须用实际平均帧率。取不到就返回 (None, None)，由调用方决定跳过还是失败——
+    这里不猜。
+    """
+    if not path.is_file():
+        raise MediaInvalid(f"文件不存在：{path.name}")
+    try:
+        proc = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=avg_frame_rate,nb_frames",
+             "-print_format", "json", str(path)],
+            capture_output=True, text=True, timeout=30, shell=False)
+    except FileNotFoundError as exc:
+        raise MediaInvalid(f"找不到 ffprobe（{FFPROBE_BIN}）") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaInvalid(f"ffprobe 读取 {path.name} 的帧率超时") from exc
+    if proc.returncode != 0:
+        raise MediaInvalid(f"{path.name} 读不出帧率")
+    try:
+        streams = (json.loads(proc.stdout or "{}")).get("streams") or []
+    except ValueError as exc:
+        raise MediaInvalid(f"{path.name} 的帧率信息读不出来") from exc
+    if not streams:
+        return None, None
+    stream = streams[0]
+    fps = _rational(stream.get("avg_frame_rate"))
+    frames = _int(stream.get("nb_frames"))
+    return fps, frames
+
+
+def _rational(value) -> float | None:
+    """把 ffprobe 的 "24/1"、"30000/1001" 变成浮点；"0/0" 与坏值给 None。"""
+    text = str(value or "").strip()
+    if "/" not in text:
+        return _float(text) or None
+    num, _, den = text.partition("/")
+    try:
+        top, bottom = float(num), float(den)
+    except ValueError:
+        return None
+    if bottom == 0 or top == 0:
+        return None
+    return round(top / bottom, 6)
+
+
+def _int(value) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _float(value) -> float | None:
     try:
         return float(value)

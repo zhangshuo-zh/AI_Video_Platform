@@ -21,6 +21,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+import config  # 只读 RIFE_MODEL_VERSION：版本号只能有一个出处
+
 
 def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
@@ -268,6 +270,54 @@ def probe_mlx_audio(which: str = "tts") -> Runtime:
                 % "、".join(supported), cli=str(cli))
         return _ok("mlx-audio 音乐入口与 acestep 档都在", cli=str(cli))
     return _ok("mlx-audio 入口在；权重首次运行才会下载", cli=str(cli))
+
+
+def rife_weights_dir() -> Path | None:
+    """RIFE 的 MLX 权重目录：显式 env 优先，否则按 HF 缓存里的快照目录找。
+
+    只做文件系统检查，**不调 `ensure_weights_available()`**——那一句在缺权重时
+    会去下载。22.7MB 的 RIFE 4.25 掉下来不算大事，但"点开一页设置就顺手联网"
+    是另一回事：这台机器是局域网内的生产机，出网动作必须由人发起。
+    """
+    raw = _env("FASTVIDEO_RIFE_WEIGHTS")
+    if raw:
+        return Path(raw).expanduser()
+    cache = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface"))
+    hub = cache / "hub" / ("models--mlx-community--RIFE-%s" % config.RIFE_MODEL_VERSION)
+    for snap in sorted((hub / "snapshots").glob("*")) if (hub / "snapshots").is_dir() else []:
+        if (snap / "model.safetensors").is_file():
+            return snap
+    return None
+
+
+def probe_rife() -> Runtime:
+    """补帧这一道的运行时四件套：解释器、后端模块、权重、平台侧脚本。
+
+    为什么单列一个 probe 而不是挂进 `probe(code, ...)`：RIFE 不是能力轴上的
+    provider，它是合成链的一段后处理。把它登记成 provider 就等于宣称
+    "能在模型中心选它跑一条作业"，而它没有作业形态——真要做成可登记的东西，
+    那属于 W-B 的引擎实例工作包，得先按"规格住清单"登记。
+    """
+    home = fastmetal_home()
+    if home is None:
+        return _unknown("设 FASTVIDEO_FASTMETAL_HOME 指向 FastVideo 仓库后才会检查补帧运行时")
+    python = fastmetal_python(home)
+    if python is None:
+        return _missing("FastVideo 仓库里没有 .venv/bin/python，补帧跑不起来", home=str(home))
+    backend = home / "fastvideo" / "mlx_runtime" / "rife_interp.py"
+    if not backend.is_file():
+        return _missing(f"仓库里没有 MLX RIFE 后端：{backend}", home=str(home), python=str(python))
+    weights = rife_weights_dir()
+    if weights is None or not weights.is_dir():
+        return _missing("RIFE 权重不在缓存里（mlx-community/RIFE-%s）；"
+                        "先下载或把目录写进 FASTVIDEO_RIFE_WEIGHTS" % config.RIFE_MODEL_VERSION,
+                        python=str(python), backend=str(backend))
+    script = Path(__file__).resolve().parent / "composition" / "rife_pass.py"
+    if not script.is_file():
+        return _missing(f"平台侧的补帧脚本不在：{script}", python=str(python))
+    return _ok("解释器、RIFE 后端、权重与补帧脚本都在（未加载权重）",
+               python=str(python), backend=str(backend), weights=str(weights),
+               script=str(script))
 
 
 def probe(code: str, model_code: str = "") -> Runtime:
