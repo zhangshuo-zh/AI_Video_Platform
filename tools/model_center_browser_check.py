@@ -188,22 +188,123 @@ def main():
         # 登记模型：打开弹窗 → 填 → 提交 → 列表出现
         P.click(cdp, "#mc-add")
         check("登记弹窗能打开", P.has(cdp, "#mc-form:not([hidden])"))
+
+        # 这两格原来是两个自由文本框（连 datalist 都没挂）：人能敲任何字符串，
+        # 再由提交侧拒——校验推给报错是最坏的一种。现在选项只出自清单。
+        picks = P.eval_js(cdp, """(() => {
+          const prov = document.querySelector('#mf-prov');
+          const model = document.querySelector('#mf-model');
+          const free = document.querySelector('#mf-model-free');
+          const set = (id, v) => { const e = document.querySelector(id);
+                                   e.value = v;
+                                   e.dispatchEvent(new Event('change', {bubbles: true})); };
+          set('#mf-cap', 'image'); set('#mf-be', 'local');
+          const local = [...prov.options].map(o => o.value).join(',');
+          const localModel = model.hidden ? '' : [...model.options].map(o => o.value).join(',');
+          set('#mf-be', 'cloud');
+          const cloud = [...prov.options].map(o => o.value).join(',');
+          const hand = free.hidden ? '下拉' : ('手填·' + document.querySelector('#mf-model-note').textContent);
+          set('#mf-be', 'local'); set('#mf-cap', 'text');
+          const none = prov.options[prov.selectedIndex].text + (prov.disabled ? '·禁用' : '·可选');
+          // 真正天天用的是这一条：同一能力里多个 provider，模型档必须跟着换。
+          set('#mf-cap', 'video'); set('#mf-be', 'local');
+          const vProv = [...prov.options].map(o => o.value).join(',');
+          set('#mf-prov', 'mlx-video');
+          const vModel = [...model.options].map(o => o.value).join(',');
+          set('#mf-prov', 'fastmetal');
+          const vBack = [...model.options].map(o => o.value).join(',');
+          set('#mf-cap', 'image');
+          return [prov.tagName, model.tagName, local, localModel, cloud, hand, none,
+                  vProv, vModel, vBack].join(' § ');
+        })()""")
+        f = [x.strip() for x in str(picks).split('§')]
+        f += ['?'] * (10 - len(f))
+        check("Provider 与模型标识是下拉，选项取自清单（图像×本地＝mflux）",
+              f[0] == 'SELECT' and f[1] == 'SELECT'
+              and f[2] == 'mflux' and 'flux1-schnell' in f[3],
+              f"控件 {f[0]}/{f[1]}／本地档 {f[2]}／模型档 {f[3]}")
+        check("只登记了名字的档（图像×云端）模型 ID 退回手填并写明原因",
+              'jimeng' in f[4] and f[5].startswith('手填·')
+              and '只登记了 provider 名' in f[5],
+              f"云端档 {f[4]}／那一格 {f[5]}")
+        check("清单里没有的组合（文本×本地）不给人自己造键",
+              '清单里没有这一档' in f[6] and '禁用' in f[6],
+              f"那一格念的是「{f[6]}」")
+        # 级联是这一格存在的理由：只测"图像×本地只有一个 provider"等于没测。
+        check("同一能力里换 provider，模型档跟着换（视频×本地：fastmetal ↔ mlx-video）",
+              f[7] == 'fastmetal,mlx-video' and f[8].startswith('wan2.2-')
+              and f[9] == 'fastmetal-1.3b-qad,fastmetal-5b-qad',
+              f"provider {f[7]}／切到 mlx-video 得 {f[8]}／切回 fastmetal 得 {f[9]}")
+
+        # 而且这一档真提交不出去：错误要说清是清单缺档，不是"provider 要填"
         P.eval_js(cdp, """(() => {
-          const set = (id, v) => { const e = document.querySelector(id); e.value = v; };
+          const set = (id, v) => { const e = document.querySelector(id);
+                                   e.value = v;
+                                   e.dispatchEvent(new Event('change', {bubbles: true})); };
+          set('#mf-cap', 'text'); set('#mf-be', 'local');
+          document.querySelector('#mf-submit').click();
+        })()""")
+        blocked = P.eval_js(cdp, "[document.querySelector('#mf-error').textContent,"
+                                 " !document.querySelector('#mc-form').hidden].join(' § ')")
+        # 布尔过 JS→CDP 是小写 true，别写成 Python 的 True
+        check("文本×本地提交被挡在界面，原文指向 adapters.py",
+              'adapters.py' in str(blocked) and str(blocked).rstrip().endswith('§ true'),
+              f"回执 {blocked}")
+
+        P.eval_js(cdp, """(() => {
+          const set = (id, v) => { const e = document.querySelector(id);
+                                   e.value = v;
+                                   e.dispatchEvent(new Event('change', {bubbles: true})); };
           set('#mf-cap', 'image'); set('#mf-be', 'local');
           set('#mf-prov', 'mflux'); set('#mf-model', 'flux1-schnell');
           set('#mf-name', '验收用底模'); set('#mf-caps', '角色一致性');
           document.querySelector('#mf-submit').click();
         })()""")
         time.sleep(1.2)
-        check("登记后回到仓库页并出现这一行",
-              P.has(cdp, "#repo-rows tr"),
-              str(P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
-                                 ".some(t => t.textContent.includes('验收用底模'))")))
+        # 这一条原来用「仓库页有行」当断言、把真正的信号写在 detail 里，
+        # 结果登记没成功也照样绿——断言必须能变红，所以直接量那一行在不在。
+        landed = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                                ".some(t => t.textContent.includes('验收用底模'))")
+        check("登记后回到仓库页并出现这一行", str(landed) == 'True',
+              f"仓库页里有没有「验收用底模」这一行：{landed}")
 
         # 人工声明未核验必须标出来
         check("人工声明的标签带「未核验」提示",
               P.eval_js(cdp, "document.body.innerHTML.includes('人工声明')"))
+
+        # 严格下拉只收了界面这一侧：接口仍然收清单外的键（远程自建、预登记），
+        # 那种行只能从接口进来。它们进编辑态时必须把原值照样显示出来并标
+        # 「清单未登记」——下拉停在空白会让人以为自己的键被人改丢了。
+        foreign = cdp.eval("""(async () => {
+          const r = await fetch('/api/models', {method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({capability: 'image', backend: 'local',
+                                  provider: 'zzz-selfhosted', model_code: 'v1'})});
+          return [r.status, (await r.json()).id].join('/');
+        })()""")
+        check("接口仍允许登记清单外的 provider（收的是界面这一侧）",
+              str(foreign).startswith('201/'), f"POST /api/models 回执 {foreign}")
+        go(cdp, f"{BASE}/#models/0")
+        time.sleep(0.6)
+        P.click(cdp, "[data-detail='zzz-selfhosted/v1']")
+        time.sleep(0.3)
+        edit_state = P.eval_js(cdp, """(() => {
+          document.querySelector('[data-act-edit]').click();
+          const prov = document.querySelector('#mf-prov');
+          const free = document.querySelector('#mf-model-free');
+          return [prov.value, prov.options[prov.selectedIndex].text, prov.disabled,
+                  free.hidden, free.value, free.disabled,
+                  document.querySelector('#mf-model-note').textContent].join(' § ');
+        })()""")
+        e = [x.strip() for x in str(edit_state).split('§')]
+        e += ['?'] * (7 - len(e))
+        check("编辑清单外登记：原值在位、标「清单未登记」、两把键都是灰的",
+              e[0] == 'zzz-selfhosted' and '清单未登记' in e[1] and e[2] == 'true'
+              and e[3] == 'false' and e[4] == 'v1' and e[5] == 'true'
+              and '不在清单里' in e[6],
+              f"下拉「{e[0]}／{e[1]}／灰 {e[2]}」手填「可见 {e[3]}／值 {e[4]}／灰 {e[5]}」"
+              f"／说明「{e[6]}」")
+        P.click(cdp, "[data-close='mc-form']")
 
         # 工作区 1：引擎管理
         go(cdp, f"{BASE}/#models/1")

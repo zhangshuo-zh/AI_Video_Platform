@@ -33,7 +33,15 @@ import model_center_browser_check as mc      # noqa: E402
 # 只拍"界面上真能走到的状态"：弹窗一律靠 click 打开，不注入 DOM，不摆假数据。
 SHOTS = [
     ("v99-model-repo.png", "#models/0", None, 0.4),
-    ("v99-model-register.png", "#models/0", "#mc-add", 0.6),
+    # v0.117：登记弹窗的 provider／模型标识改成严格下拉，旧的 v99-model-register.png
+    # 拍的是两个自由文本框——图文不符比没图更难查，所以这一张重拍，并且补拍一张
+    # 「清单只登记了名字、模型 ID 退回手填」的那一档：那句话光写在正文里看不见。
+    ("v117-model-register.png", "#models/0", "#mc-add", 0.6),
+    ("v117-model-register-hand.png", "#models/0",
+     "@js:(() => { document.querySelector('#mc-add').click();"
+     " const set = (id, v) => { const e = document.querySelector(id);"
+     " e.value = v; e.dispatchEvent(new Event('change', {bubbles: true})); };"
+     " set('#mf-cap', 'image'); set('#mf-be', 'cloud'); return 1; })()", 0.6),
     ("v99-model-detail.png", "#models/0", "[data-detail]", 0.9),
     ("v99-model-engines.png", "#models/1", None, 0.4),
     # 引擎页下半：清单里登记过的适配器＋未接入那两排。一屏装不下，必须滚过去再拍一张，
@@ -101,6 +109,12 @@ def main() -> int:
                     "card.scrollIntoView({block: 'start'}); window.scrollBy(0, -70); return 1; })()"
                     % want)
                 assert ok == 1, f"{name} 找不到标题「{want}」"
+            elif click_sel and click_sel.startswith("@js:"):
+                # 有些状态要点开弹窗再改一格才出现（登记弹窗的运行位置就是那一格）。
+                # 这里发的是人选那一项时浏览器自己会派的 change 事件，
+                # 不注入 DOM、不摆假数据、也不绕过任何校验。
+                ok = cdp.eval(click_sel.split(":", 1)[1])
+                assert ok, f"{name} 那段操作没走通：{ok}"
             elif click_sel == "@bottom":
                 cdp.eval("(() => { window.scrollTo(0, document.body.scrollHeight); return 1; })()")
             elif click_sel:

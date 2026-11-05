@@ -64,6 +64,97 @@ function adapterOf(manifest, cap, backend, provider) {
       || (a.aliases || []).some((x) => norm(x) === norm(provider))));
 }
 
+/** 一条 option 的写法，两个键共用。 */
+const pickOpt = (value, label) => `<option value="${escapeHtml(value)}">${
+  escapeHtml(label)}</option>`;
+
+const sameCode = (a, provider) => {
+  const p = norm(provider);
+  return !!p && (norm(a.code) === p || (a.aliases || []).some((x) => norm(x) === p));
+};
+
+/**
+ * 清单里能对上「能力 × 运行位置」的 provider。
+ * remote 折回 local 再比——和 routers/model_center.py 里那次 fold 同一个口径，
+ * 两边不一致就会出现「接口认、界面不给选」或反之的档。
+ */
+function manifestProviders(cap, backend) {
+  const be = backend === 'remote' ? 'local' : backend;
+  return (cache.manifest?.adapters || [])
+    .filter((a) => a.capability === cap && a.backend === be);
+}
+
+/** 模型标识的当前值：下拉与手填框两个控件只有一个可见。 */
+function pickedModel(modal) {
+  const free = modal.querySelector('#mf-model-free');
+  return (free.hidden
+    ? modal.querySelector('#mf-model') : free).value.trim();
+}
+
+/**
+ * 重填 Provider／模型标识这两格。选项只来自 GET /api/providers/manifest，
+ * 不再让人自由填——登记一档 provider 的前提是平台知道它的参数与运行方式。
+ * 三种边界各留一句可见的说法，而不是把人堵在空下拉前面：
+ * 1. 这一「能力 × 运行位置」清单里没有档 → 下拉显示「清单里没有这一档」并禁用，提交挡下；
+ * 2. provider 只登记了名字、清单没枚举模型 → 模型 ID 退回手填，旁边写明为什么；
+ * 3. keepForeign（编辑一条既有登记）→ 值对不上清单也照样列出来并标「清单未登记」，
+ *    否则下拉把它显示成空白，人会以为键丢了。
+ */
+function fillPicks(modal, cap, backend, provider, model, keepForeign) {
+  const provSel = modal.querySelector('#mf-prov');
+  const modelSel = modal.querySelector('#mf-model');
+  const modelFree = modal.querySelector('#mf-model-free');
+  const modelNote = modal.querySelector('#mf-model-note');
+  const modelLabel = modal.querySelector('label[for="mf-model"], label[for="mf-model-free"]');
+  // 编辑态这两格是登记行的键，改键＝换一档：由 openForm 打在 data 上，
+  // 重填时一起算，否则改完能力再回来会把该禁的框放开了。
+  const locked = modal.dataset.keysLocked === '1';
+
+  const list = manifestProviders(cap, backend);
+  // 目标 provider 对不上清单时怎么办，分两种：
+  // 编辑（keepForeign）要把原值留在下拉上标「清单未登记」；
+  // 新增或刚换了能力／运行位置，就落到新清单的第一档——停在空白上
+  // 会让人以为清单坏了，而其实只是这一格跟着换了内容。
+  let hit = list.find((a) => sameCode(a, provider));
+  if (!hit && provider && !keepForeign) hit = list[0];
+  if (!hit && !provider) hit = list[0];
+  const opts = list.map((a) => pickOpt(a.code, a.label));
+  if (keepForeign && provider && !hit) opts.push(pickOpt(provider, `${provider}（清单未登记）`));
+  provSel.innerHTML = opts.length ? opts.join('') : pickOpt('', '清单里没有这一档');
+  provSel.value = hit ? hit.code : (provider || '');
+  // 清单里没有这一档时上面那句会把值停在一个不存在的 option 上，
+  // selectedIndex 就成 -1：人看到的是空白下拉，读代码的人以为清单挂了。
+  if (provSel.selectedIndex < 0) provSel.selectedIndex = 0;
+  provSel.disabled = locked || !opts.length;
+
+  const tiers = hit?.models || [];
+  const codes = tiers.map((m) => m.code);
+  const inList = !!model && codes.some((c) => norm(c) === norm(model));
+  const foreign = !!(keepForeign && model && !inList && codes.length);
+  const tierOpts = tiers.map((m) => pickOpt(m.code, m.label || m.code));
+  if (foreign) tierOpts.push(pickOpt(model, `${model}（清单未登记）`));
+  // 清单没枚举模型（只登记了名字的 provider，或清单外的 provider）就退回手填：
+  // 前者是供应商自己的命名，后者连参数都不该被猜。
+  const byHand = !codes.length;
+  modelSel.hidden = byHand;
+  modelFree.hidden = !byHand;
+  modelNote.hidden = !byHand;
+  if (modelLabel) modelLabel.setAttribute('for', byHand ? 'mf-model-free' : 'mf-model');
+  if (byHand) {
+    modelFree.value = keepForeign ? (model || '') : '';
+    modelFree.disabled = locked || !list.length;
+    modelNote.textContent = hit
+      ? '这一档的清单只登记了 provider 名，没有模型档：模型 ID 按供应商那边的叫法手填。'
+      : (list.length
+          ? 'provider 不在清单里：参数与运行方式都不会被猜，提交侧会被拒。'
+          : '没有可登记的档：清单里没有这个「能力 × 运行位置」，界面上也不让你造一个键。');
+  } else {
+    modelSel.innerHTML = tierOpts.join('');
+    modelSel.value = (inList || foreign) ? model : codes[0];
+    modelSel.disabled = locked;
+  }
+}
+
 /**
  * 运行位置（登记层）的中文名。权威在后端 `models.REG_SOURCES`，随
  * `GET /api/models` 的 `reg_sources` 下发；`enums.js` 那份只用在"清单还没回来"
@@ -709,9 +800,16 @@ const MODALS = `
           <label for="mf-be" class="top">运行位置</label>
           <select id="mf-be" class="ctl"></select>
           <label for="mf-prov">Provider</label>
-          <input id="mf-prov" class="ctl" maxlength="60" placeholder="清单里的 provider code">
+          <select id="mf-prov" class="ctl"></select>
           <label for="mf-model">模型标识</label>
-          <input id="mf-model" class="ctl" maxlength="80" placeholder="清单里的 model code">
+          <!-- 模型标识跟着 provider 走：清单枚举了档位就是下拉，
+               只登记了名字的档没有可选项，退回手填并在下面写清为什么。 -->
+          <div>
+            <select id="mf-model" class="ctl"></select>
+            <input id="mf-model-free" class="ctl" maxlength="80" hidden
+                   placeholder="供应商那边叫什么就填什么">
+            <p class="hint" id="mf-model-note" hidden></p>
+          </div>
           <label for="mf-name">显示名</label>
           <input id="mf-name" class="ctl" maxlength="80" placeholder="给人看的名字，留空就用清单里的">
           <label for="mf-ver">版本</label>
@@ -733,7 +831,8 @@ const MODALS = `
         </div>
         <p class="modal-err" id="mf-error"></p>
         <p class="modal-meta">登记不会下载权重、不会启动推理、也不会改默认轨。
-          清单里没有这一档也允许登记，但界面会标「清单未登记」，提交侧照旧拒。</p>
+          Provider 与模型标识只列清单里有的档（规格住代码，界面不猜没登记过的 provider）；
+          清单只登记了 provider 名的那一档没有模型可列，模型 ID 仍由你手填。</p>
       </div>
       <div class="modal-actions">
         <button class="btn" data-close="mc-form">取消</button>
@@ -1035,9 +1134,23 @@ function openForm(regId, preset) {
   modal.querySelector('#mf-be').innerHTML = Object.entries(sourceLabels())
     .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('');
   const set = (id, value) => { modal.querySelector(id).value = value ?? ''; };
+  const beSel = modal.querySelector('#mf-be');
+  const provSel = modal.querySelector('#mf-prov');
+  const modelFree = modal.querySelector('#mf-model-free');
   capSel.value = preset?.capability || 'image';
-  modal.querySelector('#mf-be').value = preset?.backend || 'local';
-  set('#mf-prov', preset?.provider); set('#mf-model', preset?.model_code);
+  beSel.value = preset?.backend || 'local';
+  // 这两格的选项跟着能力／运行位置走，所以先打「键已锁」标记再填：
+  // 编辑态键是登记行的主键，重填时也得保持灰的。
+  modal.dataset.keysLocked = regId ? '1' : '';
+  fillPicks(modal, capSel.value, beSel.value, preset?.provider,
+            preset?.model_code, !!regId);
+  // onchange 用赋值而不是 addEventListener：弹窗 DOM 是常驻的那一份，
+  // 每次 openForm 再 add 一遍就会在人改一次能力时跑 N 遍重填。
+  const rePick = () => fillPicks(modal, capSel.value, beSel.value,
+                                 provSel.value, pickedModel(modal), false);
+  capSel.onchange = rePick;
+  beSel.onchange = rePick;
+  provSel.onchange = rePick;
   set('#mf-name', preset?.display_name); set('#mf-ver', preset?.version);
   set('#mf-path', preset?.artifact_path); set('#mf-remote', preset?.remote_model_id);
   set('#mf-caps', (preset?.tags || []).filter((t) => t.source === 'manual')
@@ -1047,19 +1160,26 @@ function openForm(regId, preset) {
   // 编辑时能力／运行位置／provider／模型标识是登记行的键，改键等于换一档——
   // 那应该是撤了再登记。只禁用而不在提交里删字段是不够的：用户会以为改了，
   // 保存后却什么都没变。后端 PATCH 也不收 backend/capability，口径两边一致。
-  modal.querySelector('#mf-prov').disabled = !!regId;
+  provSel.disabled = !!regId;
   modal.querySelector('#mf-model').disabled = !!regId;
-  modal.querySelector('#mf-cap').disabled = !!regId;
-  modal.querySelector('#mf-be').disabled = !!regId;
+  modelFree.disabled = !!regId;
+  capSel.disabled = !!regId;
+  beSel.disabled = !!regId;
   modal.hidden = false;
 
   const submit = modal.querySelector('#mf-submit');
   submit.onclick = async () => {
     err.textContent = '';
-    const provider = modal.querySelector('#mf-prov').value.trim();
-    const modelCode = modal.querySelector('#mf-model').value.trim();
+    const provider = provSel.value.trim();
+    const modelCode = pickedModel(modal);
     if (!provider || !modelCode) {
-      err.textContent = 'provider 与模型标识都要填——这两个键决定登记的是哪一档。';
+      // 两种空法说的话不一样：下拉压根没得选＝清单里没有这一档，
+      // 只漏了模型 ID＝那一档的清单只登记了名字、要人手填。
+      err.textContent = provider
+        ? '模型标识不能空——provider 与模型标识这两个键决定登记的是哪一档。'
+        : `清单里没有「${cache.catalog.capabilities[capSel.value] || capSel.value}`
+          + ` × ${sourceLabels()[beSel.value] || beSel.value}」这一档，界面登记不了。`
+          + '要加 provider 得先把适配器写进 adapters.py（规格住代码）。';
       return;
     }
     const caps = modal.querySelector('#mf-caps').value.split(/[,，]/)
