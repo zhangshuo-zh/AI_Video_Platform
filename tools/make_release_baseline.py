@@ -83,11 +83,24 @@ def git_info() -> tuple[str, str]:
     return short, branch
 
 
+def _vkey(v: str) -> tuple[int, ...]:
+    """把 "v0.118" 变成可比较的 (0, 118)。
+    按字符串比会错：`"v0.9" > "v0.118"`，因为逐字符比到第二位就分出胜负了。"""
+    return tuple(int(x) for x in v.lstrip("v").split(".") if x.isdigit())
+
+
 def design_version() -> str:
-    """设计稿最新修订行的版本号。发布以设计稿版本为标记。"""
+    """设计稿最新修订行的版本号。发布以设计稿版本为标记。
+
+    取**数值最大**的那一行，不取表里最后一行。这一句原来写的是 `rows[-1]`：
+    v0.118 那轮把修订表重排成「最新在前」，重排前表是新旧混排的，最后一行
+    恰好是最新的那条，所以这个错一直看不出来；重排之后它开始印 **v0.1**
+    （10-30 的初稿行），而三道门禁没有一道查这一行——错的版本号就这么一路
+    绿灯进了公开仓库。现在除了取对，`--check` 还要复查基线自己那行（见 check_docs）。
+    """
     text = (ROOT / "设计稿.md").read_text(encoding="utf-8")
     rows = re.findall(r"^\| \d{4}-\d{2}-\d{2} \| (v[\d.]+) \|", text, re.M)
-    return rows[-1] if rows else "?"
+    return max(rows, key=_vkey) if rows else "?"
 
 
 def doc_versions() -> dict[str, str]:
@@ -351,6 +364,16 @@ def check_docs(facts: dict) -> int:
             fails.append(f"数据字典.md: 表数不是 {facts['tables']} 张")
         if f"0001—{facts['migration']:04d}" not in dd:
             fails.append(f"数据字典.md: 迁移号没追到 0001—{facts['migration']:04d}")
+    # 基线自己头部那一行也要对得上。加这一条的理由就是上面那次事故：
+    # `design_version()` 取错行、印出「设计稿 v0.1」，而三道门禁全绿——
+    # 因为没有任何一道把基线头部再算一遍。现算与 stamped 不一致，这里就该红。
+    base = (DOCS / "发布基线.md").read_text(encoding="utf-8")
+    stamped = re.search(r"^- Git：.*；设计稿 (v[\d.]+)", base, re.M)
+    if not stamped:
+        fails.append("发布基线.md: 头部找不到「；设计稿 vX.Y」那一段")
+    elif stamped.group(1) != facts["design"]:
+        fails.append(f"发布基线.md: 头部设计稿版本 {stamped.group(1)}"
+                     f" 与现算 {facts['design']} 不一致（重跑一次生成）")
     if fails:
         print("与基线不一致：")
         for f in fails:
