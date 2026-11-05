@@ -169,6 +169,21 @@ def main():
                                 ".map(e => e.textContent)")
         check("侧栏按五组排（工作台／创作准备／生产执行／质量与交付／平台能力）",
               isinstance(titles, list) and len(titles) == 5, "、".join(titles or []))
+        # 分组标签本身就在那道分隔上，条目之间不该再画线。`utility` 那条上边框比
+        # 0037 的分组标签早，留着它会在「平台能力」标签下面与两项之间各画一条横线，
+        # 把同一组里的两项硬切开（使用侧指出的就是这个）。
+        # 这条量的是线宽，不是"看起来对不对"；顺手把条数也钉住——
+        # 万一整组因为权限变化消失了，它不会拿着空列表假装通过。
+        utility_lines = P.eval_js(cdp, """(() => {
+          const items = [...document.querySelectorAll('.nav-group.utility')];
+          const lined = items.filter(e => getComputedStyle(e).borderTopWidth !== '0px').length;
+          return items.length + '|' + lined;
+        })()""")
+        parts = str(utility_lines).split("|")
+        check("平台能力组里一条横线都不画（标签下面与两项之间都不画）",
+              len(parts) == 2 and parts == ["2", "0"],
+              f"utility 条目 {parts[0] if parts else '?'} 个／还画着线的 "
+              f"{parts[1] if len(parts) > 1 else '?'} 个")
         labels = P.eval_js(cdp, "[...document.querySelectorAll('.nav-item')]"
                                  ".map(e => e.textContent.trim())")
         check("「项目工作台」进了侧栏，且原有一级菜单一个没少",
@@ -332,6 +347,24 @@ def main():
         check("种下的那条作业真成功了（清单要有可审对象）",
               api(f"/api/jobs/{good_id}", token).get("status") == "succeeded")
         mc.go(cdp, f"{BASE}/#review/1")
+        # 说明行的样式得真的落到元素上。`p.modal-meta` 那条规则原来带 `.modal-body`
+        # 一层，卡片里用同一个类名拿不到样式，`<p>` 落回正文的 13px＋继承色（白），
+        # 于是这行本该是灰的小字在审核中心比正文还亮。这类"类名写了、样式没落"
+        # 读代码看不出来，只能量计算样式——所以这里现取一个 ink-3 的参照色来比。
+        meta_style = P.eval_js(cdp, """(() => {
+          const p = document.querySelector('.card p.modal-meta');
+          if (!p) return 'no-meta-line';
+          const probe = document.createElement('p');
+          probe.style.color = 'var(--ink-3)';
+          document.body.appendChild(probe);
+          const want = getComputedStyle(probe).color;
+          probe.remove();
+          const s = getComputedStyle(p);
+          return [s.fontSize, s.color === want ? '灰' : '还是白的 ' + s.color,
+                  s.marginTop].join('|');
+        })()""")
+        check("卡片里的说明行拿到的是摘要行样式（不是默认的白正文）",
+              str(meta_style).startswith("11.5px|灰|"), str(meta_style))
         P.click(cdp, f'[data-open-job="{good_id}"]')
         time.sleep(1.6)
         detail = P.text_of(cdp, "#job-review-detail") or ""

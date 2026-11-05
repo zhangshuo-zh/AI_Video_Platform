@@ -1012,8 +1012,12 @@ td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);curs
 .modal-warn{color:var(--bad);font-weight:600}
 .modal-label{display:block;font-size:11.5px;color:var(--ink-3);margin:6px 0 6px}
 .modal-body input.ctl,.modal-body textarea.ctl{width:100%}
-/* 只读摘要行：必须压过上面 .modal-body p 那条通用规则（它会给 12.5px／ink-2） */
-.modal-body p.modal-meta{
+/* 只读摘要行。**不带 `.modal-body` 这一层**：类名只有一个意思，按容器分两档就会
+   漏——卡片里那几处 `<p class="modal-meta">`（审核中心的产物队列／文档校验队列／
+   签字概览、资产详情的时间与上传说明）拿不到样式，`<p>` 落回浏览器默认的 16px
+   加继承色（白），比 13px 的正文还大还亮，看着就是"一坨白字压在最上面"。
+   压过上面 `.modal-body p` 那条通用规则这件事仍然成立：同权重、写在后面，后来者胜。 */
+p.modal-meta{
   margin:14px 0 0;font-size:11.5px;line-height:1.7;
   color:var(--ink-3);font-variant-numeric:tabular-nums;
 }
@@ -1244,7 +1248,13 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 
 /* hidden 属性要压过各组件的 display，否则 .chip / .palette 会把它顶掉 */
 [hidden]{display:none !important}
-.nav-group.utility{margin-top:10px;padding-top:6px;border-top:1px solid var(--line)}
+/* 「模型中心」「系统设置」带的 `utility` 类比 0037 的分组标签早：那时侧栏没有
+   小标题，靠一条上边框把工具块和业务模块隔开。现在分组标签本身就在那道分隔上，
+   这条边框就变成两条多余横线——一条压在「平台能力」标签底下（同一件事画两道），
+   一条把同一组里的两项硬切开（使用侧指出的就是这个）。
+   删掉之后这一组与「工作台」「生产执行」受同一条规矩：标签＋间距，条目之间不画线。
+   类名仍留在 DOM 里——`buildNav` 拿它当分组键的兜底（`m.group` 缺失时走 `__utility`）。 */
+.nav-group.utility{margin-bottom:3px}
 
 /* ---------- 动效关键帧 ---------- */
 /* 切页用"擦除"而不是"上浮"：从上往下揭开，配 6px 位移。
