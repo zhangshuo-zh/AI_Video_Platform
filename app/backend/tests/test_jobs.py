@@ -268,6 +268,56 @@ def test_成功作业写日志与相对路径产物(as_role, clean_queue, seeded
     assert (JOBS_DIR / arts[0]["path"]).is_file()
 
 
+def _ffmpeg_ok() -> bool:
+    import subprocess
+    from config import FFMPEG_BIN
+    try:
+        subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, check=True)
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _ffmpeg_ok(), reason="本机没有 ffmpeg")
+def test_mock的媒体分支产出真能播的mp4(as_role, clean_queue, seeded):
+    """六场景要把"生成→签字→合成"一次跑穿，产物必须是真媒体。
+
+    断言不看文件大小这种弱证据，直接用 ffprobe 读时长与视频流——
+    读得出来才算这条轨真的能喂给时间线。
+    """
+    import subprocess
+    from config import FFPROBE_BIN
+    c = as_role("editor")
+    job = _submit(c, seeded["project_id"],
+                  params={"sleep": 0.05, "media": "mp4", "color": "blue",
+                          "seconds": 0.5}).json()
+    assert worker.run_once("w-mp4") == job["id"]
+
+    arts = c.get(f"/api/jobs/{job['id']}/artifacts").json()
+    assert len(arts) == 1 and arts[0]["exists"]
+    path = JOBS_DIR / arts[0]["path"]
+    assert arts[0]["path"].endswith(".mp4")
+
+    probe = subprocess.run(
+        [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True)
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "640,360", probe.stdout
+    dur = subprocess.run(
+        [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True)
+    assert 0.2 <= float(dur.stdout.strip()) <= 1.0, dur.stdout
+
+
+def test_mock的媒体类型不在枚举里就挡在提交时(as_role, clean_queue, seeded):
+    c = as_role("editor")
+    r = _submit(c, seeded["project_id"], params={"sleep": 0.05, "media": "gif"})
+    assert r.status_code == 422
+    assert "media" in r.json()["detail"]
+
+
 def test_假适配器只在允许时可用(as_role, clean_queue, seeded, monkeypatch):
     c = as_role("editor")
     monkeypatch.setattr("services.ALLOW_MOCK", False)

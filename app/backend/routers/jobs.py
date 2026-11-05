@@ -11,15 +11,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status as http_
 from fastapi.responses import FileResponse
 
 import access
+import error_catalog
 import jobfiles
 import services
 from config import WORKER_ONLINE_SECONDS
 from db import get_conn
 from deps import require_permission, require_user
 from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, CostBucket,
+                   JobRetryBatchIn,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut)
+from repositories.content import episodes
 from repositories.jobs import jobs
 from repositories.projects import projects as project_repo
 
@@ -202,6 +205,17 @@ def job_detail(job_id: int, user=Depends(require_permission("job:read"))) -> Job
     return JobDetailOut(**services.job_detail_view(_load(job_id, user)))
 
 
+@router.get("/jobs/{job_id}/diagnosis")
+def job_diagnosis(job_id: int, user=Depends(require_permission("job:read"))) -> dict:
+    """任务书 §14 的异常恢复目录落在这一条作业上：一份形状固定的诊断。
+
+    为什么不塞进 `JobDetailOut`：详情列表每次都要带 `error_code` 与原话，
+    但那七项解释只在人点开"为什么失败、能不能重试"时才用得上。
+    分开之后队列页不会被几十段文案撑大响应，而界面要点开才付这份钱。
+    """
+    return error_catalog.for_job(_load(job_id, user))
+
+
 @router.get("/jobs/{job_id}/retry-preview", response_model=JobRetryPreviewOut)
 def retry_preview(job_id: int,
                   user=Depends(require_permission("job:submit"))) -> JobRetryPreviewOut:
@@ -263,6 +277,27 @@ def retry_job(job_id: int, user=Depends(require_permission("job:submit"))) -> Jo
                             detail="只有失败、已取消或待核对的作业可以重试")
     # 新行复制参数快照，原行的日志/耗时/错误一个字段都不动
     return JobOut.from_row(jobs.retry(row, user["id"]))
+
+
+@router.post("/jobs/retry-batch")
+def jobs_retry_batch(payload: JobRetryBatchIn,
+                     user=Depends(require_permission("job:submit"))) -> dict:
+    """把这一集里卡住的镜头一次重投（任务书 §15 的 P2「批量制作」）。
+
+    路由这一层只做两件事：**归属判断**（看不见就是 404，与单条重试同一道门）
+    与把参数交给服务层。规则不在这里——`services.job_retry_batch()` 与单条
+    重试走的是同一个 `jobs.retry()`，批量不是第二条写口子。
+    """
+    ep = episodes.get(payload.episode_id)
+    if ep is None:
+        raise HTTPException(status_code=404, detail="这一集不存在")
+    access.ensure(user, ep["project_id"], "write")
+    try:
+        return services.job_retry_batch(
+            int(ep["project_id"]), payload.episode_id, user_id=user["id"],
+            capability=payload.capability, limit=payload.limit)
+    except services.JobInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/jobs/{job_id}/logs", response_model=JobLogOut)

@@ -152,6 +152,29 @@ ROUTES = [
     # 首页工作台跨项目聚合：editor 有 project:read 就能调，但里面只会出现
     # 他看得见的项目（别人的项目在服务端就筛掉了，所以是 200 而不是 404）
     ("GET", "/api/workbench", None, 200),
+    # ---------- 项目生产工作台（0037） ----------
+    # /api/context 存的是"这个人上次站在哪一集"：登录就能读写自己那一份，
+    # 所以 outsider 也是 200——它不暴露别人的东西，也不跨项目给数字。
+    ("GET", "/api/context", None, 200),
+    ("PUT", "/api/context", {"project_id": None, "episode_id": None}, 200),
+    # 一集的生产进度里有镜头数与作业数，必须先过项目可见性那道门
+    ("GET", "/api/projects/{p}/production", None, 404),
+    # ---------- 统一预检（0037） ----------
+    # 三个预检都是只读，但读的是别人项目的镜头/集，所以一律 404
+    ("GET", "/api/audio/capabilities", None, 200),
+    ("GET", "/api/jobs/{j}/diagnosis", None, 404),
+    ("GET", "/api/jobs/{j}/review-checklist", None, 404),
+    ("POST", "/api/jobs/{j}/review-checklist", {"items": []}, 404),
+    ("POST", "/api/jobs/review-batch", {"items": [{"job_id": 1}], "decision": "rejected"}, 404),
+    ("POST", "/api/jobs/retry-batch", {"episode_id": 1}, 404),
+
+    ("GET", "/api/precheck/shot/{s}", None, 404),
+    ("GET", "/api/projects/{p}/precheck?episode_id={e}", None, 404),
+    ("GET", "/api/projects/{p}/composition-precheck?episode_id={e}", None, 404),
+    # 单镜头工作台读的是这一镜的作业与签字，影响分析读的是跨项目引用清单
+    # ——两条都先过可见性，看不见就是 404
+    ("GET", "/api/shots/{s}/workbench", None, 404),
+    ("GET", "/api/assets/{a}/impact", None, 404),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
     ("POST", "/api/users", {"username": "zz_probe", "display_name": "", "password": "123456"}, 403),

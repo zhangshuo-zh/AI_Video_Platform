@@ -19,6 +19,7 @@ import pytest
 
 import adapters
 import pipeline
+import precheck
 import services
 import worker
 from config import JOBS_DIR
@@ -782,6 +783,34 @@ def test_分镜缺提示词时检查节点失败(mock_route, people):
     assert nodes["gate"]["status"] == "blocked"
     assert view["status"] == "failed"
 
+    # §14：节点失败与作业失败给的是同一张七字段目录，且由 `_node_view` 一起带下来
+    # （界面再打一次接口就会问出两份答复）
+    dx = nodes["check_shots"]["diagnosis"]
+    assert dx["known"] is True and dx["label"]
+    for field in ("explain", "technical", "impact", "action"):
+        assert str(dx[field]).strip(), field
+    assert isinstance(dx["retryable"], bool) and dx["may_cost"] is False
+    assert dx["retryable"] is nodes["check_shots"]["retryable"], \
+        "目录说可重试、闸门说不能点时，界面只能按闸门摆——两处必须给同一个答案"
+
+
+def test_诊断真的从HTTP层带出来了(as_role, mock_route, people):
+    """后端算好不等于界面拿得到：`response_model` 会把模型里没有的字段丢掉。
+    这一条是撞过一次补的——`pipeline.run_view()` 里 diagnosis 在，
+    `GET /api/pipeline/runs/{id}` 出来却没有，界面上就只剩一句执行器原话。
+    """
+    setup = _project(people, n_shots=2, with_doc=True, prompts=False)
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               _template(FULL), people["editor"]["id"])
+    c = as_role("editor")
+    got = c.get(f"/api/pipeline/runs/{view['id']}").json()
+    node = next(n for n in got["nodes"] if n["node_key"] == "check_shots")
+    assert node["error_code"] == "shots_incomplete"
+    assert node["diagnosis"]["known"] is True and node["diagnosis"]["label"]
+    assert node["diagnosis"]["action"], "界面没有『建议做法』就等于只报了个错"""
+    assert isinstance(node["diagnosis"]["retryable"], bool)
+    assert node["diagnosis"]["retryable"] is node["retryable"]
+
 
 def test_成片准备永远不假装完成(mock_route, people):
     """阶段 D 还没做：这一格只能是 skipped，不能写 completed。"""
@@ -933,7 +962,9 @@ def test_v2成片节点从合成到验收到审核(people, clean_queue):
     assert nodes["check_composition"]["status"] == "completed"
     out = nodes["check_composition"]["output"]
     assert out["sha256"] and len(out["sha256"]) == 64
-    assert out["width"] == 1280 and out["height"] == 720
+    # 成片跟随素材尺寸（2026-11-05 起的口径）：素材是 640×360，就不再放大到 1280×720。
+    # 这一档以前写死在执行器里，等于每次合成都白白多存一倍的像素；要更大尺寸得显式填。
+    assert out["width"] == 640 and out["height"] == 360
     assert run["status"] == "waiting_review"
     assert nodes["review_composition"]["status"] == "waiting_review"
 
@@ -1084,3 +1115,53 @@ def test_预检接口在发起前给出清单(as_role, fresh_project):
     outsider = as_role("outsider")
     assert outsider.get(f"/api/projects/{pid}/preflight?episode_id={eid}"
                         ).status_code == 404
+
+
+def test_整集清单的句子按里面的具体物认跳转():
+    """`_episode_locate()` 是「产线弹窗那一行字 → 跳到哪儿」的唯一一处翻译。
+    它按关键词认，所以用例直接拿 `preflight()` 真实会说的那几句原文来钉：
+    顺序错了（「资产 X 没有参考图」被「资产」抢先）就会把人丢去列表页而不是补图的地方。
+    """
+    rows = [{"id": 41, "seq": 1}, {"id": 42, "seq": 2}]
+    assert precheck._episode_locate("第 2 镜没有提示词，生成时会拿内容那一栏代替", rows) == {
+        "module": "shot", "sub": 0, "shot_id": 42, "label": "第 2 镜"}
+    # 引用不存在的资产：那句话里同时有「资产」与「第 1／2 镜」——坏引用住在镜头上，
+    # 所以先落到那一镜，而不是把人在资产列表里自己找
+    assert precheck._episode_locate("资产 #999999 不存在，第 1／2 镜还在引用它", rows)[
+        "shot_id"] == 41
+    assert precheck._episode_locate("资产「燧人」没有参考图，定妆一致性没有依据", rows) == {
+        "module": "assets", "sub": 1}
+    assert precheck._episode_locate("video 没有可用的默认轨：这一档没有登记", rows) == {
+        "module": "models", "sub": 1}
+    assert precheck._episode_locate("生成 worker 不在线；运行建好了也不会自己往前走", rows) == {
+        "module": "generate", "sub": 0}
+    assert precheck._episode_locate("这一集已有一条未结束的运行（#7）；先取消或等它跑完", rows) == {
+        "module": "pipeline", "sub": 0}
+    assert precheck._episode_locate("这一集还没有镜头；先去创作中心把分镜建起来", rows) == {
+        "module": "writing", "sub": 2}
+    # 认不出来就不摆按钮：一句没头没尾的话硬给个默认页，点了只会跳错地方
+    assert precheck._episode_locate("说不清是什么的事", rows) == {}
+
+
+def test_发起弹窗读的是统一预检那一份结论(as_role, fresh_project):
+    """任务书 §10 的「产线与人工两种模式共用一套」落到界面上就是一句话：
+    发起弹窗问的接口（`/api/projects/{id}/precheck`）内部就是 `pipeline.preflight`，
+    但它多给了三档条目、跳转与 `can_start`——按钮禁不禁只认服务端那一格布尔。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    shot = shots.create(eid, "第一镜", "", 1.0, [999999])
+    template = next(t for t in pipeline_repo.latest_templates()
+                    if t["name"] == "标准漫剧单集生产" and t["version"] == 2)
+    data = c.get(f"/api/projects/{pid}/precheck"
+                 f"?episode_id={eid}&template_id={template['id']}").json()
+    assert data["status"] == "阻塞" and data["can_start"] is False
+    assert data["blocking_texts"] and data["warning_texts"] is not None
+    bad = [i for i in data["items"] if i["level"] == "阻塞"]
+    assert any("资产 #999999 不存在" in i["text"] for i in bad)
+    # 每条都能指出去处（或明说认不出＝空字典），界面不用再猜一遍
+    for item in data["items"]:
+        assert isinstance(item["locate"], dict) and item["code"].startswith("pipeline.")
+    jumped = [i for i in bad if i["locate"].get("shot_id") == int(shot["id"])]
+    assert jumped, "阻塞项里那条坏引用该跳到这一镜的工作台"

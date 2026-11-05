@@ -16,8 +16,9 @@ from gitrepo import GitError
 from migrate import migrate
 from routers import (audio, auth, compositions, content, dashboard, documents,
                      extraction, files, jobs, model_center as model_center_api,
-                     pipeline as pipeline_api, profiles, projects, review,
-                     seasons as seasons_api, settings, system, users, workbench)
+                     pipeline as pipeline_api, profiles, production as production_api,
+                     projects, review, seasons as seasons_api, settings, system,
+                     users, workbench)
 from services import ensure_workspace
 
 
@@ -55,6 +56,10 @@ def create_app() -> FastAPI:
     # 首页工作台：跨模块待办聚合。放在 dashboard 旁边——两个都是只读聚合，
     # 区别是 dashboard 按单个项目算，workbench 按"我看得见的项目"一起算
     app.include_router(workbench.router)
+    # 项目生产工作台（0037）：跨模块只读聚合 ＋ 每人一份的当前项目×集上下文。
+    # 放在 workbench 之后：两个都是聚合读，但 workbench 是首页那四格待办，
+    # production 是"这一集走到哪一步"，路由前缀不冲突（/api/workbench 与 /api/context）。
+    app.include_router(production_api.router)
     app.include_router(jobs.router)
     app.include_router(pipeline_api.router)
     app.include_router(compositions.router)

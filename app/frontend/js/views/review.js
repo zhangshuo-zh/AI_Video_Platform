@@ -9,11 +9,19 @@
  * （相对路径＋是否还在＋字节数）。被审的东西一变，旧签字就失配。
  */
 import { api } from '../api.js';
+import { gotoEntry } from '../goto.js';
+
+
 import { store } from '../store.js';
 import { getSub, setSub } from '../navstate.js';
 import { bindSubChips, escapeHtml, errorBox, run, subChipRow } from '../util.js';
+import { checklistHtml } from './review-checklist.js';
+import { DECISION_TONE } from '../validation.js';
 
 let openDocId = null;
+// 批量签字的选中集：只活在这一页，换项目就清空——
+// 选中的是「这一屏的这几条」，不是一次跨页的授权
+let picked = new Set();
 let openJobId = null;
 let signNote = '';
 let jobNote = '';
@@ -21,7 +29,6 @@ const GATE_LABEL = {
   none: ['未校验', 'gray'], passed: ['通过', 'green'], failed: ['未通过', 'red'],
   stale: ['已失配', 'amber'],
 };
-const DECISION_TONE = { approved: 'green', rejected: 'red', returned: 'amber' };
 const TABS = ['文档审核', '产物审核'];
 const currentTab = () => {
   const raw = getSub('review') ?? 0;
@@ -95,6 +102,9 @@ export default {
     let err = null;
     try { queue = await api.jobReviews(project.id); } catch (e) { err = e; }
     if (openJobId && !queue.some((q) => q.job_id === openJobId)) openJobId = null;
+    // 选中的作业一不在这一屏就丢掉：批量签的是「这一批看得见的」，
+    // 留着跨项目、跨筛选的幽灵条目会在下一次点「批量通过」时打到不该打的作业
+    picked = new Set([...picked].filter((id) => queue.some((q) => q.job_id === id)));
     const canSign = store.can('review:sign');
     const pending = queue.filter((q) => !q.counts.approved).length;
 
@@ -113,7 +123,13 @@ export default {
         <td class="num">${q.artifacts.length}</td>
         <td><span class="chip ${tone}">${escapeHtml(label)}</span></td>
         <td class="num t-dim">${escapeHtml(q.finished_at || '—')}</td>
-        <td class="r"><button class="btn sm primary" data-open-job="${q.job_id}">查看</button></td>
+        <td class="r">${canSign ? `<input type="checkbox" class="ctl" data-pick="${q.job_id}"
+               ${picked.has(q.job_id) ? 'checked' : ''}
+               aria-label="选中作业 #${q.job_id} 准备批量签字">` : ''}</td>
+        <td class="r">${q.shot_id ? `<button class="btn xs" data-goto-shot="${q.shot_id}"
+               ${q.episode_id ? `data-ep="${q.episode_id}"` : ''}
+               title="直接打开这一镜的生产工作台，看它的产物、参数与签字">去这一镜</button>` : ''}
+          <button class="btn sm primary" data-open-job="${q.job_id}">查看</button></td>
       </tr>`;
     }).join('');
 
@@ -123,11 +139,19 @@ export default {
         <div class="card-head"><h2>产物审核队列</h2>
           <div class="right"><span class="chip plain">${queue.length} 条作业</span>
             <span class="chip ${pending ? 'amber' : 'green'}">${pending} 条待签</span></div></div>
+        ${canSign && picked.size ? `<div class="row" style="gap:8px;margin:8px 0">
+          <span class="chip plain">已选 ${picked.size} 条</span>
+          <button class="btn sm primary" data-batch="approved">批量通过</button>
+          <button class="btn sm danger" data-batch="rejected">批量驳回</button>
+          <button class="btn sm ghost" data-batch="clear">清空选择</button>
+          <span class="t-desc">「批量通过」要求每一条的人工质量清单都看完；没看完的逐条退回并写明缺哪几项，
+            不会把已看完的那几条偷偷签掉，也不会因为有一条不行就把整批撤回。</span>
+        </div>` : ''}
         <p class="modal-meta">只列已成功且有产物的图像／视频作业。签字绑定产物清单摘要：
           文件被清理或被新一次生成顶掉，旧签字立刻失配，不会挂着「通过」骗人。</p>
         ${queue.length ? `<div class="table-wrap"><table>
           <thead><tr><th>作业</th><th>能力 / 模型档</th><th class="r">产物</th>
-            <th>结论</th><th class="r">完成时间</th><th class="r"></th></tr></thead>
+            <th>结论</th><th class="r">完成时间</th><th class="r"></th><th class="r">批量</th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div>` : `<div class="empty"><div class="empty-t">还没有可审的产物</div>
           <p>关键帧或镜头视频跑成功之后会出现在这里。本机没有图像运行时时，
@@ -270,6 +294,48 @@ export default {
 
   /** 产物分页：打开某条作业、签字。 */
   async mountJobs(root, refresh) {
+    root.querySelectorAll('[data-pick]').forEach((box) => {
+      box.addEventListener('change', () => {
+        const id = Number(box.dataset.pick);
+        if (box.checked) picked.add(id); else picked.delete(id);
+        refresh();   // 工具条要跟着出现或消失（它是按 picked.size 画的）
+      });
+    });
+    root.querySelectorAll('[data-batch]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.batch;
+        if (action === 'clear') { picked = new Set(); return refresh(); }
+        const items = [...picked].map((id) => ({ job_id: id }));
+        if (!items.length) return;
+        btn.disabled = true;
+        let out = null, err = null;
+        try {
+          out = await api.jobReviewBatch({ items, decision: action, note: jobNote });
+        } catch (e) { err = e; }
+        btn.disabled = false;
+        const bar = root.querySelector('#job-review-detail') || root.querySelector('.card');
+        if (err) { if (bar) bar.insertAdjacentHTML('afterbegin', errorBox('批量签字', err, false)); return; }
+        const refused = (out.results || []).filter((r) => !r.ok);
+        if (bar) {
+          bar.insertAdjacentHTML('afterbegin',
+            `<div class="bar ${refused.length ? 'bad' : 'good'}">批量${out.decision === 'approved' ? '通过' : '驳回'}：`
+            + `${out.signed} 条已签、${out.refused} 条未签。`
+            + (refused.length ? `<ul class="t-desc">${refused.map((r) =>
+                `<li>#${r.job_id}：${escapeHtml(r.reason)}</li>`).join('')}</ul>` : '')
+            + '</div>');
+        }
+        picked = new Set();
+        refresh();
+      });
+    });
+    root.querySelectorAll('[data-goto-shot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        // §12.1「审核页面直接定位镜头」：审核人关心的常常不是这条作业，
+        // 而是「这一镜到底怎么回事」——把他直接放到那一镜的工作台上
+        gotoEntry({ module: 'shot', sub: 0, shot_id: Number(btn.dataset.gotoShot),
+                    episode_id: btn.dataset.ep ? Number(btn.dataset.ep) : null });
+      });
+    });
     root.querySelectorAll('[data-open-job]').forEach((btn) => {
       btn.addEventListener('click', () => {
         openJobId = Number(btn.dataset.openJob);
@@ -281,8 +347,13 @@ export default {
     if (!detail || !openJobId) return;
 
     let rev = null;
+    let cl = null;
     let err = null;
-    try { rev = await api.jobReview(openJobId); } catch (e) { err = e; }
+    try {
+      rev = await api.jobReview(openJobId);
+      // 清单读不到不挡审核面：自动项要 ffprobe，慢或坏盘时也该让人签字
+      cl = await api.jobChecklist(openJobId).catch(() => null);
+    } catch (e) { err = e; }
     // 详情是异步读的：读回来时人可能已经切走或换了项目，节点不在页面上就别写了
     if (!detail.isConnected) return;
     if (err) {
@@ -339,15 +410,29 @@ export default {
           <span class="modal-label">整条作业签字</span>
           ${whole ? `<span class="chip ${DECISION_TONE[whole.decision] || 'gray'}">
             ${escapeHtml(whole.decision_label)} · ${escapeHtml(whole.signed_by_name)}</span>` : ''}
+          ${checklistHtml(cl)}
           ${canSign ? `<div class="row" style="gap:6px;margin-top:8px">
             <input id="job-review-note" class="ctl" maxlength="500" style="max-width:360px"
                    placeholder="签字备注（可空）" value="${escapeHtml(jobNote)}">
-            <button class="btn sm" data-jsign="approved" data-anchor="artifact">整条通过</button>
+            <button class="btn sm${cl && !cl.can_approve ? ' disabled' : ''}"
+                    data-jsign="approved" data-anchor="artifact"
+                    ${cl && !cl.can_approve ? 'disabled' : ''}
+                    title="${cl ? escapeHtml(cl.hint) : '清单读不到时不锁按钮，但签字仍会先做服务端校验'}">整条通过</button>
             <button class="btn sm" data-jsign="returned" data-anchor="artifact">退回</button>
             <button class="btn sm danger" data-jsign="rejected" data-anchor="artifact">驳回</button>
           </div>` : ''}
         </div>
       </div>`;
+    detail.querySelectorAll('[data-check]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const ok = await run('记录清单', () => api.saveJobChecklist(openJobId, {
+          items: [{ code: btn.dataset.check, state: btn.dataset.state, note: '' }],
+        }));
+        btn.disabled = false;
+        if (ok) refresh();
+      });
+    });
     detail.querySelector('#job-review-note')?.addEventListener('input', (e) => {
       jobNote = e.target.value;
     });

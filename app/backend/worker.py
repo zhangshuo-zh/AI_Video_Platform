@@ -34,6 +34,7 @@ import resource
 import signal
 import socket
 import subprocess
+import threading
 import sys
 import time
 import traceback
@@ -50,7 +51,7 @@ from composition.service import record_success as record_composition
 from composition.validators import MediaInvalid
 import runners
 import validations
-from config import (ALLOW_MOCK, RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
+from config import (ALLOW_MOCK, FFMPEG_BIN, RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
                     WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE,
                     WORKER_MAX_RUNTIME_SECONDS, WORKER_POLL)
 from paths import describe as describe_path
@@ -270,13 +271,52 @@ def _run_mock(job, params: dict, log, wid: str) -> tuple[list[str], int]:
         raise JobFailure("mock_failed", "模拟失败：params.fail=true", 1)
 
     _, outputs = jobfiles.ensure_dirs(job["id"])
-    target = outputs / f"result-{job['id']}.txt"
-    target.write_text(text + "\n", encoding="utf-8")
+    media = str(params.get("media", "text"))
+    if media == "text":
+        target = outputs / f"result-{job['id']}.txt"
+        target.write_text(text + "\n", encoding="utf-8")
+    else:
+        # 用本机 ffmpeg 现造一件真媒体（纯色，1 秒／单帧），
+        # 让审核签字之后的时间线与合成能真的取到片、ffprobe 也真读得出视频流。
+        target = _mock_media(job, params, outputs, media)
     if target.stat().st_size <= 0:
         raise JobFailure("empty_output", "产物是空的")
     elapsed = int((time.monotonic() - started) * 1000)
     _write(log, f"mock 完成：{jobfiles.relative(target)}，{elapsed}ms")
     return [jobfiles.relative(target)], elapsed
+
+
+def _mock_media(job, params: dict, outputs: Path, media: str) -> Path:
+    """假适配器的媒体分支：lavfi 纯色源 → 真 mp4 或真 png。
+
+    为什么走 ffmpeg 而不是手写字节：合成链要求产物能被 ffprobe 解析出时长与流，
+    自造一个"看起来像 mp4"的头只会把失败推到更远的地方。这里用与
+    `tests/test_composition.py` 同一条命令口径，成败都当场见分晓。
+    缺 ffmpeg 时以 `mock_media_unavailable` 失败并说清缺什么——
+    这条消息是给人修环境用的，不是"模型跑崩了"。
+    """
+    color = str(params.get("color", "red"))
+    seconds = float(params.get("seconds", 1.0))
+    target = outputs / f"result-{job['id']}.{'mp4' if media == 'mp4' else 'png'}"
+    if media == "mp4":
+        argv = [FFMPEG_BIN, "-hide_banner", "-y", "-f", "lavfi",
+                "-i", f"color=c={color}:s=640x360:d={seconds}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24", str(target)]
+    else:
+        argv = [FFMPEG_BIN, "-hide_banner", "-y", "-f", "lavfi",
+                "-i", f"color=c={color}:s=640x360",
+                "-frames:v", "1", str(target)]
+    try:
+        proc = subprocess.run(argv, capture_output=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise JobFailure("mock_media_unavailable",
+                         f"mock 的媒体产物需要可执行的 {FFMPEG_BIN}"
+                         f"（{type(exc).__name__}）；或用 media=text 只测队列") from exc
+    if proc.returncode != 0 or not target.exists():
+        err = (proc.stderr or b"").decode("utf-8", "ignore").strip()[-300:]
+        raise JobFailure("mock_media_failed",
+                         f"ffmpeg 造媒体失败（退出码 {proc.returncode}）：{err}")
+    return target
 
 
 def _tail(path: Path, limit: int = 800) -> str:
@@ -334,6 +374,85 @@ def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
                 break
 
 
+def _ps_rows() -> list[tuple[int, int, int]]:
+    """`ps -eo pid,ppid,rss` 三列。只用标准库＋系统自带的 ps，不引 psutil
+    （§不引入未经确认的新依赖）。读不到就回空列表——采样失败不该让一条作业失败。
+    """
+    try:
+        out = subprocess.run(["ps", "-eo", "pid,ppid,rss"],
+                             capture_output=True, text=True, timeout=2).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            continue
+    return rows
+
+
+def descendant_peak(rows: list[tuple[int, int, int]], root_pid: int) -> int:
+    """沿 ppid 链把 `root_pid` 的整棵子进程树找出来，返回树里最大的 RSS（KB）。
+
+    为什么要走整棵树而不是只看 `proc.pid`：FastMetal 与 mflux 都是**外面一层 python
+    再起算子进程**，只看直接子进程量到的那点壳常驻，真正的模型占用在孙子那一层。
+    """
+    kids = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid, _rss in rows:
+            if ppid in kids and pid not in kids:
+                kids.add(pid)
+                changed = True
+    return max((rss for pid, _ppid, rss in rows if pid in kids), default=0)
+
+
+class _RssWatch:
+    """一条作业一个采样线程：每 `every` 秒记一次这棵子进程树的 RSS 峰值。
+
+    为什么要新加这一栏，`child_max_rss_kb` 不够吗：那一栏来自
+    `getrusage(RUSAGE_CHILDREN)`，是**worker 进程生命周期内的最大值**——同一个 worker
+    跑完一条 8.75GB 的视频作业之后，接下来任何一条作业的 `child_max_rss_kb` 都会写着
+    8.75GB（本机 2026-11-05 实测：一条 1024×1024 的图像作业被记成 8.75GB，
+    而它自己那棵树的采样峰值是 3.13GB）。排产要看的是**这一条**占多少，
+    所以两个数分开存、语义写清：
+      * `child_max_rss_kb`＝worker 见过的最大子进程（生命周期，不是本条）；
+      * `child_peak_rss_sampled_kb`＝本条作业运行期间的采样峰值（按秒采，
+        **可能低于真实峰值**，但不会把上一条的峰值算到这一条头上）。
+
+    采样本身会 fork 一个 `ps`，它的 CPU 时间计入 `child_cpu_ms`——量级是每条作业
+    一秒的零头（本机实测一条 33 秒的作业多算约 30ms），换来的是每条作业自己的内存读数。
+    """
+
+    def __init__(self, root_pid: int, every: float = 1.0):
+        self.root = root_pid
+        self.every = every
+        self.peak_kb = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _loop(self):
+        while not self._stop.is_set():
+            peak = descendant_peak(_ps_rows(), self.root)
+            if peak > self.peak_kb:
+                self.peak_kb = peak
+            self._stop.wait(self.every)
+
+    def start(self) -> "_RssWatch":
+        self._thread.start()
+        return self
+
+    def stop(self) -> int:
+        self._stop.set()
+        self._thread.join(timeout=3)
+        return self.peak_kb
+
+
 def _terminate(proc, grace: float = 5.0) -> None:
     if proc.poll() is not None:
         return
@@ -372,6 +491,7 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     except OSError as exc:
         raise JobFailure("adapter_start_failed",
                          f"起不了子进程：{exc.strerror or exc}") from exc
+    watch = _RssWatch(proc.pid).start()
     try:
         _pump(proc, log, job, wid, deadline=started + WORKER_MAX_RUNTIME_SECONDS)
         return_code = proc.wait()
@@ -386,6 +506,7 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
                 exc.provider_request_id = exc.provider_request_id or early.get("request_id")
         raise
     finally:
+        sampled_kb = watch.stop()
         if proc.poll() is None:
             _terminate(proc)
         try:
@@ -411,6 +532,8 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     # 界面要的是耗时，不是磁盘目录长什么样。
     extra.pop("metrics_path", None)
     extra["child_max_rss_kb"] = child_rss_kb
+    # 本条作业自己的采样峰值（语义见 `_RssWatch` 的注释）。
+    extra["child_peak_rss_sampled_kb"] = sampled_kb
 
     # 云端回执：请求 ID 与实际用量。成功与失败都要读——失败时供应商也可能
     # 已经建过任务、计过费，这两个字段正是事后对账的凭据。
@@ -429,7 +552,17 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     if return_code != 0:
         err = (receipt.get("error") or {}) if receipt else {}
         if err:
-            code = "provider_" + str(err.get("code") or "error")
+            # `cloud_run.py` 已经把 5xx 这类错误命名成 `provider_unavailable`／
+            # `provider_error` 了，这里再无条件拼一次 `provider_` 就会变成
+            # `provider_provider_unavailable`——而 `CLOUD_UNCERTAIN_CODES` 里存的是
+            # 单前缀的那批名字。后果不是难看，是判错：供应商返回 500 时任务很可能
+            # 已经建立、甚至已经计费，这种作业必须落 `needs_attention`（待核对），
+            # 双前缀让它躲过这条规则，于是账上是"待对账"、状态上却是"失败，可重试"。
+            # 六场景真跑（场景四·云端状态未知）把这一寸不一致照了出来。
+            raw = str(err.get("code") or "error")
+            if raw.startswith("provider_"):
+                raw = raw[len("provider_"):]
+            code = "provider_" + raw
             raise JobFailure(code, str(err.get("message") or "供应商返回错误"),
                              return_code, provider_request_id=request_id)
         tail = _tail(Path(jobfiles.job_dir(job["id"])) / "logs" / "run.log")

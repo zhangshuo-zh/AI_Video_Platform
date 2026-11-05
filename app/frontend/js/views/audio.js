@@ -31,6 +31,11 @@ let audioNoticeKey = '';
 // 连点两集时先发的那条往往后到，旧版本的列表就会盖掉新那一条——用户看到的是
 // 「第 2 集」的下拉里装着第 1 集的镜头，提交上去就挂错镜头。
 let shotReqId = 0;
+// 能力表来自服务端（`GET /api/audio/capabilities`）。为什么不在这里写死四行：
+// 「能不能提交」的真相分散在三处——清单里有没有这个 capability、默认轨配没配、
+// `runners.build()` 有没有这一条分支。前端写死一份，三处任何一处变了这话就是假的。
+let audioCaps = null;
+const capOf = (code) => (audioCaps?.rows || []).find((r) => r.code === code) || null;
 // 页签下标只在这里做一次兜底：地址里出现越界的 sub 时按第 0 个渲染，
 // 提示条也要落在同一个下标上，否则一边算 3、一边算 0，话刚写上去就被自己清掉。
 const currentTab = () => {
@@ -54,6 +59,8 @@ export default {
       </div></div></section>`;
     }
     const tab = currentTab();
+    // 读不到能力表不挡这一页：照常列台账，只是按钮退回旧行为（按 canWrite 画）
+    try { audioCaps = await api.audioCapabilities(); } catch (e) { audioCaps = null; }
     const key = noticeKeyOf(project.id, tab);
     if (audioNoticeKey !== key) { audioNotice = ''; audioNoticeKey = ''; }
     const info = TABS[tab];
@@ -90,10 +97,18 @@ export default {
             : c.path ? `<span class="t-desc" title="${escapeHtml(c.path)}">${escapeHtml(c.path)}</span>`
             : '<span class="t-dim">—</span>')}</td>
         <td class="r">
-          ${canWrite && (c.status === 'draft' || c.status === 'failed')
-            ? `<button class="btn sm primary" data-audio-submit="${c.id}">送进队列</button>` : ''}
+          ${(() => {
+            if (!canWrite || (c.status !== 'draft' && c.status !== 'failed')) return '';
+            const cap = capOf(c.kind);
+            // 服务端说不能提交，按钮就只能是灰的并且写着为什么——
+            // 让人点一次拿一次 422，等于把状态透明化又退回成猜谜
+            return cap && !cap.can_submit
+              ? `<button class="btn sm" disabled title="${escapeHtml(cap.why)}">送进队列（未接线）</button>`
+              : `<button class="btn sm primary" data-audio-submit="${c.id}">送进队列</button>`;
+          })()}
           ${tab === 2 && c.status === 'ready'
-            ? '<button class="btn sm" disabled title="Rhubarb 适配器尚未接线">生成口型</button>' : ''}
+            ? `<button class="btn sm" disabled title="${escapeHtml(capOf('lipsync')?.why
+                || '口型执行未接线')}">生成口型</button>` : ''}
           ${canWrite ? `<button class="btn sm danger" data-audio-del="${c.id}">删除</button>` : ''}
         </td>
       </tr>`;
@@ -108,11 +123,25 @@ export default {
     return `<section class="view on">
       <div class="page-head">
         <h1>音频中心</h1>
-        <p>配音 VoxCPM2 · 音乐 ACE-Step · 口型 Rhubarb 分层</p>
+        <p>${escapeHtml(audioCaps?.note
+          || '配音 VoxCPM2 · 音乐 ACE-Step · 口型与音效按能力表逐条判')}</p>
         <div class="right">${subRow}</div>
       </div>
       ${err ? `<div class="card">${errorBox('音频素材', err)}</div>` : ''}
       ${audioNotice ? `<div class="card"><div class="bar bad">${escapeHtml(audioNotice)}</div></div>` : ''}
+      ${audioCaps ? `<div class="card"><div class="card-head"><h2>这一页现在能干什么</h2>
+          <span class="sub">四类能力逐条判，判据来自清单、默认轨与执行接线三处</span></div>
+        <div class="card-body"><div class="kv-grid">
+          ${audioCaps.rows.map((r) => `<div class="kv">
+            <dt>${escapeHtml(r.label)}</dt>
+            <dd><span class="chip ${r.can_submit ? 'green' : r.runner_wired ? 'amber' : 'gray'}">
+              ${r.can_submit ? '可提交' : '未接线'}</span>
+              <span class="t-desc">${escapeHtml(r.engine || '—')}${r.provider ? ` · ${escapeHtml(r.provider)}` : ''}</span>
+              <p class="t-desc">${escapeHtml(r.why || '')}</p></dd></div>`).join('')}
+        </div>
+        <p class="hint" style="text-align:left;margin:8px 0 0">
+          登记台词与归属是纯台账动作，任何时候都可以做；「送进队列」要执行引擎真接上才点得动。
+        </p></div></div>` : ''}
       <div class="card">
         <div class="card-head"><h2>${info.label}</h2><span class="sub">${info.hint}</span></div>
         ${canWrite && episodes.length ? `

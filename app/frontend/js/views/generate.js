@@ -10,10 +10,11 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
-import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone }
+import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
 import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
 import { takeJobPrefill } from '../navstate.js';
+import { diagnosisHtml } from './diagnosis.js';
 
 // 作业状态的说法与配色在 js/validation.js，能力／运行位置／计费单位在 js/enums.js。
 // 原来这两套字典在本文件里各有一份（其中 STATUS 与 writing.js 那份逐字相同），
@@ -70,8 +71,14 @@ function timeText(value) {
   return value ? String(value).slice(5, 16) : '—';
 }
 
-function statusChip(status, label) {
-  return `<span class="chip ${jobTone(status)}">${escapeHtml(jobLabel(status, label))}</span>`;
+function statusChip(status, label, fine = false) {
+  /* §12.3：列表这一层只给对外五档（待处理／进行中／需要处理／已完成／失败），
+     细粒度原词留在 title 与抽屉详情里。后端状态语义一个字都没合并，
+     只是不再让制作人员在六七个同义词之间自己找规律。
+     `fine=true` 是详情那一处（抽屉头部与副标题），那里要的就是原词。 */
+  const text = fine ? jobLabel(status, label) : publicStatus(status);
+  return `<span class="chip ${jobTone(status)}" title="${escapeHtml(jobLabel(status, label))}">`
+    + `${escapeHtml(text)}</span>`;
 }
 
 function rowHtml(job) {
@@ -538,6 +545,10 @@ export default {
         ${err ? `<p class="modal-meta">${err}</p>` : ''}`;
     }
 
+
+    // 异常诊断那一块抽到 `./diagnosis.js` 与产线节点共用：
+    // 七字段目录的意义就是「界面各处说同一句话」，画两遍迟早对不上。
+
     function metricsHtml(res) {
       const m = res.adapter_metrics || {};
       const rows = [];
@@ -566,7 +577,7 @@ export default {
       </details>`;
     }
 
-    function drawerHtml(job, logs, arts) {
+    function drawerHtml(job, logs, arts, diag) {
       const res = job.resources || {};
       const price = job.unit_price_micros == null ? '—'
         : `${money(job.unit_price_micros, job.currency)} / ${unitLabel(job.unit)}`;
@@ -650,8 +661,9 @@ export default {
         <div class="drawer-actions">${actions || `<span class="hint">${actionsHint}</span>`}</div>
         ${err}
         ${attention}
+        ${diagnosisHtml(diag)}
         <div class="kv-grid">
-          ${kv('状态', statusChip(job.status, job.status_label))}
+          ${kv('状态', statusChip(job.status, job.status_label, true))}
           ${kv('项目', escapeHtml(projectName(job.project_id)))}
           ${kv('关联', [job.episode_id ? `集 ${job.episode_id}` : '',
             job.shot_id ? `镜 ${job.shot_id}` : ''].filter(Boolean).join(' · ') || '—')}
@@ -687,17 +699,19 @@ export default {
       drawerBusy = true;
       const scroll = drawerBody.scrollTop;
       try {
-        const [job, logs, arts] = await Promise.all([
+        const [job, logs, arts, diag] = await Promise.all([
           api.job(id), api.jobLogs(id).catch(() => ({ text: '' })),
           api.jobArtifacts(id).catch(() => []),
+          // 读不到诊断不影响看详情：这一栏是辅助信息，不能反过来把主信息挡掉
+          api.jobDiagnosis(id).catch(() => null),
         ]);
         if (openJobId !== id) return;
         if (!alive()) return;
         root.querySelector('#gen-drawer-title').textContent = `作业 #${job.id}`;
         root.querySelector('#gen-drawer-sub').innerHTML =
-          `${statusChip(job.status, job.status_label)}
+          `${statusChip(job.status, job.status_label, true)}
            <span class="t-dim">${escapeHtml(job.capability_label)} · ${escapeHtml(job.provider_code)}/${escapeHtml(job.model_code)}</span>`;
-        drawerBody.innerHTML = drawerHtml(job, logs, arts);
+        drawerBody.innerHTML = drawerHtml(job, logs, arts, diag);
         if (keepScroll) drawerBody.scrollTop = scroll;
       } catch (err) {
         if (openJobId === id) drawerBody.innerHTML = errorBox('作业详情', err, false);
@@ -1166,6 +1180,34 @@ export default {
           source,
         };
         body.user_confirmed_cloud = true;
+      }
+
+      // 0037：提交前跑一次统一预检（有镜头才跑——纯文本/资产生成没有"这一镜"可查）。
+      // 规则只有一份：`precheck.py` 用的就是 `resolve_provider`／`validate_params`／
+      // `health` 这些服务端原判据，所以这里拦下的，提交也一定拦；这里放行的，
+      // 提交不会再因为同一类原因失败。警告不拦人，只把话说在前面。
+      if (linked?.shotId) {
+        try {
+          const q = { capability };
+          if (mode === 'local' || mode === 'cloud') q.execution_mode = mode;
+          if (isCloud()) q.confirmed_cloud = 'true';
+          const check = await api.precheckShot(linked.shotId, q);
+          const blockers = (check.items || []).filter((i) => i.level === '阻塞');
+          if (blockers.length) {
+            errEl.textContent = '预检阻塞：' + blockers.map((b) => b.text).join('；');
+            return;
+          }
+          const warns = (check.items || []).filter((i) => i.level === '警告');
+          if (warns.length) {
+            root.querySelector('#jm-hint').textContent =
+              '预检提醒：' + warns.map((w) => w.text).join('；');
+          }
+        } catch (err) {
+          // 预检自己读不到时不拦提交：提交路径上还有同一套服务端判据兜底，
+          // 为了"检查工具坏了"就把人锁在门外是另一种不公平
+          root.querySelector('#jm-hint').textContent =
+            `预检没跑成（${err.message || '未知错误'}），仍会由服务端在提交时把关。`;
+        }
       }
 
       const btn = root.querySelector('#jm-submit');

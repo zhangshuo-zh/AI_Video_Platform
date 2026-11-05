@@ -1,7 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
-import { JOB_TERMINAL, jobLabel, jobTone } from '../validation.js';
+import { JOB_TERMINAL, jobLabel, jobTone, publicStatus } from '../validation.js';
 import { unitLabel } from '../enums.js';
 import { getParam, getSub, setJobPrefill, setParam, setSub } from '../navstate.js';
 import { closeDetail, openDetail } from '../router.js';
@@ -1186,7 +1186,7 @@ function paintAiPreview(root) {
     <p class="modal-meta">结果先放在这里对照，<b>还没有写进正文</b>。
       应用后写工作区并生成一次 Git 提交；失败时原文保持不动。</p>
     <div class="ai-status">
-      <span class="chip ${tone}">${escapeHtml(p.status_label || p.status || '排队中')}</span>
+      <span class="chip ${tone}" title="${escapeHtml(p.status_label || p.status || '')}">${escapeHtml(publicStatus(p.status || 'queued'))}</span>
       ${p.base_version ? `<span class="t-dim">基线 ${escapeHtml(String(p.base_version).slice(0, 18))}…</span>` : ''}
       ${!terminal ? '<span class="t-dim">worker 正在跑，界面每 1.5 秒问一次</span>' : ''}
     </div>
@@ -1404,9 +1404,10 @@ async function renderShots(tab, subRow) {
       const latest = list[0];
       // 认不出来的状态原样念 code，但**必须转义**：这一列的 status 是库里的字符串，
       // 未转义插进 innerHTML 等于给脏值开一条进 DOM 的路（同库正确写法见 generate.js）
+      // 对外这一格给五档（§12.3），逐条原词与作业号都留在 title 里
       const detail = list.map((j) => `#${j.id} ${j.status_label}`).join('；');
       return `<span class="chip ${jobTone(latest.status)}" title="${escapeHtml(detail)}">`
-             + `${escapeHtml(jobLabel(latest.status, latest.status_label))}</span>`
+             + `${escapeHtml(publicStatus(latest.status))}</span>`
              + `${sourceStale ? '<span class="chip amber" title="分镜或引用资产改过，这条产物已过期；要重新生成并重新签字">源已变</span>' : ''}`
              + `<span class="t-desc" title="${escapeHtml(detail)}">${list.length} 条 · #${latest.id}</span>`;
     };
@@ -1430,6 +1431,7 @@ async function renderShots(tab, subRow) {
         <td class="shot-jobs">${jobCell(jobsByShot.get(s.id) || [], s.source_stale)}</td>
         <td class="r">
           ${canWrite ? `<button class="btn sm" data-edit-shot="${s.id}">编辑</button>` : ''}
+          <button class="btn sm" data-shot-wb="${s.id}" title="这一镜的生产档案：设定、引用、关键帧、视频、审核、能不能进合成">工作台</button>
           ${canSubmit ? `<button class="btn sm" data-gen-shot="${s.id}">生成</button>` : ''}
           ${canWrite ? `<button class="btn sm danger" data-del-shot="${s.id}">删除</button>` : ''}
         </td>
@@ -1811,6 +1813,11 @@ function mountShots(root) {
 
     // 分镜 → 生成中心：把项目/集/镜/提示词一次交棒，不在这一页开第二个提交框。
     // 走 navstate 的一次性草稿而不是地址栏参数：刷新后不应该再弹一次。
+    // 0037：一镜的生产档案。走 openDetail 而不是自己拼地址——
+    // 它负责把 `#shot/a123` 写进地址栏，刷新与粘贴都回得到同一镜。
+    root.querySelectorAll('[data-shot-wb]').forEach((btn) => {
+      btn.addEventListener('click', () => openDetail('shot', Number(btn.dataset.shotWb)));
+    });
     root.querySelectorAll('[data-gen-shot]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const shot = shotCache.shots.find((s) => s.id === Number(btn.dataset.genShot));

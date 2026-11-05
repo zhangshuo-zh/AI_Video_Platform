@@ -53,6 +53,37 @@ def _need_runtime(probe) -> None:
         raise RunnerUnavailable(probe.detail)
 
 
+def _spec_default(job, model_code: str, name: str, fallback):
+    """作业参数里没写这一项时，回落到清单里的默认值。
+
+    为什么要回落：产线节点提交的作业 `params` 是空的（模板不写死参数，
+    `pipeline._submit_job_node` 只带模板 input 里真有的那几项）。而清单给
+    FastMetal 1.3B 标的 `fast_spatial` 默认是 True——那是 W09 在 16GB 上的实测结论
+    （640×352×81 不开 fast-spatial 解码就 OOM）。不回落等于把这条实测丢掉：
+    作业会以"模型跑崩了"的样貌失败，人看不出是自己没填参数还是平台漏了默认。
+    规格仍以 `adapters.py` 为唯一来源，这里只照读一份数字，不另写第二份。
+    """
+    adapter = adapters.find(job["capability"], job["execution_mode"],
+                           job["provider_code"])
+    if adapter is None:
+        return fallback
+    for model in adapter.models or ():
+        if model.code != model_code:
+            continue
+        for param in model.params or ():
+            if param.name == name and param.default is not None:
+                return param.default
+    return fallback
+
+
+def _flag(params: dict, name: str, job, model_code: str) -> bool:
+    """布尔开关：显式给了就照给，没给就照清单默认。"""
+    value = params.get(name)
+    if value is None:
+        value = _spec_default(job, model_code, name, False)
+    return bool(value)
+
+
 def _mp4_path(outputs: Path, job_id: int, label: str) -> Path:
     return outputs / f"{job_id}-{label}.mp4"
 
@@ -82,11 +113,11 @@ def _fastmetal(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
                 "--height", str(height), "--width", str(width),
                 "--num-frames", str(frames), "--seed", str(seed),
                 "--output-path", str(out), "--metrics-json", str(metrics)]
-        if params.get("fast"):
+        if _flag(params, "fast", job, model_code):
             argv.append("--fast")
-        if params.get("fast_spatial"):
+        if _flag(params, "fast_spatial", job, model_code):
             argv.append("--fast-spatial")
-        if params.get("refine"):
+        if _flag(params, "refine", job, model_code):
             argv.append("--refine")
     else:
         argv = [v["python"], v["script"],
@@ -95,9 +126,9 @@ def _fastmetal(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
                 "--height", str(height), "--width", str(width),
                 "--num-frames", str(frames), "--seed", str(seed),
                 "--output-path", str(out), "--metrics-json", str(metrics)]
-        if params.get("fast"):
+        if _flag(params, "fast", job, model_code):
             argv.append("--fast")
-        if params.get("fast_spatial"):
+        if _flag(params, "fast_spatial", job, model_code):
             argv.append("--fast-spatial")
 
     return RunSpec(
@@ -196,11 +227,19 @@ def _mflux(job, params: dict, outputs: Path) -> RunSpec:
     width = int(params.get("width", 1024))
     height = int(params.get("height", 1024))
     steps = int(params.get("steps", 4))
-    argv = [v["cli"], "--model", "schnell",
+    # 权重用社区转好的 Q4 档，不用 `--model schnell` 拉官方仓库：
+    #   1) 官方 black-forest-labs/FLUX.1-schnell 是 gated 仓库，worker 没有 HF token 就 401；
+    #   2) 官方整包 33.7GB，且 `--quantize 8` 在 16GB 机器上装不下。
+    # Q4 是同一套 FLUX.1-schnell 权重的 MLX 量化转换（Apache-2.0），9.6GB，
+    # 量化级别已经写进权重，所以不能再传 `--quantize`（传了会和已存的量化打架）。
+    # 2026-11-05 在 M4 Air 16GB 实测 512×512、4 步：墙钟 102s、MLX 峰值 9.97GB、
+    # 进程峰值 footprint 12.3GB；1024×1024 未测，按 512 的余量不要在这台机器上默认跑。
+    argv = [v["cli"], "--model", "mflux-community/flux-1-schnell-mflux-q4",
+            "--base-model", "schnell",
             "--prompt", job["prompt_snapshot"],
             "--steps", str(steps), "--seed", str(seed),
             "--width", str(width), "--height", str(height),
-            "--quantize", "8", "--output", str(out)]
+            "--output", str(out)]
     return RunSpec(
         runner="mflux", argv=argv, cwd=outputs, expected=[out], media="image",
         meta={"adapter": "mflux", "model": job["model_code"],

@@ -535,3 +535,76 @@ def test_重试不许把旧素材洗成新素材(as_role, fresh_project, clean_q
     # 所以源指纹也必须跟着走，不能按当前分镜重算一个"新"的
     assert job_repo.get(new["id"])["prompt_snapshot"] == "雨夜石阶"
     assert services.job_source_stale(job_repo.get(new["id"])) is True
+
+
+# ---------------------------------------------------------------- 输出尺寸默认档
+
+def test_不填分辨率时成片与素材同尺寸(stage):
+    """默认不再放大：合成器原来写死 1280×720，把 640×360 的素材拉大一倍再存。
+
+    本机整集连跑量到过这件事的代价——六条 640×352 的素材拼出 1280×720 的成片、
+    5.6 MB；画质不多一个像素，字节与耗时倒是实涨。所以不填时跟着素材走。
+    """
+    for job in stage["jobs"]:
+        _approve(job, stage["project_id"], stage["user_id"])
+    view = composition_service.create(stage["project_id"], stage["episode_id"],
+                                      stage["user_id"])
+    worker.run_once(WID)
+    out = composition_service.view(view["id"])
+    assert (out["width"], out["height"]) == (640, 360), out["params"]
+    assert "与素材同尺寸" in out["params"]["size_basis"], out["params"]
+
+
+def test_显式填的分辨率仍然优先(stage):
+    for job in stage["jobs"]:
+        _approve(job, stage["project_id"], stage["user_id"])
+    view = composition_service.create(stage["project_id"], stage["episode_id"],
+                                      stage["user_id"],
+                                      params={"width": 1280, "height": 720})
+    worker.run_once(WID)
+    out = composition_service.view(view["id"])
+    assert (out["width"], out["height"]) == (1280, 720)
+    assert out["params"]["size_basis"] == "人填的"
+
+
+def test_素材尺寸不合规矩时退回默认档并说清():
+    """240 高低于范围下限（320）：不许硬用，退回配置档并把原因写在同一栏里。"""
+    from config import COMPOSE_HEIGHT, COMPOSE_WIDTH
+
+    p = composition_service._params({}, {"output_size": {
+        "width": 640, "height": 240, "clips": 1, "same_as": 2, "of": 2}})
+    assert (p["width"], p["height"]) == (COMPOSE_WIDTH, COMPOSE_HEIGHT)
+    assert "默认档" in p["size_basis"]
+    odd = composition_service._params({}, {"output_size": {
+        "width": 641, "height": 353, "clips": 1, "same_as": 1, "of": 1}})
+    assert odd["width"] % 2 == 0 and odd["height"] % 2 == 0, "奇数尺寸不能当输出用"
+
+
+def test_没有素材时不假装知道尺寸():
+    p = composition_service._params({}, None)
+    assert "默认档" in p["size_basis"] or "没有可量的素材" in p["size_basis"]
+
+
+def test_输出尺寸取众数而不是取第一镜():
+    from composition.timeline import majority_size
+
+    rows = [{"video": {"width": 640, "height": 352}},
+            {"video": {"width": 1280, "height": 720}},
+            {"video": {"width": 1280, "height": 720}}]
+    assert majority_size(rows) == {"width": 1280, "height": 720, "clips": 2,
+                                   "same_as": 2, "of": 3}
+    assert majority_size([]) is None
+    assert majority_size([{"video": {}}]) is None
+
+
+def test_时间线快照里冻着当次的尺寸档(stage):
+    """事后要能回答"这一版当时是按哪一档拼的"——快照里没这一项就是没记。"""
+    for job in stage["jobs"]:
+        _approve(job, stage["project_id"], stage["user_id"])
+    view = composition_service.create(stage["project_id"], stage["episode_id"],
+                                      stage["user_id"])
+    worker.run_once(WID)
+    frozen = json.loads(comp_row(view["id"])["timeline_json"])
+    assert frozen["output_size"] == {"width": 640, "height": 360, "clips": 1,
+                                     "same_as": 2, "of": 2}, frozen.get("output_size")
+    assert frozen["shots"][0]["video"]["width"] == 640

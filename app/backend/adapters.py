@@ -443,6 +443,20 @@ MOCK_PARAMS: tuple[Param, ...] = (
     Param("sleep", "float", 0.6, 0.0, 30.0, note="秒"),
     Param("fail", "bool", False, note="置 true 走失败分支"),
     Param("text", "str", "mock output", note="写进结果文件的文本"),
+    # media 决定产物是**什么文件**。默认 text 只证明队列语义；mp4／png 让 worker
+    # 用本机 ffmpeg 现造一段可播放的纯色片或一张图。为什么要这一档：
+    # "生成 → 审核签字 → 时间线取片 → 合成 → 导出"这条链要求产物能被 ffprobe 读出
+    # 视频流，文本文件走到底只会卡在合成前检查，业务验收就只能停在"作业成功了"。
+    # 它仍然是假适配器——不做任何模型计算，只把产物做成真的媒体；
+    # 因此 `model_validation` 依旧不给它记真实调用，production_ready 不亮。
+    Param("media", "str", "text", choices=("text", "mp4", "png"),
+          note="产物类型：text／mp4／png（后两者用本机 ffmpeg 现造）"),
+    # 底色只给枚举，不给自由文本：lavfi 的 `color=c=<x>` 会拼进源串，
+    # 收死成六色就不用在这里再写一套转义校验。
+    Param("color", "str", "red",
+          choices=("red", "green", "blue", "black", "white", "gray"),
+          note="mp4／png 的底色"),
+    Param("seconds", "float", 1.0, 0.2, 5.0, note="mp4 时长（秒）"),
 )
 MOCK_MODEL = "mock-1"
 

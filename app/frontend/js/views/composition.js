@@ -13,6 +13,23 @@ import { getSub, setParam, setSub } from '../navstate.js';
 import {
   bindModalDismiss, bindSubChips, escapeHtml, errorBox, subChipRow,
 } from '../util.js';
+import { publicStatus } from '../validation.js';
+import { gotoEntry } from '../goto.js';
+
+
+/** 一条阻塞：原话 ＋ 一个能跳到问题所在处的按钮。
+ *  单独抽成一个函数而不是三层模板套着写——嵌套模板字面量在这里把解析器绕晕过一次，
+ *  可读性也一样：这一行的规则是「有 shot_id 就去那一镜，否则有 module 就去那个模块」。
+ */
+function blockerRow(b) {
+  const locate = b.locate || {};
+  const label = locate.shot_id ? '去这一镜' : (locate.module ? '去处理' : '');
+  const gotoAttr = label
+    ? ' <button class="btn xs" data-goto="' + escapeHtml(JSON.stringify(locate)) + '">'
+      + label + '</button>'
+    : '';
+  return '<li><b>阻塞</b> ' + escapeHtml(b.text || '') + gotoAttr + '</li>';
+}
 
 const TABS = ['成片'];
 const TONE = {
@@ -67,7 +84,7 @@ function rowMeta(r) {
       ${r.episode_title && r.episode_title !== `第 ${r.episode_seq} 集`
         ? `<span class="t-desc">${escapeHtml(r.episode_title)}</span>` : ''}</td>
     <td><span class="mono">v${r.version}</span></td>
-    <td><span class="chip ${tone}">${escapeHtml(r.status_label)}</span></td>
+    <td><span class="chip ${tone}" title="${escapeHtml(r.status_label)}">${escapeHtml(publicStatus(r.job_status || r.status))}</span></td>
     <td class="num">${r.shot_count} 镜${r.audio_count ? ` · ${r.audio_count} 音频` : ''}</td>
     <td class="num">${fmtDuration(r.duration_ms || r.total_duration_ms)}</td>
     <td class="num">${r.width && r.height ? `${r.width}×${r.height}` : '—'}</td>
@@ -112,7 +129,7 @@ function detailHtml(d) {
     <div class="card-head"><h2>成片 v${d.version} · 第 ${d.episode_seq} 集</h2>
       <span class="sub">${escapeHtml(d.episode_title || '')}</span>
       <div class="right">
-        <span class="chip ${tone}">${escapeHtml(d.status_label)}</span>
+        <span class="chip ${tone}" title="${escapeHtml(d.status_label)}">${escapeHtml(publicStatus(d.job_status || d.status))}</span>
         ${d.job_id ? `<button class="btn sm" data-go-job="${d.job_id}">去生成中心</button>` : ''}
       </div></div>
     <div class="card-body">
@@ -164,6 +181,10 @@ function createModal(episodes) {
         <select class="ctl" id="cp-fps">
           <option value="24">24 fps</option><option value="30">30 fps</option>
         </select>
+        <!-- 0037：合成前检查。数字与判据都来自服务端同一份规则（precheck.py），
+             这一栏只负责摊开给人看并给跳转，不在界面重算一遍。 -->
+        <label class="modal-label">合成前检查</label>
+        <div id="cp-pre"><p class="hint">正在检查这一集能不能拼…</p></div>
         <label class="modal-label" for="cp-sub">字幕（可选）</label>
         <div id="cp-srt-wrap" class="cp-srt-wrap">
           <p class="hint">正在读这个项目的字幕文件…</p>
@@ -341,6 +362,49 @@ export default {
       });
     };
 
+    // 0037：合成前检查。界面只负责显示服务端给的那三档，不自己判。
+    let preState = null;
+    const preBox = () => modal.querySelector('#cp-pre');
+    const paintPre = async (episodeId) => {
+      const box = preBox();
+      if (!box) return;
+      if (!episodeId) { box.innerHTML = '<p class="hint">先选一集。</p>'; preState = null; return; }
+      box.innerHTML = '<p class="hint">正在检查这一集能不能拼…</p>';
+      try {
+        preState = await api.compositionPrecheck(store.current.id, episodeId);
+      } catch (err) {
+        preState = null;
+        box.innerHTML = `<p class="hint">检查没跑成（${escapeHtml(err.message || '未知错误')}），`
+          + '点「开始合成」时服务端照样会把关。</p>';
+        return;
+      }
+      if (!modal.isConnected) return;
+      const tone = { 阻塞: 'red', 警告: 'amber', 通过: 'green' }[preState.status] || 'gray';
+      const bad = (preState.items || []).filter((i) => i.level === '阻塞');
+      const warn = (preState.items || []).filter((i) => i.level === '警告');
+      // 不填分辨率会按哪一档出：这句话由服务端算（`timeline.majority_size()`），
+      // 弹窗只复述。原来这里什么都没说，人以为留空是"跟随源"，实际写死放大到 1280×720。
+      const plan = preState.output_plan;
+      const planLine = plan
+        ? `<p class="hint">分辨率两栏留空就与素材同尺寸：`
+          + `${plan.width}×${plan.height}（${plan.same_as}/${plan.of} 镜是这一档）</p>`
+        : '';
+      box.innerHTML = `<p><span class="chip ${tone}">${escapeHtml(preState.status)}</span>
+          <span class="hint">共 ${preState.total} 项 · 阻塞 ${bad.length} · 警告 ${warn.length}</span></p>
+        ${bad.length ? `<ul class="hint">${bad.map(blockerRow).join('')}</ul>` : ''}
+        ${warn.length ? `<ul class="hint">${warn.map((w) => `<li>提醒 ${escapeHtml(w.text)}</li>`).join('')}</ul>` : ''}
+        ${planLine}`;
+    };
+
+    modal.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-goto]');
+      if (!btn) return;
+      let entry;
+      try { entry = JSON.parse(btn.dataset.goto); } catch { return; }
+      closeModal();
+      gotoEntry(entry);
+    });
+
     const openModal = () => {
       const err = modal.querySelector('#cp-modal-err');
       err.hidden = true;
@@ -348,6 +412,7 @@ export default {
       modal.hidden = false;
       modal.querySelector('#cp-ep')?.focus();
       if (subWrap) paintSubs();
+      paintPre(Number(modal.querySelector('#cp-ep')?.value) || null);
       // 每次都现读：这台机器的 FFmpeg 可能刚被换过，缓存会让界面说瞎话
       api.compositionSubtitles(store.current.id)
         .then((state) => {
@@ -362,6 +427,10 @@ export default {
     modal.querySelector('[data-cp-cancel]').addEventListener('click', closeModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
     root.querySelectorAll('[data-new-comp]').forEach((b) => b.addEventListener('click', openModal));
+    // 换集要重跑检查：阻塞项是按集算的，留着上一集的结论会指错地方
+    modal.querySelector('#cp-ep')?.addEventListener('change', (e) => {
+      paintPre(Number(e.target.value) || null);
+    });
     modal.querySelector('[data-cp-ok]').addEventListener('click', async () => {
       const err = modal.querySelector('#cp-modal-err');
       const episodeId = Number(modal.querySelector('#cp-ep').value);
@@ -369,6 +438,14 @@ export default {
       const fps = Number(modal.querySelector('#cp-fps').value) || 24;
       if (!episodeId) {
         err.textContent = '先选一集。';
+        err.hidden = false;
+        return;
+      }
+      // 检查跑过且明确阻塞就不发起：服务端那条路也会拒，但那时只剩一句错误原话，
+      // 人已经点过一次"开始合成"了。这里提前一步，界面上还能看见是哪几项。
+      if (preState && preState.status === '阻塞') {
+        err.textContent = '合成前检查有阻塞项：' + preState.items
+          .filter((i) => i.level === '阻塞').map((i) => i.text).join('；');
         err.hidden = false;
         return;
       }

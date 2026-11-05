@@ -44,14 +44,27 @@ function allowed(entry) {
 function buildNav() {
   const nav = document.getElementById('nav');
   // 没权限的模块连入口都不给（真正的拦截在服务端，这里只是别让人白点）
-  const visible = MODULES.filter(allowed);
-  nav.innerHTML = visible.map((m) => {
-    const item = `<div class="nav-item" data-v="${m.id}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span>${m.label}</div>`;
-    if (!m.subs.length) return item;
-    const subs = m.subs
-      .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}">${s}</span>`).join('');
-    const cls = m.utility ? 'nav-group utility' : 'nav-group';
-    return `<div class="${cls}">${item}<div class="nav-sub">${subs}</div></div>`;
+  const visible = MODULES.filter((m) => !m.hidden && allowed(m));
+  // 0037 分组：任务书 §11 要的是"按我在做什么"找入口，不是按模块名列表。
+  // 分组只影响侧栏的排布与一行小标题——**模块 id、顺序、二级页一个都没动**，
+  // 深链 #assets/1/a57 这类地址照旧有效（为导航调整而删页面是任务书明确禁止的）。
+  const groups = [];
+  visible.forEach((m) => {
+    const key = m.group || (m.utility ? '__utility' : '__plain');
+    let bucket = groups.find((g) => g.key === key);
+    if (!bucket) { bucket = { key, label: m.group_label || '', items: [] }; groups.push(bucket); }
+    bucket.items.push(m);
+  });
+  nav.innerHTML = groups.map((g) => {
+    const body = g.items.map((m) => {
+      const item = `<div class="nav-item" data-v="${m.id}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span>${m.label}</div>`;
+      if (!m.subs.length) return item;
+      const subs = m.subs
+        .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}">${s}</span>`).join('');
+      return `<div class="nav-group${m.utility ? ' utility' : ''}">${item}<div class="nav-sub">${subs}</div></div>`;
+    }).join('');
+    if (!g.label) return body;
+    return `<div class="nav-section"><div class="nav-section-t">${g.label}</div>${body}</div>`;
   }).join('');
 }
 
@@ -190,6 +203,80 @@ function syncChrome() {
   btn.disabled = pickable === 0;
   btn.title = pickable ? '切换项目' : '没有在产项目，到项目中心新建或恢复';
   document.getElementById('cur-path').textContent = '';
+  paintEpisode();
+}
+
+/* ---------------- 顶栏当前集（0037） ----------------
+ * 与项目切换器同一套做法（自绘菜单、键盘可达、点外面收起），
+ * 因为"当前集"和"当前项目"是同一类东西：全站上下文，不是某个页面的局部筛选。
+ */
+
+function paintEpisode() {
+  const btn = document.getElementById('ep-pick');
+  const label = document.getElementById('cur-episode');
+  if (!btn || !label) return;
+  const ep = store.currentEpisode;
+  label.textContent = ep ? `第 ${ep.seq} 集` : '未选集';
+  const has = (store.episodes || []).length;
+  btn.disabled = !store.currentId || has === 0;
+  btn.title = !store.currentId ? '先选一个项目'
+    : has === 0 ? '这个项目还没有集，去创作中心建一集'
+      : '切换当前集';
+}
+
+function closeEpMenu(returnFocus) {
+  const menu = document.getElementById('ep-menu');
+  const btn = document.getElementById('ep-pick');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  btn.setAttribute('aria-expanded', 'false');
+  if (returnFocus) btn.focus();
+}
+
+function openEpMenu() {
+  const menu = document.getElementById('ep-menu');
+  const btn = document.getElementById('ep-pick');
+  const list = store.episodes || [];
+  menu.innerHTML = list.map((e) => `
+    <div class="pm-item${e.id === store.currentEpisodeId ? ' on' : ''}" role="option"
+         data-id="${e.id}" tabindex="-1">第 ${e.seq} 集${e.title ? ' · ' + escapeHtml(e.title) : ''}</div>`).join('')
+    || '<div class="pm-empty">这个项目还没有集</div>';
+  menu.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+}
+
+function setupEpPick() {
+  const btn = document.getElementById('ep-pick');
+  const menu = document.getElementById('ep-menu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', () => { menu.hidden ? openEpMenu() : closeEpMenu(true); });
+  menu.addEventListener('click', (e) => {
+    const it = e.target.closest('.pm-item');
+    if (!it) return;
+    closeEpMenu(true);
+    store.selectEpisode(Number(it.dataset.id));
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#ep-pick') && !e.target.closest('#ep-menu')) closeEpMenu(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) closeEpMenu(true);
+  });
+}
+
+/* ---------------- 轻提示 ----------------
+ * 全站共用一条：写回失败、预检阻塞这类"只有一句话"的反馈，
+ * 不值得弹一层模态，但也不能什么都不说。
+ */
+
+function toast(text) {
+  const el = document.createElement('div');
+  el.className = 'chip amber';
+  el.textContent = text;
+  el.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:60;'
+    + 'padding:10px 14px;max-width:min(560px,80vw);white-space:normal;text-align:left';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4200);
 }
 
 /* ---------------- 登录闸门 ----------------
@@ -391,7 +478,7 @@ function setupPalette() {
 
   const render = (q = '') => {
     const key = q.trim();
-    shown = MODULES.filter((m) => allowed(m) && m.label.includes(key));
+    shown = MODULES.filter((m) => !m.hidden && allowed(m) && m.label.includes(key));
     index = 0;
     list.innerHTML = shown.length
       ? shown.map((m, i) =>
@@ -487,6 +574,9 @@ async function startApp() {
   appStarted = true;
   await store.loadWorker();
   paintWorker();
+  // 0037：当前集是服务端上下文，不是浏览器缓存——启动时读一次，
+  // 之后顶栏、工作台、成片都按它算
+  await store.loadContext();
   buildNav();
   syncChrome();
   // 地址有三段：#projects（模块）、#assets/1（模块＋二级标签）、
@@ -507,6 +597,7 @@ async function boot() {
   setupTheme();       // 要在问身份之前：未登录时能看见的只有闸门里那枚切换钮
   bindNav();
   setupProjPick();
+  setupEpPick();
   setupPalette();
   setupGate();
   bindUserMenu();
@@ -515,6 +606,8 @@ async function boot() {
   // 就退回在产第一个）。所以渲染完要再同步一次顶栏——先同步的那次拿的是旧状态，
   // 会出现"列表里已经没有这个项目、顶栏还写着它"。
   window.addEventListener('app:go', (e) => goView(e.detail));
+  // 轻提示的统一出口：视图只派事件，不各自攒一个浮层
+  window.addEventListener('app:toast', (e) => toast(e.detail?.text || ''));
   window.addEventListener('app:refresh', async () => {
     syncChrome();
     await goView(currentViewId() || 'overview');

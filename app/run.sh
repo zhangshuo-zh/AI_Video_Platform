@@ -23,6 +23,12 @@ if [ -z "${FASTVIDEO_FASTMETAL_HOME:-}" ] && [ -d "$HOME/FastVideo" ]; then
   export FASTVIDEO_FASTMETAL_HOME="$HOME/FastVideo"
 fi
 
+# mflux 由 `uv tool install` 装在 ~/.local/bin，那个目录默认不在 PATH 里。
+# 只在可执行文件真的存在时补默认值，换机器/换安装位置仍用环境变量覆盖。
+if [ -z "${FASTVIDEO_MFLUX_BIN:-}" ] && [ -x "$HOME/.local/bin/mflux-generate" ]; then
+  export FASTVIDEO_MFLUX_BIN="$HOME/.local/bin/mflux-generate"
+fi
+
 if [ "${1:-}" = "stop" ]; then
   # worker 是独立进程，stop 必须两样一起收：只停 API 会让队列不再前进，
   # 看起来像"作业卡住了"，其实是没人干活。

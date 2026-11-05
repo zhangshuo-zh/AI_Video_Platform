@@ -1,7 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, escapeHtml, formatMoney, run } from '../util.js';
-import { jobTone } from '../validation.js';
+import { jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
 import { closeDetail } from '../router.js';
 import { setStudioTarget, missingOf } from './asset-workspaces.js';
@@ -249,7 +249,7 @@ export async function renderDetail(id) {
                 <div class="ad-ref">
                   <div>
                     <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
-                      <span class="chip ${jobTone(j.status)}">${escapeHtml(j.status_label || j.status)}</span></div>
+                      <span class="chip ${jobTone(j.status)}" title="${escapeHtml(j.status_label || j.status)}">${escapeHtml(publicStatus(j.status))}</span></div>
                     <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
                       (j.execution_mode === 'cloud' ? '云端' : '本地'))}
                       ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}

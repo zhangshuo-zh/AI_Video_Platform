@@ -251,6 +251,14 @@ body{
 /* 没有二级项的模块不带 .nav-group 外壳（buildNav 直接返回裸项），
    补一条同样的组间距，否则它和下一组会贴得比别处近 */
 .nav > .nav-item{margin-bottom:3px}
+/* 0037 分组导航：一行小标题 + 它下面的模块。标题不可点，所以刻意不做成
+   .nav-item 的样子（不描边、不上底、字号更小），否则会被误读成一个页面入口。 */
+.nav-section{margin:0 0 10px}
+.nav-section + .nav-section{margin-top:2px}
+.nav-section-t{
+  padding:8px 10px 5px;font-size:10.5px;font-weight:650;letter-spacing:.06em;
+  color:var(--ink-3);text-transform:none;user-select:none;
+}
 .nav-item{
   display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:9px;
   color:var(--ink-2);cursor:pointer;user-select:none;font-size:13.5px;letter-spacing:-.005em;
@@ -419,6 +427,13 @@ main{min-width:0;display:flex;flex-direction:column}
 }
 .crumb{font-size:12.5px;color:var(--ink-2);position:relative;display:flex;align-items:center;gap:7px}
 .crumb b{color:var(--ink);font-weight:650;letter-spacing:-.01em}
+/* 0037：当前集与当前项目同一层、同一做法（自绘菜单、不描边不上底）。
+   中间用一条淡竖线分开，避免两个可点文字看起来像一个长标题被折成两行。 */
+.ep-crumb{padding-left:11px;border-left:1px solid var(--line)}
+.ep-crumb .proj-pick b{font-weight:600}
+/* 合成前检查那一栏：状态徽章 + 计数 + 清单，窄屏下靠 .table-wrap 之外自己折行 */
+.cp-pre ul.hint{margin:4px 0 0;padding-left:18px}
+.cp-pre p{margin:0 0 4px}
 /* 项目切换的触发器：不描边、不上白底——它是全站上下文，做成按钮会让人以为点下去是"执行"什么。
    但下拉箭头常驻：先前做成 hover 才露，反馈是"别人不知道这里可以点击"——
    可点性得靠箭头自己说，不能等鼠标移上来才提示。 */
@@ -1464,6 +1479,10 @@ td.shot-jobs .t-desc{max-width:180px}
   font-size:11.5px;color:var(--ink-3)}
 .pl-err{margin:6px 0 0;font-size:11.5px;color:var(--bad);line-height:1.6;
   word-break:break-word}
+/* 节点失败诊断：与生成中心作业抽屉用的是同一块面板（`views/diagnosis.js`），
+   这里只补一层分隔，不重排字号——两处摆的是同一份七字段目录。 */
+.pl-diag{margin:8px 0 0;padding-top:8px;border-top:1px dashed var(--line)}
+.pl-diag .drawer-h{font-size:12px;margin:0 0 6px}
 .pl-events-head{margin:16px 0 6px;font-size:12px;font-weight:600;color:var(--ink-2)}
 .pl-events{list-style:none;margin:0;padding:0;display:grid;gap:4px;
   max-height:260px;overflow:auto}
@@ -1628,3 +1647,9 @@ td.shot-jobs .t-desc{max-width:180px}
 .variant-pick{margin-top:8px;padding-left:10px;border-left:2px solid var(--line)}
 .variant-pick:empty{display:none}
 .variant-pick .pick-grp{margin-top:2px}
+
+/* 审核质量清单（§8.2）。自动项与人工项各一条列表：
+   项名加粗、结论做成 chip、说明文字降一级——扫读时先看结论，要看理由再往下看。 */
+.rev-checklist .rev-check-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 8px; }
+.rev-checklist .rev-check-list li { display: grid; gap: 3px; }
+.rev-checklist .rev-check-list b { margin-right: 6px; }

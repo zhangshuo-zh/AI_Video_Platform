@@ -65,7 +65,7 @@ export default {
     if (todoResult.status === 'fulfilled') todo = todoResult.value;
     const w = store.worker;
     const q = w?.queue || { queued: 0, running: 0 };
-    const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility).map((m) => `
+    const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility && !m.hidden).map((m) => `
         <div class="mod" data-go="${m.id}">
           <h3>${m.label}</h3>
           <p>${m.desc}</p>

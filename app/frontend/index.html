@@ -143,6 +143,17 @@
           <span id="cur-path"></span>
           <div class="proj-menu" id="proj-menu" role="listbox" aria-label="项目列表" hidden></div>
         </div>
+        <!-- 0037：当前集。和当前项目同一层，因为工作台、预检、成片都按"这一集"算。
+             没选集时下拉是灰的并说明为什么——灰而不说原因，等于让人以为坏了。 -->
+        <div class="crumb ep-crumb">
+          <button class="proj-pick" id="ep-pick" type="button"
+                  aria-haspopup="listbox" aria-expanded="false" title="切换当前集">
+            <b id="cur-episode">未选集</b>
+            <svg class="chev" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.6 6 7.8 9.2 4.6"/></svg>
+          </button>
+          <div class="proj-menu" id="ep-menu" role="listbox" aria-label="集列表" hidden></div>
+        </div>
         <div class="top-right">
           <!-- 日/夜切换：图标表示"当前是哪套"，title 说"点下去去哪套"。
                放在最左，不挤账户头像。 -->

@@ -666,6 +666,13 @@ class JobAttentionIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class JobRetryBatchIn(BaseModel):
+    """批量重投的入参。`capability` 只认清单里已有的能力，`limit` 上限 50。"""
+    episode_id: int
+    capability: str = "video"
+    limit: int = Field(default=50, ge=1, le=200)
+
+
 class JobRetryPreviewOut(BaseModel):
     """重试前给人看清"这一枪会继承什么、可能再花多少"。
 
@@ -838,6 +845,20 @@ class ShotIn(BaseModel):
     # 0034：这一镜用的是这个资产的**哪一个形态**（人物的哪套衣服）。
     # 服务端会保证父资产同时出现在 asset_ids 里，见 routers/content._checked_variant_ids。
     variant_ids: list[int] = []
+    # 0037：镜头设定五栏（任务书 §6.1 第一阶段）。全部可留空——它们是给人看的
+    # 生产语言，今天没有任何执行器读它们，所以**不进源版本指纹**：
+    # 补填一个景别不该把这一镜已经签过字的产物判成过期。
+    shot_size: str = Field(default="", max_length=40)
+    camera_move: str = Field(default="", max_length=40)
+    aspect: str = Field(default="", max_length=20)
+    style: str = Field(default="", max_length=60)
+    negative_prompt: str = Field(default="", max_length=2000)
+
+
+class ContextIn(BaseModel):
+    """当前上下文：项目 × 集。两个都可为空（清空上下文是合法操作）。"""
+    project_id: int | None = None
+    episode_id: int | None = None
 
 
 class ShotOut(BaseModel):
@@ -849,6 +870,11 @@ class ShotOut(BaseModel):
     duration: float
     asset_ids: list[int]
     variant_ids: list[int] = []
+    shot_size: str = ""
+    camera_move: str = ""
+    aspect: str = ""
+    style: str = ""
+    negative_prompt: str = ""
     # 形态 id → 「父资产名 · 形态名」。分镜表要把 #57 翻成人话，
     # 让浏览器再为一串 id 逐个回查形态就是 N+1；列表接口一次带出来。
     variant_labels: dict[int, str] = {}
@@ -866,6 +892,14 @@ class ShotOut(BaseModel):
                    asset_ids=json.loads(row["asset_ids"] or "[]"),
                    variant_ids=(json.loads(row["variant_ids"] or "[]")
                                 if "variant_ids" in keys else []),
+                   # 0037 的镜头设定五栏：老库/老夹具可能还没有这些列，
+                   # 读不到就按空串给——它们是给人看的，不是判据，缺了不该报错。
+                   shot_size=(row["shot_size"] if "shot_size" in keys else ""),
+                   camera_move=(row["camera_move"] if "camera_move" in keys else ""),
+                   aspect=(row["aspect"] if "aspect" in keys else ""),
+                   style=(row["style"] if "style" in keys else ""),
+                   negative_prompt=(row["negative_prompt"]
+                                    if "negative_prompt" in keys else ""),
                    variant_labels=variant_labels or {},
                    source_stale=bool(source_stale))
 
@@ -1555,6 +1589,37 @@ class ReviewSignIn(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class ReviewCheckItemIn(BaseModel):
+    """人工清单里的一项结论。`code` 必须属于这一类能力的清单，服务端按 `reviewkit` 校验。"""
+    code: str = Field(min_length=1, max_length=60)
+    state: Literal["pass", "issue", "na"]
+    note: str = Field(default="", max_length=300)
+
+
+class ReviewCheckIn(BaseModel):
+    """保存人工清单结论。一次最多 20 项（清单本身只有 4—5 项，多出来就是异常调用）。"""
+    items: list[ReviewCheckItemIn] = Field(default_factory=list, max_length=20)
+
+
+class ReviewBatchItemIn(BaseModel):
+    job_id: int
+    # 默认签整条作业的产物清单；一件一件签走原来的单条接口
+    anchor: str = Field(default="artifact", min_length=1, max_length=40)
+
+
+class ReviewBatchIn(BaseModel):
+    """批量签字。
+
+    `decision` 是**整批同一个结论**——批量通过与批量驳回是两种动作，
+    混在一张表里传不同结论会让人数不清自己签了什么。
+    上限 50：一次点几十条是真实需求（一镜一条），但更大批量该走产线的审核节点，
+    而不是在审核中心一口气改 500 条。
+    """
+    items: list[ReviewBatchItemIn] = Field(min_length=1, max_length=50)
+    decision: Literal["approved", "rejected", "returned"]
+    note: str = Field(default="", max_length=500)
+
+
 class ReviewGateOut(BaseModel):
     id: int | None = None
     project_id: int
@@ -1643,6 +1708,10 @@ class PipelineNodeOut(BaseModel):
     retry_hint: str = ""
     error_code: str = ""
     error_message: str = ""
+    # 七字段诊断（`error_catalog.for_node`）。它必须写在模型里：
+    # `response_model` 会丢掉模型外的字段，以前一处后端算好了、HTTP 层却什么也没带出来，
+    # 界面只能显示"没有原话"——pytest 直接调 `run_view()` 还看不见这一层丢失。
+    diagnosis: dict = {}
     output: dict = {}
     started_at: str = ""
     finished_at: str = ""

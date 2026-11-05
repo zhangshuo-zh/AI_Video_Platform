@@ -251,7 +251,33 @@ def build(project_id: int, episode_id: int, *,
         "audio": audio,
         "subtitles": subtitles,
         "total_duration_ms": total_ms,
+        # 不填分辨率时合成按它出（见 `majority_size`）；快照一起冻住，事后能复盘
+        # "这一版当时是按哪一档尺寸拼的"
+        "output_size": majority_size(timeline_shots),
     }
+
+
+def majority_size(shot_rows: list[dict]) -> dict | None:
+    """素材里最常见的那个宽高——**不填分辨率时成片就按它出**，不放大。
+
+    为什么默认要跟着素材走：合成执行器原来写死 1280×720（`COMPOSE_WIDTH/HEIGHT`），
+    而本机预览档 FastMetal 真跑出来的一镜是 640×352。2026-11-05 整集连跑量到：
+    六条 640×352 的素材拼出来的是 1280×720 的成片、5,622,530 字节——
+    等于每次合成都把画面拉大一倍再存一份，**画质不会多一个像素，字节与耗时倒是实打实涨**。
+    所以默认改成"与素材同尺寸"；要更大就由人显式填 `width`/`height`。
+    取众数而不是取第一镜：一集里混了不同尺寸的素材时，取第一镜会让整集跟着那一镜走。
+    """
+    counts: dict[tuple[int, int], int] = {}
+    for row in shot_rows:
+        video = row.get("video") or {}
+        width, height = video.get("width"), video.get("height")
+        if width and height:
+            counts[(int(width), int(height))] = counts.get((int(width), int(height)), 0) + 1
+    if not counts:
+        return None
+    (width, height), hits = max(counts.items(), key=lambda kv: (kv[1], -kv[0][0]))
+    return {"width": width, "height": height, "clips": len(counts),
+            "same_as": hits, "of": sum(counts.values())}
 
 
 def _shot_starts(rows: list[dict]) -> dict[int, int]:

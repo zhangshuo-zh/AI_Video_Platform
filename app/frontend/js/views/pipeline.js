@@ -16,6 +16,9 @@ import { getSub, setSub, setParam } from '../navstate.js';
 import {
   bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow,
 } from '../util.js';
+import { publicStatus } from '../validation.js';
+import { gotoEntry } from '../goto.js';
+import { diagnosisHtml } from './diagnosis.js';
 
 const TABS = ['运行', '模板', '整季'];
 // 与后端 pipeline.RUN_STATUS_LABELS／NODE_STATUS_LABELS 同一套词，这里只决定颜色
@@ -148,18 +151,43 @@ function createModal(episodes, templates, busy) {
   </div>`;
 }
 
-/** 生产前检查的三档渲染。阻断红、警告琥珀；都空时说一句"检查过"。 */
+/** 生产前检查的三档渲染。阻断红、警告琥珀；都空时说一句"检查过"。
+ *
+ * 数据来自统一预检（`precheck.episode_precheck`）而不是 `pipeline.preflight` 原样：
+ * 任务书 §10 要「产线与人工两种模式共用一套」，落到界面上就是——
+ * 发起弹窗里看到的这一张清单，与工作台、生成中心提交前看到的是**同一份条目与同一份结论**，
+ * 每条还带一个跳转（认不出位置的就不摆按钮，比丢回默认页诚实）。
+ * 老版响应只有 `blocking`／`warnings` 两组字符串时照样能画（不硬依赖新字段）。
+ */
 function preflightHtml(data) {
+  const items = data?.items || [];
+  if (items.length) {
+    const group = (level, title, tone) => {
+      const list = items.filter((i) => i.level === level);
+      if (!list.length) return '';
+      return `<div class="pl-pre-group ${tone}"><b>${title}（${list.length}）</b><ul>
+        ${list.map((i) => {
+          const loc = i.locate || {};
+          const jump = loc.module
+            ? ` <button class="btn xs" data-goto="${escapeHtml(JSON.stringify(loc))}">${
+                loc.shot_id ? '去这一镜' : '去处理'}</button>` : '';
+          return `<li class="${tone}">${escapeHtml(i.text)}${jump}</li>`;
+        }).join('')}</ul></div>`;
+    };
+    return group('阻塞', '不能发起', 'bad') + group('警告', '可以发起，但要注意', 'warn')
+      + (items.some((i) => i.level === '通过') && items.length === 1
+        ? '<p class="hint">生产前检查通过：分镜、引用资产、默认模型轨与运行冲突都没问题。</p>' : '');
+  }
   const block = data?.blocking || [];
   const warn = data?.warnings || [];
   if (!block.length && !warn.length) {
     return '<p class="hint">生产前检查通过：分镜、引用资产、默认模型轨与运行冲突都没问题。</p>';
   }
-  const items = (list, tone) => list.map((t) => `<li class="${tone}">${escapeHtml(t)}</li>`).join('');
+  const items2 = (list, tone) => list.map((t) => `<li class="${tone}">${escapeHtml(t)}</li>`).join('');
   return `${block.length ? `<div class="pl-pre-group bad">
-      <b>不能发起（${block.length}）</b><ul>${items(block, 'bad')}</ul></div>` : ''}
+      <b>不能发起（${block.length}）</b><ul>${items2(block, 'bad')}</ul></div>` : ''}
     ${warn.length ? `<div class="pl-pre-group warn">
-      <b>可以发起，但要注意（${warn.length}）</b><ul>${items(warn, 'warn')}</ul></div>` : ''}`;
+      <b>可以发起，但要注意（${warn.length}）</b><ul>${items2(warn, 'warn')}</ul></div>` : ''}`;
 }
 
 // 发起弹窗里生产前检查的请求序号：改集/改模板都会重问一次，先发的请求可能后到，不挡就会把上一集的阻断结果显示成这一集的，或者反过来——按钮的禁用状态必须跟着最后一次点击的判断走。
@@ -182,6 +210,8 @@ function nodeRows(detail, canSubmit) {
     // 读项目／读集／读剧本这三格，类型名和节点名几乎一样（"读取项目"与"读项目"），
     // 再挂一枚类型 chip 只是噪音；从生成节点往后类型才是有用的信息
     const quietType = ['project_input', 'episode_input', 'document_input'].includes(n.node_type);
+    // 节点失败与作业失败给的是同一张七字段目录：服务端 `pipeline._node_view` 直接把
+    // `diagnosis` 挂在节点上带下来，所以这里不再另打一次接口（两处问会问出两份答复）。
     return `<li class="pl-node st-${n.status}">
       <span class="pl-idx">${i + 1}</span>
       <div class="pl-main">
@@ -193,7 +223,7 @@ function nodeRows(detail, canSubmit) {
         <div class="pl-meta">
           <span class="mono">${escapeHtml(n.node_key)}</span>
           ${deps ? `<span>前置：${escapeHtml(deps)}</span>` : ''}
-          ${n.job_id ? `<span>作业 #${n.job_id}${n.job_status_label ? ' · ' + escapeHtml(n.job_status_label) : ''}</span>
+          ${n.job_id ? `<span>作业 #${n.job_id}${n.job_status ? ' · ' + escapeHtml(publicStatus(n.job_status)) : ''}${n.job_status_label ? `（原词：${escapeHtml(n.job_status_label)}）` : ''}</span>
             <button class="btn xs" data-go-generate>去生成中心</button>` : ''}
           ${n.review_id ? `<span>签字 #${n.review_id}</span>
             <button class="btn xs" data-go-review>去审核</button>` : ''}
@@ -201,6 +231,9 @@ function nodeRows(detail, canSubmit) {
           ${n.finished_at ? `<span class="t-dim">结束 ${escapeHtml(n.finished_at)}</span>` : ''}
         </div>
         ${n.error_message ? `<p class="pl-err">${escapeHtml(n.error_message)}</p>` : ''}
+        ${n.diagnosis && n.error_code ? `<div class="pl-diag">`
+          + diagnosisHtml({ error_message: n.error_message, diagnosis: n.diagnosis },
+            '这一格为什么停在这里，接下来怎么办') + `</div>` : ''}
         ${retryable ? `<div class="row" style="gap:6px;margin-top:6px">
           <button class="btn sm" data-retry-node="${n.id}">重试这一格</button>
           <span class="t-desc">旧作业、旧产物、旧签字都留着，新作业另起一行</span></div>` : ''}
@@ -787,10 +820,14 @@ export default {
       if (!episodeId || !templateId) { preBox.innerHTML = ''; okBtn.disabled = false; return; }
       preBox.innerHTML = '<p class="hint">正在做生产前检查…</p>';
       try {
-        const data = await api.preflight(store.current.id, episodeId, templateId);
+        // 走统一预检（`GET /api/projects/{p}/precheck`）：它内部就是 `pipeline.preflight`，
+        // 但翻成了三档条目并带上跳转——于是发起弹窗与工作台看到的是同一张清单，
+        // 不会再出现"弹窗说能发起、点下去吃 422"那种界面骗人的事。
+        const data = await api.precheckEpisode(store.current.id, episodeId, templateId);
         if (req !== preReqId || !preBox.isConnected) return;
         preBox.innerHTML = preflightHtml(data);
-        okBtn.disabled = (data.blocking || []).length > 0;
+        // 禁不禁只认服务端那句 `can_start`（= 一条阻塞都没有），页面不自己数
+        okBtn.disabled = data.can_start === false;
       } catch (e) {
         if (req !== preReqId || !preBox.isConnected) return;
         // 读不到预检不替人做决定：照常允许点，服务端发起时还会再挡一次
@@ -798,6 +835,15 @@ export default {
         okBtn.disabled = false;
       }
     };
+    // 清单里的「去这一镜／去处理」：先收弹窗再跳，不然人落在目标页上还被一层蒙着
+    modal.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-goto]');
+      if (!btn) return;
+      let entry;
+      try { entry = JSON.parse(btn.dataset.goto); } catch { return; }
+      closeModal();
+      gotoEntry(entry);
+    });
     modal.querySelector('#pl-ep')?.addEventListener('change', checkPreflight);
     modal.querySelector('#pl-tpl')?.addEventListener('change', checkPreflight);
     bindModalDismiss(modal, closeModal);

@@ -117,6 +117,84 @@ class JobRepository:
                 (episode_id,)).fetchall()
         return {int(row["shot_id"]): row for row in rows}
 
+    def submission_counts(self, project_ids: list[int] | None) -> list[dict]:
+        """谁提交了多少条作业（按 `created_by` 分组）。
+
+        这一条只回答"谁按了提交"，不回答"谁干了多少活"：作业数不等于产量
+        （一次批量重投会算成同一个人的多条），也不等于时长。界面上必须把这句
+        限制一起显示出来——平台的可查事实只有 `created_by` 这类弱引用，
+        没有操作审计（设计稿 §8 明写不做），把它当绩效读数就是编。
+        """
+        if project_ids is None:
+            where, args = "1", []
+        elif not project_ids:
+            where, args = "0", []
+        else:
+            marks = ",".join("?" for _ in project_ids)
+            where, args = f"project_id IN ({marks})", list(project_ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT j.created_by AS user_id,
+                           u.display_name AS name,
+                           COUNT(*) AS n,
+                           SUM(CASE WHEN j.status = 'succeeded' THEN 1 ELSE 0 END) AS ok,
+                           SUM(COALESCE(j.elapsed_ms, 0)) AS busy_ms
+                      FROM job j LEFT JOIN app_user u ON u.id = j.created_by
+                     WHERE {where}
+                     GROUP BY j.created_by, u.display_name
+                     ORDER BY n DESC, j.created_by""", args).fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_result_paths(self, project_id: int, *, capability: str = "video",
+                            shot_bound: bool | None = True, provider: str | None = None,
+                            exclude_provider: str | None = None,
+                            limit: int = 20) -> list[str]:
+        """这个项目最近若干条**成功作业**的产物清单原文（给磁盘估算取样）。
+
+        三种典型大小要分开取，否则数字会自己骗自己：成片作业的 `capability` 也是
+        `video`，混进"每镜平均"会把平均值抬高一到两个数量级（本机实测：一镜
+        640×352 约 0.17 MB，一次成片约 5.6 MB）。所以镜头样本要求挂在具体镜头上
+        且排除 `ffmpeg`，成片样本正好反过来。只取 `succeeded`——失败的作业没有
+        可量的文件。
+        """
+        sql = ["SELECT result_paths_json FROM job WHERE project_id = ?",
+               "AND capability = ? AND status = 'succeeded'"]
+        args = [int(project_id), capability]
+        if shot_bound is True:
+            sql.append("AND shot_id IS NOT NULL")
+        elif shot_bound is False:
+            sql.append("AND shot_id IS NULL")
+        if provider:
+            sql.append("AND provider_code = ?")
+            args.append(provider)
+        if exclude_provider:
+            sql.append("AND provider_code <> ?")
+            args.append(exclude_provider)
+        sql.append("ORDER BY id DESC LIMIT ?")
+        args.append(int(limit))
+        with get_conn() as conn:
+            rows = conn.execute(" ".join(sql), args).fetchall()
+        return [r["result_paths_json"] or "[]" for r in rows]
+
+    def latest_jobs_by_shot(self, episode_id: int,
+                            capability: str = "video") -> dict[int, sqlite3.Row]:
+        """这一集每一镜的**最后一条**该能力的作业（不分状态）。键是 shot_id。
+
+        为什么要单独这一条：「这一镜现在卡在什么状态」必须只有一个答案出处。
+        批重投、下一步任务与统计都读它——各处自己写一遍"取最新一条"，
+        就会出现一处按 `MAX(id)`、另一处按 `finished_at`，
+        于是同一个镜头在这两个页面上一个说"卡住"、一个说"没事"。
+        """
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT j.* FROM job j
+                    JOIN (SELECT shot_id, MAX(id) AS mid FROM job
+                           WHERE episode_id = ? AND capability = ?
+                             AND shot_id IS NOT NULL
+                           GROUP BY shot_id) t ON t.mid = j.id""",
+                (episode_id, capability)).fetchall()
+        return {int(row["shot_id"]): row for row in rows}
+
     def get(self, job_id: int) -> sqlite3.Row | None:
         with get_conn() as conn:
             return conn.execute(
@@ -634,6 +712,59 @@ class JobRepository:
                 "total_jobs": int(total or 0), "locals": [dict(r) for r in locals_]}
 
     # ---------- worker 心跳 ----------
+    def stats_for_projects(self, project_ids: list[int] | None) -> dict:
+        """项目范围的作业事实（P2 生产统计的读数出口）。
+
+        为什么另开一个方法而不是让界面去拼 `cost_summary`：`cost_summary` 的口径是
+        **成本**（`BILLABLE_WHERE` 只收计得上价的那几条），拿它当"跑了多少条、
+  成功几条"会悄悄漏掉本地作业——本地不计费。这里按状态×能力如实数，
+        金额仍然只从 `cost_summary` 那一条口径出（一个出处）。
+
+        只读、单条聚合，不 JOIN 产物表：这条接口挂在工作台上，每次打开都跑。
+        """
+        where, args = self._scope(project_ids)
+        with get_conn() as conn:
+            by_group = conn.execute(
+                f"""SELECT status, capability,
+                           COUNT(*) AS n,
+                           SUM(COALESCE(elapsed_ms, 0)) AS total_ms,
+                           SUM(CASE WHEN elapsed_ms IS NOT NULL THEN 1 ELSE 0 END) AS timed,
+                           MAX(elapsed_ms) AS max_ms
+                      FROM job WHERE {where}
+                     GROUP BY status, capability""", args).fetchall()
+            codes = conn.execute(
+                f"""SELECT error_code, COUNT(*) AS n FROM job
+                     WHERE {where} AND status IN ('failed', 'needs_attention')
+                       AND error_code IS NOT NULL AND error_code <> ''
+                     GROUP BY error_code
+                     ORDER BY n DESC, error_code LIMIT 12""", args).fetchall()
+            # 重试的两端各数一次：`retry_of_job_id` 非空＝这一条是重投出来的，
+            # `superseded_by_job_id` 非空＝这一条被后来的顶掉了。job 表没有
+            # `retry_count` 那一列（那是产线节点上的），别拿节点口径来数作业。
+            retried = conn.execute(
+                f"""SELECT SUM(CASE WHEN retry_of_job_id IS NOT NULL THEN 1 ELSE 0 END) AS n,
+                           SUM(CASE WHEN superseded_by_job_id IS NOT NULL THEN 1 ELSE 0 END) AS m
+                      FROM job WHERE {where}""", args).fetchone()
+            # 每条能力各自的**采样**峰值。`child_peak_rss_sampled_kb` 是 worker
+            # 里 `_RssWatch` 按秒采的这棵子进程树峰值；老的行没有这一栏，`json_extract`
+            # 给 NULL，于是那一档显示「没读数」而不是拿 `child_max_rss_kb`（生命周期值）冒充。
+            peaks = conn.execute(
+                f"""SELECT capability,
+                           MAX(json_extract(resources_json,
+                                '$.child_peak_rss_sampled_kb')) AS peak_kb,
+                           SUM(CASE WHEN json_extract(resources_json,
+                                '$.child_peak_rss_sampled_kb') IS NOT NULL
+                                THEN 1 ELSE 0 END) AS n
+                      FROM job
+                     WHERE {where} AND status = 'succeeded'
+                       AND execution_mode = 'local' AND json_valid(resources_json)
+                     GROUP BY capability""", args).fetchall()
+        return {"by_group": [dict(r) for r in by_group],
+                "peaks": [dict(r) for r in peaks],
+                "by_error_code": [dict(r) for r in codes],
+                "retried": int(retried["n"] or 0),
+                "superseded": int(retried["m"] or 0)}
+
     def heartbeat(self, worker_id: str, pid: int, current_job_id: int | None,
                   version: str, *, limits: dict | None = None,
                   resources: dict | None = None) -> None:

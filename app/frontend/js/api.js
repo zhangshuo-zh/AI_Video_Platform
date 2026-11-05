@@ -145,6 +145,9 @@ export const api = {
   }).then(toJson),
   jobLogs: (id) => fetch(`/api/jobs/${id}/logs`).then(toJson),
   jobArtifacts: (id) => fetch(`/api/jobs/${id}/artifacts`).then(toJson),
+  // §14 异常目录在这一条作业上的诊断。单独一个请求而不是塞进详情：
+  // 队列页每次刷几十行，七项解释只在点开这一条时要用。
+  jobDiagnosis: (id) => fetch(`/api/jobs/${id}/diagnosis`).then(toJson),
   // 产物走浏览器直连（图片/视频能直接预览）；它不是 JSON，不能过 toJson
   jobArtifactUrl: (id, index) => `/api/jobs/${id}/artifacts/${index}`,
   jobCosts: (projectId) => fetch('/api/jobs/costs'
@@ -327,6 +330,24 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
+  // §8.2 审核质量清单：自动项每次现算（含 ffprobe），所以只在点开某一条时读
+  jobChecklist: (jobId) => fetch(`/api/jobs/${jobId}/review-checklist`).then(toJson),
+  // 音频四类能力的真实状态（能不能提交、缺哪一件）：页面上的按钮按它来画，不按写死的文案
+  audioCapabilities: () => fetch('/api/audio/capabilities').then(toJson),
+  saveJobChecklist: (jobId, body) => fetch(`/api/jobs/${jobId}/review-checklist`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 批量签字：整批同一个结论，服务端逐条落地、逐条报原因
+  jobReviewBatch: (body) => fetch('/api/jobs/review-batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  /** 批量重投：把这一集卡在失败／已取消的镜头一次重投（服务端逐条判，界面不自己筛）。*/
+  jobRetryBatch: (episodeId, capability = 'video') => fetch('/api/jobs/retry-batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ episode_id: Number(episodeId), capability }),
+  }).then(toJson),
 
   // 产线中心（0026／阶段 C）：只做编排。不建第二条队列、不记第二本账——
   // 这里拿到的 job_id／review_id 都是引用，成本与产物仍去生成中心读。
@@ -495,4 +516,27 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
+
+  /* ---------- 项目生产工作台（0037） ---------- */
+  // 上下文在服务端，不在 localStorage：顶栏、工作台、预检、成片四入口必须认同一个集
+  context: () => fetch('/api/context').then(toJson),
+  setContext: (projectId, episodeId) => fetch('/api/context', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId ?? null, episode_id: episodeId ?? null }),
+  }).then(toJson),
+  production: (pid, episodeId) => fetch(
+    `/api/projects/${pid}/production?`
+    + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}) })).then(toJson),
+  shotWorkbench: (sid) => fetch(`/api/shots/${sid}/workbench`).then(toJson),
+  assetImpact: (id) => fetch(`/api/assets/${id}/impact`).then(toJson),
+  precheckShot: (sid, params = {}) => fetch(
+    `/api/precheck/shot/${sid}?` + new URLSearchParams(params)).then(toJson),
+  precheckEpisode: (pid, episodeId, templateId) => fetch(
+    `/api/projects/${pid}/precheck?` + new URLSearchParams({
+      episode_id: episodeId, ...(templateId ? { template_id: templateId } : {}),
+    })).then(toJson),
+  compositionPrecheck: (pid, episodeId, subtitlePath) => fetch(
+    `/api/projects/${pid}/composition-precheck?` + new URLSearchParams({
+      episode_id: episodeId, ...(subtitlePath ? { subtitle_path: subtitlePath } : {}),
+    })).then(toJson),
 };

@@ -71,7 +71,9 @@ class ShotRepository:
 
     def create(self, episode_id: int, summary: str, prompt: str,
                duration: float, asset_ids: list[int],
-               variant_ids: list[int] | None = None) -> sqlite3.Row:
+               variant_ids: list[int] | None = None,
+               *, shot_size: str = "", camera_move: str = "", aspect: str = "",
+               style: str = "", negative_prompt: str = "") -> sqlite3.Row:
         with get_conn() as conn:
             seq = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM shot WHERE episode_id = ?",
@@ -79,33 +81,43 @@ class ShotRepository:
             ).fetchone()["n"]
             cursor = conn.execute(
                 """INSERT INTO shot (episode_id, seq, summary, prompt, duration,
-                                     asset_ids, variant_ids)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                     asset_ids, variant_ids,
+                                     shot_size, camera_move, aspect, style,
+                                     negative_prompt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids),
-                 json.dumps(variant_ids or [])),
+                 json.dumps(variant_ids or []), shot_size, camera_move, aspect,
+                 style, negative_prompt),
             )
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
 
     def update(self, shot_id: int, summary: str, prompt: str,
                duration: float, asset_ids: list[int],
-               variant_ids: list[int] | None = None) -> sqlite3.Row | None:
-        """整体改一镜的四个可编辑字段（0034 起再加形态引用）。
+               variant_ids: list[int] | None = None,
+               *, shot_size: str = "", camera_move: str = "", aspect: str = "",
+               style: str = "", negative_prompt: str = "") -> sqlite3.Row | None:
+        """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏）。
 
         **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
         搬动它等于让"第 3 镜"在别的集里又出现一次；真要挪就删了重建。
         改完 touch 项目时间：项目中心"最近修改"是这件事在界面上的唯一回执。
+
+        五栏设定走关键字参数而不是位置参数：老调用方（含测试夹具）传四个位置参数
+        照样能跑，不会因为多了一栏就得全仓改一遍。
         """
         with get_conn() as conn:
             if conn.execute("SELECT 1 FROM shot WHERE id = ?", (shot_id,)).fetchone() is None:
                 return None
             conn.execute(
                 """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?,
-                          variant_ids = ?, revision = revision + 1,
+                          variant_ids = ?, shot_size = ?, camera_move = ?, aspect = ?,
+                          style = ?, negative_prompt = ?, revision = revision + 1,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (summary, prompt, duration, json.dumps(asset_ids),
-                 json.dumps(variant_ids or []), shot_id),
+                 json.dumps(variant_ids or []), shot_size, camera_move, aspect,
+                 style, negative_prompt, shot_id),
             )
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()

@@ -7,6 +7,10 @@ import { api } from './api.js';
 export const store = {
   projects: [],
   currentId: null,
+  // 0037：当前集。真相在 `user_context` 那一行，这里只是它的缓存——
+  // 各页再各自记一个"我选中的集"，就会出现顶栏第 3 集、工作台第 1 集。
+  episodes: [],
+  currentEpisodeId: null,
   // 登录态：user 是后端 /api/auth/me 给的那一份，permissions 是权限点数组。
   // 界面按 can() 决定显不显示某个操作；真正的拦截在服务端，前端这层只是别让人白点。
   user: null,
@@ -78,11 +82,65 @@ export const store = {
     return this.projects.find((p) => p.id === this.currentId) || null;
   },
 
+  get currentEpisode() {
+    return this.episodes.find((e) => e.id === this.currentEpisodeId) || null;
+  },
+
+  /** 读服务端上下文。项目换了就顺带把这一集的清单拉一次——顶栏那个下拉要用它。 */
+  async loadContext() {
+    try {
+      const ctx = await api.context();
+      // 上下文里的项目看不见时，后端已经把它抹成 null；这里跟着清本地缓存，
+      // 别出现"服务端说没项目、顶栏还挂着旧项目名"
+      if (ctx.project_id && ctx.project_id !== this.currentId
+          && this.projects.some((p) => p.id === ctx.project_id)) {
+        this.currentId = ctx.project_id;
+      }
+      if (!ctx.project_id) this.currentEpisodeId = null;
+      else await this.loadEpisodes(ctx.project_id);
+      this.currentEpisodeId = this.episodes.some((e) => e.id === ctx.episode_id)
+        ? ctx.episode_id : null;
+    } catch {
+      // 读不到上下文不影响能用：退回"没选集"，各页照旧按自己那套读数据
+      this.currentEpisodeId = null;
+    }
+    return this;
+  },
+
+  async loadEpisodes(pid) {
+    if (!pid) { this.episodes = []; this.currentEpisodeId = null; return []; }
+    try {
+      this.episodes = await api.episodes(pid);
+    } catch {
+      this.episodes = [];
+    }
+    return this.episodes;
+  },
+
+  /** 换集：先本地重绘，再上报服务端。失败要回滚，否则顶栏说的和服务端存的不是一回事。 */
+  selectEpisode(id) {
+    const before = this.currentEpisodeId;
+    this.currentEpisodeId = id;
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+    api.setContext(this.currentId, id)
+      .catch(() => {
+        this.currentEpisodeId = before;
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: '这一集没记住：上下文写回失败，可能是项目已不可见' } }));
+      });
+  },
+
   select(id) {
     this.currentId = id;
+    // 换项目＝换上下文：当前集必须清空，否则会拿旧项目的集去算新项目的进度
+    this.episodes = [];
+    this.currentEpisodeId = null;
     // 先立刻重绘：切项目这件事不该等网络
     window.dispatchEvent(new CustomEvent('app:refresh'));
     if (!id) return;
+    api.setContext(id, null).catch(() => {});
+    this.loadEpisodes(id).then(() => window.dispatchEvent(new CustomEvent('app:refresh')));
     // 上报"打开过"只为让列表下次按最近使用排序，失败也不吭声。
     // 但 v0.62 起"最后打开"成了界面上看得见的一列：只写库不回读，
     // 人点完一行看到的还是破折号，等于界面在说谎 ⇒ 成功后静默回读一次再重绘。

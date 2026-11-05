@@ -104,6 +104,51 @@ class ReviewRepository:
         out.update({row["decision"]: row["n"] for row in rows})
         return out
 
+    def signer_counts(self, project_ids: list[int] | None) -> list[dict]:
+        """谁签了几次、各结论几条（按签字人与结论分组）。
+
+        与 `decision_counts` 同一纪律：只数真存在的签字行。**不在此处合成"通过率"**——
+        签得少可能只是这一轮没轮到那个人，把它读成质量高低是平台说不清的事。
+        """
+        if project_ids is None:
+            where, args = "1", []
+        elif not project_ids:
+            where, args = "0", []
+        else:
+            marks = ",".join("?" for _ in project_ids)
+            where, args = f"project_id IN ({marks})", list(project_ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT r.signed_by AS user_id, u.display_name AS name,
+                          r.decision, COUNT(*) AS n
+                     FROM review_item r LEFT JOIN app_user u ON u.id = r.signed_by
+                     WHERE {where}
+                     GROUP BY r.signed_by, u.display_name, r.decision
+                     ORDER BY r.signed_by, r.decision""", args).fetchall()
+        return [dict(row) for row in rows]
+
+    def decision_counts(self, project_ids: list[int] | None) -> list[dict]:
+        """签字结论的分布（P2 质量分析的读数出口）：按 档别 × 结论 数条数。
+
+        只数 `review_item` 里真存在的行——**没签过的那部分不在这里出现**，
+        "还差多少没审"由作业状态那一份事实回答（`jobs.stats_for_projects`），
+        两边各说各的，不在这里合成一个"通过率"骗人的数。
+        """
+        if project_ids is None:
+            where, args = "1", []
+        elif not project_ids:
+            where, args = "0", []
+        else:
+            marks = ",".join("?" for _ in project_ids)
+            where, args = f"project_id IN ({marks})", list(project_ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT target_kind, decision, COUNT(*) AS n
+                      FROM review_item WHERE {where}
+                     GROUP BY target_kind, decision
+                     ORDER BY target_kind, decision""", args).fetchall()
+        return [dict(r) for r in rows]
+
     def delete_for_document(self, conn, doc_id: int) -> None:
         """删文档时清掉它的签字。
 

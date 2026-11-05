@@ -12,6 +12,7 @@ from fastapi import (APIRouter, Depends, File, HTTPException, UploadFile,
                      status as http_status)
 
 import asset_studio
+import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
 from config import FILES_DIR
 from db import transaction
@@ -210,6 +211,21 @@ def list_shots(episode_id: int,
             for item in items]
 
 
+def _shot_form_fields(payload) -> dict:
+    """0037 的镜头设定五栏：去空格后原样交给仓储。
+
+    为什么单独一个函数而不是在两个端点各写五遍：新建与编辑必须认同一批字段，
+    漏一栏就会出现"编辑时能填、新建时填了不存"。
+    这五栏**不进 `shot_source_version()` 的指纹**（见 services 里那段说明）：
+    今天没有执行器读它们，把它们算进源版本会让"补填景别"变成"全片产物过期"。
+    """
+    return {"shot_size": payload.shot_size.strip(),
+            "camera_move": payload.camera_move.strip(),
+            "aspect": payload.aspect.strip(),
+            "style": payload.style.strip(),
+            "negative_prompt": payload.negative_prompt.strip()}
+
+
 @router.post("/episodes/{episode_id}/shots", response_model=ShotOut,
              status_code=http_status.HTTP_201_CREATED)
 def create_shot(episode_id: int, payload: ShotIn,
@@ -223,7 +239,8 @@ def create_shot(episode_id: int, payload: ShotIn,
     # 反过来的话"只勾了形态、没勾人"这条引用就进了库，而删除保护看不见它。
     variant_ids = _checked_variant_ids(project["id"], payload.variant_ids, asset_ids)
     row = shots.create(episode_id, summary, payload.prompt.strip(),
-                       payload.duration, asset_ids, variant_ids)
+                       payload.duration, asset_ids, variant_ids,
+                       **_shot_form_fields(payload))
     # 回显带形态名字：新建那一行马上就会出现在分镜表里，界面不该先闪一下 #12
     return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
 
@@ -244,7 +261,8 @@ def update_shot(shot_id: int, payload: ShotIn,
     asset_ids = _checked_asset_ids(project["id"], payload.asset_ids)
     variant_ids = _checked_variant_ids(project["id"], payload.variant_ids, asset_ids)
     row = shots.update(shot_id, summary, payload.prompt.strip(),
-                       payload.duration, asset_ids, variant_ids)
+                       payload.duration, asset_ids, variant_ids,
+                       **_shot_form_fields(payload))
     if row is None:
         raise HTTPException(status_code=404, detail="镜头不存在")
     return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
@@ -420,6 +438,22 @@ def asset_shots(asset_id: int,
         data = {k: row[k] for k in AssetShotOut.model_fields if k != "variant_names"}
         out.append(AssetShotOut(**data, variant_names=names.get(int(row["shot_id"]), [])))
     return out
+
+
+@router.get("/assets/{asset_id}/impact")
+def asset_impact(asset_id: int,
+                 user=Depends(require_permission("asset:read"))) -> dict:
+    """改了这条资产，哪些镜头与哪些已生成产物会受影响（任务书 §6.3、场景三）。
+
+    与 `/api/assets/{id}/shots` 的分工：那条只列引用关系，这条在引用关系上
+    再判"最新那条成功视频的源版本还对不对、签过字没有、建议做什么"。
+    可见性沿用同一个出口 `_shots_visible`——看不见就是不存在，
+    多一个聚合接口不该多一条泄露通道。
+    """
+    ensure_asset(asset_id, user, "read")
+    rows = production_mod.referencing_shots(asset_id)
+    visible = {int(row["shot_id"]) for row in _shots_visible(rows, user)}
+    return production_mod.asset_impact(asset_id, only_shot_ids=visible)
 
 
 @router.delete("/assets/{asset_id}", status_code=http_status.HTTP_204_NO_CONTENT)

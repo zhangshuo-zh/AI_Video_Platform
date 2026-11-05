@@ -1,7 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, subChipRow } from '../util.js';
-import { JOB_ACTIVE, jobTone, validationText } from '../validation.js';
+import { JOB_ACTIVE, jobTone, publicStatus, validationText } from '../validation.js';
 import { unitLabel } from '../enums.js';
 import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './asset-workspaces.js';
 
@@ -219,8 +219,10 @@ function jobChip(label, job) {
   if (!job) return '';
   // 配色走 validation.js 的唯一那份（原来这里第五份，还多认了一个
   // 不存在的 pending、少认了 cancel_requested）
-  return `<span class="chip ${jobTone(job.status)}" title="作业 #${job.job_id}；状态与成本在生成中心">
-    ${escapeHtml(label)}·${escapeHtml(job.status_label || job.status)}</span>`;
+  // 对外只显示五档（§12.3）；细粒度原词留在 title 里，不用换页也能看见
+  return `<span class="chip ${jobTone(job.status)}" title="作业 #${job.job_id}｜${escapeHtml(
+    job.status_label || job.status)}｜状态与成本在生成中心">
+    ${escapeHtml(label)}·${escapeHtml(publicStatus(job.status))}</span>`;
 }
 
 /** 顶部那条"这一页现在能不能干活"。数据全是接口回的，一个数字都不写死。 */
@@ -969,7 +971,7 @@ export default {
       d.notice = out.reused
         ? `这次的内容和已在队列里的作业 #${out.job_id} 完全一样，平台没有重复排队。`
             + '要再来一批请点「换一批」或改提示词。'
-        : `已排进队列：作业 #${out.job_id}（${out.status_label}）。`;
+        : `已排进队列：作业 #${out.job_id}（${publicStatus(out.status)}）`;
       // 确认是一次性的：下一次云端提交要重新勾一次，不然就成了"一直有效"的授权
       d.cloudConfirm = false;
       refresh();      // 新作业要换的不只是状态：幂等回显与按钮文案也跟着变
@@ -1302,7 +1304,7 @@ function startPoll(d, projectId, patch, alive) {
           } catch (e) { d.error = `候选读不到：${e.message || e}`; }
         }
       } else if (['failed', 'cancelled', 'needs_attention'].includes(next.status)) {
-        d.error = next.error_message || `作业${next.status_label}`;
+        d.error = next.error_message || `作业${publicStatus(next.status)}`;
       }
     }
     if (!changed) return;

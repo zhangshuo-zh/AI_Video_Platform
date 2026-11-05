@@ -72,6 +72,28 @@ def test_fastmetal_命令是数组且提示词原样传递(tmp_path, monkeypatch
     assert "--num-inference-steps" not in spec.argv
 
 
+def test_fastmetal_空参数也照清单默认开fast_spatial(tmp_path, monkeypatch):
+    """产线节点提交的作业 params 是空的，默认值必须从清单读回来。
+
+    这是本轮真跑六场景时查出来的一条：清单给 1.3B 标 `fast_spatial=True`
+    的依据是 W09 在 16GB 上的实测（640×352×81 不开就解码 OOM），
+    但 runner 过去只看 `params.get(...)`——空参数就等于把这条实测丢掉，
+    作业会以"模型跑崩了"的样貌失败。规格住代码，也要**真的被读到**才算数。
+    """
+    home = _fake_fastmetal(tmp_path)
+    monkeypatch.setenv("FASTVIDEO_FASTMETAL_HOME", str(home))
+    monkeypatch.delenv("FASTVIDEO_FASTMETAL_MODEL", raising=False)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+
+    spec = runners.build(_job(), {}, outputs)
+
+    assert "--fast-spatial" in spec.argv, spec.argv
+    # 显式给 false 时不硬塞：清单默认是建议，不是命令
+    off = runners.build(_job(), {"fast_spatial": False}, outputs)
+    assert "--fast-spatial" not in off.argv
+
+
 def test_fastmetal_缺权重时在起进程前失败(tmp_path, monkeypatch):
     home = _fake_fastmetal(tmp_path)
     (home / "FastMetal-1.3B-QAD" / "vae" / "config.json").unlink(missing_ok=True)
@@ -128,7 +150,12 @@ def test_mflux_只认_cli_不猜权重(tmp_path, monkeypatch):
                          {"width": 512, "height": 512, "steps": 4, "seed": 9},
                          outputs)
     assert spec.argv[0] == str(cli)
-    assert spec.argv[spec.argv.index("--model") + 1] == "schnell"
+    # 走社区 Q4 转换档：官方仓库 gated 且整包 33.7GB，16GB 机器装不下 q8。
+    assert spec.argv[spec.argv.index("--model") + 1] == \
+        "mflux-community/flux-1-schnell-mflux-q4"
+    assert spec.argv[spec.argv.index("--base-model") + 1] == "schnell"
+    # 量化级别已写进权重；再传 --quantize 会与已存的量化打架
+    assert "--quantize" not in spec.argv
     assert spec.argv[spec.argv.index("--output") + 1].endswith(".png")
     assert spec.media == "image"
 

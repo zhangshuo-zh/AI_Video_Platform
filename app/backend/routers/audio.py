@@ -38,6 +38,16 @@ def _clip(clip_id: int, user, need: str = "read"):
     return row
 
 
+@router.get("/audio/capabilities")
+def audio_capabilities(user=Depends(require_permission("audio:read"))) -> dict:
+    """音频四类能力的真实状态：能不能提交、缺哪一件、为什么。
+
+    项目无关，所以不带走可见性判断——它只读清单与运行时，不含任何项目内容。
+    """
+    import production
+    return production.audio_status_view()
+
+
 @router.get("/projects/{project_id}/audio-clips", response_model=list[AudioClipOut])
 def list_clips(project_id: int, kind: str | None = None, episode_id: int | None = None,
                user=Depends(require_permission("audio:read"))) -> list[AudioClipOut]:

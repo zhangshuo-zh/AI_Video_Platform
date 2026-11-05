@@ -74,6 +74,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(429, {"error": {"message": "rate limited",
                                            "code": "rate_limit"}})
                 return
+            if scenario == "deepseek_500_with_id":
+                # 5xx **并且带 request_id**：供应商侧任务可能已经建立、甚至已计费。
+                # 这一档要落 needs_attention（待核对），不能按普通失败建议重试。
+                self._json(500, {"error": {"message": "upstream exploded",
+                                           "code": "server_error"},
+                                 "request_id": "chatcmpl-500-1"})
+                return
             self._json(500, {"error": {"message": "unknown scenario"}})
             return
 
@@ -320,6 +327,47 @@ def test_worker_云端文本端到端写请求ID与用量(tmp_path, monkeypatch,
     assert SECRET not in log
     # 产物是一份正文，可以被 /artifacts 读出
     assert done["result_paths_json"] != "[]"
+
+
+def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, mock_api,
+                                             provider_state, clean_queue, fresh_project):
+    """错误码前缀不能拼两次——拼两次会让"结果未知"伪装成"失败，可重试"。
+
+    `cloud_run.py` 给 5xx 的码就叫 `provider_unavailable`／`provider_error`，
+    worker 过去无条件再拼一次 `provider_`，于是 `CLOUD_UNCERTAIN_CODES`
+    查不到这个名字：账上写的是"待对账"，状态却成了"失败"，界面给的默认建议是重试,
+    而重试正是对一笔可能已扣费的调用最坏的建议。这条是六场景真跑（场景四）照出来的。
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", SECRET)
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    mock_api.scenario = "deepseek_500_with_id"
+
+    import db
+    with db.get_conn() as conn:
+        conn.execute("""UPDATE provider_config SET provider='deepseek',
+                          model='deepseek-flash', enabled=1, is_default=0,
+                          key_env='DEEPSEEK_API_KEY'
+                        WHERE capability='text' AND backend='cloud'""")
+
+    pid = fresh_project("editor")
+    row = services.submit_job(JobSubmitIn(
+        project_id=pid, capability="text", execution_mode="cloud",
+        provider_code="deepseek", model_code="deepseek-flash", prompt="会撞上 5xx",
+        params={"max_tokens": 16},
+        estimate={"quantity": 0.001, "unit": "million_token",
+                  "unit_price_micros": 8_000_000, "currency": "CNY",
+                  "source": "测试价"},
+        user_confirmed_cloud=True), created_by=None)
+    assert worker.run_once("w-uncertain") == row["id"]
+
+    done = job_repo.get(row["id"])
+    assert done["error_code"] == "provider_unavailable", done["error_code"]
+    assert not done["error_code"].startswith("provider_provider_")
+    assert done["status"] == "needs_attention", done["status"]
+    assert done["billable_status"] == "pending_reconciliation"
+    assert done["provider_request_id"] == "chatcmpl-500-1"
+    assert "云端调用结果未知" in (done["attention_reason"] or "")
 
 
 def test_云端401失败也留请求ID(tmp_path, monkeypatch, mock_api,

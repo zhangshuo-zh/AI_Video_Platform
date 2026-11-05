@@ -25,6 +25,8 @@ import shutil
 from datetime import datetime
 from types import SimpleNamespace
 
+import diskplan
+import error_catalog
 import jobfiles
 import services
 from config import COMPOSE_MAX_SHOTS, DISK_MIN_FREE_GB, FFMPEG_BIN, FILES_DIR
@@ -481,16 +483,16 @@ def preflight(project_id: int, episode_id: int,
     # 磁盘余量问的是同一个出处（jobfiles.volume_usage）：作业目录可能还没建，
     # 那时直接 disk_usage 会抛 OSError——而"盘要满了"这句话恰恰在最该说的时候
     # 最容易沉默。这里不再 catch 掉：读不到就当读不到，明说。
-    usage_disk = jobfiles.volume_usage()
-    if usage_disk is None:
-        warnings.append("读不到作业目录所在盘的余量，发起前自己确认一下空间")
-    else:
-        free = usage_disk.free
-        info["free_bytes"] = free
-        info["min_free_gb"] = DISK_MIN_FREE_GB
-        if free < DISK_MIN_FREE_GB * 1024 ** 3:
-            warnings.append(f"作业目录只剩 {free // (1024 ** 3)} GB，低于提醒线 "
-                            f"{DISK_MIN_FREE_GB} GB；一集成片可能不够")
+    # 磁盘这一条与两个预检入口共用 `diskplan` 那一处算式：产线发起前说的
+    # "预计还要多少"必须和工作台说的一样，否则一处放行一处提醒就是界面在骗人。
+    disk = diskplan.disk_readout(project_id, shots_missing=len(shot_rows))
+    info["free_bytes"] = disk["free_bytes"]
+    info["min_free_gb"] = disk["min_free_gb"]
+    info["estimated_need_bytes"] = disk["estimated_need_bytes"]
+    low = (disk["free_bytes"] is None
+           or disk["free_bytes"] < max(disk["estimated_need_bytes"], disk["floor_bytes"]))
+    if low or not disk["has_sample"]:
+        warnings.append(disk["sentence"])
 
     return {"blocking": blocking, "warnings": list(dict.fromkeys(warnings)), "info": info}
 
@@ -1609,6 +1611,10 @@ def node_view(row, by_key: dict, run=None, job=None) -> dict:
         "retryable": not hint,
         "retry_hint": hint,
         "error_code": node["error_code"], "error_message": node["error_message"],
+        # 七字段诊断与生成中心那条作业抽屉同一个出处（`error_catalog`）。
+        # 放在这里而不是让前端再打一次接口：这一格能不能重试已经算过了（`hint`），
+        # 目录要的正是这个口试，前端再问一次只会拿到两份不一致的答复。
+        "diagnosis": error_catalog.for_node(node, retry_hint=hint)["diagnosis"],
         "output": output,
         "started_at": node["started_at"] or "", "finished_at": node["finished_at"] or "",
         "created_at": node["created_at"],

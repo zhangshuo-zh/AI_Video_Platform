@@ -39,6 +39,29 @@ export const HEALTH = {
 export const HEALTH_LABEL = Object.fromEntries(
   Object.entries(HEALTH).map(([k, [, label]]) => [k, label]));
 
+/** 作业状态的对外五档（任务书 §12.3）。
+ *
+ * 为什么要多这一层：制作人员真正要回答的是"这件事现在要我管吗"，
+ * 而 `queued`／`starting`／`running` 三个词在界面上是三种颜色、一句话。
+ * 深层详情仍然显示 `jobLabel` 的原词——**数据库与后端状态语义一个字都没合并**，
+ * 这层只用于展示分组与筛选。
+ */
+export const PUBLIC_STATUS = {
+  待处理: ['queued'],
+  进行中: ['starting', 'running', 'cancel_requested'],
+  需要处理: ['needs_attention'],
+  已完成: ['succeeded'],
+  失败: ['failed', 'cancelled'],
+};
+
+const PUBLIC_OF = {};
+Object.entries(PUBLIC_STATUS).forEach(([word, list]) => list.forEach((s) => { PUBLIC_OF[s] = word; }));
+
+/** 后端状态 → 对外五档；认不出来回「需要处理」，不假装它没事。 */
+export function publicStatus(status) {
+  return PUBLIC_OF[status] || '需要处理';
+}
+
 /** 一句括号里的短语，给"选模型"那种地方用；取不到的状态原样回状态码。 */
 export function validationText(state) {
   const badge = VAL_BADGE[state || 'never'];
@@ -110,3 +133,12 @@ export const ALERT_LABEL = {
 export function alertLabel(code) {
   return ALERT_LABEL[code] || String(code || '');
 }
+
+/** 签字结论的中文名与色调：审核中心与工作台统计共用这一份。
+ *
+ *  这三行原来住在 `views/review.js` 里。抽出来的理由与 `publicStatus` 一样——
+ *  第二处想要「已通过」这三个字的时候只能自己再写一遍，而从那一刻起
+ *  两处就可能一处说「通过」、另一处说「已通过」。
+ */
+export const DECISION_LABEL = { approved: '已通过', returned: '退回', rejected: '驳回' };
+export const DECISION_TONE = { approved: 'green', returned: 'amber', rejected: 'red' };

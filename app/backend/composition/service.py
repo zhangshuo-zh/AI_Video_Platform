@@ -47,10 +47,29 @@ JOB_STATUS_LABELS = {
 }
 
 
-def _params(raw: dict | None) -> dict:
+def _usable_size(size: dict | None) -> dict | None:
+    """素材那档尺寸能不能直接当输出用（偶数、在 320—3840 之内）。"""
+    if not size:
+        return None
+    width, height = int(size.get("width") or 0), int(size.get("height") or 0)
+    if not width or not height or width % 2 or height % 2:
+        return None
+    if not (320 <= width <= 3840 and 320 <= height <= 2160):
+        return None
+    return {"width": width, "height": height}
+
+
+def _params(raw: dict | None, timeline: dict | None = None) -> dict:
+    """合成分辨率：显式填的优先；没填就**与素材同尺寸**，最后才退到配置默认档。
+
+    素材尺寸不合规矩（奇数、超出 320—3840）时不硬用——那时退回默认档并在
+    `size_basis` 里说清为什么退，而不是悄悄产出一个宽高都不对的成片。
+    """
     raw = raw or {}
-    width = int(raw.get("width") or COMPOSE_WIDTH)
-    height = int(raw.get("height") or COMPOSE_HEIGHT)
+    size = timeline.get("output_size") if timeline else None
+    derived = _usable_size(size) if size else None
+    width = int(raw.get("width") or (derived or {}).get("width") or COMPOSE_WIDTH)
+    height = int(raw.get("height") or (derived or {}).get("height") or COMPOSE_HEIGHT)
     fps = int(raw.get("fps") or COMPOSE_FPS)
     if width % 2 or height % 2:
         raise CompositionInvalid(f"分辨率 {width}×{height} 不合法：宽高必须是偶数")
@@ -58,8 +77,15 @@ def _params(raw: dict | None) -> dict:
         raise CompositionInvalid(f"分辨率 {width}×{height} 不合法：超出 320—3840 范围")
     if not (1 <= fps <= 60):
         raise CompositionInvalid(f"帧率 {fps} 不合法：只接受 1—60")
+    if raw.get("width") or raw.get("height"):
+        basis = "人填的"
+    elif derived:
+        basis = (f"与素材同尺寸（{size['same_as']}/{size['of']} 镜是 "
+                 f"{width}×{height}）")
+    else:
+        basis = "配置默认档（这一集没有可量的素材，或素材尺寸不合规矩）"
     return {"width": width, "height": height, "fps": fps,
-            "video_codec": "h264", "container": "mp4"}
+            "video_codec": "h264", "container": "mp4", "size_basis": basis}
 
 
 def create(project_id: int, episode_id: int, created_by: int | None, *,
@@ -82,13 +108,15 @@ def create(project_id: int, episode_id: int, created_by: int | None, *,
     episode = episodes.get(episode_id)
     if episode is None or episode["project_id"] != project_id:
         raise CompositionInvalid("这一集不属于该项目")
-    frozen = _params(params)
     try:
         timeline = timeline_mod.build(
             project_id, episode_id, require_approved=True,
             subtitle_path=subtitle_path, shot_jobs=shot_jobs)
     except timeline_mod.CompositionInvalid as exc:
         raise CompositionInvalid(exc.message, exc.reasons) from exc
+    # 参数在时间线之后定：没填分辨率时要按素材那一档出，而素材尺寸只有建好时间线才知道。
+    # 原来先算参数再建时间线，默认就永远是配置里的 1280×720——把 640×352 的预览档放大一倍。
+    frozen = _params(params, timeline)
 
     key = key or f"compose-{uuid.uuid4().hex}"
     try:

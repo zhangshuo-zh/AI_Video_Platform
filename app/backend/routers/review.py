@@ -9,7 +9,8 @@ import access
 import reviewgate
 import services
 from deps import require_permission
-from models import JobReviewOut, ReviewGateOut, ReviewQueueItem, ReviewSignIn
+from models import (JobReviewOut, ReviewBatchIn, ReviewCheckIn, ReviewGateOut,
+                    ReviewQueueItem, ReviewSignIn)
 from repositories.documents import documents as docs
 from repositories.jobs import jobs as job_repo
 
@@ -97,6 +98,57 @@ def job_review(job_id: int, request: Request,
     row = _job(job_id, user)
     can_sign = "review:sign" in getattr(request.state, "permissions", set())
     return JobReviewOut(**services.job_review_state(row, can_sign=can_sign))
+
+
+@router.get("/jobs/{job_id}/review-checklist")
+def job_checklist_view(job_id: int,
+                       user=Depends(require_permission("review:read"))) -> dict:
+    """一条作业的审核清单：自动项现算 ＋ 人工项已存的结论 ＋ 能不能签字的结论。
+
+    为什么单独一个接口而不塞进 `JobReviewOut`：审核队列一屏几十条作业，
+    每条都要 ffprobe 一次才能填这栏，那是把队列页变成一次媒体扫描。
+    清单只在人点开某一条时才算。
+    """
+    return services.job_checklist(_job(job_id, user))
+
+
+@router.post("/jobs/{job_id}/review-checklist")
+def job_checklist_save_view(job_id: int, payload: ReviewCheckIn,
+                            user=Depends(require_permission("review:sign"))) -> dict:
+    """保存人工清单结论。项不属于这一类能力的清单整批拒（422），不往里掺野 code。"""
+    try:
+        return services.job_checklist_save(_job(job_id, user, "write"), payload, user)
+    except services.ReviewNotReviewable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except reviewgate.ReviewInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/jobs/review-batch")
+def job_review_batch_view(payload: ReviewBatchIn,
+                          user=Depends(require_permission("review:sign"))) -> dict:
+    """批量签字：整批同一个结论，逐条落地、逐条报原因。
+
+    两条口径写死在这里：
+    ① **通过（approved）要求那一条的人工清单看完**（§8.2「审核不仅检查文件，
+       也检查内容质量」——没看够就不能盖章）；**驳回与退回不要求**，
+       一眼看出不行就该能立刻驳回，不能被表单卡住。
+    ② 每条都走与单条接口**完全相同**的归属判断与签字路径（下面的 `sign_one`
+       就是那条路），批量不是第二个写口子。
+    """
+    def sign_one(one):
+        job = _job(int(one.job_id), user, "write")
+        if payload.decision == "approved":
+            checklist = services.job_checklist(job)
+            if not checklist["can_approve"]:
+                raise services.ReviewNotReviewable(
+                    f"作业 #{job['id']} 还不能签通过：{checklist['hint']}")
+        return services.job_review_sign(
+            job, ReviewSignIn(anchor=one.anchor, decision=payload.decision,
+                              note=payload.note), user)
+
+    return services.job_review_batch(payload.items, payload.decision,
+                                     payload.note, user, sign_one)
 
 
 @router.post("/jobs/{job_id}/review-sign", response_model=JobReviewOut)
