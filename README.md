@@ -132,3 +132,9 @@ cd app/backend
 ## 不做的事
 
 当前明确不做：节点画布、自建常驻推理服务、失败自动转云端、把密钥或口令写进提交。产线这一版另有三条：不做 FFmpeg 成片（阶段 D，`export_prepare` 恒为 `skipped`）、不做并发与整季批量（阶段 E，worker 的全局互斥与单行 `worker_state` 一个字段都没动）、不允许模板里出现云端节点。完整清单见设计稿 §6。
+
+## 许可
+
+代码与文档采用 [Apache License 2.0](LICENSE)，Copyright © 2026 zhangshuo-zh。
+
+这一许可**只覆盖本仓库的代码与文档，不覆盖任何模型权重、字体、音色或第三方素材**。本项目调用的模型各有各的条款——例如 Wan 2.2 是 Apache-2.0，而不少开源音乐／语音模型带非商用限制，还有的是"代码宽松、权重另签"这种分叉许可（仓库 license ≠ 权重 license）。真要拿去生产之前，按 [盘点/W17_LICENSE_BENCHMARKS.md](盘点/W17_LICENSE_BENCHMARKS.md) 里逐条取证的许可与商用边界对一遍，别把本文件的 Apache-2.0 当成对模型的授权。
