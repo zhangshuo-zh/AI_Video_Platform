@@ -313,6 +313,10 @@ function statusCell(r) {
 /* 展开态记在模块级：切走再切回来不该把人打开的行全关上，
    但也不写进地址——这不是"你在看哪一条"，只是临时视图状态。 */
 let resolveSeq = 0;         // 场景候选弹窗的请求序号（只认最后一次）
+// 运行监控里"已离线的 worker 进程"默认收着。这是视图状态、不是业务状态：
+// 它不进地址栏、不进库，但必须活过轮询重绘——否则每 5 秒刷新一次，
+// 人刚点开历史就被折叠回去，等于这个开关白做（与 production.js 的结果条同一类坑）。
+let showWorkerHistory = false;
 const slotOpen = new Set();
 const emptyOpen = new Set();
 
@@ -567,14 +571,32 @@ function pageMonitor() {
     if (r.rss_peak_mb != null) bits.push(`峰值内存 ${r.rss_peak_mb} MB`);
     return bits.length ? bits.join(' · ') : '—';
   };
-  const workers = (w.workers || []).map((n) => `<tr>
+  const nodeRow = (n) => `<tr>
       <td class="mono">${escapeHtml(n.worker_id || '—')}</td>
       <td>${n.online ? '<span class="chip green">在线</span>' : '<span class="chip gray">离线</span>'}</td>
       <td>${n.current_job_id ? '#' + n.current_job_id : '<span class="hint">空闲</span>'}</td>
       <td class="hint">${escapeHtml(String(n.heartbeat_at || '').slice(0, 16))}
         ${n.age_seconds != null ? `（${n.age_seconds}s 前）` : ''}</td>
       <td class="hint">${escapeHtml(resChips(n))}</td>
-    </tr>`).join('');
+    </tr>`;
+
+  // 一行＝一个进程，这是租约归属的要求，不该改；要改的是"默认给你看几行"。
+  // 连续开发攒下的死行既不影响队列、也不该每天占着面板让人分辨哪条是真的在干活。
+  const allNodes = w.workers || [];
+  const liveNodes = allNodes.filter((n) => n.online);
+  const deadNodes = allNodes.filter((n) => !n.online);
+  const historyCount = w.history_count != null ? Number(w.history_count) : deadNodes.length;
+  const shownNodes = showWorkerHistory ? allNodes : liveNodes;
+  const workers = shownNodes.map(nodeRow).join('');
+  const historyLine = historyCount ? `
+    <div class="card-body" style="border-top:1px solid var(--line);padding-top:10px">
+      <button class="btn xs" id="mc-worker-history">
+        ${showWorkerHistory ? '收起离线进程'
+          : `另有 ${historyCount} 个进程在 7 天内登记过 · 现已离线（点开看）`}</button>
+      <span class="t-desc">离线行不领活、不影响队列；保留 7 天后自动清。
+        一行代表一个进程：它的并发上限与"正在跑哪条作业"都记在自己这行上，
+        两个进程共用一行会把租约算到别人头上，所以这里不合并、只折叠。</span>
+    </div>` : '';
 
   const queueChips = Object.entries(byRes).map(([k, v]) =>
     `<span class="chip ${v.running ? 'blue' : (v.queued ? 'amber' : 'gray')}">
@@ -607,8 +629,11 @@ function pageMonitor() {
     </div>
     <div class="table-wrap"><table>
       <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th></tr></thead>
-      <tbody>${workers || '<tr><td colspan="5" class="hint">还没有 worker 登记过心跳</td></tr>'}</tbody>
+      <tbody>${workers || `<tr><td colspan="5" class="hint">${
+        allNodes.length ? '现在没有在线的 worker——队列不会前进。启动：./run.sh worker'
+                         : '还没有 worker 登记过心跳'}</td></tr>`}</tbody>
     </table></div>
+    ${historyLine}
   </div>
 
   <div class="card" style="margin-bottom:14px">
@@ -835,6 +860,7 @@ export default {
     if ((getSub('models') ?? 0) === 0) mountRepo(root);
     if ((getSub('models') ?? 0) === 1) mountEngines(root);
     if ((getSub('models') ?? 0) === 2) mountPolicies(root);
+    if ((getSub('models') ?? 0) === 3) mountMonitor(root);
 
     root.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => {
       root.querySelector('#' + b.dataset.close).hidden = true;
@@ -1327,6 +1353,16 @@ function mountEngines(root) {
 }
 
 /* ================= 工作区 2 交互 ================= */
+function mountMonitor(root) {
+  // 折叠/展开离线进程。走 app:refresh 重画整页（与引擎页展开同一条件：
+  // 只有重画才能让页内切换器与表体同一轮更新），展开状态存在模块变量里，
+  // 所以轮询不会把人刚点开的那段又折回去。
+  root.querySelector('#mc-worker-history')?.addEventListener('click', () => {
+    showWorkerHistory = !showWorkerHistory;
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+  });
+}
+
 function mountPolicies(root) {
   // 把当前值填进 select：渲染时没带 selected，统一在这里回填，省一遍字符串拼接
   root.querySelectorAll('tr.policy').forEach((tr) => {

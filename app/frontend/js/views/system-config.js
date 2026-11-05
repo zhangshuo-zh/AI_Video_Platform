@@ -1,26 +1,44 @@
 import usersPanel from './system-users.js';
+import rolesPanel from './system-roles.js';
+import { getSub, setSub } from '../navstate.js';
+import { bindSubChips, subChipRow } from '../util.js';
 
 /**
- * 系统设置（v0.99 起只剩一件事：用户与角色）。
+ * 系统设置（v0.111 起两个二级页：用户管理／角色管理）。
  *
- * 原来这里有两个二级页：「模型与密钥」和「用户与角色」。
- * 前者整页搬去了「模型中心 · 引擎管理」——十行能力轨、允许参数、密钥变量名、
- * 健康、验证列、环境检查、验证记录弹窗、整批保存，一行功能都没减，
- * 只是入口收成一个：模型这件事不该同时有两个东家（模块单一所有权）。
+ * 历史：这里原本有「模型与密钥」和「用户与角色」两页。前者整页搬去了
+ * 「模型中心 · 引擎管理」——一行功能都没减，只是入口收成一个（模块单一所有权）。
+ * 后者这一版再拆一次：加人与调角色权限是两种动作、常常不是同一个时刻，
+ * 挤在一页时往下滚就看不见上面，而"这个角色挂在谁身上"正是调权限时要对照的东西。
  *
- * 所以这个文件现在只做转发。留着它、而不是把 system-users.js 直接注册成
- * 'system-config'，是为了让旧地址 `#system-config` 与 `#system-config/0`
- * 仍然打得开——菜单调整不该让任何人手里的书签失效。
- * 旧深链 `#system-config/1` 会被 router 的下标钳位（router.js:39）送回第 0 页。
+ * 留着这个文件而不是把两个面板直接注册进 views/index.js，是为了让旧地址
+ * `#system-config` 与 `#system-config/0` 仍然打得开——菜单调整不该让书签失效。
+ * 旧深链 `#system-config/1` 现在有了真内容（角色管理），不再被钳回第 0 页。
  */
-export default {
-  subIndex: 0,
 
-  render() {
-    return usersPanel.render();
+const SUBS = ['用户管理', '角色管理'];
+
+export default {
+  async render() {
+    const sub = getSub('system-config') ?? 0;
+    const panel = sub === 1 ? rolesPanel : usersPanel;
+    const body = await panel.render();
+    return `<section class="view on">
+      <div class="page-head">
+        <h1>系统设置</h1>
+        <p>${SUBS[sub]} · 账号与权限；密钥只显示配没配，值永远不出后端</p>
+        <div class="right">${subChipRow(SUBS, sub)}</div>
+      </div>
+      ${body}
+    </section>`;
   },
 
   mount(root) {
-    usersPanel.mount?.(root);
+    bindSubChips(root, (i) => {
+      setSub('system-config', i);
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+    });
+    const sub = getSub('system-config') ?? 0;
+    (sub === 1 ? rolesPanel : usersPanel).mount?.(root);
   },
 };

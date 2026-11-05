@@ -2109,6 +2109,12 @@ def worker_status(user=None) -> dict:
         "online": online, "heartbeat_at": heartbeat, "age_seconds": age,
         "current_job_id": current_job_id,
         "workers": nodes,
+        # 两个计数由这里数，不让界面自己 filter 一遍再算：
+        # "在线几台、历史几台"是同一份 worker_node 上的事实，两处各算迟早分家。
+        # `workers` 仍原样给全部行——面板默认只画在线的，历史靠这两个数说话，
+        # 点开时用的还是这一份数据，不另开一条查询。
+        "live_count": len(live),
+        "history_count": len(nodes) - len(live),
         "queue": {"queued": health["queued"], "running": health["running"],
                   "by_resource": by_resource},
         "alerts": alerts, "by_status": health["by_status"],

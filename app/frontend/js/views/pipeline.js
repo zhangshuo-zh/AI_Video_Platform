@@ -60,6 +60,9 @@ let openRunId = null;
 let openSeasonId = null;
 let notice = '';
 let noticeKey = '';
+// 整季页的 worker 表默认只列在线进程（与模型中心·运行监控同一档行为）。
+// 视图状态、不进地址栏也不进库，但必须活过轮询重绘，否则刚点开就被折回去。
+let showWorkerHistory = false;
 
 const SEASON_TONE = {
   running: 'blue', paused: 'amber', cancelled: 'gray',
@@ -311,7 +314,11 @@ function workerPanel() {
       ${q.running ? `跑 ${q.running}` : ''}${q.queued ? ` 等 ${q.queued}` : ''}
       ${!q.running && !q.queued ? '空闲' : ''}</span>`;
   }).join('');
-  const rows = workers.map((node) => {
+  const liveNodes = workers.filter((n) => n.online);
+  const deadCount = w?.history_count != null
+    ? Number(w.history_count) : workers.length - liveNodes.length;
+  const shownNodes = showWorkerHistory ? workers : liveNodes;
+  const rows = shownNodes.map((node) => {
     const limits = node.limits || {};
     const per = limits.per || {};
     const cap = Object.keys(RES_LABEL)
@@ -342,7 +349,14 @@ function workerPanel() {
       ${workers.length ? `<div class="table-wrap" style="margin-top:10px"><table>
         <thead><tr><th>进程</th><th>状态</th><th class="num">心跳</th>
           <th class="num">占用与上限</th><th>正在跑</th></tr></thead>
-        <tbody>${rows}</tbody></table></div>` : `<p class="hint">还没有 worker 心跳。离线时队列不会自己前进：另开终端跑 <code>./run.sh worker</code>。</p>`}
+        <tbody>${rows}</tbody></table></div>
+        ${deadCount ? `<div class="row" style="margin-top:10px;gap:8px;align-items:center">
+          <button class="btn xs" id="sp-worker-history">${
+            showWorkerHistory ? '收起离线进程'
+              : `另有 ${deadCount} 个进程在 7 天内登记过 · 现已离线（点开看）`}</button>
+          <span class="t-desc">离线行不领活、不影响队列；保留 7 天后自动清。
+            一行＝一个进程：它的上限与"正在跑哪条"都记在自己这行，合并会把租约算到别人头上。</span>
+        </div>` : ''}` : `<p class="hint">还没有 worker 心跳。离线时队列不会自己前进：另开终端跑 <code>./run.sh worker</code>。</p>`}
     </div>
   </div>`;
 }
@@ -460,6 +474,11 @@ function bindSeasons(root, refresh) {
       refresh();
     });
   });
+  root.querySelector('#sp-worker-history')?.addEventListener('click', () => {
+    showWorkerHistory = !showWorkerHistory;
+    refresh();
+  });
+
   root.querySelectorAll('[data-open-season]').forEach((btn) => {
     btn.addEventListener('click', () => {
       openSeasonId = Number(btn.dataset.openSeason);

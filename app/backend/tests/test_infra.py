@@ -306,14 +306,18 @@ def test_有二级页的模块页内也有切换器():
     只查"已经有真实内容的模块"；生成／音频／审核／设定四页的 subs 目前
     还是装饰，等接真功能时再纳入（那时这条测试要一起改）。
 
-    v0.99 起 system-config.js 不在名单里了：它只剩一个二级页，
-    整页转发给 system-users.js，页内切换器由后者画（最后一行查的就是它）。
+    v0.99 时 system-config.js 只剩一个二级页，所以不在名单里；
+    v0.111 它又变成两页（用户管理／角色管理），切换器收回它自己画——
+    两个面板只出正文卡片，头部与那一排 chip 只有一个出处。
     模型中心四个工作区是新的多页模块，所以进名单。
     """
-    for name in ("assets.js", "writing.js", "models.js"):
+    for name in ("assets.js", "writing.js", "models.js", "system-config.js"):
         text = (FRONTEND / "js" / "views" / name).read_text()
         assert "data-kind" in text or "subChipRow" in text, f"{name} 缺页内切换器"
-    assert "subChipRow" in (FRONTEND / "js" / "views" / "system-users.js").read_text()
+    # 拆页之后：切换器不许在两个面板里各画一遍（一次点击会触发两遍重渲染）
+    for name in ("system-users.js", "system-roles.js"):
+        text = (FRONTEND / "js" / "views" / name).read_text()
+        assert "subChipRow" not in text, f"{name} 自己又画了一排切换器"
 
 
 def test_页内切换器改完导航必须重渲染():

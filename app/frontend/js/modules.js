@@ -139,13 +139,16 @@ export const MODULES = [
   },
   {
     // 不是业务模块，是系统级配置；侧栏里单独放在最下面。
-    // v0.99 起模型那一页搬去「模型中心」，这里只剩用户与角色。
+    // v0.99 模型那一页搬去「模型中心」；v0.111 剩下的「用户与角色」再拆成两页——
+    // 加人是偶尔一次，调角色权限是一次长时间对照，挤在一页时滚到矩阵就看不见用户表。
+    // subs 的顺序必须与 views/system-config.js 的 SUBS 一字不差（router 按下标钳位）。
     // perms 仍带 system:config：万一有人粘进旧地址，也要能落到"这一页已经搬走"的说明上
     id: 'system-config', label: '系统设置', icon: 'ic-system',
-    subs: ['用户与角色'], utility: true,
+    subs: ['用户管理', '角色管理'], utility: true,
     perms: ['system:config', 'user:read'],
     group: 'platform', group_label: G.platform,
-    desc: '账号与权限：用户、角色、18 个权限点。模型与引擎的配置已搬到「模型中心」。',
+    desc: '账号与权限：用户管理（建人、挂角色、口令、删除）与角色管理'
+      + '（角色概览与 18 个权限点矩阵）。模型与引擎的配置已搬到「模型中心」。',
     ents: '系统',
   },
 ];

@@ -501,3 +501,44 @@ def test_枚举的说法只有一份出处(as_admin):
     assert '"no_auto_fallback": True' not in src, "路由里又出现了一份字面量 True"
     # 运行位置的白名单也不许在这里再数一遍
     assert '("local", "cloud", "remote")' not in src
+
+
+def test_worker状态给得出在线数与历史数(as_role):
+    """面板默认只列在线进程，"另有几个离线"这句话必须由服务端数。
+
+    钉两件事：① `live_count`/`history_count` 与 `workers` 里的 online 标志一致
+    （两处各算迟早分家）；② `workers` 仍然原样带着全部行——折叠是视图的事，
+    把历史从响应里删掉就是另一回事了，那样"点开看"就没有数据来源。
+    """
+    import services
+    from repositories.jobs import jobs as job_repo
+
+    # 现场造一份：一个在线（心跳现在）、两个离线（3 天前、8 天前）
+    job_repo.heartbeat("test-host:1:aaaaaa", 1, None, "test")
+    job_repo.heartbeat("test-host:2:bbbbbb", 2, None, "test")
+    job_repo.heartbeat("test-host:3:cccccc", 3, None, "test")
+    with __import__("db").get_conn() as conn:
+        conn.execute("UPDATE worker_node SET heartbeat_at = "
+                     "datetime('now','localtime','-3 days') WHERE worker_id = ?",
+                     ("test-host:2:bbbbbb",))
+        conn.execute("UPDATE worker_node SET heartbeat_at = "
+                     "datetime('now','localtime','-8 days') WHERE worker_id = ?",
+                     ("test-host:3:cccccc",))
+    view = services.worker_status()
+    # 必须再走一次 HTTP：服务层算了但没进 `WorkerStatusOut` 的字段会被静默丢掉，
+    # 只调函数的用例对那种事完全无感，界面拿到的却是一个都不剩。
+    http = as_role("admin").get("/api/worker/status").json()
+    for key in ("workers", "live_count", "history_count"):
+        assert key in http, f"响应里没有 {key}（多半是 WorkerStatusOut 少声明了）"
+    assert http["live_count"] == view["live_count"]
+    assert http["history_count"] == view["history_count"]
+    nodes = {n["worker_id"]: n for n in view["workers"]}
+    assert nodes["test-host:1:aaaaaa"]["online"] is True
+    assert nodes["test-host:2:bbbbbb"]["online"] is False
+    # 8 天前那一行现在还在（清理只在下一次写心跳时顺带做），但它必须是离线：
+    # 这条断言要能失败——写成"不在或离线"就等于永远为真，测不出任何东西
+    assert nodes["test-host:3:cccccc"]["online"] is False
+    live = sum(1 for n in view["workers"] if n["online"])
+    assert view["live_count"] == live
+    assert view["history_count"] == len(view["workers"]) - live
+    assert view["history_count"] >= 1        # 这一条要真能看见"有历史"，不是永远 0

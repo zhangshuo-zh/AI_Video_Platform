@@ -45,6 +45,10 @@ SHOTS = [
     ("v99-model-monitor.png", "#models/3", None, 0.4),
     # 监控页下半：模型维度（登记/可用/需要看一眼）与"三项做不到"的如实标注
     ("v99-model-monitor-models.png", "#models/3", "@anchor:模型维度", 0.5, 470),
+    # v0.111：系统设置的「用户与角色」拆成两页。旧的 v86-users.png 拍的是
+    # 一页装三块的样子，拆完再拿它配图就是图文不符——所以这两张必须重拍。
+    ("v111-system-users.png", "#system-config/0", None, 0.5, 1150),
+    ("v111-system-roles.png", "#system-config/1", None, 0.5, 1250),
 ]
 
 

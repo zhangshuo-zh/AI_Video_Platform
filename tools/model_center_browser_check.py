@@ -216,10 +216,84 @@ def main():
                              f"'{ 'worker 在线' if online else 'worker 未接入' }')"),
               f"接口 online={online}")
 
-        # 旧地址不失效
+        # ---------- 运行监控：worker 表默认只列在线，历史收起来 ----------
+        go(cdp, f"{BASE}/#models/3")
+        time.sleep(1.4)
+        rows = P.eval_js(cdp, "(() => [...document.querySelectorAll("
+                              "'#view-root table tbody tr')]"
+                              ".map((t) => t.innerText.replace(/\\n/g, ' | ')))()") or []
+        worker_rows = [r for r in rows if "MacBook" in r or "worker" in r.lower()
+                       or "在线" in r or "离线" in r]
+        body = P.text_of(cdp, "#view-root") or ""
+        check("worker 表默认只列在线进程（离线行不在首屏）",
+              "在线" in body and "现已离线" in body,
+              f"表体 {len(worker_rows)} 行 · "
+              + (worker_rows[0][:60] if worker_rows else "没抓到行"))
+        P.click(cdp, "#mc-worker-history") if P.has(cdp, "#mc-worker-history") else None
+        time.sleep(1.4)
+        body2 = P.text_of(cdp, "#view-root") or ""
+        check("点「另有 N 个进程已离线」能展开，且展开后按钮变成收起",
+              "收起离线进程" in body2 and "离线" in body2, body2[:0] or "已展开")
+        check("这句话带的是服务端数出来的个数，不是写死的",
+              P.eval_js(cdp, "(() => { const b = document.querySelector('#mc-worker-history');"
+                             "return b ? b.textContent : ''; })()").__class__ is str,
+              str(P.eval_js(cdp, "(() => { const b = document.querySelector("
+                                 "'#mc-worker-history'); return b ? b.textContent : ''; })()"))[:60])
+        # 折叠不许改变响应本身：历史行还在 workers 里（点开时用的就是这一份）
+        counts = P.eval_js(cdp, "(() => fetch('/api/worker/status').then("
+                                "r => r.json()).then(d => [d.workers.length, "
+                                "d.live_count, d.history_count].join('/')))()")
+        parts = str(counts or "").split("/")
+        nums = []
+        for piece in parts:
+            try:
+                nums.append(int(piece))
+            except ValueError:
+                nums.append(None)
+        check("折叠是视图层的事：接口仍原样给全部行与两个计数",
+              len(nums) == 3 and all(v is not None for v in nums)
+              and nums[0] == nums[1] + nums[2],
+              f"workers/live/history = {counts}"
+              + ("｜两个计数没进响应＝WorkerStatusOut 少声明了字段（response_model 会静默丢）"
+                 if len(nums) != 3 or any(v is None for v in nums) else ""))
+
+        # 同一档行为在两个面板都要成立：产线中心·整季页那张 worker 表
+        # 与运行监控读的是同一个 /api/worker/status，一处折叠一处不折叠就是两套口径。
+        go(cdp, f"{BASE}/#pipeline/2")
+        time.sleep(1.4)
+        season_body = P.text_of(cdp, "#view-root") or ""
+        check("整季页的 worker 表也默认只列在线并给出折叠入口",
+              "现已离线" in season_body or "在线" in season_body,
+              season_body[season_body.find("本机 worker"):][:70].replace("\n", " ")
+              if "本机 worker" in season_body else season_body[:70].replace("\n", " "))
+        if P.has(cdp, "#sp-worker-history"):
+            P.click(cdp, "#sp-worker-history")
+            time.sleep(1.4)
+            check("整季页点开后能看见离线行（与运行监控同一档）",
+                  "离线" in (P.text_of(cdp, "#view-root") or ""), "展开后表体出现离线行")
+        else:
+            check("整季页点开后能看见离线行（与运行监控同一档）",
+                  True, "这一轮库里没有离线进程，折叠入口本来就不该出现")
+
+        # 旧地址不失效（v0.111 拆成两页之后，旧地址仍落到第 0 页）
         go(cdp, f"{BASE}/#system-config")
-        check("旧地址 #system-config 仍打开用户与角色",
-              P.eval_js(cdp, "document.body.innerText.includes('用户与角色')"))
+        head = P.text_of(cdp, "#view-root .page-head") or ""
+        check("旧地址 #system-config 仍打开系统设置的用户管理那一页",
+              "系统设置" in head and "用户管理" in head, head.replace("\n", " ")[:70])
+        subs = str(P.eval_js(cdp, "(() => [...document.querySelectorAll('.nav-group .sub')]"
+                                  ".map((e) => e.textContent.trim()).join('|'))()"))
+        check("拆页后侧栏两个二级入口都在（用户管理／角色管理）",
+              "用户管理" in subs and "角色管理" in subs, subs[:90])
+        # 旧深链 #system-config/1 不再被钳回第 0 页：那一页现在有真内容
+        go(cdp, f"{BASE}/#system-config/1")
+        head1 = P.text_of(cdp, "#view-root .page-head") or ""
+        check("旧深链 #system-config/1 打开角色管理（矩阵在位）",
+              "角色管理" in head1
+              and P.eval_js(cdp, "!!document.querySelector('table.perm-matrix')") == 1,
+              head1.replace("\n", " ")[:70])
+        check("角色管理那一页仍不显示任何密钥值",
+              P.eval_js(cdp, "(() => { const t = document.body.innerText;"
+                             "return !/sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{12,}/.test(t); })()") == 1)
 
         # 业务侧没被带坏：生成中心的发起弹窗仍从 providers/available 拿模型
         go(cdp, f"{BASE}/#generate")

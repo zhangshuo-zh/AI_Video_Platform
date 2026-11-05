@@ -1,12 +1,12 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { bindModalDismiss, confirmDanger, escapeHtml, run, subChipRow } from '../util.js';
-// 这一页只经 system-config.js 转发渲染，页内切换器由它统一绑定，
-// 这里再绑一次会让一次点击触发两遍重渲染
+import { bindModalDismiss, confirmDanger, escapeHtml, run } from '../util.js';
+// 页内那一排二级切换器由 system-config.js 统一画与绑：
+// 两页共用一个头部，这里再绑一次会让一次点击触发两遍重渲染
 
 /**
- * 系统设置 · 用户与角色。
- * 三件事：人（新建/停用/重置口令）、人挂角色、角色挂权限。
+ * 系统设置 · 用户管理（v0.111 起「角色权限矩阵」拆去了「角色管理」）。
+ * 只管人：新建、停用／启用、改角色、重置口令、删除（含名下项目的处置）。
  * 界面上按权限点收口，真正的拦截在服务端——这里只是别让人白点。
  */
 
@@ -26,33 +26,22 @@ function roleChecks(prefix, roles, selected) {
     </label>`).join('');
 }
 
-function groupPermissions(perms) {
-  const groups = [];
-  perms.forEach((p) => {
-    let g = groups.find((x) => x.name === p.group_name);
-    if (!g) groups.push(g = { name: p.group_name, items: [] });
-    g.items.push(p);
-  });
-  return groups;
-}
-
 export default {
   async render() {
     if (!store.can('user:read')) {
-      return `<section class="view on"><div class="card"><div class="empty">
-        <div class="empty-t">没有权限</div><p>查看用户与角色需要 user:read。</p>
-      </div></div></section>`;
+      return `<div class="card"><div class="empty">
+        <div class="empty-t">没有权限</div><p>查看用户需要 user:read。</p>
+      </div></div>`;
     }
 
     let users = [];
     let roles = [];
-    let perms = [];
     try {
-      [users, roles, perms] = await Promise.all([api.users(), api.roles(), api.permissions()]);
+      [users, roles] = await Promise.all([api.users(), api.roles()]);
     } catch (err) {
-      return `<section class="view on"><div class="card"><div class="empty">
+      return `<div class="card"><div class="empty">
         <div class="empty-t">读不到用户</div><p>${escapeHtml(err.message)}</p>
-      </div></div></section>`;
+      </div></div>`;
     }
 
     const roleName = (code) => roles.find((r) => r.code === code)?.name || code;
@@ -61,7 +50,6 @@ export default {
     const canWrite = store.can('user:write');
     const canAssign = store.can('user:assign');
     const meId = store.user?.id;
-    const groups = groupPermissions(perms);
 
     // 超级用户那一行不给任何写按钮：服务端也拦（users.py 的 _guard_target），
     // 这里只是别让人点了才被拒
@@ -95,27 +83,7 @@ export default {
         <td class="r">${userActions(u)}</td>
       </tr>`).join('');
 
-    const matrix = groups.map((g) => `
-      <tr class="grp-row"><td colspan="${roles.length + 1}">${escapeHtml(g.name)}</td></tr>
-      ${g.items.map((p) => `
-        <tr>
-          <td>${escapeHtml(p.name)}<span class="t-dim mono"> ${escapeHtml(p.code)}</span></td>
-          ${roles.map((r) => `
-            <td><input type="checkbox" data-role="${r.id}" data-perm="${escapeHtml(p.code)}"
-                       ${r.permissions.includes(p.code) ? 'checked' : ''}
-                       ${r.code === 'admin' ? 'disabled' : ''}></td>`).join('')}
-        </tr>`).join('')}`).join('');
-
     return `
-    <section class="view on">
-      <div class="page-head">
-        <h1>系统设置</h1>
-        <!-- v0.99：模型那一页搬去「模型中心」，这里只剩账号与权限。
-             副标题不再提"模型双轨"，否则人会以为系统设置里还能改模型。 -->
-        <p>账号与权限；密钥只显示配没配，值永远不出后端</p>
-        <div class="right">${subChipRow(['用户与角色'], 0)}</div>
-      </div>
-
       <div class="card">
         <div class="card-head"><h2>用户</h2>
           <span class="sub">${users.length} 个 · 只列出不高于你自己层级的账号</span></div>
@@ -155,30 +123,14 @@ export default {
         </div>
       </div>` : ''}
 
-      <div class="card" style="margin-top:14px">
-        <div class="card-head"><h2>角色权限</h2>
-          <span class="sub">一列一个角色，勾完点那列顶部或底部的保存</span></div>
-        <div class="table-wrap">
-          <table class="perm-matrix">
-          <thead><tr>
-          <th>权限点</th>
-          ${roles.map((r) => `<th>
-          <span>${escapeHtml(r.name)}</span>
-          ${r.code === 'admin' ? '<span class="t-dim">（内置，不可改）</span>'
-          : (canWrite ? `<button class="btn sm" data-save-role="${r.id}">保存</button>` : '')}
-          </th>`).join('')}
-          </tr></thead>
-          <tbody>${matrix}</tbody>
-          </table>
-        </div>
-      </div>
-
       <div class="modal" id="roles-modal" hidden>
         <div class="modal-box">
           <div class="modal-head neutral">改角色</div>
           <div class="modal-body">
             <p class="t-dim" id="rm-who"></p>
             <div class="row" style="gap:14px;flex-wrap:wrap" id="rm-roles"></div>
+            <p class="modal-meta">这里改的是"这个人挂哪些角色"；
+              角色本身有哪些权限点，去「角色管理」那一页改。</p>
           </div>
           <div class="modal-actions">
             <button class="btn" id="rm-cancel">取消</button>
@@ -227,8 +179,7 @@ export default {
             <button class="btn danger-solid" id="du-ok">永久删除</button>
           </div>
         </div>
-      </div>
-    </section>`;
+      </div>`;
   },
 
   mount(root) {
@@ -403,21 +354,5 @@ export default {
     root.querySelector('#du-cancel').addEventListener('click', closeDel);
     delModal.addEventListener('click', (e) => { if (e.target === delModal) closeDel(); });
     bindModalDismiss(delModal, closeDel);
-
-    /* ---------- 角色权限矩阵 ---------- */
-    root.querySelectorAll('[data-save-role]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const roleId = Number(btn.dataset.saveRole);
-        const codes = [...root.querySelectorAll(`input[data-role="${roleId}"]`)]
-          .filter((el) => el.checked)
-          .map((el) => el.dataset.perm);
-        btn.disabled = true;
-        const ok = await run('保存', () => api.setRolePermissions(roleId, codes));
-        btn.disabled = false;
-        if (!ok) return;
-        btn.textContent = '已保存';
-        setTimeout(refresh, 400);
-      });
-    });
   },
 };

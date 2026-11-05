@@ -642,6 +642,12 @@ class WorkerStatusOut(BaseModel):
     # 阶段 E：多 worker 时逐个列出（worker_id／pid／心跳／上限／当前作业），
     # 顶栏仍只看 online，面板看这一列解释"为什么两个进程只动了一条"。
     workers: list[dict] = []
+    # 面板默认只列在线进程，"另有 N 个已离线"这句话由这两个数说话。
+    # 为什么单独声明：`response_model` 会静默丢掉没在这里写的字段——
+    # 服务层算了、pytest 直调 `services.worker_status()` 也看得见，
+    # 但 HTTP 响应里没有，界面就永远拿不到（这一笔就是这么撞上的）。
+    live_count: int = 0
+    history_count: int = 0
     # P0：光有"在线/离线"两态不够。队列里有活却没人领、跑着的作业早该超时、
     # 租约过期但还挂着 running——这三种都要在界面上说清，而不是让人猜。
     alerts: list[dict] = []
