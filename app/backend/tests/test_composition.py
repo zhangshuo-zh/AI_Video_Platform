@@ -240,11 +240,26 @@ def _compose(stage, **kw):
     return composition_service.view(comp["id"])
 
 
-def _psnr(a: Path, b: Path) -> float:
-    """两份成片的平均 PSNR（dB）。同一素材没改动会接近 inf，烧上字幕会掉到几十。"""
+# 字幕带在画面里的位置与占比：SRT 默认落在下方，取底部 30% 为"该被动"的区域，
+# 顶部 50% 为"不该被动"的对照区。
+BAND_BOTTOM = "ih*0.3:0:ih*0.7"
+BAND_TOP = "ih*0.5:0:0"
+
+
+def _psnr(a: Path, b: Path, band: str = "") -> float:
+    """两份成片的平均 PSNR（dB）。`band` 给几何串就只比那一条带。
+
+    原来这里只比整幅平均值，并断言 `< 40`——CI（ubuntu 的 ffmpeg 带 libass）上
+    稳定红在 42.9：字幕确实烧进去了，但 640×360 里那行字只占画面一小部分，
+    整幅平均自然掉不到 40 以下。**这条断言量错了东西**：它把"字幕占多少像素"
+    这件事当成了"字幕有没有生效"。本机没有 libass，这一支从来不走，所以
+    这个错只在 CI 上暴露——也正是 CI 一直红的原因。
+    """
+    graph = ("[0:v][1:v]psnr" if not band else
+             f"[0:v]crop=iw:{band}[c0];[1:v]crop=iw:{band}[c1];[c0][c1]psnr")
     proc = subprocess.run(
         [FFMPEG_BIN, "-hide_banner", "-i", str(a), "-i", str(b),
-         "-filter_complex", "[0:v][1:v]psnr", "-f", "null", "-"],
+         "-filter_complex", graph, "-f", "null", "-"],
         capture_output=True, text=True, check=True)
     text = (proc.stderr or "") + (proc.stdout or "")
     tail = [line for line in text.splitlines() if "average:" in line]
@@ -266,9 +281,17 @@ def test_字幕按这台机器的能力分档处理(stage):
         assert with_sub["timeline"]["subtitles"][0]["path"] == path
         plain = _compose(stage)          # 同一集不带字幕的对照
         assert plain["status"] == "succeeded", plain["error_message"]
-        score = _psnr(jobfiles.resolve_artifact(with_sub["output_path"]),
-                      jobfiles.resolve_artifact(plain["output_path"]))
-        assert score < 40, f"烧了字幕画面却没变（PSNR={score}）"
+        sub_path = jobfiles.resolve_artifact(with_sub["output_path"])
+        plain_path = jobfiles.resolve_artifact(plain["output_path"])
+        bottom = _psnr(sub_path, plain_path, BAND_BOTTOM)
+        top = _psnr(sub_path, plain_path, BAND_TOP)
+        # 两条断言各钉一件事，都不依赖"字幕占多少像素"这种机器相关的量：
+        #   下带必须真的被画上（差到看不出就红）；
+        #   上带必须基本没动（要是连上面都变了，说明烧的是整幅覆盖，那也不对）。
+        assert bottom < 45, f"字幕带几乎没有变化（下带 PSNR={bottom}）＝字幕没烧进去"
+        assert top > bottom + 6, (
+            f"上带({top})与下带({bottom})差得太少：字幕要么没落在下方，"
+            "要么整幅都被改了")
     else:
         # 这一档直接调 create()（不走 _compose），所以得自己把镜头签掉：
         # 前置检查先验镜头、再验字幕，镜头没签的话报的是"缺签字"，
