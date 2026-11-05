@@ -282,8 +282,41 @@ body{
 }
 
 /* 二级导航：只在当前模块展开 */
-.nav-sub{display:none;padding:5px 0 7px 32px}
-.nav-item.on + .nav-sub{display:grid;gap:3px}
+/* 二级菜单的展开／缩回。原来是 `display:none` ↔ `display:grid` 两态硬切：
+   浏览器不对 display 做插值，所以侧栏是"啪"地跳开的。现在换成
+   `grid-template-rows: 0fr ↔ 1fr` 的高度插值——内容必须包一层 `.nav-sub-in`
+   才压得动，而那一层的上下内边距得跟着插值（见下面那条注释），
+   左缩进 32px 与 chip 之间的 gap 不参与高度，留在原处即可。
+   `visibility` 那两条不是装饰：收起时内容高度是 0，但节点还在无障碍树里，
+   读屏会念出一排看不见的路径——`display:none` 时代没这个问题。用 visibility
+   把它请出去，并用 0s 延迟让"隐藏"排在缩回动画**之后**，展开时立刻可见。 */
+.nav-sub{
+  display:grid;grid-template-rows:0fr;overflow:hidden;visibility:hidden;
+  transition:grid-template-rows var(--mid) var(--ease),visibility 0s linear var(--mid);
+}
+.nav-sub-in{
+  /* 上下内边距跟着一起插值，不写死：padding 是**不可压缩**的，
+     留在内层不动的话，`grid-template-rows:0fr` 只能把内容压到 0，
+     那 5px＋7px 还撑着——真量下来收起态还剩 12px 高（这条断言第一次就跑红了）。
+     把它做成随展开态变化的属性，0fr 那一头才真的是 0。 */
+  min-height:0;display:grid;gap:3px;padding:0 0 0 32px;
+  /* 3px 的位移配高度一起往下走，读起来像被"揭"开而不是原地淡入
+     ——与 .view 的擦除同一套语言（切页用擦除不用上浮，理由在那条注释里） */
+  opacity:0;transform:translateY(-3px);
+  transition:padding var(--mid) var(--ease),opacity var(--fast) var(--ease),
+             transform var(--fast) var(--ease);
+}
+.nav-item.on + .nav-sub{
+  grid-template-rows:1fr;visibility:visible;
+  transition:grid-template-rows var(--mid) var(--ease),visibility 0s;
+}
+.nav-item.on + .nav-sub .nav-sub-in{
+  padding:5px 0 7px 32px;opacity:1;transform:none;
+}
+/* 系统要求减少动效时只留状态、不插值：侧栏的可点性从来不靠动画表达 */
+@media (prefers-reduced-motion:reduce){
+  .nav-sub,.nav-sub-in{transition:none}
+}
 /* 作用域必须写到 `.nav-sub .sub`。`.sub` 这个类名同时被 54 处卡片副标题用着
    （`.card-head .sub` 只改了字号和颜色），裸写 `.sub` 等于让每一段说明文字
    都长出 cursor:pointer 和一条左边框——不可点的东西看着像可点，

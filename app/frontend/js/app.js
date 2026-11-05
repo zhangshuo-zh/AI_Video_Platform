@@ -61,7 +61,11 @@ function buildNav() {
       if (!m.subs.length) return item;
       const subs = m.subs
         .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}">${s}</span>`).join('');
-      return `<div class="nav-group${m.utility ? ' utility' : ''}">${item}<div class="nav-sub">${subs}</div></div>`;
+      // 内层那圈 `.nav-sub-in` 是动效的必需品：`grid-template-rows:0fr` 要压的是
+      // 一个可以缩到 0 的行，padding/gap 必须住在内层，否则那条内边距撑着一个
+      // "0 高度"的容器，缩回时收不干净（app.css 的 .nav-sub 注释写了为什么不用 display 切换）
+      return `<div class="nav-group${m.utility ? ' utility' : ''}">${item}`
+        + `<div class="nav-sub"><div class="nav-sub-in">${subs}</div></div></div>`;
     }).join('');
     if (!g.label) return body;
     return `<div class="nav-section"><div class="nav-section-t">${g.label}</div>${body}</div>`;
@@ -79,7 +83,9 @@ function bindNav() {
   document.getElementById('nav').addEventListener('click', (e) => {
     const sub = e.target.closest('.sub');
     if (sub) {
-      const group = sub.parentElement;
+      // 认容器而不是认 parentElement：动效给二级项加了一层 .nav-sub-in 外壳，
+      // 用 closest 就与"这层壳今天有几层"解耦，加壳、去壳都不用回来改这里
+      const group = sub.closest('.nav-sub');
       const index = [...group.querySelectorAll('.sub')].indexOf(sub);
       const viewId = sub.closest('.nav-group').querySelector('.nav-item').dataset.v;
       group.querySelectorAll('.sub').forEach((x) => x.classList.remove('on'));

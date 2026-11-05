@@ -184,6 +184,57 @@ def main():
               len(parts) == 2 and parts == ["2", "0"],
               f"utility 条目 {parts[0] if parts else '?'} 个／还画着线的 "
               f"{parts[1] if len(parts) > 1 else '?'} 个")
+
+        # 二级菜单的展开／缩回必须是插值。原来 `.nav-sub` 是 `display:none` ↔
+        # `display:grid` 两态硬切，浏览器不对 display 插值，侧栏于是"啪"地跳开。
+        # 这里不比较两个终态（终态对了也可能是瞬变），而是**每 16ms 采一次高度、
+        # 数中间帧**：真在动就会留下一串介于 0 与满高之间的采样值。
+        # 为什么用采样而不是"点完立刻量一次"：点击要走一次异步渲染，
+        # 类名什么时候翻过去不由这里决定，掐 60ms 量会因渲染快慢时红时绿。
+        nav_anim = cdp.eval("""(async () => {
+          const wait = (ms) => new Promise(r => setTimeout(r, ms));
+          const at = (v) => [...document.querySelectorAll('.nav-item')]
+            .find(e => e.dataset.v === v);
+          const item = at('assets'), plain = at('projects');
+          const sub = item && item.nextElementSibling;
+          if (!sub || !plain) return 'no-sub';
+          const sample = async (ms) => {
+            const vals = [];
+            const iv = setInterval(
+              () => vals.push(Math.round(sub.getBoundingClientRect().height)), 16);
+            await wait(ms); clearInterval(iv); return vals;
+          };
+          plain.click(); await wait(500);
+          const closed = Math.round(sub.getBoundingClientRect().height);
+          const visClosed = getComputedStyle(sub).visibility;
+          item.click(); const up = await sample(700);
+          const opened = Math.round(sub.getBoundingClientRect().height);
+          const visOpen = getComputedStyle(sub).visibility;
+          plain.click(); const down = await sample(700);
+          const top = Math.max(...up, ...down);
+          return JSON.stringify({
+            closed, opened, top,
+            midUp: up.filter(v => v > 0 && v < top).length,
+            midDown: down.filter(v => v > 0 && v < top).length,
+            visClosed, visOpen,
+            prop: getComputedStyle(sub).transitionProperty,
+          });
+        })()""")
+        na = json.loads(nav_anim) if str(nav_anim).startswith("{") else {}
+        check("二级菜单展开与缩回都是插值（中间帧采得到）",
+              bool(na) and na["closed"] == 0 and na["opened"] > 0
+              and na["midUp"] >= 2 and na["midDown"] >= 2,
+              f"收起 {na.get('closed')}／展开 {na.get('opened')} 高／展开途中 "
+              f"{na.get('midUp')} 帧中间高度、缩回途中 {na.get('midDown')} 帧"
+              if na else str(nav_anim))
+        # 收起时高度是 0，但节点还在文档里——`display:none` 时代它不在无障碍树里，
+        # 读屏不会念这排看不见的路径。换成高度插值后必须用 visibility 把这件事补回来。
+        check("过渡挂在高度上，且收起态对读屏不可见（与旧的 display:none 同义）",
+              bool(na) and "grid-template-rows" in na["prop"]
+              and na["visClosed"] == "hidden" and na["visOpen"] == "visible",
+              f"transition-property={na.get('prop','?')}／收起 visibility="
+              f"{na.get('visClosed','?')}／展开 visibility={na.get('visOpen','?')}"
+              if na else str(nav_anim))
         labels = P.eval_js(cdp, "[...document.querySelectorAll('.nav-item')]"
                                  ".map(e => e.textContent.trim())")
         check("「项目工作台」进了侧栏，且原有一级菜单一个没少",
