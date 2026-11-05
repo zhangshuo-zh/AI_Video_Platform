@@ -13,7 +13,7 @@
     },
     {
       "item": "音乐（ACE-Step 1.5）真实执行／口型 Rhubarb／音效",
-      "reason": "配音已结清：2026-11-05 装 mlx-audio v0.6.4＋mlx-community/VoxCPM2-8bit（3.0GB），平台队列真跑 job #46 succeeded（6.9s／48kHz／1.76s／169,020B，按秒采样峰值 0.86GB，本地不计价），走的是「素材→送进队列」这条人路径。音乐仍开：ACE-Step1.5-MLX-4bit 5.3GB 已装到本机，但 mlx-audio 0.6.4 的音乐注册表只有 minimax_music3、没有 acestep（PyPI 上 0.6.4 即最新版），真跑只会 ValueError；现在 runtime.probe_mlx_audio(\"music\") 读那张注册表并返回 missing，提交在扣任何资源之前回 422 并写明缺哪一档。口型 Rhubarb 与音效仍未安装／未接线。配乐替代档 minimax_music3 已取证（§24）：MLX 8bit 整仓 14.18 GB、官方口径 24GB+ 显存，本机 16GB 装不下，故未下载未实测；许可为 MiniMax Community License 7,373 字节（界面标示＋AUP＋营收 2,000 万美元阈值＋托管方防护义务），比 ACE-Step 的 Apache＋MIT 重。下一步建议盯 mlx-audio 上游补 acestep 档。",
+      "reason": "配音已结清：2026-11-05 装 mlx-audio v0.6.4＋mlx-community/VoxCPM2-8bit（3.0GB），平台队列真跑 job #46 succeeded（6.9s／48kHz／1.76s／169,020B，按秒采样峰值 0.86GB，本地不计价），走的是「素材→送进队列」这条人路径。音乐仍开：ACE-Step1.5-MLX-4bit 5.3GB 已装到本机，但 mlx-audio 0.6.4 的音乐注册表只有 minimax_music3、没有 acestep（PyPI 上 0.6.4 即最新版），真跑只会 ValueError；现在 runtime.probe_mlx_audio(\"music\") 读那张注册表并返回 missing，提交在扣任何资源之前回 422 并写明缺哪一档。口型 Rhubarb 与音效仍未安装／未接线。配乐替代档 minimax_music3 已取证（《开发/生产工作台改造/03-业务验收记录.md》§24）：MLX 8bit 整仓 14.18 GB、官方口径 24GB+ 显存，本机 16GB 装不下，故未下载未实测；许可为 MiniMax Community License 7,373 字节（界面标示＋AUP＋营收 2,000 万美元阈值＋托管方防护义务），比 ACE-Step 的 Apache＋MIT 重。下一步建议盯 mlx-audio 上游补 acestep 档。",
       "checked_at": "2026-11-05"
     },
     {

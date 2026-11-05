@@ -98,8 +98,10 @@ footer {
 <main>
 <h1>AI 视频生产平台 代码质量与业务逻辑优化报告</h1>
 <ul><li>文档类型：一轮工程优化的交付说明（as-built，按当轮真实改动与实测证据写）</li><li>版本：v1.0（2026-11-03）｜对应设计稿 v0.97｜对应平台迁移 0001—0032</li><li>任务来源：《AI 视频生产平台代码质量、业务逻辑与文档体系综合优化任务书》（2026-11-03 下发，要求直接执行，不接受只交方案）</li><li>口径出处：可复算数字以 <a href="发布基线.html">发布基线</a> 为准（<code>tools/make_release_baseline.py</code> 现场生成，<code>--check</code> 为门禁）；本轮的读路径数字以 <code>tools/bench_queries.py</code> 现测为准</li><li>配套文档：<a href="需求概要说明书.html">需求概要说明书</a>、<a href="系统设计说明书.html">系统设计说明书</a>、<a href="数据字典.html">数据字典</a>、<a href="系统使用说明书.html">系统使用说明书</a>、<a href="黄金样例与故障演练.html">黄金样例与故障演练</a></li></ul>
+<h2>目录</h2>
+<ol><li><a href="#修订记录">修订记录</a></li><li><a href="#1-结论摘要先看这一屏">1. 结论摘要（先看这一屏）</a></li><li><a href="#2-起点基线与盘点方法">2. 起点基线与盘点方法</a></li><li><a href="#3-问题清单按严重度排序">3. 问题清单（按严重度排序）</a></li><li><a href="#4-逐项成因与修复">4. 逐项成因与修复</a></li><li><a href="#5-改动文件与目的">5. 改动文件与目的</a></li><li><a href="#6-冗余处理">6. 冗余处理</a></li><li><a href="#7-数据库任务与前端优化">7. 数据库、任务与前端优化</a></li><li><a href="#8-业务规则与版本一致性变化">8. 业务规则与版本一致性变化</a></li><li><a href="#9-迁移与向后兼容">9. 迁移与向后兼容</a></li><li><a href="#10-测试与验收">10. 测试与验收</a></li><li><a href="#11-文档同步与校验">11. 文档同步与校验</a></li><li><a href="#12-未完成环境限制与下一轮建议">12. 未完成、环境限制与下一轮建议</a></li><li><a href="#13-交付清单本轮一次找齐">13. 交付清单（本轮一次找齐）</a></li><li><a href="#附录-a-变更详录">附录 A 变更详录</a></li></ol>
 <h2>修订记录</h2>
-<div class="table-wrap"><table><thead><tr><th>日期</th><th>版本</th><th>内容</th></tr></thead><tbody><tr><td>2026-11-03</td><td>v1.0</td><td>首版。记录 v0.97 综合优化轮的盘点结论、P0／P1／P2 清单、逐项成因与修复、改动文件与目的、冗余处理、数据库／任务／前端优化及其前后指标、业务规则与版本一致性变化、迁移与向后兼容、测试与验收证据、六份文档同步情况、未完成项与环境限制、下一轮建议</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>版本</th><th>一句话结论</th><th>详见</th></tr></thead><tbody><tr><td>2026-11-03</td><td>v1.0</td><td>记录 v0.97 综合优化轮的盘点结论、P0／P1／P2 清单、逐项成因与修复、改动文件与目的、冗余处理、数据库／任务／前端优化及其前后指标、业务规则与版本一致性变化、迁移与向后兼容、测试与验收证据、六份文档同步情况、未完成项与环境限制…</td><td>附录 A</td></tr></tbody></table></div>
 <hr>
 <h2>1. 结论摘要（先看这一屏）</h2>
 <p><strong>实际完成（代码已改、测试与浏览器都验过）</strong>：业务口径三处收口（分镜「源已变」与成片用同一条成功的视频作业；重试继承原作业的源版本；镜头与音频的原因一次说完）、节点可重试性改由服务端下发（<code>retryable</code>＋<code>retry_hint</code>）、六条读路径批量化并加一条索引（迁移 0032）、模型验证矩阵三个端点合成一条查询、前端五个视图的过期响应与跨页监听收口、两处诚实化（换集读失败不再演成空态、磁盘占用在目录未建时不再抛）。</p>
@@ -165,7 +167,7 @@ footer {
 <p><code>pytest -q</code> → <strong>628 passed</strong>（起点 625）。新增三条都在 <code>test_composition.py</code>（该文件 12 → 15）：<code>test_分镜的标记与成片用同一条视频作业</code>、<code>test_重试不许把旧素材洗成新素材</code>、<code>test_镜头与音频的问题同一次说完</code>。</p>
 <p>改写两条：分镜标记用例原来给"最新一条成功作业"喂的是图像作业（正是问题 2 的镜像），改成视频作业；<code>test_管理员不带任何筛选也能列作业</code> 的断言依赖"会话内作业总数不超过一页"，被新增用例挤出——<strong>判定为用例自身脆弱而非产品缺陷</strong>，改成"空条件 200 ＋ 列表非空 ＋ 按 <code>project_id</code> 精确定位"，未放宽任何校验，也未删除用例。</p>
 <h3>10.2 真浏览器（19 项全过）</h3>
-<p>临时库 ＋ 8010 端口 ＋ 无头 Chrome，逐条记录见 <a href="黄金样例与故障演练.html">黄金样例与故障演练 §2.11</a>。关键几条：分镜标记逐镜＝接口 <code>source_stale</code>；<strong>补跑过一条更新的图像作业的那一镜仍然贴标记</strong>（改前不贴）；只挂图像作业的镜头不误报；成片弹窗一次列全两类原因；被驳回那格 <code>[data-retry-node]</code> 数量＝0 且写明原因；⋯ 菜单三行交替只留一个、Escape 收得掉、切页不留监听；音频连切两集候选为最后那一集。380px 六处页面 <code>scrollWidth − clientWidth</code> 全为 0；<code>window.__errs</code> 全程为空。</p>
+<p>临时库 ＋ 8010 端口 ＋ 无头 Chrome，逐条记录见 <a href="黄金样例与故障演练.html">黄金样例与故障演练 《黄金样例与故障演练》§2.11</a>。关键几条：分镜标记逐镜＝接口 <code>source_stale</code>；<strong>补跑过一条更新的图像作业的那一镜仍然贴标记</strong>（改前不贴）；只挂图像作业的镜头不误报；成片弹窗一次列全两类原因；被驳回那格 <code>[data-retry-node]</code> 数量＝0 且写明原因；⋯ 菜单三行交替只留一个、Escape 收得掉、切页不留监听；音频连切两集候选为最后那一集。380px 六处页面 <code>scrollWidth − clientWidth</code> 全为 0；<code>window.__errs</code> 全程为空。</p>
 <h3>10.3 反证（检查不是空跑）</h3>
 <p>把 <code>views/audio.js</code> 临时换回改动前那一份，同一套检查里第 14、15 两条<strong>当场 FAIL</strong>（候选从"最后一集 1 条"变回"前一集 2 条"），换回本轮版本后 19 项全过。第二条检查用页面内 <code>window.fetch</code> 包一层延时，把前一集的响应人为拖慢 1.5 秒<strong>让它后到</strong>——这才是真正打中守卫的时序，而不是"顺手点了两下正好没撞上"。</p>
 <h3>10.4 演练</h3>
@@ -173,8 +175,8 @@ footer {
 <hr>
 <h2>11. 文档同步与校验</h2>
 <p>六份文档全部追平本轮，并按记忆里的口径分开处理"正文追平"与"校正另起一行"：</p>
-<div class="table-wrap"><table><thead><tr><th>文档</th><th>版本</th><th>本轮同步的内容</th></tr></thead><tbody><tr><td><code>设计稿.md</code></td><td>v0.96 → <strong>v0.97</strong></td><td>新增一行完整修订（含判断后不做清单与边界）</td></tr><tr><td><code>需求概要说明书.md</code></td><td>v2.20 → <strong>v2.21</strong></td><td>§4.5 标记口径、§4.11 可重试性与源版本继承、§4.12 原因一次说完、§7 测试表 <code>test_composition.py</code> 11 → <strong>15 项</strong>、交付表新增 v0.97 行、头部基线 628</td></tr><tr><td><code>系统设计说明书.md</code></td><td>v1.28 → <strong>v1.29</strong></td><td>§6.2 迁移 0032、§8.2 同尺与批量读、§8.12 两条重试规则、§8.13 原因合并、§11 节点字段、§12 三条前端设计、§15 测试表两行</td></tr><tr><td><code>数据字典.md</code></td><td>v1.23 → <strong>v1.24</strong></td><td>§3.17 索引清单、§9 第 12／19 条、§10 最新迁移</td></tr><tr><td><code>系统使用说明书.md</code></td><td>v1.23 → <strong>v1.24</strong></td><td>§10.4 三步、§11.1 第 4 步、§9 换集读法、FAQ 新增 <strong>14.18</strong>、14.17 补一句</td></tr><tr><td><code>黄金样例与故障演练.md</code></td><td>v1.9 → <strong>v1.10</strong></td><td>新增 §2.11（19 项 ＋ 反证 ＋ 前后指标）</td></tr></tbody></table></div>
-<p><strong>顺带修掉的四处文档与代码不一致</strong>（都是本轮复核时现数出来的，不是猜的）：<code>数据字典</code> §10 的"最新迁移"残留 <code>0030_season.sql</code>（实际 0031 早已存在）；<code>需求概要</code> §7 的 <code>test_composition.py</code> 写 11 项（<code>--collect-only</code> 实收 15）；<code>系统设计</code> §15 的 <code>test_composition_api.py</code> 写 3 项（实收 7，v0.93 补字幕三条时只改了另一份文档）；以及本轮改动让三处旧表述变成错的（列表口径、重试语义、原因上报）。</p>
+<div class="table-wrap"><table><thead><tr><th>文档</th><th>版本</th><th>本轮同步的内容</th></tr></thead><tbody><tr><td><code>设计稿.md</code></td><td>v0.96 → <strong>v0.97</strong></td><td>新增一行完整修订（含判断后不做清单与边界）</td></tr><tr><td><code>需求概要说明书.md</code></td><td>v2.20 → <strong>v2.21</strong></td><td>《需求概要说明书》§4.5 标记口径、《需求概要说明书》《需求概要说明书》§4.11 可重试性与源版本继承、《需求概要说明书》§4.12 原因一次说完、§7 测试表 <code>test_composition.py</code> 11 → <strong>15 项</strong>、交付表新增 v0.97 行、头部基线 628</td></tr><tr><td><code>系统设计说明书.md</code></td><td>v1.28 → <strong>v1.29</strong></td><td>《系统设计说明书》§6.2 迁移 0032、《系统设计说明书》§8.2 同尺与批量读、《系统设计说明书》《系统设计说明书》§8.12 两条重试规则、《系统设计说明书》§8.13 原因合并、《系统设计说明书》§11 节点字段、《系统设计说明书》§12 三条前端设计、《系统设计说明书》§15 测试表两行</td></tr><tr><td><code>数据字典.md</code></td><td>v1.23 → <strong>v1.24</strong></td><td>《数据字典》§3.17 索引清单、§9 第 12／19 条、§10 最新迁移</td></tr><tr><td><code>系统使用说明书.md</code></td><td>v1.23 → <strong>v1.24</strong></td><td>§10.4 三步、《系统使用说明书》§11.1 第 4 步、§9 换集读法、FAQ 新增 <strong>14.18</strong>、14.17 补一句</td></tr><tr><td><code>黄金样例与故障演练.md</code></td><td>v1.9 → <strong>v1.10</strong></td><td>新增 《黄金样例与故障演练》§2.11（19 项 ＋ 反证 ＋ 前后指标）</td></tr></tbody></table></div>
+<p><strong>顺带修掉的四处文档与代码不一致</strong>（都是本轮复核时现数出来的，不是猜的）：<code>数据字典</code> §10 的"最新迁移"残留 <code>0030_season.sql</code>（实际 0031 早已存在）；<code>需求概要</code> §7 的 <code>test_composition.py</code> 写 11 项（<code>--collect-only</code> 实收 15）；<code>系统设计</code> 《系统设计说明书》§15 的 <code>test_composition_api.py</code> 写 3 项（实收 7，v0.93 补字幕三条时只改了另一份文档）；以及本轮改动让三处旧表述变成错的（列表口径、重试语义、原因上报）。</p>
 <p><strong>校验</strong>：<code>tools/make_release_baseline.py</code> 重算（628 passed／133 业务 138 总／迁移 0032／表 34），<code>--check</code> 门禁通过——四份说明书的关键数字与基线一致。</p>
 <hr>
 <h2>12. 未完成、环境限制与下一轮建议</h2>
@@ -187,6 +189,10 @@ footer {
 <hr>
 <h2>13. 交付清单（本轮一次找齐）</h2>
 <p>代码：<code>app/backend/</code>（17 个文件）＋ <code>app/frontend/js/</code>（6 个文件）＋ <code>app/backend/migrations/0032_job_episode_index.sql</code> ＋ <code>tools/bench_queries.py</code>。 测试：<code>app/backend/tests/test_composition.py</code>、<code>test_jobs.py</code>；628 passed；真浏览器 19 项全过并含反证。 文档：六份追平 ＋ 本报告 ＋ <code>文档/发布基线.md</code> 重算 ＋ <code>文档/assets/v97-*.png</code> 五张 ＋ <code>设计稿.md</code> v0.97 ＋ <code>README.md</code>。 未提交：以上改动全部留在工作树，<strong>提交与推送是两次独立授权</strong>，等确认。</p>
+<h2>附录 A 变更详录</h2>
+<p>原文逐条归档，一条不删、不改。顶部那张表是它的目录：一行一句结论，细节在这里。</p>
+<h3>v1.0（2026-11-03）</h3>
+<p>首版。记录 v0.97 综合优化轮的盘点结论、P0／P1／P2 清单、逐项成因与修复、改动文件与目的、冗余处理、数据库／任务／前端优化及其前后指标、业务规则与版本一致性变化、迁移与向后兼容、测试与验收证据、六份文档同步情况、未完成项与环境限制、下一轮建议</p>
 </main>
 <footer>由 <code>tools/build_doc_html.py</code> 生成 · 源文件：代码质量与业务逻辑优化报告.md · 图片已内嵌，单文件可直接分发</footer>
 </body>

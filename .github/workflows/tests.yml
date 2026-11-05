@@ -72,3 +72,9 @@ jobs:
       - name: 发布基线门禁
         working-directory: .
         run: python tools/make_release_baseline.py --check --pytest-log /tmp/pytest.log
+
+      # 第三道门：文档自己的结构。目录、锚点、修订速览、跨册引用、历史不丢、图有没有孤儿，
+      # 全是"写完没人回头对"的那类账——规矩只有挂在 CI 上才算立住（《写作与引用规范》§11）。
+      - name: 文档结构门禁
+        working-directory: .
+        run: python tools/doc_structure_check.py

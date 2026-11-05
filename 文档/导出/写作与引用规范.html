@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 视频生产平台 文档写作与引用规范</title>
+<style>
+:root {
+  --ink: #1d1d1f;
+  --muted: #5f6673;
+  --line: rgba(0,0,0,.12);
+  --bg: #f5f5f7;
+  --card: rgba(255,255,255,.92);
+  --code: #f0f2f5;
+  --accent: #2453cf;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--bg);
+  font: 15px/1.72 -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main {
+  max-width: 1080px;
+  margin: 32px auto 72px;
+  padding: 44px 56px 64px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 14px 38px rgba(0,0,0,.08);
+}
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin: -24px 0 32px;
+}
+h1 { font-size: 34px; line-height: 1.25; margin: 0 0 18px; letter-spacing: -.02em; }
+h2 { font-size: 26px; margin: 42px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 21px; margin: 32px 0 12px; }
+h4 { font-size: 17px; margin: 24px 0 10px; }
+p, ul, ol { margin: 0 0 16px; }
+ul, ol { padding-left: 26px; }
+li { margin: 7px 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--code);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: .92em;
+}
+pre {
+  overflow: auto;
+  padding: 18px;
+  border-radius: 12px;
+  background: #17181b;
+  color: #f2f3f5;
+}
+pre code { padding: 0; background: transparent; color: inherit; }
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 18px auto 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.08);
+}
+.table-wrap { overflow-x: auto; margin: 18px 0 24px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 10px 12px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+th { background: #ececf0; font-weight: 650; white-space: nowrap; }
+tbody tr:nth-child(even) { background: rgba(0,0,0,.018); }
+hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+footer {
+  max-width: 1080px;
+  margin: -48px auto 40px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+@media print {
+  body { background: #fff; }
+  main { margin: 0; border: 0; box-shadow: none; border-radius: 0; }
+  img { break-inside: avoid; }
+  table { break-inside: avoid; }
+}
+@media (max-width: 720px) {
+  main { margin: 0; padding: 28px 20px 44px; border-radius: 0; }
+  h1 { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+<main>
+<h1>AI 视频生产平台 文档写作与引用规范</h1>
+<ul><li>文档类型：元文档。规定 <code>文档/</code> 与 <code>设计稿.md</code> 怎么写、怎么互相指、事实住在哪一册</li><li>版本：v1.0（2026-11-05），对应设计稿 v0.117</li><li>适用对象：改文档的人与改代码的人（同一轮里两者必须一起改）</li><li>本册不声明可算数字：路由数、测试数、表数、迁移号一律见《发布基线.md》</li></ul>
+<h2>修订记录</h2>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>版本</th><th>一句话结论</th><th>详见</th></tr></thead><tbody><tr><td>2026-11-05</td><td>v1.0</td><td>首次成册：唯一东家表、每册骨架、目录与锚点、速览＋详录、引用写法、门禁六查</td><td>§1—§12</td></tr></tbody></table></div>
+<h2>目录</h2>
+<ol><li><a href="#修订记录">修订记录</a></li><li><a href="#1-这一册解决什么">1. 这一册解决什么</a></li><li><a href="#2-事实只有一个东家">2. 事实只有一个东家</a></li><li><a href="#3-每册的固定骨架">3. 每册的固定骨架</a></li><li><a href="#4-目录什么时候必须有">4. 目录：什么时候必须有</a></li><li><a href="#5-修订记录速览表变更详录">5. 修订记录：速览表＋变更详录</a></li><li><a href="#6-引用写法">6. 引用写法</a></li><li><a href="#7-数字与状态的写法">7. 数字与状态的写法</a></li><li><a href="#8-配图规则">8. 配图规则</a></li><li><a href="#9-句子与表格">9. 句子与表格</a></li><li><a href="#10-术语对照">10. 术语对照</a></li><li><a href="#11-门禁doc_structure_checkpy">11. 门禁：doc_structure_check.py</a></li><li><a href="#12-已知缺口">12. 已知缺口</a></li></ol>
+<h2>1. 这一册解决什么</h2>
+<p>三个问题，都是现测的——数字用 <code>tools/doc_structure_check.py</code> 的同一套判据 量改造前的仓库（<code>git show HEAD:</code> 那 20 份），不是估的：</p>
+<ul><li><strong>读不动。</strong> 正文里超过 400 字的行 <strong>232 行</strong>；《设计稿》全册 55% 的字数是一张 96 行的</li></ul>
+<p>修订记录表，单行最长 3,578 字，正文从第 97 行才开始；《需求概要》《系统设计》的修订表 也各占两到三成字数。</p>
+<ul><li><strong>指不准。</strong> 全库 <code>§N</code> 引用 <strong>923 处</strong>：627 处指本册能对上，67 处写了《册名》能对上，</li></ul>
+<p>但 <strong>44 处裸写 <code>§N</code> 其实指别册、133 处指过去有 2 册以上都有这一级</strong>（读者只能猜）， 还有 5 处哪一册都对不上。</p>
+<ul><li><strong>没有地图。</strong> 该有目录而没有的册 <strong>11 份</strong>，最长一册 1,699 行、156 个标题，进去就是滚。</li></ul>
+<p>本轮改完的同一套判据读数：<code>§</code> 引用不合规 <strong>0</strong> 处、缺目录 <strong>0</strong> 份、 超过 400 字的正文行从 232 降到 <strong>55</strong>（构成见 §12）。</p>
+<p>本册给的是<strong>可检查</strong>的规矩，不是风格偏好。每条后面都写了它靠什么守住， 守不住的东西写进 §12 当已知缺口，不假装已经管住。</p>
+<h2>2. 事实只有一个东家</h2>
+<p>一类事实只许一册能写，别处只许引用。这是全库最重要的一条， <code>§6</code> 的引用写法和 <code>§11</code> 的门禁都为它服务。</p>
+<div class="table-wrap"><table><thead><tr><th>事实</th><th>唯一东家</th><th>别册允许的写法</th></tr></thead><tbody><tr><td>路由数、测试数、表数、迁移号、端点口径</td><td>《发布基线.md》（<code>tools/make_release_baseline.py</code> 现算生成）</td><td>「见《发布基线》§X」；只有需求概要与系统设计按门禁要求各留一行读数</td></tr><tr><td>表、列、索引、约束</td><td>《数据字典.md》</td><td>「列口径见《数据字典》§X」</td></tr><tr><td>界面逐屏怎么操作</td><td>《系统使用说明书.md》《生产工作台使用说明书.md》《模型中心使用说明书.md》</td><td>互相指，不重述字段表</td></tr><tr><td>接口、状态机、组件、实现取舍</td><td>《系统设计说明书.md》</td><td>「实现见《系统设计》§X」</td></tr><tr><td>产品需求、交互规范、验收口径</td><td>《需求概要说明书.md》</td><td>「需求原文见《需求概要》§X」</td></tr><tr><td>决策与分期</td><td>《设计稿.md》正文 《设计稿》§0—§8</td><td>修订记录只写一句话结论</td></tr><tr><td>演练与样例</td><td>《黄金样例与故障演练.md》</td><td>指过去，别抄步骤</td></tr><tr><td>阻塞项与未验证项</td><td><code>tools/release_blockers.json</code>（生成进《发布基线》）</td><td>不许在正文另列一张阻塞表</td></tr><tr><td>某一轮工作包的过程记录</td><td><code>文档/开发/**</code></td><td>只作历史留档，当前口径一律指回主干册</td></tr></tbody></table></div>
+<p><strong>为什么值得钉成规矩</strong>：上一轮「来源下拉念英文」那条缺陷，病根就是视图里又抄了一份枚举表； 文档同理——第二份定义迟早漂，而漂了没人报错。</p>
+<h2>3. 每册的固定骨架</h2>
+<p>顺序固定，缺项就写「本册无」，不许直接跳过小节：</p>
+<pre><code># 册名
+- 文档类型：一句话
+- 版本：vX.Y（YYYY-MM-DD），对应设计稿 vA.B     ← 门禁读这一行，格式不许变
+- 适用对象 / 当前实现基线 / 截图位置 / 配套文档   ← 按需，主干四册必须有「版本」行
+
+## 目录                                        ← §4
+## 0. 一页结论                                 ← 五到十行，说这册解决什么问题
+## 1…N 正文                                    ← 小节模板见下
+## 附录 A 变更详录                             ← §5，原文逐条归档
+## 附录 B 名词表 / 接口表 / 截图索引           ← 按需</code></pre>
+<p>正文每个小节按这三段写，缺哪段就明写缺：</p>
+<ol><li><strong>这一节解决什么</strong>：一到两句，不写背景铺垫。</li><li><strong>怎么用／怎么判</strong>：步骤、字段表、判序。判序必须给"为什么这样排"。</li><li><strong>边界</strong>：这一节不管什么、谁管（用 <code>《册名》§N</code> 指出去）。</li></ol>
+<h2>4. 目录：什么时候必须有</h2>
+<ul><li>超过 200 行或超过 12 个标题的册<strong>必须有</strong>目录，用有序列表加页内锚点。</li><li>目录只列到二级标题（<code>## </code>）；三级标题进正文不影响目录。</li><li>锚点写法与 GitHub 一致：去掉 <code>## </code>、空格转 <code>-</code>、保留中文。</li></ul>
+<p>例：<code>## 3. 模块划分（七块 + 系统设置）</code> → <code>#3-模块划分七块--系统设置</code>。</p>
+<ul><li>目录条目数必须等于该册 <code>## </code> 标题数。门禁查这一条，因为漏了条目就等于没目录。</li></ul>
+<h2>5. 修订记录：速览表＋变更详录</h2>
+<p><strong>顶部速览表</strong>（放在目录之后、正文之前）：</p>
+<pre><code>| 日期 | 版本 | 一句话结论 | 详见 |
+|---|---|---|---|
+| 2026-11-05 | v0.117 | 登记弹窗的 Provider／模型标识改成严格下拉 | §8.11.1、《模型中心使用说明书》§2.4 |</code></pre>
+<p>四条硬规矩：</p>
+<ul><li>一行只写一句结论，<strong>不超过 120 字</strong>，不带数字读数（读数进详录）。</li><li>「详见」必须能解析：本册小节写 <code>§N</code>，别册写 <code>《册名》§N</code>，图写 <code>图 N-M</code>。</li><li>日期与版本号<strong>一条都不许删、不许合并</strong>。历史是资产，压缩的是排版不是记录。</li><li>校正轮（只改文档不动代码的那种）单独成行，写明"本册只有数字与口径变了"。</li></ul>
+<p><strong>附录 A 变更详录</strong>：把原来的长行原文搬到这里，按版本倒序，每条一个小标题 <code>### vX.Y（YYYY-MM-DD）</code>，正文照旧。速览表那一行就是它的目录。</p>
+<p>为什么拆而不是删：单行 3,578 字在 Markdown 里渲染成一整块，谁也读不动； 但这些行里有"当时为什么这样定、踩了什么坑"，是唯一的出处，删了就没了。</p>
+<h2>6. 引用写法</h2>
+<div class="table-wrap"><table><thead><tr><th>场景</th><th>唯一合法写法</th><th>不合法</th></tr></thead><tbody><tr><td>指本册小节</td><td><code>§N</code>（本册能对上）</td><td>加册名（冗余）</td></tr><tr><td>指别册小节</td><td><code>《册名》§N</code></td><td><code>§N</code>（裸写，读者要猜哪一册）</td></tr><tr><td>指仓库外文档</td><td><code>《任务书》§N（外部，不随仓库分发）</code></td><td>裸写 <code>§N</code> 让人去仓库里找</td></tr><tr><td>指图</td><td><code>图 2-1</code></td><td>「上面那张图」</td></tr><tr><td>指代码</td><td><code>app/backend/services.py</code> 的 <code>resolve_provider()</code></td><td>只写函数名</td></tr><tr><td>指工具</td><td><code>tools/model_center_browser_check.py</code></td><td>「验收脚本」</td></tr></tbody></table></div>
+<p>三条补充：</p>
+<ul><li><strong>裸 <code>§N</code> 只许指本册。</strong> 门禁按这一条抓 76 处历史欠账。</li><li>指外部文档时第一次出现就标「外部」，别假设读者有那份。</li><li>引用要落到<strong>存在的小节</strong>：目标册没有 <code>§N</code> 就是断链，门禁直接红。</li></ul>
+<h2>7. 数字与状态的写法</h2>
+<ul><li><strong>可算的数字一律现测</strong>，不引 <code>/tmp</code>、不引上一轮的读数、不靠推算。</li></ul>
+<p>推算出来的数要写清算式与样本从哪来。</p>
+<ul><li>正文里不重述《发布基线》的读数。要提就写「读数见《发布基线》」。</li></ul>
+<p>例外只有两处，是门禁要求留的：《需求概要》与《系统设计》头部各一行当前实现基线。</p>
+<ul><li>状态格（已做／未做／阻塞）用<strong>同一天的磁盘读数</strong>，并标证据层级：</li></ul>
+<p>代码里有 ≠ 接口通 ≠ 界面有入口 ≠ 真机跑过。</p>
+<ul><li>改了一个数，要扫同源文件里的旧值残留。<code>make_release_baseline.py --check</code> 抓四类老账。</li></ul>
+<h2>8. 配图规则</h2>
+<ul><li>图必须<strong>真渲染</strong>：由 <code>tools/*_shots.py</code> 在无头浏览器里拍，存 <code>文档/assets/</code>，</li></ul>
+<p>不跨目录引用 <code>app/截图/</code>，不用其他项目的图凑。</p>
+<ul><li>命名 <code>v&lt;界面版本&gt;-&lt;页面&gt;.png</code>，例如 <code>v117-model-register.png</code>。</li><li>只拍界面上真能走到的状态。需要前置数据就用真接口推到位，拍不到就退出，不摆假数据。</li><li>插图后<strong>图号倒着改</strong>（先把后面的号往后挪，再插新的），正着改会撞号。</li><li>双向核对：正文引用的图必须存在；存在的图要么被引用，要么进《需求概要》§7.2 的历史表。</li><li>逐步操作截图属于《系统使用说明书》那一册，别塞进设计文档。</li></ul>
+<h2>9. 句子与表格</h2>
+<ul><li>一句一事。超过 120 字的句子拆开；一段不超过 6 行。</li><li>表格单元格超过 200 字就该考虑拆成小节正文，长表格读不动。</li><li>并列的坑按硬度排序，不按发现顺序。</li><li>不用排比连引例（三个以上同构短句加例子＝"AI 味"），最多举一例。</li><li>术语向 §10 的名词表对齐，同一档东西不要一册两种叫法。</li><li>结论先行：小节第一句给结论，理由放后面。</li></ul>
+<h2>10. 术语对照</h2>
+<div class="table-wrap"><table><thead><tr><th>术语</th><th>意思</th><th>别再这么写</th></tr></thead><tbody><tr><td>清单</td><td><code>adapters.py</code> 里的适配器规格（能力、后端、参数、计价、出处）</td><td>「配置表」「模型列表」</td></tr><tr><td>档</td><td>清单里的一个 <code>model_code</code></td><td>「版本」（版本另有其义）</td></tr><tr><td>槽位</td><td>能力 × 后端，共十行</td><td>「模型」</td></tr><tr><td>登记</td><td>这台机器上某一档的实例记录，住 <code>model_registration</code></td><td>「安装」「配置」</td></tr><tr><td>默认轨</td><td><code>provider_config.is_default=1</code> 那一行，选路的唯一来源</td><td>「主模型」</td></tr><tr><td>建议轨／备用轨</td><td>调用策略里给人看的配置，不参与选路</td><td>「备选默认」</td></tr><tr><td>健康</td><td>环境齐不齐（目录、解释器、脚本、权重或密钥变量）</td><td>「可用」</td></tr><tr><td>验证</td><td>凭什么认为真能产出（五类出处，只追加）</td><td>「测试通过」</td></tr><tr><td>生产可用</td><td>已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收</td><td>「配好了」</td></tr><tr><td>产线／人工</td><td>两种生产模式，共用同一份预检</td><td>「自动／手动」</td></tr><tr><td>签</td><td>审核中心的人工签字，只落那一处</td><td>「确认」「批准」</td></tr></tbody></table></div>
+<h2>11. 门禁：doc_structure_check.py</h2>
+<p><code>python3 tools/doc_structure_check.py</code> 查六件事，任何一件红就不许提交 （<code>--report</code> 只报数不判红，<code>--only refs</code> 单看一项）：</p>
+<ol><li><strong>目录</strong>：该有目录的册必须有，条目数＝二级标题数（<code>## 目录</code> 自己不列）。</li><li><strong>头部版本号</strong>：主干册有 <code>- 版本：vX.Y（YYYY-MM-DD）</code>，格式能被《发布基线》读到。</li></ol>
+<p>《发布基线》自己不查——它是生成物，版本＝生成日期＋commit，再手写一个号就是第二份版本号。</p>
+<ol><li><strong>修订速览</strong>：一行 ≤120 字，「详见」列非空。</li><li><strong><code>§</code> 引用</strong>：裸写只许指本册；<code>《册名》§N</code> 的目标小节必须存在；</li></ol>
+<p>带路径的册名（<code>《开发/x/03-业务验收记录.md》</code>）与外部《任务书》都认。</p>
+<ol><li><strong>历史不丢</strong>：速览表与《附录 X 变更详录》按（版本, 日期）成对对账，</li></ol>
+<p>少一条就是搬丢了历史——这是本轮唯一能自动证明"压的是排版、不是记录"的检查。</p>
+<ol><li><strong>图</strong>：正文引用的文件必须存在；没被引用的图必须在《需求概要》§7.2 历史表里有名。</li></ol>
+<p>配套门禁不变：<code>make_release_baseline.py --check</code>（数字一致）、 <code>tools/js_load_check.py</code>（前端模块能加载）、<code>pytest</code>、两套真浏览器验收。</p>
+<h2>12. 已知缺口</h2>
+<p>本册写了但<strong>这一轮没管住</strong>的，如实列出来：</p>
+<ul><li><strong>详录与速览的对应关系</strong>由门禁查"有没有丢"（§11 第 5 条），</li></ul>
+<p>但查不出"这一句话有没有概括原文"——那句话是人写的。</p>
+<ul><li><strong>正文改写只做完了一半</strong>：超过 400 字的正文行从 232 降到 <strong>55</strong>，其中 <strong>23 行是表格行</strong></li></ul>
+<p>（《需求概要》的完成度表 18 行、《发布基线》的阻塞项表 3 行、《系统设计》2 行）—— 一格装一段，拆它要重排整张表，属于下一轮；剩下 32 行是《设计稿》与《系统设计》的决策长段， 本轮已拆掉最长的四条。</p>
+<ul><li><strong>《附录 X 变更详录》与 <code>文档/开发/</code> 里的裸 <code>§N</code> 一律豁免</strong>：那是原文留档，</li></ul>
+<p>改了就不叫留档。代价是历史文本里的引用仍然要读者自己认。</p>
+<ul><li><strong>外部《任务书》的编号</strong>不随仓库分发，引用一律标「外部」，无法校验目标存在。</li><li><strong>附录字母</strong>按各册已有附录顺延（系统使用说明书的详录是附录 E），</li></ul>
+<p>门禁按"变更详录"这个名字认，不认字母。</p>
+</main>
+<footer>由 <code>tools/build_doc_html.py</code> 生成 · 源文件：写作与引用规范.md · 图片已内嵌，单文件可直接分发</footer>
+</body>
+</html>
