@@ -388,7 +388,8 @@ class JobSubmitIn(BaseModel):
 
 class JobOut(BaseModel):
     id: int
-    project_id: int
+    # 0039：删项目后作业行留着、project_id 置空。界面把这种行显示成「已删除项目」。
+    project_id: int | None
     episode_id: int | None
     shot_id: int | None
     capability: str

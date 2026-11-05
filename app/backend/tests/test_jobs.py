@@ -445,7 +445,14 @@ def test_worker_心跳决定在线(as_role):
     assert offline["current_job_id"] is None
 
 
-def test_删项目带走作业目录(as_role, clean_queue, fresh_project):
+def test_删项目留下作业与产物目录(as_role, clean_queue, fresh_project):
+    """0039：`job.project_id` 是 ON DELETE SET NULL——钱花了，账与文件都要留着。
+
+    原来这里断言的是相反的行为（作业行随项目 CASCADE 消失、目录被摘掉），
+    而《系统使用说明书》§2.5 与 §3.2 承诺的是"作业与产物不会被删"。
+    两边必须有一个让步，让步的是代码：删项目是既有流程里最重的动作，
+    一次误删不该把成本账与产物路径一起抹掉。
+    """
     c = as_role("editor")
     pid = fresh_project("editor")
     job = _submit(c, pid).json()
@@ -454,8 +461,22 @@ def test_删项目带走作业目录(as_role, clean_queue, fresh_project):
     assert folder.is_dir()
 
     services.delete_project_cascade(pid, "测试")
-    assert jobs.get(job["id"]) is None
-    assert not folder.exists()
+
+    row = jobs.get(job["id"])
+    assert row is not None                      # 行还在
+    assert row["project_id"] is None            # 只是不再属于这个项目
+    assert folder.is_dir()                      # 日志与产物目录一个字节都没动
+
+    # 无主作业只归管理员：本人（项目已没了）与外人都拿 404，不泄露"这行存在"
+    assert as_role("editor").get(f"/api/jobs/{job['id']}").status_code == 404
+    assert as_role("outsider").get(f"/api/jobs/{job['id']}").status_code == 404
+    admin = as_role("admin").get(f"/api/jobs/{job['id']}")
+    assert admin.status_code == 200
+    assert admin.json()["project_id"] is None
+
+    # 管理员的「全部项目」视图能列出它；别人的视图按可见项目筛，自然筛不到
+    assert job["id"] in [j["id"] for j in as_role("admin").get("/api/jobs").json()]
+    assert job["id"] not in [j["id"] for j in as_role("outsider").get("/api/jobs").json()]
 
 
 def test_日志路径越界读不到():

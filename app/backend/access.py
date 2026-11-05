@@ -71,6 +71,13 @@ def ensure(user, project_id: int, need: str = "read"):
     """
     if need not in NEEDS:
         raise HTTPException(status_code=500, detail="内部：未知的权限级别")
+    if project_id is None:
+        # 0039：删项目不再带走作业行，`job.project_id` 会被外键置成 NULL。
+        # 这类"无主作业"只有管理员能读——别人一律 404，与「看不见就是不存在」
+        # 同一条纪律：不因为行还在就告诉调用方"这行存在，只是你不配看"。
+        if not is_manager(user):
+            raise HTTPException(status_code=404, detail="项目不存在")
+        return None
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM project WHERE id = ?", (project_id,)).fetchone()
         if row is None:

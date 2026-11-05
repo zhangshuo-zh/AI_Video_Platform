@@ -260,11 +260,18 @@ def list_members(project_id: int,
 def add_member(project_id: int, payload: ProjectMemberIn,
                user=Depends(require_permission("project:write"))) -> ProjectMembersOut:
     project = ensure(user, project_id, "manage")
-    target = user_repo.get_by_id(payload.user_id)
+    # 与 `_clean_members` 同一条层级闸（0040 之前这里只查存在与否）：
+    # 候选名单是按层级筛过的，但接口不能假设调用方走的是那个名单。
+    # 少这一道，"只能邀请与你同级或更低的账号"就只是建项目那条路的承诺，
+    # 成员弹窗里点一下就能绕过——虽然不放大谁的权限，但两条路口径会分叉。
+    target = user_repo.user_row(payload.user_id)
     if target is None or not target["is_active"]:
         raise HTTPException(status_code=404, detail="用户不存在")
     if target["id"] == project["owner_id"]:
         raise HTTPException(status_code=422, detail="所有人本来就有全部权限")
+    if row_rank(target) > user_rank(user):
+        raise HTTPException(status_code=422,
+                            detail=f"协作人 #{payload.user_id} 的层级高于你，不能邀请")
     project_repo.add_member(project_id, payload.user_id, user["id"])
     return _members_payload(project_id, user)
 

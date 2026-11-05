@@ -105,8 +105,9 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
     # 那一列里（0033）。只看前者删项目，形态图会变成没人认领的孤儿文件。
     images = project_repo.asset_images(project_id) + variants.images_by_project(project_id)
     doc_paths = docs.paths_by_project(project_id)
-    # Job 目录在删行之前记下来：行一删就查不到 id，日志与产物会变成孤儿
-    job_ids = job_repo.ids_for_project(project_id)
+    # 作业行与它的日志／产物目录**不跟着删**（0039）：`job.project_id` 是
+    # ON DELETE SET NULL，行留在库里，文件留在 jobs/<id>/ 下。
+    # 钱花了账要留着——《系统使用说明书》§2.5 与 §3.2 承诺的就是这一条。
     project_repo.delete(project_id)
 
     # 上传的图落在 FILES_DIR/<资产id>/ 下（content.py 上传接口），文件清完
@@ -142,9 +143,6 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
                 folder.rmdir()
         except PathError:
             pass
-    # 作业日志与产物整目录摘掉；Job 行已随项目外键 CASCADE 消失
-    for job_id in job_ids:
-        jobfiles.remove_job(job_id)
     # 字幕不在某个 Job 名下，是按项目存的，得单独收——不然删掉项目后
     # data/jobs/subtitles/<旧项目id>/ 会永远留在盘上，备份越背越重还没人能看见它
     jobfiles.remove_project_subtitles(project_id)

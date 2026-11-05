@@ -202,6 +202,29 @@ def test_协作人管不了成员也归档不了(app, people, as_role):
     assert r2.status_code == 403 and "归档" in r2.json()["detail"], r2.json()
 
 
+def test_加协作人也要过层级闸(app, people, as_role):
+    """与建项目时勾选协作人同一条规则：不能把比自己层级高的人拉进项目。
+
+    建项目那条路走 `_clean_members`，早就有这道闸；成员弹窗这条路原来只查
+    "存不存在"，于是界面那句「只能邀请与你同级或更低的账号」在接口上可以绕过。
+    候选名单按层级筛过不等于接口安全——调用方可以不从名单里挑。
+    """
+    pid = _owned_editor(app, people)
+    admin = people["admin"]["id"]
+
+    r = as_role("editor").post(f"/api/projects/{pid}/members", json={"user_id": admin})
+    assert r.status_code == 422, f"制作邀请管理员该被拒，实得 {r.status_code} {r.text}"
+    assert "层级高于你" in r.json()["detail"], r.json()
+    assert admin not in [m["user_id"] for m in
+                         as_role("editor").get(f"/api/projects/{pid}/members").json()["members"]], \
+        "被拒的那一条不许已经落进成员表"
+
+    viewer = people["viewer"]["id"]
+    ok = as_role("editor").post(f"/api/projects/{pid}/members", json={"user_id": viewer})
+    assert ok.status_code == 200, f"同级或更低的人照旧加得进：{ok.status_code} {ok.text}"
+    assert viewer in [m["user_id"] for m in ok.json()["members"]], ok.json()
+
+
 def test_删项目只给管理员连所有人自己也要权限点(app, people, as_role):
     """这是本轮顺手钉住的一条真口径：`project:delete` 只授给 admin 角色（0002），
     所以 editor 即使是他自己名下的项目也删不掉——《使用说明书》§4 那句

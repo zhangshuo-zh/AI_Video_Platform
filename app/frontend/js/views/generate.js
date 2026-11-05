@@ -36,6 +36,7 @@ const money = formatMoney;
 
 function projectName(id) {
   const p = store.projects.find((x) => x.id === id);
+  if (id === null || id === undefined) return '已删除项目';
   return p ? p.name : `项目 #${id}`;
 }
 
