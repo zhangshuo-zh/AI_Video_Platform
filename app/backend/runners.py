@@ -47,6 +47,10 @@ class RunSpec:
     expected: list[Path]
     media: str                    # video / image / audio / other
     meta: dict = field(default_factory=dict)
+    # 有些执行器自己决定文件名（mlx-audio 的 TTS 会按分段数命名 000/001…），
+    # 这时"预期产物"只能事后按模式找，不能假装我们预先知道文件名。
+    # 空字符串＝仍按 `expected` 逐条要求存在。
+    expected_glob: str = ""
 
 def _need_runtime(probe) -> None:
     if probe.state != "ok":
@@ -247,6 +251,84 @@ def _mflux(job, params: dict, outputs: Path) -> RunSpec:
               "width": width, "height": height, "steps": steps})
 
 
+# ---------- 音频两腿（VoxCPM2 配音 / ACE-Step 1.5 音乐）----------
+# 权重都走 mlx-community 的量化转换，不拉官方整包：
+#   openbmb/VoxCPM2 主文件 4,580,080,592B（卡面 gated=false、apache-2.0），
+#   MLX 8bit 版 3.2GB 级、由 `mlx-audio` 直接跑；ACE-Step 1.5 的 MLX 4bit 版
+#   卡面写 2.2GB 主模型＋0.7GB VAE＋2.4GB 文本编码器。
+# 这台 16GB 无风扇机器上"整包官方权重＋bf16"是装不下的，量化档才是可用档。
+VOXCPM_MLX_MODEL = "mlx-community/VoxCPM2-8bit"
+ACE_STEP_MLX_MODEL = "mlx-community/ACE-Step1.5-MLX-4bit"
+# `mlx_audio.music.generate` 的 --lyrics/--lyrics-file 是必填互斥组：
+# 没有歌词也要给一段结构标记，否则子进程直接 argparse 退出。
+ACE_STEP_INSTRUMENTAL = "[inst]"
+
+
+def _voxcpm(job, params: dict, outputs: Path) -> RunSpec:
+    """配音：一条台词 → 一个 wav（可能分段，文件名由执行器决定）。
+
+    产物用 `expected_glob` 事后找，不是偷懒：`mlx_audio.tts.generate` 在
+    单段时写 `<prefix>.wav`、多段时写 `<prefix>_000.wav`、`_001.wav`……
+    分段数只有跑完才知道。找不到任何文件就抛，绝不写半条成功。
+    """
+    probe = runtime.probe_mlx_audio("tts")
+    _need_runtime(probe)
+    text = (job["prompt_snapshot"] or "").strip()
+    if not text:
+        raise RunnerUnavailable("这条配音作业没有可朗读的文本")
+    out_dir = outputs / ("%s-tts" % job["id"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    speed = params.get("speed")
+    if speed is None:
+        speed = _spec_default(job, job["model_code"], "speed", 1.0)
+    argv = [probe.values["cli"], "--model", VOXCPM_MLX_MODEL,
+            "--text", text, "--speed", str(float(speed)),
+            "--output_path", str(out_dir), "--file_prefix", str(job["id"]),
+            "--audio_format", "wav", "--verbose"]
+    instruct = str(params.get("instruct") or "").strip()
+    if instruct:
+        argv += ["--instruct", instruct]
+    return RunSpec(
+        runner="voxcpm2", argv=argv, cwd=out_dir, expected=[], media="audio",
+        expected_glob="%s*.wav" % job["id"],
+        meta={"adapter": "voxcpm2", "model": job["model_code"],
+              "cli": probe.values["cli"], "hf_model": VOXCPM_MLX_MODEL,
+              "speed": float(speed), "instruct": instruct})
+
+
+def _ace_step(job, params: dict, outputs: Path) -> RunSpec:
+    """音乐：一句风格描述（＋可选歌词）→ 一个 wav。
+
+    `duration`／`steps`／`seed` 都照清单默认回落，理由与 FastMetal 那条一样：
+    产线节点提交的作业 params 是空的，不回落就等于把清单里的默认丢掉。
+    """
+    probe = runtime.probe_mlx_audio("music")
+    _need_runtime(probe)
+    caption = (job["prompt_snapshot"] or "").strip()
+    if not caption:
+        raise RunnerUnavailable("这条音乐作业没有风格描述")
+    out = outputs / ("%s-music.wav" % job["id"])
+    model = job["model_code"]
+    duration = int(params.get("duration")
+                   or _spec_default(job, model, "duration", 30))
+    steps = int(params.get("steps") or _spec_default(job, model, "steps", 27))
+    seed = params.get("seed")
+    argv = [probe.values["cli"], "--model", ACE_STEP_MLX_MODEL,
+            "--caption", caption,
+            "--lyrics", str(params.get("lyrics") or "").strip() or ACE_STEP_INSTRUMENTAL,
+            "--duration", str(duration), "--steps", str(steps),
+            "--output", str(out), "--verbose"]
+    if seed is not None:
+        argv += ["--seed", str(int(seed))]
+    return RunSpec(
+        runner="ace-step", argv=argv, cwd=outputs, expected=[out], media="audio",
+        meta={"adapter": "ace-step", "model": job["model_code"],
+              "cli": probe.values["cli"], "hf_model": ACE_STEP_MLX_MODEL,
+              "duration": duration, "steps": steps,
+              "lyrics": str(params.get("lyrics") or "").strip() or ACE_STEP_INSTRUMENTAL})
+
+
+
 def _cloud(job, params: dict, outputs: Path, adapter) -> RunSpec:
     """云端：把一次调用写成请求 JSON，交给 cloud_run.py 子进程。
 
@@ -322,7 +404,29 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         return _mlx_video(job, params, outputs)
     if capability == "image" and provider == "mflux":
         return _mflux(job, params, outputs)
+    if capability == "tts" and provider in ("voxcpm2", "voxcpm"):
+        return _voxcpm(job, params, outputs)
+    if capability == "music" and provider in ("ace-step", "acestep", "ace_step"):
+        return _ace_step(job, params, outputs)
     raise RunnerUnavailable(f"{capability}/{provider} 还没有执行接线")
+
+
+def has_branch(capability: str, provider: str) -> bool:
+    """这一对 capability/provider 在 `build()` 里有没有分支。
+
+    存在的理由：音频中心那张能力表原来把 tts/music 的 `runner_wired` **写死成 False**，
+    注释还写着"今天没有分支"——那是一句会在接线当天就变成假话的实话。
+    现在它问这里，而这里与 `build()` 读的是同一串条件。
+    """
+    if capability == "video":
+        return provider in ("fastmetal", "mlx-video")
+    if capability == "image":
+        return provider == "mflux"
+    if capability == "tts":
+        return provider in ("voxcpm2", "voxcpm")
+    if capability == "music":
+        return provider in ("ace-step", "acestep", "ace_step")
+    return False
 
 
 def _magic_ok(path: Path, media: str) -> bool:
@@ -335,20 +439,35 @@ def _magic_ok(path: Path, media: str) -> bool:
         return len(head) >= 12 and head[4:8] == b"ftyp"
     if media == "image":
         return head.startswith(b"\x89PNG\r\n\x1a\n") or head[:3] == b"\xff\xd8\xff"
+    if media == "audio":
+        # WAV＝RIFF....WAVE；mp3＝ID3；flac＝fLaC；m4a 走 ISO-BMFF。
+        # 这条不是装饰：音频产物一旦被截断、或写成一张 HTML 错误页，
+        # 时间线与成片会带着一个"看起来存在"的空音轨走下去。
+        return (head[:4] == b"RIFF" and head[8:12] == b"WAVE") or \
+            head[:3] == b"ID3" or head[:4] == b"fLaC" or \
+            (len(head) >= 12 and head[4:8] == b"ftyp")
     return True
 
 
 def verify(spec: RunSpec) -> list[Path]:
     """按媒体类型验真；返回实际存在的产物路径。缺一件就抛，不写半条成功。"""
-    missing = [str(p) for p in spec.expected if not p.is_file()]
+    # `RunSpec` 是 frozen 的：找到的产物只带出去，不回头改那份规格。
+    expected = list(spec.expected)
+    if not expected and spec.expected_glob:
+        expected = sorted(p for p in spec.cwd.glob(spec.expected_glob) if p.is_file())
+        if not expected:
+            raise RunnerUnavailable(
+                "命令返回了，但 %s 里没有任何 %s 产物"
+                % (spec.cwd.name, spec.expected_glob))
+    missing = [str(p) for p in expected if not p.is_file()]
     if missing:
         raise RunnerUnavailable("命令返回了，但没有产物：" + "、".join(Path(p).name for p in missing))
-    for path in spec.expected:
+    for path in expected:
         if path.stat().st_size <= 0:
             raise RunnerUnavailable(f"产物是空的：{path.name}")
         if not _magic_ok(path, spec.media):
             raise RunnerUnavailable(f"产物不是可识别的 {spec.media} 文件：{path.name}")
-    return spec.expected
+    return expected
 
 
 def provider_receipt(spec: RunSpec) -> dict:

@@ -36,6 +36,22 @@ _SELECT = """
 
 
 class DocumentRepository:
+    def list_by_projects(self, project_ids: list[int]) -> list[sqlite3.Row]:
+        """一次读回一组项目的文档（首页工作台用）。
+
+        存在的理由就是"别按项目逐个回库"：首页列的是全部在产项目，
+        逐项目读文档＋签字在 25 个项目那一档量到回库 159 次。
+        """
+        ids = sorted({int(i) for i in project_ids})
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            return conn.execute(
+                _SELECT + f" WHERE d.project_id IN ({marks})"
+                " ORDER BY d.kind, (d.episode_id IS NULL), e.seq, d.title",
+                ids).fetchall()
+
     def list_by_project(self, project_id: int, kind: str | None = None,
                         episode_id: int | None = None) -> list[sqlite3.Row]:
         conds = ["d.project_id = ?"]

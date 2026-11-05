@@ -199,6 +199,77 @@ def probe_mflux() -> Runtime:
                home=home, cli=str(cli))
 
 
+def mlx_audio_bin(which: str = "tts") -> Path | None:
+    """找 mlx-audio 的两个入口脚本。
+
+    装法只有一种被验证过：`uv tool install mlx-audio` ⇒ 入口落在 `~/.local/bin/`，
+    名字里带点（`mlx_audio.tts.generate`／`mlx_audio.music.generate`），
+    而 `~/.local/bin` 常常不在 PATH 里——所以既查 PATH 也查那个固定目录，
+    还支持用 `FASTVIDEO_MLX_AUDIO_BIN` 直接指到可执行文件（与 mflux 同一套规矩）。
+    """
+    env = _env("FASTVIDEO_MLX_AUDIO_BIN")
+    if env:
+        cand = Path(env)
+        return cand if cand.is_file() else None
+    name = "mlx_audio.%s.generate" % ("tts" if which == "tts" else "music")
+    found = shutil.which(name)
+    if found:
+        return Path(found)
+    for base in (Path.home() / ".local" / "bin", Path("/opt/homebrew/bin")):
+        cand = base / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+# mlx-audio 的模型注册表是"按目录里有没有这一档"来认的：
+# `mlx_audio/<类别>/models/<模型类型>.py`。音乐这一类在 0.6.4 里只有 minimax_music3，
+# 所以 ACE-Step 的 MLX 权重虽然已经下到本机，跑起来仍是 `ValueError: Model type
+# acestep not supported for music`——那是一条**运行时就读得出**的事实，
+# 不该等到作业失败才让人知道。
+_MUSIC_MODEL_TYPES = {"ace-step": "acestep"}
+
+
+def _supported_music_types(site_root: Path) -> list[str]:
+    models = site_root / "mlx_audio" / "music" / "models"
+    if not models.is_dir():
+        return []
+    # 一档模型可能是一个 .py，也可能是一个包目录（minimax_music3/ 就是目录）——
+    # 只 glob("*.py") 会把整张注册表读成空，而"读成空"在这里等于"检查没做却说 ok"。
+    names = {p.stem for p in models.glob("*.py") if p.stem != "__init__"}
+    names |= {p.name for p in models.iterdir() if p.is_dir() and not p.name.startswith("__")}
+    return sorted(names)
+
+
+def probe_mlx_audio(which: str = "tts") -> Runtime:
+    cli = mlx_audio_bin(which)
+    if cli is None:
+        return _missing(
+            "找不到 mlx_audio.%s.generate；先 `uv tool install mlx-audio`，"
+            "或把可执行文件路径写进 FASTVIDEO_MLX_AUDIO_BIN"
+            % ("tts" if which == "tts" else "music"))
+    if which == "music":
+        # 入口脚本本身是个带 shebang 的小启动器，site-packages 在 shebang 那个
+        # 虚拟环境里（uv tool 的布局：…/tools/mlx-audio/lib/python3.12/site-packages）。
+        # 猜相对目录会猜空——猜空就等于"检查没做但说 ok"，那是假绿。
+        candidates: list[Path] = []
+        try:
+            shebang = Path(cli).read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        except OSError:
+            shebang = ""
+        if shebang.startswith("#!"):
+            env_root = Path(shebang[2:].strip()).parent.parent
+            candidates = sorted((env_root / "lib").glob("python*/site-packages"))
+        supported = _supported_music_types(candidates[0]) if candidates else []
+        if supported and "acestep" not in supported:
+            return _missing(
+                "mlx-audio 的音乐注册表里没有 acestep 这一档（现有：%s）；"
+                "权重已在本机，等 mlx-audio 支持后再配默认轨"
+                % "、".join(supported), cli=str(cli))
+        return _ok("mlx-audio 音乐入口与 acestep 档都在", cli=str(cli))
+    return _ok("mlx-audio 入口在；权重首次运行才会下载", cli=str(cli))
+
+
 def probe(code: str, model_code: str = "") -> Runtime:
     """按 adapter code 分发。没登记的本地 provider 不猜运行方式。"""
     if code == "fastmetal":
@@ -207,4 +278,8 @@ def probe(code: str, model_code: str = "") -> Runtime:
         return probe_mlx_video()
     if code == "mflux":
         return probe_mflux()
+    if code == "voxcpm2":
+        return probe_mlx_audio("tts")
+    if code == "ace-step":
+        return probe_mlx_audio("music")
     return _unknown("这个本地 provider 还没有运行时探测规则")

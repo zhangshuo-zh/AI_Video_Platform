@@ -17,6 +17,7 @@ import jobfiles
 import production
 import services
 from repositories.content import episodes, shots
+from repositories.reviews import reviews
 from repositories.context import context
 from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
@@ -426,3 +427,45 @@ def test_没人做过任何事时不给空表格(as_role, fresh_project):
     stats = c.get(f"/api/projects/{pid}/production?episode_id={eid}").json()["stats"]
     assert stats["team"]["members"] == []
     assert stats["jobs_total"] == 0
+
+
+def test_资产影响按批量读_回库次数不随引用镜头数增长(as_role, fresh_project, monkeypatch):
+    """规模基准（600 资产／1 500 镜头那一档）量到的一条真缺陷，在这儿钉住。
+
+    `asset_impact` 原来在循环里逐条 `shots.get()` 与 `reviews.signs()`：
+    引用镜头从 25 涨到 75 时，同一条读路径的回库从 18 涨到 54。
+    改成"循环外两次 IN 批量"之后，这条用例不许再看见逐条调用——
+    断言写的是**调用次数**而不是结果对不对，因为结果两种写法都对，
+    只有次数能证明这条路径在几百镜时还站得住。
+    """
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = _episode(c, pid)
+    aid = c.post(f"/api/projects/{pid}/assets", json={
+        "kind": "character", "name": "阿昭", "summary": "",
+        "consistency_prompt": "黑发、灰袍", "aliases": [], "tags": [],
+        "scope": "project"}).json()["id"]
+    shot_ids = [_shot(c, eid, f"第 {i + 1} 镜", asset_ids=[aid])["id"]
+                for i in range(20)]
+    for sid in shot_ids[:10]:          # 一半有产物：签字那一档也要真被批量读到
+        _succeeded_video_job(pid, eid, sid)
+
+    seen = {"per_get": 0, "per_signs": 0, "batch_shots": 0, "batch_signs": 0}
+    orig_get, orig_signs = shots.get, reviews.signs
+    orig_many, orig_sb = shots.get_many, reviews.signs_by_targets
+    monkeypatch.setattr(shots, "get", lambda i: (
+        seen.__setitem__("per_get", seen["per_get"] + 1), orig_get(i))[1])
+    monkeypatch.setattr(reviews, "signs", lambda *a, **k: (
+        seen.__setitem__("per_signs", seen["per_signs"] + 1), orig_signs(*a, **k))[1])
+    monkeypatch.setattr(shots, "get_many", lambda ids: (
+        seen.__setitem__("batch_shots", seen["batch_shots"] + 1), orig_many(ids))[1])
+    monkeypatch.setattr(reviews, "signs_by_targets", lambda kind, ids: (
+        seen.__setitem__("batch_signs", seen["batch_signs"] + 1),
+        orig_sb(kind, ids))[1])
+
+    out = production.asset_impact(aid)
+    assert out["counts"]["referencing"] == 20
+    assert out["counts"]["never_generated"] == 10
+    assert seen["batch_shots"] == 1 and seen["batch_signs"] == 1, seen
+    assert seen["per_get"] == 0 and seen["per_signs"] == 0, (
+        f"循环里又逐条回库了：{seen}")

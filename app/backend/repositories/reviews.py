@@ -188,6 +188,41 @@ class ReviewRepository:
                     LIMIT ?""",
                 (project_id, min(max(limit, 1), 200))).fetchall()
 
+    def job_queue_for_projects(self, project_ids: list[int],
+                               limit: int = 200) -> list[sqlite3.Row]:
+        """一组项目的可审作业，**每个项目各留最近 limit 条**。
+
+        与 `job_queue` 同一套判据（已成功、图像或视频、产物清单非空），
+        只是把"逐项目一趟"换成"一趟窗口"：`ROW_NUMBER() OVER (PARTITION BY
+        project_id ORDER BY id DESC)` 之后取 rn ≤ limit——
+        直接 `LIMIT n×项目数` 会把大项目的份额吃光，那是另一种错。
+        """
+        ids = sorted({int(i) for i in project_ids})
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        cap = min(max(limit, 1), 200)
+        with get_conn() as conn:
+            return conn.execute(
+                f"""SELECT * FROM (
+                        SELECT j.id AS job_id, j.project_id, j.capability, j.kind,
+                               j.execution_mode, j.provider_code, j.model_code,
+                               j.shot_id, j.episode_id, j.status,
+                               j.result_paths_json, j.finished_at,
+                               s.seq AS shot_seq, e.seq AS episode_seq,
+                               e.title AS episode_title,
+                               ROW_NUMBER() OVER (PARTITION BY j.project_id
+                                                  ORDER BY j.id DESC) AS rn
+                          FROM job j
+                          LEFT JOIN shot s ON s.id = j.shot_id
+                          LEFT JOIN episode e ON e.id = j.episode_id
+                         WHERE j.project_id IN ({marks})
+                           AND j.status = 'succeeded'
+                           AND j.capability IN ('image','video')
+                           AND j.result_paths_json NOT IN ('', '[]')
+                     ) WHERE rn <= ? ORDER BY project_id, job_id DESC""",
+                [*ids, cap]).fetchall()
+
     def _signs_for(self, project_id: int, target_kind: str,
                    target_ids: list[int]) -> list[sqlite3.Row]:
         """批量取一批目标的签字。空列表直接回空，不拼出 `IN ()` 那种语法错误。
@@ -207,6 +242,31 @@ class ReviewRepository:
                        AND r.target_id IN ({marks})
                      ORDER BY r.id""",
                 [project_id, target_kind, *target_ids]).fetchall()
+
+    def signs_by_targets(self, target_kind: str,
+                         target_ids: list[int] | set[int]) -> dict[int, list[sqlite3.Row]]:
+        """按目标 id 分组的签字，一条 SQL 打完一批。
+
+        与 `_signs_for` 的差别只有一个：**不按项目筛**。
+        「资产改动影响哪些镜头」引用的可能是全局池里的资产，命中镜头会跨项目，
+        按项目过滤的那条批量口在这儿用不上——但"一次问齐"这条纪律不能跟着松。
+        """
+        ids = sorted({int(i) for i in target_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"""SELECT r.*, u.display_name AS signed_by_name
+                      FROM review_item r
+                      LEFT JOIN app_user u ON u.id = r.signed_by
+                     WHERE r.target_kind = ? AND r.target_id IN ({marks})
+                     ORDER BY r.id""",
+                [target_kind, *ids]).fetchall()
+        grouped: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["target_id"]), []).append(row)
+        return grouped
 
     def signs_for_jobs(self, project_id: int, job_ids: list[int]) -> list[sqlite3.Row]:
         return self._signs_for(project_id, self.JOB, job_ids)

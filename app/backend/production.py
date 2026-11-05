@@ -74,8 +74,8 @@ def _audio_wired() -> dict:
     """配音／音乐到底能不能真跑。只用两个既有事实：
 
     1. `services.resolve_provider()` 能不能解析出默认轨，以及那一轨的健康状态；
-    2. 该 provider 在 `runners.build()` 里有没有分支——今天 tts 与 music 都没有，
-       会抛「配音/voxcpm2 还没有执行接线」。这条不是推测，是 runners.py 里读得到的事实。
+    2. 该 provider 在 `runners.build()` 里有没有分支——问 `runners.has_branch()`，
+       它与 `build()` 读同一串条件，所以这张表不会在接线之后还写着"没接线"。
     """
     import services
 
@@ -88,8 +88,12 @@ def _audio_wired() -> dict:
             health = adapters.health(resolved["row"])
         except services.NoRoute as exc:
             health = {"state": "unconfigured", "detail": str(exc)}
+        # `runner_wired` 问 `runners.has_branch()`：这里曾经写死 False，
+        # 而写死的那个值在接线当天就会变成假话——能力表必须跟着代码走。
+        import runners
         out[capability] = {"label": label, "provider": provider,
-                           "health": health, "runner_wired": False}
+                           "health": health,
+                           "runner_wired": runners.has_branch(capability, provider)}
     return out
 
 
@@ -783,15 +787,20 @@ def asset_impact(asset_id: int, *, only_shot_ids: set[int] | None = None) -> dic
         for sid, job in job_repo.latest_succeeded_videos_by_shot(eid).items():
             latest[int(sid)] = job
 
+    # 循环外两次批量读完：镜头行一次 IN、签字一次 IN。
+    # 原来这两句在循环里逐条 `shots.get()`／`reviews.signs()`——600 资产／1 500 镜头
+    # 那一档量到的是**回库次数随引用镜头数增长**（18→54），正是规模基准要抓的那种。
+    shot_rows = shots.get_many(list(hits))
+    sign_rows = reviews.signs_by_targets("job", [int(j["id"]) for j in latest.values()])
     items = []
     for hit in sorted(hits.values(), key=lambda h: (h["episode_id"], h["seq"])):
         job = latest.get(hit["shot_id"])
         stale = False
         signed = False
         if job is not None:
-            stale = services.job_source_stale(job, shot=shots.get(hit["shot_id"]))
+            stale = services.job_source_stale(job, shot=shot_rows.get(hit["shot_id"]))
             signed = any(s["decision"] == "approved"
-                         for s in reviews.signs("job", int(job["id"])))
+                         for s in sign_rows.get(int(job["id"]), []))
         items.append({**hit, "job_id": int(job["id"]) if job is not None else None,
                       "stale": stale, "signed": signed,
                       "recommend": ("源已变，建议重新生成这一镜" if stale else

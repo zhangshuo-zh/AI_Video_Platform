@@ -63,6 +63,22 @@ class ShotRepository:
         with get_conn() as conn:
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
 
+    def get_many(self, shot_ids: list[int] | set[int]) -> dict[int, sqlite3.Row]:
+        """一次读回一组镜头，键是 id。
+
+        存在的理由与 `AssetRepository.get_many` 同一句：批量场景里逐个 `get()`
+        就是 N 趟回库。「资产改动影响哪些镜头」这种一屏列几十镜的读路径最先撞上它。
+        查不到的 id 不出现在返回字典里——调用方要区分"镜头被删了"。
+        """
+        ids = sorted({int(i) for i in shot_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM shot WHERE id IN ({marks})", ids).fetchall()
+        return {int(r["id"]): r for r in rows}
+
     def list_by_episode(self, episode_id: int) -> list[sqlite3.Row]:
         with get_conn() as conn:
             return conn.execute(

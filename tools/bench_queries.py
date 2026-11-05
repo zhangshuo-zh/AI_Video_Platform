@@ -37,9 +37,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "app" / "backend"
 
-EPISODES = 24
-SHOTS_PER_EPISODE = 13          # 标准漫剧单集 v2 的镜头量级
-JOBS_PER_SHOT = 3
+EPISODES = 25                   # × 60 镜 ＝ 1 500 镜（一季九集×60 之外再留一倍余量）
+SHOTS_PER_EPISODE = 60          # 整集实测跑满的那一档（§17 量过 60 镜）
+JOBS_PER_SHOT = 3               # ⇒ 4 500 条作业
+ASSETS = 600                    # 任务书 §9 点名的量级：人物×形态×场景×道具凑到六百件
 
 # 候选索引：建之前／建之后各量一遍，用 EXPLAIN 证明查询计划真的换了。
 CANDIDATE_INDEXES = {
@@ -121,7 +122,8 @@ class Counter:
         self.queries = self.probes = self.rows = 0
 
 
-def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int) -> dict:
+def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int,
+                assets: int = ASSETS) -> dict:
     """在临时库里搭项目→集→镜→成功视频作业→成片版本→产线运行，返回规模与抽样 id。
 
     成片与产线也要搭：这两条列表路径如果库里没有行，测出来的"回库 3 次"是真的快，
@@ -139,21 +141,29 @@ def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int) -> dict:
     if tmpl is None:
         raise SystemExit("临时库里没有内置产线模板——基准需要它来搭运行")
     template_id = tmpl[0]
-    sample = {"project_ids": [], "episode_ids": [], "shot_ids": []}
+    sample = {"project_ids": [], "episode_ids": [], "shot_ids": [],
+              "referenced_asset_ids": []}
     timeline = json.dumps({"schema": 1, "shots": [], "audio": [], "subtitles": [],
                            "total_duration_ms": 12000}, ensure_ascii=False)
-    # 三个真资产：预检与"源已变"都要读引用资产的版本信息，
-    # 库里没有资产时"逐资产回库"和"一次批量"都只打一趟，量不出差别。
-    asset_ids = []
-    for a in range(3):
-        aid = 700000 + a
-        asset_ids.append(aid)
+    # 资产要按项目铺：预检与"源已变"读的是**本镜引用的那几件**，
+    # 库里只有三件全局资产时"逐资产回库"和"一次批量"都只打一趟，量不出差别。
+    # 每项目 24 件、kind 轮着来，三分之一没有参考图、三分之一没有一致性提示词
+    # ——那两档正是 precheck 里会走 WARN 分支的路径，空着就没被测到。
+    per_project = max(1, assets // episodes)
+    project_assets: dict[int, list[int]] = {}
+    aid = 700000
+    for a in range(assets):
+        owner = 5000 + (a % episodes)          # 与下面建项目的 id 规则对齐
         conn.execute(
             """INSERT INTO asset (id, project_id, kind, name, summary, consistency_prompt,
                                   ref_images, created_at, updated_at)
-               VALUES (?, NULL, 'character', ?, '基准用', ?, '[]',
+               VALUES (?, ?, ?, ?, '基准用', ?, ?,
                        datetime('now','localtime'), datetime('now','localtime'))""",
-            (aid, f"基准角色_{a}", "黑发、灰袍" if a else ""))
+            (aid, owner, ("character", "scene", "prop")[a % 3], f"基准资产_{a}",
+             "" if a % 3 == 1 else "黑发、灰袍",
+             "[]" if a % 3 == 2 else json.dumps([f"assets/{aid}.png"])))
+        project_assets.setdefault(owner, []).append(aid)
+        aid += 1
     for e in range(episodes):
         pid, eid = 5000 + e, 9000 + e
         conn.execute(
@@ -166,6 +176,10 @@ def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int) -> dict:
         sample["project_ids"].append(pid)
         sample["episode_ids"].append(eid)
         ep_job_ids = []
+        pool = project_assets[pid]
+        # 抽样一个"确实被本项目的镜头引用着"的资产：asset_impact 只有在这种资产上
+        # 才会走到反查那一支，拿没被引用的资产量等于什么都没量。
+        sample.setdefault("referenced_asset_ids", []).append(pool[0])
         for s in range(shots_per_ep):
             sid = eid * 100 + s
             conn.execute(
@@ -174,7 +188,7 @@ def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int) -> dict:
                    VALUES (?, ?, ?, ?, ?, 2.0, ?, 1, datetime('now','localtime'),
                            datetime('now','localtime'))""",
                 (sid, eid, s + 1, f"镜头 {s + 1} 内容", f"镜头 {s + 1} 提示词",
-                 json.dumps([asset_ids[s % 3], asset_ids[(s + 1) % 3]])))
+                 json.dumps([pool[s % len(pool)], pool[(s + 7) % len(pool)]])))
             sample["shot_ids"].append(sid)
             for k in range(jobs_per_shot):
                 job_id += 1
@@ -233,7 +247,7 @@ def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int) -> dict:
     conn.commit()
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("project", "episode", "shot", "job", "composition",
-                        "pipeline_run", "pipeline_node_run")}
+                        "pipeline_run", "pipeline_node_run", "asset")}
     conn.close()
     return {"sample": sample, "counts": counts}
 
@@ -269,6 +283,8 @@ def main() -> int:
     ap.add_argument("--episodes", type=int, default=EPISODES)
     ap.add_argument("--shots-per-episode", type=int, default=SHOTS_PER_EPISODE)
     ap.add_argument("--jobs-per-shot", type=int, default=JOBS_PER_SHOT)
+    ap.add_argument("--assets", type=int, default=ASSETS,
+                    help="资产件数（按项目平铺；600 是任务书 §9 点名的量级）")
     ap.add_argument("--index", action="append", default=[], choices=sorted(CANDIDATE_INDEXES),
                     help="只建这些候选索引再量一遍（可重复）")
     args = ap.parse_args()
@@ -287,10 +303,14 @@ def main() -> int:
     ensure_admin(verbose=False)     # 迁移只建表；超级用户是 main.py 启动时补的，基准也要有
     import pipeline as _pl
     _pl.ensure_builtin_templates()  # 内置模板同样是启动时补的，搭运行记录要用它
-    world = build_world(args.episodes, args.shots_per_episode, args.jobs_per_shot)
+    world = build_world(args.episodes, args.shots_per_episode, args.jobs_per_shot,
+                        args.assets)
 
     import services
     import pipeline
+    import precheck as _pre
+    import production as _prod
+    from repositories.content import assets as asset_repo
     from composition import service as composition_service
     from repositories.compositions import compositions
     from repositories.jobs import jobs as job_repo
@@ -307,7 +327,7 @@ def main() -> int:
     ep, pid = world["sample"]["episode_ids"][0], world["sample"]["project_ids"][0]
     admin = users.get_by_id(1)
     print(f"规模：项目 {c['project']}／集 {c['episode']}／镜 {c['shot']}／"
-          f"成功视频作业 {c['job']}（临时库 {tmp.name}，跑完即删）\n")
+          f"资产 {c['asset']}／成功视频作业 {c['job']}（临时库 {tmp.name}，跑完即删）\n")
 
     with get_conn() as conn0:
         run_by_episode = {int(r["episode_id"]): int(r["id"]) for r in conn0.execute(
@@ -324,6 +344,25 @@ def main() -> int:
         ("成片列表 list_for_project", lambda: composition_service.list_for_project(pid)),
         ("产线运行列表 runs_for_project", lambda: pipeline.runs_for_project(pid)),
         ("产线运行详情 run_view(一集)", lambda: pipeline.run_view(_run_for(ep))),
+        # ↓ 生产主线改造（0037／0038）新长出来的那几条读路径：
+        #   这一批是任务书 §9 点名"600 资产／1 500 镜头量级下没测过"的正主——
+        #   工作台、预检、统计、资产影响都是**每次打开页面就跑**的，
+        #   它们里藏一次 N+1，人每天点几百次就是在替服务器数行数。
+        ("项目工作台 project_overview(60 镜那一集)",
+         lambda: _prod.project_overview(pid, current_episode_id=ep)),
+        ("九阶段与下一步 episode_board(一集)", lambda: _prod.episode_board(pid, ep)),
+        ("生产统计 project_stats(项目级)", lambda: _prod.project_stats(pid)),
+        ("镜头工作台 shot_workbench(一镜)",
+         lambda: _prod.shot_workbench(world["sample"]["shot_ids"][0])),
+        ("生成前预检 shot_precheck(一镜)",
+         lambda: _pre.shot_precheck(world["sample"]["shot_ids"][0])),
+        ("整集预检 episode_precheck(一集)", lambda: _pre.episode_precheck(pid, ep)),
+        ("合成前预检 composition_precheck(一集)",
+         lambda: _pre.composition_precheck(pid, ep)),
+        ("资产列表 list_visible(项目 24 件＋全局池)",
+         lambda: asset_repo.list_visible(pid)),
+        ("资产影响 asset_impact(被镜头引用的那件)",
+         lambda: _prod.asset_impact(world["sample"]["referenced_asset_ids"][0])),
     ]
 
     counter = Counter()

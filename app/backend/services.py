@@ -1343,6 +1343,51 @@ def job_review_sign(job, payload, user) -> dict:
 WORKBENCH_ARTIFACT_WINDOW = 200
 
 
+def _pending_documents_for(project_ids: list[int]) -> dict[int, int]:
+    """一组项目各自的"还没整篇签过的文档数"，三趟批量读完。
+
+    判据与 `_pending_documents` 一字不差：版本令牌现算（`read_content`），
+    读不到正文的不算待办。这里只解决**怎么读**——首页列的是全部在产项目，
+    逐项目回库在规模基准里量到 25 个项目 159 次、8 个项目 57 次，是随项目数长的。
+    """
+    if not project_ids:
+        return {}
+    out = {int(pid): 0 for pid in project_ids}
+    rows = docs.list_by_projects(project_ids)
+    signs_by_doc = reviews.signs_by_targets(reviews.DOCUMENT,
+                                            [int(r["id"]) for r in rows])
+    for doc in rows:
+        try:
+            version = read_content(doc)["version"]
+        except Exception:
+            continue
+        signed = any(s["anchor"] == WHOLE_DOC_ANCHOR and s["base_version"] == version
+                     for s in signs_by_doc.get(int(doc["id"]), []))
+        if not signed:
+            out[int(doc["project_id"])] = out.get(int(doc["project_id"]), 0) + 1
+    return out
+
+
+def _pending_artifacts_for(project_ids: list[int]) -> dict[int, int]:
+    """一组项目各自的"待审产物条数"，两趟批量读完（每项目仍只数最近那 200 条）。"""
+    if not project_ids:
+        return {}
+    out = {int(pid): 0 for pid in project_ids}
+    rows = reviews.job_queue_for_projects(project_ids,
+                                          limit=WORKBENCH_ARTIFACT_WINDOW)
+    if not rows:
+        return out
+    signs_by_job = reviews.signs_by_targets(
+        reviews.JOB, [int(r["job_id"]) for r in rows])
+    for job in rows:
+        version = artifact_version(job)
+        signed = any(s["anchor"] == ARTIFACT_ANCHOR and s["base_version"] == version
+                     for s in signs_by_job.get(int(job["job_id"]), []))
+        if not signed:
+            out[int(job["project_id"])] = out.get(int(job["project_id"]), 0) + 1
+    return out
+
+
 def _pending_documents(project_id: int) -> int:
     """当前正文版本上还没整篇签字的文档数。
 
@@ -1351,23 +1396,7 @@ def _pending_documents(project_id: int) -> int:
     读不到正文（文件被人手工删了）不算待办：宁可少报一条，
     也不拿一个点进去就 404 的数字催人。
     """
-    rows = docs.list_by_project(project_id)
-    if not rows:
-        return 0
-    signs = reviews.signs_for_documents(project_id, [int(r["id"]) for r in rows])
-    by_doc: dict[int, list] = {}
-    for sign in signs:
-        by_doc.setdefault(int(sign["target_id"]), []).append(sign)
-    pending = 0
-    for doc in rows:
-        try:
-            version = read_content(doc)["version"]
-        except Exception:
-            continue
-        if not any(s["anchor"] == WHOLE_DOC_ANCHOR and s["base_version"] == version
-                   for s in by_doc.get(int(doc["id"]), [])):
-            pending += 1
-    return pending
+    return _pending_documents_for([project_id]).get(int(project_id), 0)
 
 
 def _pending_artifacts(project_id: int) -> int:
@@ -1376,20 +1405,7 @@ def _pending_artifacts(project_id: int) -> int:
     产物摘要（`artifact_version`）每次现算：文件被清理或被顶掉，摘要就变，
     旧签字自然不算数——首页不会把"产物早就没了、页面上还挂着通过"算成已签。
     """
-    rows = reviews.job_queue(project_id, limit=WORKBENCH_ARTIFACT_WINDOW)
-    if not rows:
-        return 0
-    signs = reviews.signs_for_jobs(project_id, [int(r["job_id"]) for r in rows])
-    by_job: dict[int, list] = {}
-    for sign in signs:
-        by_job.setdefault(int(sign["target_id"]), []).append(sign)
-    pending = 0
-    for job in rows:
-        version = artifact_version(job)
-        if not any(s["anchor"] == ARTIFACT_ANCHOR and s["base_version"] == version
-                   for s in by_job.get(int(job["job_id"]), [])):
-            pending += 1
-    return pending
+    return _pending_artifacts_for([project_id]).get(int(project_id), 0)
 
 
 def workbench(user) -> dict:
@@ -1405,14 +1421,16 @@ def workbench(user) -> dict:
     project_ids = [int(r["id"]) for r in rows]
     status_counts = workbench_repo.job_status_counts(project_ids)
     run_counts = workbench_repo.active_run_counts(project_ids)
+    pending_docs = _pending_documents_for(project_ids)
+    pending_arts = _pending_artifacts_for(project_ids)
     projects = []
     for row in rows:
         pid = int(row["id"])
         by_status = status_counts.get(pid, {})
         projects.append({
             "id": pid, "name": row["name"],
-            "review_documents": _pending_documents(pid),
-            "review_artifacts": _pending_artifacts(pid),
+            "review_documents": pending_docs.get(pid, 0),
+            "review_artifacts": pending_arts.get(pid, 0),
             "jobs_failed": by_status.get("failed", 0),
             "needs_attention": by_status.get("needs_attention", 0),
             "runs_active": run_counts.get(pid, 0),
