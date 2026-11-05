@@ -494,6 +494,21 @@ def test_前端枚举表和后端枚举对齐():
         assert table == {k: f"'{v}'" for k, v in source.items()}, (
             f"{name} 与后端不一致：前端 {table}／后端 {source}")
 
+    # 上面那半只钉得住 enums.js **自己**跟后端一致，看不见"某个视图又抄了一份"。
+    # 后半截扫视图，因为 `models.js` 的价格牌正是这么抄出事的：本地那张表只抄了
+    # 三档，于是 `token`／`request`／`minute`／`character` 四档把英文 code 直接念在
+    # 界面上（「8 元/token」），抄下来的 `million_token` 还写成「百万 token」。
+    # 锚只认 `million_token`／`second` 这两个不会撞车的键名——`character` 在资产那边
+    # 是"人物／角色"的意思，拿它当锚会误报两条正常代码。
+    copies = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            if re.search(r"\b(million_token|second):\s*'[^']*[一-鿿]", line):
+                copies.append(f"{f.name}:{n}: {line.strip()[:70]}")
+    assert not copies, (
+        "这些行在视图里又抄了一份计费单位表，改成 import enums.js 的 unitLabel："
+        + "；".join(copies))
+
 
 def test_视图不再自己写第二份状态字典():
     """`views/*.js` 里不许再出现 job 状态字面量的第二份表。

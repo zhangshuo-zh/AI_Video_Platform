@@ -5,7 +5,7 @@ import {
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
 import { HEALTH, VAL_BADGE, alertLabel } from '../validation.js';
-import { REG_SOURCES } from '../enums.js';
+import { REG_SOURCES, unitLabel } from '../enums.js';
 
 /**
  * 模型中心（v0.99，0035）。四个工作区：
@@ -135,7 +135,10 @@ function priceChips(prices) {
   if (!prices || !prices.length) return '<span class="hint">无按量计价</span>';
   return prices.map((p) => {
     const yuan = (p.amount_micros / 1e6).toFixed(p.amount_micros % 1e6 ? 2 : 1);
-    const unit = { second: '秒', million_token: '百万 token', image: '张' }[p.unit] || p.unit;
+    // 单位名从 enums.js 那一份取：这里原来自己抄了三档（second／million_token／image），
+    // 抄出来的「百万 token」和后端「百万 Token」差一个大小写，而没抄的四档
+    // （token／request／minute／character）会直接把英文 code 念在价格牌上。
+    const unit = unitLabel(p.unit);
     const when = Object.entries(p.when || {}).map(([k, v]) => `${k}=${v}`).join(' ');
     return `<span class="chip plain" title="${escapeHtml(p.source)}">
       ${yuan} ${escapeHtml(p.currency)}/${escapeHtml(unit)}${when ? ' · ' + escapeHtml(when) : ''}</span>`;
@@ -190,6 +193,11 @@ function pageRepo() {
     </tr>`;
   }).join('');
 
+  // 「全部类型」与「全部来源」两个下拉的选项都来自接口（capabilities／reg_sources），
+  // 不在这里硬写。原来来源那三个 option 有两个毛病：写的是英文取值
+  // （local／cloud／remote，而同一张表「运行位置」那一列念的是中文），
+  // 而且后端加第四档时界面永远不会知道。登记弹窗里那份（见 #mf-be）早就是生成的，
+  // 两处口径现在一致。
   return `
   <div class="card">
     <div class="card-head">
@@ -207,8 +215,8 @@ function pageRepo() {
         </select>
         <select class="ctl" id="repo-source">
           <option value="">全部来源</option>
-          <option value="local">local</option><option value="cloud">cloud</option>
-          <option value="remote">remote</option>
+          ${Object.entries(sourceLabels())
+            .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}
         </select>
       </div>
     </div>

@@ -131,6 +131,60 @@ def main():
         P.eval_js(cdp, "(() => { const i = document.querySelector('#repo-search');"
                        "i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); })()")
 
+        # 来源筛选：选项必须念中文。这一档原来把 local／cloud／remote 直接印在界面上，
+        # 而同一张表「运行位置」那一列念的是本地／云端／远程自建——同一屏两种说法。
+        # 筛的时候挑"有行的那一档"而不是写死 cloud：库副本里哪几档有登记是数据决定的，
+        # 写死就会因为那一档正好没登记而假失败。
+        src_opts = P.eval_js(cdp, "[...document.querySelectorAll('#repo-source option')]"
+                                  ".map(o => o.value + '=' + o.textContent).join(',')")
+        ascii_only = [x for x in str(src_opts).split(',')
+                      if len(x.split('=')) > 1 and x.split('=', 1)[1].isascii()]
+        check("来源筛选的选项念的是中文", bool(src_opts) and not ascii_only,
+              f"选项 {src_opts}" + (f"／英文残留 {ascii_only}" if ascii_only else ""))
+        got = P.eval_js(cdp, """(() => {
+          const rows = [...document.querySelectorAll('#repo-rows tr')];
+          const c = {};
+          rows.forEach(t => { c[t.dataset.source] = (c[t.dataset.source] || 0) + 1; });
+          const pick = Object.keys(c).sort((a, b) => c[b] - c[a])[0] || '';
+          const sel = document.querySelector('#repo-source');
+          sel.value = pick;
+          sel.dispatchEvent(new Event('change', {bubbles: true}));
+          const left = rows.filter(t => t.style.display !== 'none');
+          const wrong = left.filter(t => t.dataset.source !== pick).length;
+          const label = sel.options[sel.selectedIndex].text;
+          sel.value = '';
+          sel.dispatchEvent(new Event('change', {bubbles: true}));
+          return pick + '|' + c[pick] + '|' + left.length + '|' + wrong + '|' + label;
+        })()""")
+        p = str(got).split('|')
+        check("选中文那一档后只剩该来源的行",
+              len(p) == 5 and p[2] == p[1] and p[3] == '0' and not p[4].isascii(),
+              f"档位 {p[0]}（界面念「{p[4]}」）应 {p[1]} 行／实际可见 {p[2]} 行／串档 {p[3]} 行")
+
+        # 计价牌上的单位名同样只许来自 enums.js 那一份。models.js 原来在本地另抄了
+        # 三档：抄下来的「百万 token」跟后端「百万 Token」差一个大小写，而没抄的四档
+        # （token／request／minute／character）会把 code 直接念在人前。
+        # 逐行点开详情读那一张牌，读完关掉——不关掉会挡住下一步的「登记模型」按钮。
+        priced = P.eval_js(cdp, """(() => {
+          const texts = [];
+          for (const b of document.querySelectorAll('#repo-rows [data-detail]')) {
+            b.click();
+            const kv = [...document.querySelectorAll('#mc-detail-body .kv')]
+              .find(x => x.querySelector('dt')
+                       && x.querySelector('dt').textContent === '计价');
+            if (kv) texts.push(kv.querySelector('dd').textContent.trim());
+          }
+          const c = document.querySelector('[data-close="mc-detail"]');
+          if (c) c.click();
+          return texts.join(' || ');
+        })()""")
+        cells = [t for t in str(priced).split(' || ') if t]
+        codes = ('second', 'million_token', 'token', 'request', 'minute', 'image', 'character')
+        drifted = [t for t in cells if any(f'元/{c}' in t for c in codes) or '元/百万 token' in t]
+        check("计价牌念的是后端那一份单位名", bool(cells) and not drifted,
+              f"读到 {len(cells)} 张计价牌"
+              + (f"／英文 code 或旧写法：{drifted[:2]}" if drifted else ''))
+
         # 登记模型：打开弹窗 → 填 → 提交 → 列表出现
         P.click(cdp, "#mc-add")
         check("登记弹窗能打开", P.has(cdp, "#mc-form:not([hidden])"))
