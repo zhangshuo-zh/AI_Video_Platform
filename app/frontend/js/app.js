@@ -8,6 +8,7 @@ import { api } from './api.js';
 import { renderView, currentViewId } from './router.js';
 import { setParam, setSub } from './navstate.js';
 import { escapeHtml } from './util.js';
+import { applyPicks, restorePicks } from './pick.js';
 
 /* ---------------- worker 状态条 ---------------- */
 
@@ -550,11 +551,25 @@ function setupTheme() {
     btn.addEventListener('click', () => {
       const next = root.dataset.theme === 'night' ? 'day' : 'night';
       root.dataset.theme = next;
+      // 夜间的原生 select 弹层是系统菜单，深色主题管不到它；切过去就把下拉换成自绘的。
+      if (next === 'night') applyPicks(); else restorePicks();
       // 手动选过一次，就别再跟着时钟走：他要的不是"按时间"
       try { localStorage.setItem(THEME_KEY, next); } catch { /* 禁用存储时切完这次仍然生效 */ }
       paintThemeButtons(next);
     });
   });
+}
+
+/**
+ * 视图每次重绘、弹窗每次填充都会换一批 select；按 DOM 变化补增强。
+ * 80ms 去抖，且 `applyPicks` 只处理没标记过的节点，所以不会自己触发自己。
+ */
+let pickTimer = 0;
+function watchPicks() {
+  new MutationObserver(() => {
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(() => applyPicks(), 80);
+  }).observe(document.body, { childList: true, subtree: true });
 }
 
 /* ---------------- 启动 ---------------- */
@@ -601,6 +616,7 @@ async function startApp() {
 
 async function boot() {
   setupTheme();       // 要在问身份之前：未登录时能看见的只有闸门里那枚切换钮
+  watchPicks();
   bindNav();
   setupProjPick();
   setupEpPick();

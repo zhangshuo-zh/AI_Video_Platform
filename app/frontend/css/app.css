@@ -9,6 +9,7 @@
 
 :root{
   color-scheme:light;
+  --pick-shadow:0 10px 28px rgba(23,32,60,.18);
 
   /* ---------- 底与浮层 ---------- */
   --bg:#eef1f8;
@@ -111,6 +112,7 @@
 /* 只改颜色、圆角、阴影三件事。哪个选择器要写结构差异，就说明上面漏了变量。 */
 [data-theme=night]{
   color-scheme:dark;
+  --pick-shadow:0 12px 30px rgba(0,0,0,.55);
 
   --bg:#131110;
   /* 第一版只给了 .14/.16，截图出来底部几乎是一片纯黑——夜间也要看得出"有底纹"，
@@ -1010,6 +1012,30 @@ input.ctl:focus,select.ctl:focus,textarea.ctl:focus{outline:none;border-color:va
 input.ctl:disabled,select.ctl:disabled,textarea.ctl:disabled,
 input.ctl[readonly]{opacity:.55;cursor:not-allowed;background:var(--field)}
 input.ctl:disabled:hover,select.ctl:disabled:hover,textarea.ctl:disabled:hover{border-color:var(--line)}
+
+/* 夜间自绘下拉（pick.js）。白天继续用原生 select；夜间原生弹层由系统菜单
+   绘制，color-scheme 管不到它，只能换成按钮＋浮层。 */
+.fv-pick{position:relative;display:block;width:100%}
+.fv-pick>select.ctl{display:none}
+.fv-pick-btn{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--field);color:var(--ink);font:inherit;font-size:13px;text-align:left;
+  cursor:pointer;transition:border-color var(--fast)}
+.fv-pick-btn::after{content:'';flex:none;width:7px;height:7px;
+  border-right:1.5px solid var(--ink);border-bottom:1.5px solid var(--ink);
+  transform:rotate(45deg) translateY(-2px);opacity:.7}
+.fv-pick-btn:hover{border-color:var(--line-hover)}
+.fv-pick-btn:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.fv-pick-btn:disabled{opacity:.55;cursor:not-allowed}
+.fv-pick-list{position:fixed;z-index:999;max-height:280px;overflow:auto;padding:4px;
+  background:var(--field);border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  box-shadow:var(--pick-shadow)}
+.fv-pick-opt{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;
+  background:none;color:var(--ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.fv-pick-opt:hover{background:var(--accent-tint)}
+.fv-pick-opt.on{background:var(--accent-tint);font-weight:600}
+.fv-pick-opt:disabled{opacity:.45;cursor:not-allowed}
+.fv-pick-none{display:block;padding:7px 10px;color:var(--ink);opacity:.6}
 textarea.ctl{line-height:1.65;resize:vertical;min-height:66px}
 input.ctl.sm{padding:4px 8px;font-size:11.5px;width:100%;max-width:300px}
 .row{display:flex;gap:8px;align-items:center}

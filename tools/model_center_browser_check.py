@@ -560,6 +560,23 @@ def main():
         check("生成中心仍能读到模型候选",
               P.eval_js(cdp, "fetch('/api/providers/available').then(r=>r.status)") == 200)
 
+        # 夜间：原生 select 的弹层是系统菜单（color-scheme 管不到），
+        # 换成了自绘浮层。显式切一次夜间再验，避免以后又退回浅色系统菜单。
+        cdp.eval("localStorage.setItem('fv.theme','night')")
+        cdp.cmd("Page.reload", ignoreCache=True)
+        time.sleep(1.6)
+        P.click(cdp, "#mc-add")
+        time.sleep(0.6)
+        P.eval_js(cdp, "document.querySelectorAll('.fv-pick-btn')[0].click()")
+        time.sleep(0.4)
+        pick = P.eval_js(
+            cdp, "(() => { const l = document.querySelector('.fv-pick-list:not([hidden])');"
+                 " if (!l) return 'NONE'; const s = getComputedStyle(l);"
+                 " return [s.backgroundColor, s.color,"
+                 " document.querySelectorAll('.fv-pick-opt').length].join(' / '); })()")
+        check("夜间下拉是自绘深色浮层（不是系统浅色菜单）",
+              str(pick).startswith('rgb(36, 31, 27)'), f"底色/文字/选项 {pick}")
+
         errors = P.eval_js(cdp, "window.__errs || []") or []
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
         bad = [r for r in results if not r[1]]
