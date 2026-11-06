@@ -291,6 +291,19 @@ def main():
             time.sleep(0.5)
             P.click(cdp, "[data-act-edit]")
             time.sleep(0.4)
+            # 编辑时四个键是锁住的（改键＝换一档）。锁住可以，但不能"点不动还不说"：
+            # 控件要真的 disabled、表单里要写明为什么、控件本身要挂同一句 title。
+            locked = P.eval_js(cdp, """(() => {
+              const ids = ['#mf-cap', '#mf-be', '#mf-prov', '#mf-model'];
+              const all = ids.every((s) => { const e = document.querySelector(s);
+                                             return e && e.disabled; });
+              const note = document.querySelector('#mf-lock-note');
+              const says = note && !note.hidden && note.textContent.includes('撤登记');
+              const titled = ids.every((s) => !!document.querySelector(s).title);
+              return [all, says, titled].join('/');
+            })()""")
+            check("编辑登记时四个键锁住并写明原因", str(locked) == 'true/true/true',
+                  f"回执 {locked}")
             P.eval_js(cdp, """(() => {
               const e = document.querySelector('#mf-name');
               e.value = '验收用底模';

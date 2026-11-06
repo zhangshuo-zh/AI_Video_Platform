@@ -829,6 +829,7 @@ const MODALS = `
           <span class="pf-label"></span>
           <label class="pf-check"><input type="checkbox" id="mf-enabled" checked> 登记后立即启用</label>
         </div>
+        <p class="hint" id="mf-lock-note" hidden></p>
         <p class="modal-err" id="mf-error"></p>
         <p class="modal-meta">登记不会下载权重、不会启动推理、也不会改默认轨。
           Provider 与模型标识只列清单里有的档（规格住代码，界面不猜没登记过的 provider）；
@@ -1165,6 +1166,22 @@ function openForm(regId, preset) {
   modelFree.disabled = !!regId;
   capSel.disabled = !!regId;
   beSel.disabled = !!regId;
+  // 光把控件 disabled 不够：`.ctl` 原来没有禁用态样式，点不动会被当成页面坏了。
+  // 这里把「为什么点不动、想改该怎么办」写在表单里，并在四个键上挂同一句 title。
+  const lockNote = modal.querySelector('#mf-lock-note');
+  if (lockNote) {
+    lockNote.hidden = !regId;
+    lockNote.textContent = regId
+      ? '编辑只改显示名、版本、权重路径、能力声明与备注；'
+        + '要换能力／运行位置／provider／模型标识，请先撤登记再重新登记（改键等于换一档）。'
+      : '';
+  }
+  if (regId) {
+    const why = '编辑登记时这一格锁住了：改键等于换一档，请先撤登记再重新登记。';
+    for (const el of [capSel, beSel, provSel, modal.querySelector('#mf-model')]) {
+      if (el) el.title = why;
+    }
+  }
   modal.hidden = false;
 
   const submit = modal.querySelector('#mf-submit');
