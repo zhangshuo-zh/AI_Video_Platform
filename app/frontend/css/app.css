@@ -9,7 +9,15 @@
 
 :root{
   color-scheme:light;
-  --pick-shadow:0 10px 28px rgba(23,32,60,.18);
+  /* 层级只有六档：页内贴边工具 → 行内菜单 → 弹层 → 遮罩 → 顶层确认 → 自绘下拉。
+     原来 2/5/20/50/60/70/200/999 各写各的，谁压谁只能现猜；
+     grep 复核：本文件除这一段外不应再出现裸 z-index 数值。 */
+  --z-sticky:5;
+  --z-menu:20;
+  --z-pop:60;
+  --z-scrim:70;
+  --z-top:200;
+  --z-pick:999;
 
   /* ---------- 底与浮层 ---------- */
   --bg:#eef1f8;
@@ -91,6 +99,7 @@
   --sh-2:inset 0 0 0 1px rgba(30,40,90,.05), 0 2px 6px rgba(30,40,90,.07), 0 14px 34px rgba(30,40,90,.1);
   --sh-pop:inset 0 0 0 1px rgba(30,40,90,.05), 0 8px 20px rgba(30,40,90,.1), 0 28px 70px rgba(30,40,90,.14);
   --btn-sh:0 1px 2px rgba(30,40,90,.05);
+  /* 交互阴影族（按下内凹），与浮层 --sh-pop 不是一层，别合并 */
   --press:inset 0 2px 6px rgba(0,0,0,.24);
   --primary-sh:inset 0 1px 0 rgba(255,255,255,.24), 0 2px 8px var(--accent-glow);
   --primary-sh-hi:inset 0 1px 0 rgba(255,255,255,.24), 0 4px 14px var(--accent-glow);
@@ -112,7 +121,6 @@
 /* 只改颜色、圆角、阴影三件事。哪个选择器要写结构差异，就说明上面漏了变量。 */
 [data-theme=night]{
   color-scheme:dark;
-  --pick-shadow:0 12px 30px rgba(0,0,0,.55);
 
   --bg:#131110;
   /* 第一版只给了 .14/.16，截图出来底部几乎是一片纯黑——夜间也要看得出"有底纹"，
@@ -378,7 +386,7 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
 .palette{
   position:fixed;inset:0;background:var(--scrim);
   -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
-  display:flex;justify-content:center;align-items:flex-start;padding-top:14vh;z-index:50;
+  display:flex;justify-content:center;align-items:flex-start;padding-top:14vh;z-index:var(--z-pop);
   animation:fade-in .12s var(--ease);
 }
 .palette[hidden]{display:none}
@@ -451,7 +459,7 @@ main{min-width:0;display:flex;flex-direction:column}
 /* 顶栏：整条横贯窗口（毛玻璃要盖住滚过去的内容），
    里面的内容与 .view 走同一套限宽居中规则，两边才对得齐。 */
 .topbar{
-  height:52px;position:sticky;top:0;z-index:5;
+  height:52px;position:sticky;top:0;z-index:var(--z-sticky);
   background:var(--frost);
   -webkit-backdrop-filter:var(--blur-chrome);backdrop-filter:var(--blur-chrome);
   border-bottom:1px solid var(--line);
@@ -487,7 +495,7 @@ main{min-width:0;display:flex;flex-direction:column}
 .proj-pick:disabled:hover{background:none}
 /* 自绘菜单 */
 .proj-menu{
-  position:absolute;top:calc(100% + 8px);left:-6px;z-index:20;min-width:250px;
+  position:absolute;top:calc(100% + 8px);left:-6px;z-index:var(--z-menu);min-width:250px;
   max-height:min(58vh,320px);overflow:auto;padding:5px;
   background:var(--pop);border:1px solid var(--edge);border-radius:11px;
   box-shadow:var(--sh-pop);
@@ -534,7 +542,7 @@ main{min-width:0;display:flex;flex-direction:column}
 .theme-btn svg{width:15px;height:15px;display:block;color:currentColor}
 [data-theme=night] .theme-btn{color:var(--accent)}
 /* 闸门里那枚要压过卡片与网格，也得离窗口边角留点距离 */
-.gate-theme{position:absolute;top:20px;right:22px;z-index:2;width:32px;height:32px}
+.gate-theme{position:absolute;top:20px;right:22px;z-index:var(--z-sticky);width:32px;height:32px}
 .gate-theme svg{width:17px;height:17px}
 /* 太阳/月亮只留一枚：切换钮本身已经说明"现在是哪套"，两枚并排会让人以为是两个开关 */
 .theme-btn .i-moon{display:none}
@@ -704,7 +712,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 /* 行内"更多"菜单：fixed 浮层。放进单元格会被 .table-wrap 的 overflow 裁掉 */
 .row-menu{
   /* max-height 由 JS 按视口现算（两头都放不下时靠这里内部滚动） */
-  position:fixed;z-index:60;min-width:186px;padding:5px;overflow:auto;
+  position:fixed;z-index:var(--z-pop);min-width:186px;padding:5px;overflow:auto;
   background:var(--sheet);border:1px solid var(--line);border-radius:10px;
   box-shadow:var(--sh-2);display:grid;gap:1px;
 }
@@ -1027,9 +1035,9 @@ input.ctl:disabled:hover,select.ctl:disabled:hover,textarea.ctl:disabled:hover{b
 .fv-pick-btn:hover{border-color:var(--line-hover)}
 .fv-pick-btn:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .fv-pick-btn:disabled{opacity:.55;cursor:not-allowed}
-.fv-pick-list{position:fixed;z-index:999;max-height:280px;overflow:auto;padding:4px;
+.fv-pick-list{position:fixed;z-index:var(--z-pick);max-height:280px;overflow:auto;padding:4px;
   background:var(--field);border:1px solid var(--line-strong);border-radius:var(--r-ctl);
-  box-shadow:var(--pick-shadow)}
+  box-shadow:var(--sh-pop)}
 .fv-pick-opt{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;
   background:none;color:var(--ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
 .fv-pick-opt:hover{background:var(--accent-tint)}
@@ -1045,7 +1053,7 @@ td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);curs
 .modal{
   position:fixed;inset:0;background:var(--scrim);
   -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
-  display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;
+  display:flex;align-items:center;justify-content:center;z-index:var(--z-pop);padding:20px;
   animation:fade-in .12s var(--ease);
 }
 .modal[hidden]{display:none}
@@ -1097,7 +1105,7 @@ p.modal-meta{
 /* ---------- 登录闸门 ---------- */
 /* 整屏盖住，不透明：没登录的人不该从缝里看到项目名和计数 */
 .gate{
-  position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;
+  position:fixed;inset:0;z-index:var(--z-top);display:flex;align-items:center;justify-content:center;
   padding:24px;background:var(--page-art), var(--bg);overflow:hidden;
 }
 .gate[hidden]{display:none}
@@ -1222,7 +1230,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 
 /* ---------- 详情抽屉 ---------- */
 .drawer{
-  position:fixed;inset:0;z-index:70;background:var(--scrim);
+  position:fixed;inset:0;z-index:var(--z-scrim);background:var(--scrim);
   display:flex;justify-content:flex-end;animation:fade-in .14s var(--ease);
 }
 .drawer-panel{

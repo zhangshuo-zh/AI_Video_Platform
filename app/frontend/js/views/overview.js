@@ -35,11 +35,20 @@ function todoStrip(data) {
     { n: c.runs_active || 0, label: '进行中的运行', go: 'pipeline',
       sub: '还没收尾的产线' },
   ];
-  if (!items.some((it) => it.n > 0)) return '';
-  return `<div class="wb-grid">${items.map((it) => `
+  // worker 离线不是"有几条待办"，是"待办不会自己往前走"。
+  // 它没有数量，塞进数字卡会变成一句"1"；单独一条提示，且即使零待办也要出现。
+  const down = store.worker ? !store.worker.online : false;
+  const has = items.some((it) => it.n > 0);
+  if (!has && !down) return '';
+  const downBar = down ? `<div class="gen-alerts"><div class="gen-alert warn">
+      <span class="chip amber">worker 未接入</span>
+      <span>队列里的活不会自己往前走；先到生成中心看启动方式。</span>
+    </div></div>` : '';
+  const cards = has ? `<div class="wb-grid">${items.map((it) => `
     <button type="button" class="wb-card ${it.tone || ''}" data-go="${it.go}">
       <b>${it.n}</b><span>${it.label}</span><em>${it.sub}</em>
-    </button>`).join('')}</div>`;
+    </button>`).join('')}</div>` : '';
+  return downBar + cards;
 }
 
 /**
