@@ -215,6 +215,36 @@ export const api = {
   // 场景候选：只读、登录即可。返回里带 auto_switch=false——备用轨不会自动顶上。
   resolveScene: (key) => fetch(`/api/model-policies/resolve/${encodeURIComponent(key)}`).then(toJson),
 
+  // 智能体中心（0041）
+  // 这一族的读接口分两档：配置／工具表要 system:config，运行与待审批按项目可见范围。
+  // 签字**不在这里**——批准与驳回走 `signAgentStep`，它落在审核中心（不变量 3）。
+  agentOverview: () => fetch('/api/agent/overview').then(toJson),
+  agentConfigs: () => fetch('/api/agent/configs').then(toJson),
+  agentTools: () => fetch('/api/agent/tools').then(toJson),
+  agentPlanOptions: (qs) => fetch(`/api/agent/plan-options?${qs}`).then(toJson),
+  agentRuns: (pid) => fetch(`/api/agent/runs?project_id=${pid}`).then(toJson),
+  agentRun: (id) => fetch(`/api/agent/runs/${id}`).then(toJson),
+  createAgentRun: (body) => fetch('/api/agent/runs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 暂停／恢复用 POST＋空 body：它们改的是"外生意愿"那两位，不是内容，
+  // 用 PATCH 反而会让读代码的人以为还有别的字段可改
+  pauseAgentRun: (id) => fetch(`/api/agent/runs/${id}/pause`, { method: 'POST' }).then(toJson),
+  resumeAgentRun: (id) => fetch(`/api/agent/runs/${id}/resume`, { method: 'POST' }).then(toJson),
+  cancelAgentRun: (id, reason) => fetch(
+    `/api/agent/runs/${id}/cancel?reason=${encodeURIComponent(reason || '')}`,
+    { method: 'POST' }).then(toJson),
+  agentPending: () => fetch('/api/agent/pending').then(toJson),
+  agentStepReview: (id) => fetch(`/api/agent-steps/${id}/review`).then(toJson),
+  // 审核中心那一栏（动作审批）读它：签字写口在审核中心，智能体中心只显示状态
+  agentActionReviews: (pid) =>
+    fetch(`/api/projects/${pid}/agent-action-reviews`).then(toJson),
+  signAgentStep: (id, body) => fetch(`/api/agent-steps/${id}/review-sign`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+
   // 创作单元 / 分镜 / 资产
   episodes: (pid) => fetch(`/api/projects/${pid}/episodes`).then(toJson),
   createEpisode: (pid, title) => fetch(`/api/projects/${pid}/episodes`, {

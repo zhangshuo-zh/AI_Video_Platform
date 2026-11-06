@@ -1859,7 +1859,10 @@ def _service_engine_gate(capability: str, mode: str, provider: str, model: str) 
     换成 HF 仓名的思路，只是方向反过来：那里是出参，这里是核对）。
     """
     adapter = adapters.find(capability, mode, provider)
-    if adapter is None or adapter.code not in engines.SERVICE_ENGINES:
+    # 只有"同一时刻只有一个当前模型"的那一小族才过这道闸门（MODEL_GATED_ENGINES）。
+    # 服务型但按请求选模型的（Ollama）不在里面：核对一个不存在的概念
+    # 只会得到假话或假阻断。分两个集合而不是加特判，理由写在 engines.py 那一段。
+    if adapter is None or adapter.code not in engines.MODEL_GATED_ENGINES:
         return
     status = engines.probe(adapter.code)
     if status.state != "ok":

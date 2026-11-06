@@ -312,6 +312,56 @@ _DRAW_THINGS = Adapter(
     ),
 )
 
+# ---------- 文本：本地（2026-11-06 本机实测）----------
+# 这是平台**第一条本地文本腿**。在它之前 text 族三条全是 backend="cloud"，
+# 也就是说"本地优先"这句话在文本这一类根本没有可走的路——
+# 《智能体管理中心》说明书 §3.1 要的正是这一档，取证见
+# 《文档/开发/智能体管理/00-接入前现状审计.md》§4。
+#
+# 为什么它是"服务型"而不是子进程型：Ollama 自己是一个常驻 HTTP 服务，
+# 端点住在 `engine_instance`（0040），与 draw_things 同一族。
+# 为什么它不进 `_service_engine_gate` 那一族：Draw Things 同一时刻只有
+# 一个"当前模型"，而 Ollama 的模型名是**每次请求里带的**，
+# 不存在"引擎自己选着另一档"这件事——核对一个不存在的概念只会得到假话。
+# 详见《文档/开发/引擎接入/00-接入前现状审计.md》§5b 同一条分族纪律。
+_OLLAMA = Adapter(
+    code="ollama",
+    label="Ollama（本机模型服务）",
+    capability="text",
+    backend="local",
+    source="本机 Ollama 0.35.1 实测（2026-11-06）：GET /api/version 回版本号，"
+           "GET /api/tags 回 models[] 且带 capabilities 数组；"
+           "POST /api/chat 的 tools 与 format 两条都跑通过真调用（见 note）",
+    aliases=("ollama-api",),
+    params_source="目标机实测的 /api/chat 请求字段（num_predict／temperature／think）",
+    home_env="",            # 端点在 engine_instance 表里，不写死 127.0.0.1:11434
+    note="密钥不适用：本机服务，平台不发凭据。"
+         "实测两条硬结论——① 带 tools 的调用能真的返回 tool_calls（qwen3:8b，16.3 秒）；"
+         "② 结构化输出必须把思考关掉：think 缺省时 300 个 token 全花在推理上、"
+         "content 是空的，加 think=false 后同样内容 1.9 秒返回合法 JSON。"
+         "所以本档默认 think=false，要思考链是显式改参数，不是平台替他选。",
+    models=(
+        ModelSpec(
+            code="qwen3:8b",
+            label="Qwen3 8B（本机 Q4_K_M）",
+            note="本机 /api/tags 实测在册的唯一一档：5,225,388,164 字节、"
+                 "8.2B、Q4_K_M、上下文 40,960，capabilities=[completion, tools, thinking]。"
+                 "换一档模型要在清单里另登记一行并重新实测，"
+                 "不能拿这一行的参数表去跑没测过的档。",
+            params=(
+                Param("max_tokens", "int", 2048, 1, 32768,
+                      note="下发成 options.num_predict。上限按上下文 40,960 的"
+                           "保守值登记，不是官方规格"),
+                Param("temperature", "float", None, 0, 2,
+                      note="不填＝服务端默认。实测 0 时结构化输出稳定"),
+                Param("think", "bool", False,
+                      note="关掉思考。这条默认值是量出来的：开着思考时"
+                           "format(JSON schema) 会返回空 content"),
+            ),
+        ),
+    ),
+)
+
 # ---------- 配音 / 音乐：本地 ----------
 _VOXCPM = Adapter(
     code="voxcpm2",
@@ -492,13 +542,14 @@ _CLOUD_OTHER = (
 )
 
 ADAPTERS: tuple[Adapter, ...] = (
-    _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _VOXCPM, _ACE_STEP,
+    _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _OLLAMA, _VOXCPM, _ACE_STEP,
     *_TEXT_CLOUD, *_VIDEO_CLOUD, *_CLOUD_OTHER,
 )
 
 # 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
 # 2026-11-06.1＝W-B：新增本机服务型引擎 draw_things（执行形状与 mflux 那一族不同）。
-MANIFEST_VERSION = "2026-11-06.1"
+# 2026-11-06.2＝智能体中心 A4：新增本地文本腿 ollama（平台第一条 text×local）。
+MANIFEST_VERSION = "2026-11-06.2"
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以

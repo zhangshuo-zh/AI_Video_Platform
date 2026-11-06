@@ -180,8 +180,10 @@ def main():
           return items.length + '|' + lined;
         })()""")
         parts = str(utility_lines).split("|")
-        check("平台能力组里一条横线都不画（标签下面与两项之间都不画）",
-              len(parts) == 2 and parts == ["2", "0"],
+        # 「2」是这一组当时的条数；0041 加了「智能体中心」变成三条。
+        # 这条验收要守的是"一条横线都不画"，不是条数——条数交给下面那条去数名字。
+        check("平台能力组里一条横线都不画（标签下面与条目之间都不画）",
+              len(parts) == 2 and int(parts[0]) >= 2 and parts[1] == "0",
               f"utility 条目 {parts[0] if parts else '?'} 个／还画着线的 "
               f"{parts[1] if len(parts) > 1 else '?'} 个")
 
@@ -237,9 +239,15 @@ def main():
               if na else str(nav_anim))
         labels = P.eval_js(cdp, "[...document.querySelectorAll('.nav-item')]"
                                  ".map(e => e.textContent.trim())")
-        check("「项目工作台」进了侧栏，且原有一级菜单一个没少",
-              "项目工作台" in (labels or []) and len(labels or []) == 13,
-              f"{len(labels or [])} 项：{'、'.join(labels or [])}")
+        # 按名字逐条点名，不按条数判：上一版写死 13，加「智能体中心」那天
+        # 这条就红了——红的是"数字变了"，而不是"少了菜单"，那种红只会让人学会忽略它。
+        must_have = ["模块地图", "项目工作台", "项目中心", "资产中心", "创作中心",
+                     "设定中心", "生成中心", "产线中心", "音频中心", "成片中心",
+                     "审核中心", "模型中心", "智能体中心", "系统设置"]
+        missing = [n for n in must_have if n not in (labels or [])]
+        check("一级菜单点名点得齐（含项目工作台与智能体中心），一个都没少",
+              not missing and len(labels or []) == len(must_have),
+              f"缺 {missing}｜共 {len(labels or [])} 项：{'、'.join(labels or [])}")
         check("顶栏出现当前集上下文", P.has(cdp, "#ep-pick"),
               P.text_of(cdp, "#cur-episode"))
 

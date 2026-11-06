@@ -14,8 +14,9 @@ from bootstrap import ensure_admin
 from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
 from gitrepo import GitError
 from migrate import migrate
-from routers import (audio, auth, compositions, content, dashboard, documents,
-                     extraction, files, jobs, model_center as model_center_api,
+from routers import (agents as agents_api, audio, auth, compositions, content,
+                     dashboard, documents, extraction, files, jobs,
+                     model_center as model_center_api,
                      pipeline as pipeline_api, profiles, production as production_api,
                      projects, review, seasons as seasons_api, settings, system,
                      users, workbench)
@@ -69,6 +70,10 @@ def create_app() -> FastAPI:
     # 模型中心排在 settings 之前：两者都挂 system:config，但模型中心是"模型这件事的入口"，
     # settings 只剩密钥与用户，读起来先具体后通用
     app.include_router(model_center_api.router)
+    # 智能体中心排在模型中心之后：它读模型中心那三张表（配置、实例、策略），
+    # 自己一行配置都不存。签字入口仍然在审核中心（`routers/review.py`），
+    # 这里只有"看"和"发起／暂停／取消"
+    app.include_router(agents_api.router)
     app.include_router(settings.router)
     app.include_router(system.router)
     app.include_router(users.router)

@@ -2088,3 +2088,31 @@ class ModelPolicyIn(BaseModel):
     resource_limit: dict = {}
     cloud_confirm_required: bool = False
     enabled: bool = False
+
+
+# ==================== 智能体中心（0041） ====================
+# 只有入参需要模型：这一族的**返回值**是跨表聚合（run × step × job × review），
+# 形状由 `agents.py` 的视图函数决定。给它套一层 Out 模型会造出第二份字段清单，
+# 而每个新字段都得改两处——上一轮 `response_model` 静默吞掉未声明字段的事
+# 就是这一类形状（《发布基线》里那条"必须走 HTTP 量"的教训）。
+class AgentRunIn(BaseModel):
+    """发起一次智能体运行。
+
+    `episode_id` 可空：整季盘点、跨集比对是项目级任务，不该被逼着选一个集。
+    `goal` 是人的原话——它会被冻进 run，事后要能回答"他要的是什么、
+    平台理解成了什么"，所以这里不接受结构化模板，只要那句话。
+    """
+    project_id: int
+    episode_id: int | None = None
+    goal: str = Field(min_length=1, max_length=2000)
+    # 任务场景**引用** model_policy 的键；空串＝不按场景，走文本能力默认轨。
+    # 这里不复制场景的任何字段（能力、建议轨、预算都在策略表里）
+    scene_key: str = Field(default="", max_length=60)
+    idempotency_key: str | None = Field(default=None, max_length=120,
+                                        pattern=r"^[A-Za-z0-9._:-]+$")
+    # 与 JobSubmitIn 同一句话：云端要授权，勾了才走。
+    # 名称也刻意保持一致——两处两个名字会让人以为是两件事
+    user_confirmed_cloud: bool = False
+    # 有效期：人批的是"接下来这段时间内允许执行这一批参数"，不是永久授权。
+    # 上下界与 0041 的 CHECK 同一条，改这里必须一起改那边
+    approval_valid_seconds: int = Field(default=86400, ge=60, le=604800)

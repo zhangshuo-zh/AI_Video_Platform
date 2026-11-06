@@ -11,7 +11,8 @@ import composition from './composition.js';
 import audio from './audio.js';
 import review from './review.js';
 import knowledge from './knowledge.js';
+import agents from './agents.js';
 import models from './models.js';
 import systemConfig from './system-config.js';
 
-export default { overview, production, projects, shot: shotWorkbench, assets, writing, generate, pipeline, composition, audio, review, knowledge, models, 'system-config': systemConfig };
+export default { overview, production, projects, shot: shotWorkbench, assets, writing, generate, pipeline, composition, audio, review, knowledge, agents, models, 'system-config': systemConfig };

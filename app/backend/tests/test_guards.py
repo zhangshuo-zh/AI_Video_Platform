@@ -287,6 +287,27 @@ ROUTES = [
     ("PATCH", "/api/engines/{m}", {"note": "越权改"}, 403),
     ("DELETE", "/api/engines/{m}?confirm=撤实例", None, 403),
     ("POST", "/api/engines/{m}/probe", None, 403),
+    # ---------- 智能体中心（0041） ----------
+    # 三条配置面（概览／配置卡／工具表）都是"平台怎么装的"，沿用 system:config ⇒ 403。
+    # 其余按业务点走：发起＝job:submit、暂停恢复取消＝job:cancel、
+    # 审批队列＝review:read、签字＝review:sign——**一个新权限点都没加**。
+    # outsider 有 job:submit／review:read，所以会一路走到归属判定，拿 404。
+    ("GET", "/api/agent/overview", None, 403),
+    ("GET", "/api/agent/configs", None, 403),
+    ("GET", "/api/agent/tools", None, 403),
+    ("GET", "/api/agent/plan-options?project_id={p}", None, 404),
+    ("POST", "/api/agent/runs",
+     {"project_id": "{p}", "goal": "把这一集缺的资产补齐", "scene_key": ""}, 404),
+    ("GET", "/api/agent/runs?project_id={p}", None, 404),
+    ("GET", "/api/agent/runs/{x}", None, 404),
+    ("POST", "/api/agent/runs/{x}/pause", None, 404),
+    ("POST", "/api/agent/runs/{x}/resume", None, 404),
+    ("POST", "/api/agent/runs/{x}/cancel", None, 404),
+    ("GET", "/api/agent/pending", None, 200),
+    ("GET", "/api/projects/{p}/agent-action-reviews", None, 404),
+    ("GET", "/api/agent-steps/{x}/review", None, 404),
+    ("POST", "/api/agent-steps/{x}/review-sign",
+     {"anchor": "execute", "decision": "approved", "note": "越权签"}, 404),
 ]
 
 # auth 四条与 health 不参与"匿名 401"这张表，单独测

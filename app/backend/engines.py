@@ -33,11 +33,20 @@ from repositories.engine_instances import engine_instances
 
 # 这一族引擎的状态来自"打一次本机服务"，不是"看一次文件系统"。
 # 清单与界面都用这个集合判断该走哪条探测路，避免出现第二份名单。
-SERVICE_ENGINES = frozenset({"draw_things"})
+# 2026-11-06 加入 ollama：本机常驻 HTTP 服务，与 Draw Things 同一族探测形状
+# （目标机实测 GET /api/tags 回 200 与 models[]）。
+SERVICE_ENGINES = frozenset({"draw_things", "ollama"})
+
+# 其中**只有一个当前模型**的那一小族，才需要提交前核对"引擎现在选的是哪一档"。
+# Ollama 不在这一族里：它的模型名是每次请求里带的，不存在"引擎自己选着别的档"
+# 这件事——去核对一个不存在的概念，只会得到一句假话或一个假阻断。
+# 分开两个集合，而不是给 draw_things 写特判：下一个服务型引擎进来时
+# 必须在这里表态"有没有单一当前模型"，这是 W-B 那条边界的自然延伸。
+MODEL_GATED_ENGINES = frozenset({"draw_things"})
 
 # 各引擎的"自述端点"。只有实测存在的才列进来：Draw Things 实测没有
 # /sdapi/v1/sd-models（404），所以这里不写一个不存在的端点凑数。
-_INFO_PATHS = {"draw_things": "/sdapi/v1/options"}
+_INFO_PATHS = {"draw_things": "/sdapi/v1/options", "ollama": "/api/tags"}
 
 _TIMEOUT_SECONDS = 5.0
 
@@ -82,10 +91,12 @@ def fetch_info(endpoint: str) -> dict:
     return _get_info_for(endpoint)
 
 
-def _get_info_for(endpoint: str) -> dict:
+def _get_info_for(endpoint: str, engine_hint: str = "") -> dict:
     if not endpoint:
         return {"error": "没有登记启用中的引擎实例"}
-    engine = _engine_of(endpoint)
+    # engine_hint 是给 probe() 用的：它已经知道自己在探哪一档引擎。
+    # 没有 hint 时仍按端点反查（`fetch_info()` 这条公开路径就是这么进来的）。
+    engine = engine_hint or _engine_of(endpoint)
     path = _INFO_PATHS.get(engine or "")
     if path is None:
         return {"error": f"这一档引擎（{engine or '未知'}）没有已核实的自述端点，"
@@ -115,21 +126,51 @@ def probe(engine_code: str, endpoint: str = "") -> EngineStatus:
         return EngineStatus("unknown", "这一档不是本机服务型引擎，平台不猜它的状态", {})
     address = endpoint or resolve_endpoint(engine_code)
     if not address:
+        # 第三个参数不能省：`EngineStatus` 是 frozen dataclass，`values` 没有默认值。
+        # 这一句在 W-B 那天起就没被走到过（那时表里还没有任何引擎会被判成服务型
+        # 而同时没有实例行），2026-11-06 接 Ollama 时第一次走到就 TypeError——
+        # "还没配"这一档恰恰是最常遇到的那一档，值得有一条自己的测试。
         return EngineStatus("unknown",
                             "还没有登记启用中的引擎实例：在「引擎管理 · 引擎实例」里"
-                            "加一条端点（例如 http://127.0.0.1:7860）后才会检查")
+                            "加一条端点（例如 http://127.0.0.1:7860）后才会检查",
+                            {})
     base = {"endpoint": address}
-    info = _get_info_for(address)
+    info = _get_info_for(address, engine_code)
     if info.get("error"):
         # 连不上是 missing（配了但服务不在），不是 unknown（还没配）——
         # 人要做的事不同：前者去把应用和 API Server 打开，后者是来登记一行。
         return EngineStatus("missing", info["error"], base)
-    model = info["payload"].get("model")
-    values = {**base, "model": str(model) if model else "",
-              "keys": len(info["payload"])}
+    described = _describe(engine_code, info["payload"])
+    values = {**base, "model": described["model"],
+              "models": described["models"], "keys": len(info["payload"])}
+    return EngineStatus("ok", described["detail"], values)
+
+
+def _describe(engine_code: str, payload: dict) -> dict:
+    """把一坨自述翻成"在线／当前哪一档／还有哪几档"。
+
+    每个服务型引擎各写一条，而不是猜一个通用形状：Draw Things 回的是一个扁平
+    options 表里的 `model` 键（实测），Ollama 回的是 `models[]` 数组
+    （实测），两者没有任何共同结构。写成"通用解析"就会变成对其中一家说谎。
+    """
+    if engine_code == "ollama":
+        rows = payload.get("models")
+        names = [str(m.get("name")) for m in rows
+                 if isinstance(m, dict) and m.get("name")] \
+            if isinstance(rows, list) else []
+        if not names:
+            return {"model": "", "models": [],
+                    "detail": "服务在线，但 /api/tags 里没有已下载的模型"}
+        return {"model": "", "models": names,
+                "detail": f"服务在线，本机在册 {len(names)} 档："
+                          + "、".join(names[:4])
+                          + ("…" if len(names) > 4 else "")}
+    model = payload.get("model")
     if not model:
-        return EngineStatus("ok", "服务在线，但自述里读不到当前模型名", values)
-    return EngineStatus("ok", f"服务在线，当前模型 {model}", values)
+        return {"model": "", "models": [],
+                "detail": "服务在线，但自述里读不到当前模型名"}
+    return {"model": str(model), "models": [str(model)],
+            "detail": f"服务在线，当前模型 {model}"}
 
 
 def _engine_of(endpoint: str) -> str:

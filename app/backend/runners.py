@@ -36,6 +36,7 @@ from paths import resolve_within, within
 
 CLOUD_RUNNER = Path(__file__).resolve().parent / "cloud_run.py"
 ENGINE_HTTP_RUNNER = Path(__file__).resolve().parent / "engine_http_run.py"
+LLM_RUNNER = Path(__file__).resolve().parent / "llm_http_run.py"
 
 class RunnerUnavailable(Exception):
     """运行时缺东西：解释器／入口／权重／模型目录。"""
@@ -312,6 +313,44 @@ def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
               "body": body})
 
 
+
+# ---------- 文本：本机常驻 LLM 服务（A4：Ollama）----------
+# 与 draw_things 同族（端点住 `engine_instance`，健康由 `engines.probe()` 现查），
+# 但**不过** `_service_engine_gate` 那道"当前模型对不对"的核对：
+# 这一族的模型名是每次请求里带的，不存在"服务自己选着另一档"这件事。
+# 分族的那一行判断在 `engines.MODEL_GATED_ENGINES`，理由写在那里。
+def _ollama(job, params: dict, outputs: Path, model: str) -> RunSpec:
+    status = engines.probe("ollama")
+    if status.state != "ok":
+        raise RunnerUnavailable(f"本机模型服务现在不能用：{status.detail}")
+    endpoint = status.values.get("endpoint") or ""
+    out = outputs / f"{job['id']}-ollama.md"
+    request_path = outputs / f"{job['id']}-ollama-request.json"
+    receipt = outputs / f"{job['id']}-ollama-receipt.json"
+
+    request = {"endpoint": endpoint, "path": "/api/chat", "provider": "ollama",
+               "model": model, "prompt": job["prompt_snapshot"],
+               "params": {"max_tokens": params.get("max_tokens"),
+                          "temperature": params.get("temperature"),
+                          "think": params.get("think")},
+               "output": str(out), "receipt": str(receipt), "timeout": 300}
+    # 计划类请求要的是**结构化输出**：提示词里写着"只输出一个 JSON 数组"。
+    # 那一句是给人读的约束，模型不一定守；`format` 才是服务端会守的那一道。
+    # 所以这里按提示词的特征把它补上——补的依据是"这段提示词在要 JSON"，
+    # 不是"这个 provider 大概支持 JSON"，后者是猜。
+    prompt = job["prompt_snapshot"] or ""
+    if "JSON 数组" in prompt and "只输出一个 JSON 数组" in prompt:
+        request["format"] = {"type": "array", "items": {"type": "object"}}
+    request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+    argv = [sys.executable, str(LLM_RUNNER), str(request_path)]
+    return RunSpec(
+        runner="ollama", argv=argv, cwd=outputs, expected=[out], media="text",
+        meta={"adapter": "ollama", "model": model, "endpoint": endpoint,
+              "request_path": str(request_path), "result_path": str(receipt),
+              "resident_models": status.values.get("models") or [],
+              "formatted": request.get("format") is not None})
+
 # ---------- 音频两腿（VoxCPM2 配音 / ACE-Step 1.5 音乐）----------
 # 权重都走 mlx-community 的量化转换，不拉官方整包：
 #   openbmb/VoxCPM2 主文件 4,580,080,592B（卡面 gated=false、apache-2.0），
@@ -467,6 +506,8 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         return _mflux(job, params, outputs)
     if capability == "image" and provider in ("draw_things", "drawthings"):
         return _draw_things(job, params, outputs, model)
+    if capability == "text" and provider in ("ollama",):
+        return _ollama(job, params, outputs, model)
     if capability == "tts" and provider in ("voxcpm2", "voxcpm"):
         return _voxcpm(job, params, outputs)
     if capability == "music" and provider in ("ace-step", "acestep", "ace_step"):
@@ -481,6 +522,8 @@ def has_branch(capability: str, provider: str) -> bool:
     注释还写着"今天没有分支"——那是一句会在接线当天就变成假话的实话。
     现在它问这里，而这里与 `build()` 读的是同一串条件。
     """
+    if capability == "text":
+        return provider == "ollama"
     if capability == "video":
         return provider in ("fastmetal", "mlx-video")
     if capability == "image":

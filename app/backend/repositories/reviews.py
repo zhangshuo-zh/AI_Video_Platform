@@ -18,13 +18,22 @@ from db import get_conn
 
 DOCUMENT = "document"
 JOB = "job"
+# 0041 第三档：审的是"允许不允许发生一次动作"（智能体要执行的某一步），
+# 绑的是那一步的参数指纹，不是内容指纹。写入口仍然是审核中心这一个——
+# 为智能体另建一张"待审批"表会造出第二个签字处，与不变量 3 直接撞。
+AGENT_ACTION = "agent_action"
+# 一次动作只有一个可签点：整步批准或驳回。不像产物那样逐件签，
+# 因为"执行这组参数"是不可拆的一件事——拆开就出现"批了一半的步骤"。
+AGENT_ACTION_ANCHOR = "execute"
 
 
 class ReviewRepository:
-    # 审核对象的两档。挂在类上是为了调用方写 `reviews.DOCUMENT`——
+    # 审核对象的三档。挂在类上是为了调用方写 `reviews.DOCUMENT`——
     # `from … import reviews` 是单例导入，模块级常量那样写取不到。
     DOCUMENT = DOCUMENT
     JOB = JOB
+    AGENT_ACTION = AGENT_ACTION
+    AGENT_ACTION_ANCHOR = AGENT_ACTION_ANCHOR
 
     # ---------- gate：仍然只针对文档（规则校验器读的是正文） ----------
     def create_gate(self, *, project_id: int, doc_id: int, base_version: str,

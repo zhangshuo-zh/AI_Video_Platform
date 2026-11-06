@@ -6,13 +6,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status as http_status
 
 import access
+import agents as agents_mod           # 智能体的动作审批读它，不读步骤表之外的东西
 import reviewgate
 import services
 from deps import require_permission
 from models import (JobReviewOut, ReviewBatchIn, ReviewCheckIn, ReviewGateOut,
                     ReviewQueueItem, ReviewSignIn)
+from repositories.agents import agent_runs
 from repositories.documents import documents as docs
 from repositories.jobs import jobs as job_repo
+from repositories.reviews import reviews
 
 router = APIRouter(prefix="/api", tags=["review"])
 
@@ -163,3 +166,81 @@ def job_review_sign(job_id: int, payload: ReviewSignIn,
     except reviewgate.ReviewInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return JobReviewOut(**state)
+
+
+# ==================== 智能体的动作审批（0041） ====================
+# 为什么审批落在这一册而不是「智能体中心」自己开一张表：
+# 文件头那句话——**签字只有这一个写入口**（不变量 3）。说明书 §7 建议的
+# `agent_approval` 若照建，界面上就会同时存在两个"待审批"，而它们互不知道
+# 对方签过什么；取证与裁定写在《文档/开发/智能体管理/00-接入前现状审计.md》§6 丙。
+#
+# 与 document／job 两档的唯一区别是绑的东西：
+#   document → 正文 sha256；job → 产物清单摘要；agent_action → **那一步的参数指纹**。
+# 审"一次动作能不能发生"，参数就是被审对象，所以参数一改指纹变、旧批准失配，
+# 与"正文改一个字旧签字作废"是同一条道理。
+
+@router.get("/projects/{project_id}/agent-action-reviews")
+def agent_action_queue(project_id: int,
+                       user=Depends(require_permission("review:read"))) -> dict:
+    """这一集里正在等人批的步骤。只读——要签就走下面那条。"""
+    access.ensure(user, project_id, "read")
+    return {"items": agents_mod.pending_approvals([project_id]),
+            "target_kind": reviews.AGENT_ACTION,
+            "anchor": reviews.AGENT_ACTION_ANCHOR,
+            "note": "批准的是上面那组参数；参数一改指纹就变，旧批准自动作废"}
+
+
+@router.get("/agent-steps/{step_id}/review")
+def agent_step_review(step_id: int,
+                      user=Depends(require_permission("review:read"))) -> dict:
+    """审批那一张卡：完整参数、往外送什么、按什么计价、有效期、已签记录。"""
+    try:
+        return agents_mod.approval_view(step_id, user)
+    except agents_mod.AgentNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/agent-steps/{step_id}/review-sign")
+def agent_step_review_sign(step_id: int, payload: ReviewSignIn,
+                           user=Depends(require_permission("review:sign"))) -> dict:
+    """给智能体的一个动作签字（批准／驳回／退回）。
+
+    三道判断，顺序与另两档一致：
+    ① 归属（看不见就是 404）；② 这一步是不是真的在等人（不是就 409，
+    不写一条"没人会读"的签字）；③ 锚点必须是 `execute`（不接受自由锚点，
+    否则同一步会长出多条不同口径的结论）。
+
+    **不在这里执行任何东西**：写完签字就结束，推进由 worker 的节拍来读这一行
+    （`agents._advance`）。所以"批了没生效"永远是"还没到下一拍"，
+    而不是"点了没反应"。
+    """
+    step = agent_runs.step(step_id)
+    if step is None:
+        raise HTTPException(status_code=404, detail=f"没有这一步：#{step_id}")
+    run = agent_runs.get(step["run_id"])
+    if run is None:
+        raise HTTPException(status_code=404, detail="这一步所属的运行已经不在了")
+    access.ensure(user, int(run["project_id"]), "write")
+    if payload.anchor != reviews.AGENT_ACTION_ANCHOR:
+        raise HTTPException(
+            status_code=422,
+            detail=f"这一档的锚点只能是「{reviews.AGENT_ACTION_ANCHOR}」："
+                   "一次动作不可拆，没有逐件签")
+    if step["status"] != agents_mod.STEP_AWAITING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"这一步现在不是「等你审批」（{step['status']}），"
+                   "签了也不会被执行——驳回过期或已被作废的步骤没有意义")
+    row = reviews.upsert_sign(
+        project_id=int(run["project_id"]), target_kind=reviews.AGENT_ACTION,
+        target_id=int(step["id"]), gate_id=None,
+        # base_version 绑参数指纹：这是"审批与参数绑定"的落库处
+        base_version=step["args_hash"], anchor=payload.anchor,
+        decision=payload.decision, note=payload.note, user_id=user["id"])
+    return {"signed": {"id": row["id"], "decision": row["decision"],
+                       "base_version": row["base_version"],
+                       "signed_at": row["signed_at"]},
+            "step_status": step["status"],
+            "note": ("批准已记下。这一步会在 worker 的下一拍被执行，"
+                     "页面刷新即可看到进度——审批不自己动手，这是设计不是延迟"),
+            "binding": "指纹变了（有人改了参数）这条签字就不算数，平台会重新等一次审批"}

@@ -16,6 +16,7 @@ import { store } from '../store.js';
 import { getSub, setSub } from '../navstate.js';
 import { bindSubChips, escapeHtml, errorBox, run, subChipRow } from '../util.js';
 import { checklistHtml } from './review-checklist.js';
+import { bindActions, renderActions } from './review-actions.js';
 import { DECISION_TONE } from '../validation.js';
 
 let openDocId = null;
@@ -29,7 +30,17 @@ const GATE_LABEL = {
   none: ['未校验', 'gray'], passed: ['通过', 'green'], failed: ['未通过', 'red'],
   stale: ['已失配', 'amber'],
 };
-const TABS = ['文档审核', '产物审核'];
+// 三个页签的顺序必须与 js/modules.js 里 review 的 subs **一字不差**：
+// 侧栏高亮读的是同一个下标（router 按它钳位），两份列表对不上就会出现
+// "侧栏指着产物审核、页面显示别的"。
+const HEAD_SUB = {
+  0: '校验器 gate + 人工签字',
+  1: '关键帧与镜头视频的产物验收',
+  // 第三栏的标题把"签字只在这里落"这件事写在了名字里：
+  // 智能体中心只显示状态，要签就得来这里
+  2: '智能体要执行的动作，批准与驳回只在这一栏落笔',
+};
+const TABS = ['文档审核', '产物审核', '动作审批'];
 const currentTab = () => {
   const raw = getSub('review') ?? 0;
   return raw >= 0 && raw < TABS.length ? raw : 0;
@@ -49,10 +60,13 @@ export default {
     const tab = currentTab();
     const head = `<div class="page-head">
         <h1>审核中心</h1>
-        <p>${tab === 0 ? '校验器 gate + 人工签字' : '关键帧与镜头视频的产物验收'} · ${escapeHtml(project.name)}</p>
+        <p>${HEAD_SUB[tab] || '审核'} · ${escapeHtml(project.name)}</p>
         <div class="row" style="gap:6px">${subChipRow(TABS, tab)}</div>
       </div>`;
     if (tab === 1) return `<section class="view on">${head}${await this.renderJobs(project)}</section>`;
+    if (tab === 2) {
+      return `<section class="view on">${head}${await renderActions(project)}</section>`;
+    }
     let queue = [];
     let err = null;
     try { queue = await api.reviewQueue(project.id); } catch (e) { err = e; }
@@ -167,6 +181,7 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('review', i); refresh(); });
     if (currentTab() === 1) return this.mountJobs(root, refresh);
+    if (currentTab() === 2) return bindActions(root, refresh);
     root.querySelectorAll('[data-open-review]').forEach((btn) => {
       btn.addEventListener('click', () => {
         openDocId = Number(btn.dataset.openReview);

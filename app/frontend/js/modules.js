@@ -111,7 +111,9 @@ export const MODULES = [
     id: 'review', label: '审核中心', icon: 'ic-review',
     // 二级页与页内分页一一对应（0025 起多了产物审核）：侧栏高亮和页面看到的
     // 必须是同一个值，所以这里的顺序要与 views/review.js 的 TABS 一字不差
-    subs: ['文档审核', '产物审核'],
+    // 0041 起多了第三栏「动作审批」：智能体要执行的写操作在这里签。
+    // 顺序仍须与 views/review.js 的 TABS 一字不差（router 按下标钳位）。
+    subs: ['文档审核', '产物审核', '动作审批'],
     group: 'quality', group_label: G.quality,
     desc: '校验器 gate 与人工签字，产物验收也在这里签；签字只在这里落，别处只显示状态。',
     ents: 'Review',
@@ -136,6 +138,23 @@ export const MODULES = [
     desc: '模型登记、引擎健康、任务调用策略与运行概览的统一入口。'
       + '规格仍以适配器清单为唯一来源；选路与排队仍归生成中心那一个队列，这里不开第二条路。',
     ents: 'ModelRegistration · ModelPolicy',
+  },
+  {
+    // 智能体中心（0041）。它管的是"谁替人做决定、做到哪一步了"，
+    // 不管模型是什么、能不能跑——那半归上面那个「模型中心」，
+    // 这一页对模型只做引用＋跳转，一个字段都不复制。
+    // 取证与边界写在《文档/开发/智能体管理/00-接入前现状审计.md》§7。
+    //
+    // 入口权限刻意用 project:read 而不是 system:config：运行是属于项目的，
+    // 制作角色要能发起、要看自己那批待办；配置那一档（本地／云端两张卡、
+    // 工具白名单）在页内按 store.can('system:config') 决定显不显示。
+    id: 'agents', label: '智能体中心', icon: 'ic-agents',
+    subs: ['总览', '智能体配置', '任务路由', '运行与审批'], utility: true,
+    perms: ['project:read'],
+    group: 'platform', group_label: G.platform,
+    desc: '智能体配置、任务路由、运行记录与待审批动作的统一入口。'
+      + '它只负责规划与调用白名单工具；排队、成本、产物仍归生成中心，签字仍归审核中心。',
+    ents: 'AgentRun · AgentStep · AgentEvent（配置与模型一律引用模型中心，不另存一份）',
   },
   {
     // 不是业务模块，是系统级配置；侧栏里单独放在最下面。

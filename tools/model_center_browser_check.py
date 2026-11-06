@@ -206,6 +206,11 @@ def main():
           const hand = free.hidden ? '下拉' : ('手填·' + document.querySelector('#mf-model-note').textContent);
           set('#mf-be', 'local'); set('#mf-cap', 'text');
           const none = prov.options[prov.selectedIndex].text + (prov.disabled ? '·禁用' : '·可选');
+          // 0041/A4 之后 文本×本地 有适配器了（ollama），"清单里没有的组合"这一档
+          // 要换个至今仍然空着的组合来守：音乐×云端。
+          set('#mf-be', 'cloud'); set('#mf-cap', 'music');
+          const noAdapter = prov.options[prov.selectedIndex].text
+            + (prov.disabled ? '·禁用' : '·可选');
           // 真正天天用的是这一条：同一能力里多个 provider，模型档必须跟着换。
           set('#mf-cap', 'video'); set('#mf-be', 'local');
           const vProv = [...prov.options].map(o => o.value).join(',');
@@ -215,10 +220,10 @@ def main():
           const vBack = [...model.options].map(o => o.value).join(',');
           set('#mf-cap', 'image');
           return [prov.tagName, model.tagName, local, localModel, cloud, hand, none,
-                  vProv, vModel, vBack].join(' § ');
+                  vProv, vModel, vBack, noAdapter].join(' § ');
         })()""")
         f = [x.strip() for x in str(picks).split('§')]
-        f += ['?'] * (10 - len(f))
+        f += ['?'] * (11 - len(f))
         # 期望值现从清单取，不写死 provider 名单：清单本轮就多加了一家
         # （draw_things），写死的断言会红在测试自己头上，而不是红在真缺陷上。
         # 期望值直接读清单那一份（`adapters.py` 是唯一出处）：
@@ -247,9 +252,15 @@ def main():
               'jimeng' in want[2] and f[4] == want[2] and f[5].startswith('手填·')
               and '只登记了 provider 名' in f[5],
               f"provider 界面「{f[4]}」清单「{want[2]}」／那一格 {f[5]}")
-        check("清单里没有的组合（文本×本地）不给人自己造键",
-              '清单里没有这一档' in f[6] and '禁用' in f[6],
-              f"那一格念的是「{f[6]}」")
+        # 0041/A4 起 文本×本地 **有**适配器了（ollama，本机常驻服务），
+        # 这一格于是念得出真 provider。"清单没有的组合不给人自己造键"这条纪律
+        # 换到至今仍然没有适配器的 音乐×云端 上去守——纪律没变，只是那个
+        # 空档被填上了，继续拿文本×本地当反例就是拿历史当现状。
+        check("文本×本地现在有清单给的 provider（ollama 在内）",
+              'Ollama' in f[6] and '禁用' not in f[6], f"那一格念的是「{f[6]}」")
+        check("清单里仍然没有的组合（音乐×云端）不给人自己造键",
+              '清单里没有这一档' in f[10] and '禁用' in f[10],
+              f"那一格念的是「{f[10]}」")
         # 级联是这一格存在的理由：只测"图像×本地只有一个 provider"等于没测。
         check("同一能力里换 provider，模型档跟着换（视频×本地：fastmetal ↔ mlx-video）",
               f[7] == 'fastmetal,mlx-video' and f[8].startswith('wan2.2-')
@@ -261,13 +272,13 @@ def main():
           const set = (id, v) => { const e = document.querySelector(id);
                                    e.value = v;
                                    e.dispatchEvent(new Event('change', {bubbles: true})); };
-          set('#mf-cap', 'text'); set('#mf-be', 'local');
+          set('#mf-cap', 'music'); set('#mf-be', 'cloud');
           document.querySelector('#mf-submit').click();
         })()""")
         blocked = P.eval_js(cdp, "[document.querySelector('#mf-error').textContent,"
                                  " !document.querySelector('#mc-form').hidden].join(' § ')")
         # 布尔过 JS→CDP 是小写 true，别写成 Python 的 True
-        check("文本×本地提交被挡在界面，原文指向 adapters.py",
+        check("音乐×云端提交被挡在界面，原文指向 adapters.py",
               'adapters.py' in str(blocked) and str(blocked).rstrip().endswith('§ true'),
               f"回执 {blocked}")
 

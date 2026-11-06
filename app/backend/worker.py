@@ -44,6 +44,7 @@ from pathlib import Path
 
 import adapters
 import jobfiles
+import agents
 import pipeline
 import seasons
 from composition import ffmpeg_runner, interpolate
@@ -831,6 +832,13 @@ def main(argv: list[str] | None = None) -> int:
             pipeline.tick()
         except Exception as exc:
             print(f"[产线] 推进失败，本轮跳过：{type(exc).__name__}: {exc}")
+        # 智能体运行的推进节拍也住在这里（同裁定 D3 的理由：本进程是唯一会写
+        # Job 状态的地方，"派活"与"收活"是同一进程里的先后两步）。
+        # 单独一个 try：一条运行的计划有问题不该把产线的推进也停掉。
+        try:
+            agents.tick()
+        except Exception as exc:
+            print(f"[智能体] 推进失败，本轮跳过：{type(exc).__name__}: {exc}")
         # 下面两步原来是没有 try 的，而这条链上恰恰最容易撞库锁：
         # `advance_run` 在 BEGIN IMMEDIATE 事务里要跑 ffprobe 验成片（最长 30 秒），
         # 另一条连接等 5 秒（db.py 的 timeout）就抛 "database is locked"。
