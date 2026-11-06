@@ -282,21 +282,37 @@ def main():
               'adapters.py' in str(blocked) and str(blocked).rstrip().endswith('§ true'),
               f"回执 {blocked}")
 
-        P.eval_js(cdp, """(() => {
-          const set = (id, v) => { const e = document.querySelector(id);
-                                   e.value = v;
-                                   e.dispatchEvent(new Event('change', {bubbles: true})); };
-          set('#mf-cap', 'image'); set('#mf-be', 'local');
-          set('#mf-prov', 'mflux'); set('#mf-model', 'flux1-schnell');
-          set('#mf-name', '验收用底模'); set('#mf-caps', '角色一致性');
-          document.querySelector('#mf-submit').click();
-        })()""")
-        time.sleep(1.2)
+        # 这一档在本机先前的配置里可能已经登记过（脚本从现役库复制副本）。
+        # 已存在就走「编辑登记」，不存在才新登记——用例验的是「表单真的落到
+        # 仓库」，不该依赖"这个键一定空着"。原来写死"新登记"，配置过 mflux
+        # 的机器上必然吃 422「这一档已经登记过了」，红得与页面无关。
+        if P.has(cdp, "[data-detail='mflux/flux1-schnell']"):
+            P.click(cdp, "[data-detail='mflux/flux1-schnell']")
+            time.sleep(0.5)
+            P.click(cdp, "[data-act-edit]")
+            time.sleep(0.4)
+            P.eval_js(cdp, """(() => {
+              const e = document.querySelector('#mf-name');
+              e.value = '验收用底模';
+              e.dispatchEvent(new Event('change', {bubbles: true}));
+            })()""")
+            P.click(cdp, "#mf-submit")
+        else:
+            P.eval_js(cdp, """(() => {
+              const set = (id, v) => { const e = document.querySelector(id);
+                                       e.value = v;
+                                       e.dispatchEvent(new Event('change', {bubbles: true})); };
+              set('#mf-cap', 'image'); set('#mf-be', 'local');
+              set('#mf-prov', 'mflux'); set('#mf-model', 'flux1-schnell');
+              set('#mf-name', '验收用底模'); set('#mf-caps', '角色一致性');
+              document.querySelector('#mf-submit').click();
+            })()""")
+        time.sleep(1.5)
         # 这一条原来用「仓库页有行」当断言、把真正的信号写在 detail 里，
         # 结果登记没成功也照样绿——断言必须能变红，所以直接量那一行在不在。
         landed = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
                                 ".some(t => t.textContent.includes('验收用底模'))")
-        check("登记后回到仓库页并出现这一行", str(landed) == 'True',
+        check("登记/编辑后仓库页出现「验收用底模」这一行", str(landed) == 'True',
               f"仓库页里有没有「验收用底模」这一行：{landed}")
 
         # 人工声明未核验必须标出来
