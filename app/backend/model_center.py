@@ -39,11 +39,11 @@ IMAGE_TAG = {"image": "图生图", "video": "图生视频"}
 # 一个假的 adapter 会让"选了就能跑"变成谎言。
 UNINTEGRATED_ENGINES = [
     {"code": "comfyui", "label": "ComfyUI", "kind": "本机应用",
-     "note": "本机 /Applications 已装，共享模型根 ~/ComfyUI-Shared；"
-             "平台无适配器、无 HTTP 客户端、无 workflow 契约 → 未接入"},
-    {"code": "draw-things", "label": "Draw Things", "kind": "本机应用",
-     "note": "本机 /Applications 已装；它到底暴露哪些本地接口未经取证，"
-             "平台无适配器 → 未接入（不假定它有所需 API）"},
+     "note": "本机 /Applications 已装；平台无适配器、无 HTTP 客户端、无 workflow 契约 → 未接入"},
+    # Draw Things 在 2026-11-06 的 W-B 里接进来了（清单 `draw_things`、0040 实例表、
+    # `engine_http_run.py` 真出图跑通），所以从这张名单里摘掉——再留着就是一份
+    # 会过期的第二真相：同一件事在清单里说"有这一档引擎"，这里说"未接入"。
+    # 它的模型目录是否就绪仍然不可复核（TCC），那句话写在《00-接入前现状审计》里。
 ]
 
 

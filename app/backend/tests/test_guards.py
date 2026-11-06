@@ -278,6 +278,15 @@ ROUTES = [
     ("PUT", "/api/model-policies",
      [{"scene_key": "character_bio", "capability": "text"}], 403),
     ("GET", "/api/model-policies/resolve/{sk}", None, 200),
+    # ---------- 引擎实例（0040／W-B；同样全部 system:config） ----------
+    # 这五条是"这一档引擎在哪个端点"的管理面。探测与撤除都不动应用与历史作业，
+    # 但都能改配置，所以外人一律 403；{m}=0 那条不存在的实例也是先撞权限点。
+    ("GET", "/api/engines", None, 403),
+    ("POST", "/api/engines",
+     {"engine_code": "draw_things", "endpoint": "http://127.0.0.1:7860"}, 403),
+    ("PATCH", "/api/engines/{m}", {"note": "越权改"}, 403),
+    ("DELETE", "/api/engines/{m}?confirm=撤实例", None, 403),
+    ("POST", "/api/engines/{m}/probe", None, 403),
 ]
 
 # auth 四条与 health 不参与"匿名 401"这张表，单独测

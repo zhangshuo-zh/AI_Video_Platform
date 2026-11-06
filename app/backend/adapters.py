@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import engines
 import runtime
 
 
@@ -267,6 +268,50 @@ _MFLUX = Adapter(
     ),
 )
 
+# ---------- 图像：本机常驻服务（Draw Things）----------
+# 它与 mflux 的分别**不是"另一个模型"，而是另一种执行形状**：这是应用里的常驻
+# HTTP 服务，端点住在 `engine_instance`（0040），平台既起不了它，也没法编程换模型
+# （2026-11-06 目标机实测：`POST /sdapi/v1/options` 回 404、`sd_model_checkpoint`
+# 被 422 拒）。所以这一档的"当前用的是哪个权重"只能现读，见 G1b 已裁＝甲。
+_DRAW_THINGS = Adapter(
+    code="draw_things",
+    label="Draw Things（本机应用）",
+    capability="image",
+    backend="local",
+    source="本机 bundle 26.0924.0 的端点字符串＋社区仓 drawthingsai/draw-things-community"
+           "（HEAD 7d5f686b）的 HTTPAPIServer/ServerModels/Parameters 三份一手文件；"
+           "端点与返回体形状另见《文档/开发/引擎接入/00-接入前现状审计.md》§5b（目标机实测）",
+    aliases=("drawthings",),
+    params_source="GET /sdapi/v1/options 实测 87 个键 ＋ Parameters.swift 的区间",
+    home_env="",            # 不是仓库型运行时：地址在 engine_instance 表里，不在环境变量
+    note="换模型只能在应用界面里做，平台不代切：引擎当前模型与登记行不符就阻断提交。"
+         "实测 512×512、4 步约 15 秒；width/height 下限 128，缩略图不要走这条路。"
+         "未识别的参数键会被 422 当场拒掉，不会被静默忽略。",
+    models=(
+        ModelSpec(
+            code="noobai-xl-epsilon-11",
+            label="noobaiXL（SDXL·epsilon 预测 1.1）",
+            note="权重在应用自己的索引里，导入后改名成 *_f16.ckpt；登记行的"
+                 "「权重路径」那一格填应用里显示的那个文件名，一致性核对靠它。",
+            params=(
+                Param("width", "int", 1024, 128, 8192,
+                      note="128 是实测下限：送 64 会先撞 RangeValidator 报"
+                           "「must be between 128 and 8192」"),
+                Param("height", "int", 1024, 128, 8192),
+                Param("steps", "int", 16, 1, 150,
+                      note="默认值取自引擎当前模型的自述，切档会变——所以它是"
+                           "「引擎说的默认」，不是平台定死的规格"),
+                Param("guidance_scale", "float", 5, 0, 50,
+                      note="别名 cfg_scale 同样收；白名单只登记这一个规范名"),
+                Param("seed", "int", None, 0, 2147483647),
+                Param("negative_prompt", "str", "",
+                      note="2026-11-06 实测存在于返回体里；此前按 strings 命中形态"
+                           "判为「不可定级」，现在由行为级确认"),
+            ),
+        ),
+    ),
+)
+
 # ---------- 配音 / 音乐：本地 ----------
 _VOXCPM = Adapter(
     code="voxcpm2",
@@ -447,14 +492,13 @@ _CLOUD_OTHER = (
 )
 
 ADAPTERS: tuple[Adapter, ...] = (
-    _FASTMETAL, _MLX_VIDEO, _MFLUX, _VOXCPM, _ACE_STEP,
+    _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _VOXCPM, _ACE_STEP,
     *_TEXT_CLOUD, *_VIDEO_CLOUD, *_CLOUD_OTHER,
 )
 
 # 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
-# 2026-11-05.1＝给 fastmetal 两档补上 fps／fast_factor／fast_sharpen，
-# 出处是本机入口脚本的 argparse 原文；同时成片侧多了导出前的一道 RIFE 补帧。
-MANIFEST_VERSION = "2026-11-05.1"
+# 2026-11-06.1＝W-B：新增本机服务型引擎 draw_things（执行形状与 mflux 那一族不同）。
+MANIFEST_VERSION = "2026-11-06.1"
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以
@@ -635,6 +679,15 @@ def health(row) -> dict:
     model = (row["model"] or "").strip()
     if not model:
         return {**base, "state": "missing", "detail": "选了 provider 但还没填模型档"}
+    if adapter.code in engines.SERVICE_ENGINES:
+        # 本机服务型引擎（Draw Things 这一类）没有"仓库四件套"可查：它的真相是
+        # 端点连不连得上、引擎当前选的是哪一档权重。探测住在 engines.py 而不是
+        # runtime.py——后者的模块头明写着"不发网络请求"，那条边界正是设置页
+        # 敢随手调用它的前提，破了它"点开一页设置会不会联网"就变成要看代码才知道。
+        checked = engines.probe(adapter.code)
+        return {**base, "state": checked.state, "detail": checked.detail,
+                "engine_model": checked.values.get("model") or "",
+                "endpoint": checked.values.get("endpoint") or ""}
     checked = runtime.probe(adapter.code, model)
     return {**base, "state": checked.state, "detail": checked.detail}
 

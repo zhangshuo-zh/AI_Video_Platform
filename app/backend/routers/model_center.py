@@ -15,12 +15,16 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 import adapters
+import engines
 import model_center as mc
 import validations
 from deps import require_permission, require_user
-from models import (BACKENDS, CAPABILITIES, ModelPolicyIn, ModelRegistrationIn,
+from models import (BACKENDS, CAPABILITIES, EngineInstanceIn,
+                    EngineInstancePatch, ModelPolicyIn, ModelRegistrationIn,
                     ModelRegistrationPatch, POLICY_PREFERENCES, REG_SOURCES,
                     ValidationOut)
+from repositories.engine_instances import (CONNECTION_TYPES, EngineInstanceError,
+                                           engine_instances)
 from repositories.model_center import RegistrationError, model_center
 
 router = APIRouter(prefix="/api", tags=["model-center"])
@@ -250,3 +254,129 @@ def _in_manifest(capability: str, provider: str) -> bool:
     """建议轨必须能在清单里找到（local 或 cloud 任一轴）。"""
     return any(adapters.find(capability, backend, provider) is not None
                for backend in ("local", "cloud"))
+
+
+# ================= 引擎实例（W-B／CR-001） =================
+# 这一族接口管的是"这一档引擎在哪个端点"，不是"这台机器上跑了什么模型"。
+# 三条边界与 0040 表头、`repositories/engine_instances.py` 的头一致：
+#   * engine_code 必须在清单里——实例不能凭空发明一个 provider；
+#   * 返回值里的健康是**现查**的，库里没有那一列；
+#   * 密钥只出现在"变量名＋有没有值"这一层，值永不进响应。
+
+@router.get("/engines")
+def list_engines(_=Depends(require_permission("system:config"))) -> dict:
+    """引擎实例列表，带每台现在的真实状态（探测一次，不落库）。"""
+    items = []
+    for row in engine_instances.instances():
+        status = engines.probe(row["engine_code"])
+        adapter = _adapter_for(row["engine_code"])
+        items.append({
+            "id": row["id"], "engine_code": row["engine_code"],
+            "engine_label": adapter.label if adapter else "",
+            "display_name": row["display_name"],
+            "connection_type": row["connection_type"],
+            "endpoint": row["endpoint"],
+            "shared_secret_env": row["shared_secret_env"],
+            "secret_present": bool(adapters.key_present(row["shared_secret_env"])),
+            "enabled": bool(row["enabled"]), "note": row["note"],
+            # 停用中的实例不探测：探测它只会让界面多一条"连不上"的噪声，
+            # 而人已经告诉我们这台不用了。
+            "health_state": status.state if row["enabled"] else "unknown",
+            "health_detail": status.detail if row["enabled"] else "已停用，未探测",
+            "engine_model": status.values.get("model", "") if row["enabled"] else "",
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        })
+    return {"items": items, "connection_types": list(CONNECTION_TYPES),
+            "service_engines": sorted(engines.SERVICE_ENGINES)}
+
+
+@router.post("/engines", status_code=201)
+def create_engine(payload: EngineInstanceIn,
+                  user=Depends(require_permission("system:config"))) -> dict:
+    code = payload.engine_code.strip()
+    if _adapter_for(code) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"清单里没有这一档引擎：{code}。加引擎是改规格（`adapters.py`），"
+                   "实例表不能凭空发明一个 provider")
+    try:
+        row = engine_instances.create({
+            "engine_code": code, "display_name": payload.display_name,
+            "connection_type": payload.connection_type, "endpoint": payload.endpoint,
+            "shared_secret_env": payload.shared_secret_env,
+            "enabled": payload.enabled, "note": payload.note,
+            "created_by": user["id"]})
+    except EngineInstanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"id": row["id"], "warning": _probe_warning(row)}
+
+
+@router.patch("/engines/{instance_id}")
+def patch_engine(instance_id: int, payload: EngineInstancePatch,
+                 _=Depends(require_permission("system:config"))) -> dict:
+    if engine_instances.instance(instance_id) is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    try:
+        row = engine_instances.update(instance_id, patch)
+    except EngineInstanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"id": row["id"], "enabled": bool(row["enabled"])}
+
+
+@router.delete("/engines/{instance_id}")
+def remove_engine(instance_id: int, confirm: str = "",
+                  _=Depends(require_permission("system:config"))) -> dict:
+    """撤实例。**不动应用本身、不动历史作业**。"""
+    row = engine_instances.instance(instance_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    if confirm != "撤实例":
+        raise HTTPException(
+            status_code=422,
+            detail="要撤实例请带 confirm=撤实例。这一步只删除这条登记："
+                   "应用与它的模型都不受影响，历史作业仍按当时冻结的快照可查。")
+    engine_instances.delete(row["id"])
+    return {"removed": row["id"],
+            "note": "只撤了端点登记；应用、权重与 job 历史一律没碰"}
+
+
+@router.post("/engines/{instance_id}/probe")
+def probe_engine(instance_id: int,
+                 _=Depends(require_permission("system:config"))) -> dict:
+    """手动探一次：只读一次服务自述，不建 Job、不写库。
+
+    为什么这里不写 `env_check` 留痕：`model_validation`（0021）是按
+    (capability, backend, provider) 那一 Triple 索引的，实例不是那一形状，
+    把探测硬塞进去要么伪造槽位要么扩表——扩表是独立改动，不在 W-B。
+    这一条先把"能不能连、当前是哪档模型"如实回给人看。
+    """
+    row = engine_instances.instance(instance_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    status = engines.probe(row["engine_code"], row["endpoint"])
+    return {"id": row["id"], "state": status.state, "detail": status.detail,
+            "model": status.values.get("model", ""),
+            "endpoint": status.values.get("endpoint", row["endpoint"])}
+
+
+def _adapter_for(code: str):
+    """按 code 找 adapter（实例只认 code，不认能力轴）。找到哪个算哪个。"""
+    for capability in CAPABILITIES:
+        for backend in ("local", "cloud"):
+            adapter = adapters.find(capability, backend, code)
+            if adapter is not None:
+                return adapter
+    return None
+
+
+def _probe_warning(row) -> str:
+    """新建成功后顺手探一次，连不上就把原话带回界面——
+    但不因此回 4xx：登记一个"还没启动的服务"是合法动作（人可能先建记录再开应用）。
+    """
+    if not row["enabled"]:
+        return ""
+    status = engines.probe(row["engine_code"], row["endpoint"])
+    if status.state == "ok":
+        return ""
+    return f"实例留下了，但现在连不上：{status.detail}"

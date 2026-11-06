@@ -2034,6 +2034,47 @@ class ModelRegistrationPatch(BaseModel):
     note: str | None = None
 
 
+class EngineInstanceIn(BaseModel):
+    """新增引擎实例。只收配置字段——健康、版本、探测时间是现查值，
+    在这里开字段就等于邀请人把它们写进库（0040 表头把这条边界写死了）。"""
+    engine_code: str
+    endpoint: str
+    display_name: str = ""
+    connection_type: str = "local_http"
+    shared_secret_env: str = ""
+    enabled: bool = True
+    note: str = ""
+
+
+class EngineInstancePatch(BaseModel):
+    """逐字段更新。`engine_code` 与 `endpoint` 是这一行的键，改不了——
+    与登记弹窗那两格同一口径：改键＝换一台机器，应该新建一条再停旧的。"""
+    display_name: str | None = None
+    connection_type: str | None = None
+    shared_secret_env: str | None = None
+    enabled: bool | None = None
+    note: str | None = None
+
+
+class EngineInstanceOut(BaseModel):
+    id: int
+    engine_code: str
+    engine_label: str = ""
+    display_name: str
+    connection_type: str
+    endpoint: str
+    shared_secret_env: str
+    secret_present: bool = False        # 只看变量名有没有值，永不回显值
+    enabled: bool
+    note: str
+    # 下面三样是**现查**结果，不来自库里任何一列
+    health_state: str = "unknown"
+    health_detail: str = ""
+    engine_model: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class ModelPolicyIn(BaseModel):
     scene_key: str
     scene_label: str = ""

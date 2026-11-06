@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import access
 import adapters
 import docai
+import engines
 import extraction
 import gitrepo
 import jobfiles
@@ -37,6 +38,7 @@ from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
 from repositories.jobs import jobs as job_repo
+from repositories.model_center import model_center as registration_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from repositories.providers import providers as provider_repo
@@ -1842,6 +1844,43 @@ def job_source_stale(job, shot=None, loaded_assets: dict | None = None,
     return shot_source_version(shot, loaded_assets, loaded_variants) != version
 
 
+def _service_engine_gate(capability: str, mode: str, provider: str, model: str) -> None:
+    """第五条闸门（W-B；G1b 已裁＝甲）：服务型引擎的当前模型必须与登记行一致。
+
+    为什么非要在这道拦：Draw Things 这类常驻服务**同一时刻只有一个当前模型**，
+    而换模型只能在它的界面里点——实测 `POST /sdapi/v1/options` 回 404、
+    `sd_model_checkpoint` 被 422 拒，平台没有任何编程入口。所以"作业说要跑 A 档、
+    引擎其实选着 B 档"这件事只能靠提交前核对，不能靠运行时纠正。
+
+    不符就拒绝，**不自动切、也不悄悄换成另一档引擎**（与 MC1 同一条纪律）：
+    自动切等于替人决定"这一集长什么样"，而那是人该看见的一次选择。
+    期望值取登记行的 `artifact_path`——那一格本来就是"这台机器上的事实"，
+    对服务型引擎来说就是应用里显示的那个文件名（同 runners._mflux 把平台码
+    换成 HF 仓名的思路，只是方向反过来：那里是出参，这里是核对）。
+    """
+    adapter = adapters.find(capability, mode, provider)
+    if adapter is None or adapter.code not in engines.SERVICE_ENGINES:
+        return
+    status = engines.probe(adapter.code)
+    if status.state != "ok":
+        raise JobInvalid(f"{adapter.label} 现在不能用：{status.detail}")
+    registration = registration_repo.find_registration(capability, mode,
+                                                       adapter.code, model)
+    expected = (registration["artifact_path"].strip()
+                if registration is not None else "")
+    live = (status.values.get("model") or "").strip()
+    if not expected:
+        raise JobInvalid(
+            f"这一档引擎（{adapter.label}）的登记没填「权重路径」，"
+            f"平台无法核对引擎当前选的是哪一档（现在自述为 {live or '读不到'}）。"
+            "请在模型中心把应用里显示的那个文件名填进登记行的权重路径")
+    if live.lower() != expected.lower():
+        raise JobInvalid(
+            f"引擎当前选中的是 {live or '（读不到）'}，这条作业登记的是 {expected}。"
+            f"平台不代切模型：请在 {adapter.label} 里选中 {expected} 再提交，"
+            "或把这条登记的权重路径改成你实际要用的那一档")
+
+
 def submit_job(payload, created_by: int | None) -> dict:
     """校验并写入 Job 行，返回 sqlite3.Row。**不触发执行**——执行是 worker 的事。
 
@@ -1925,6 +1964,10 @@ def submit_job(payload, created_by: int | None) -> dict:
         errors = adapters.validate_params(got["adapter"], model, payload.params)
         if errors:
             raise JobInvalid("；".join(errors))
+
+    # 闸门走的是**两条路都要过**：显式选择与默认轨解析之后都可能是服务型引擎，
+    # 只挂在 explicit 那一支会留一条"默认轨指到 Draw Things 就没人核对"的缝。
+    _service_engine_gate(capability, mode, provider, model)
 
     cost = _cost_of(payload, mode, created_by)
 

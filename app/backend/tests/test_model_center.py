@@ -22,6 +22,7 @@ import uuid
 
 import pytest
 
+import adapters
 import jobfiles
 import model_center as mc
 import validations
@@ -131,8 +132,11 @@ def test_清单里有但没登记的档必须出现在目录里(as_admin, clean_
     """少了这一段，"装了不等于配了"就看不见——这是仓库页存在的理由之一。"""
     items = as_admin.get("/api/models").json()["items"]
     unregistered = [i for i in items if i["status"] == "not_registered"]
-    # 全新库里一条登记都没有：清单的 9 档全部应当是"未登记"
-    assert len(unregistered) == 9
+    # 数量从清单现数，不写死：W-B 加 draw_things 那一档时这里从 9 变 10，
+    # 写死的版本只会以"红一次"的方式提醒人，而现数的版本根本不会红。
+    expected = sum(len(adapter.models or ()) for adapter in adapters.ADAPTERS)
+    assert expected >= 9, "清单至少要有的档数明显不对，先看 adapters.py 是不是被改坏"
+    assert len(unregistered) == expected, "清单里有但没登记的档必须全部出现在目录里"
     assert all(not i["registered"] for i in unregistered)
 
 
@@ -440,14 +444,21 @@ def test_顶部四数与目录同一口径(as_admin, clean_registrations):
 
 
 def test_未接入引擎单独列出不计入引擎数(as_admin, clean_registrations):
-    """ComfyUI 与 Draw Things 本机装了但平台零引用：
-    它们必须出现在页面上，但不能混进"引擎总数"，更不能有一个能点的连接按钮。"""
+    """ComfyUI 本机装了但平台零引用：必须出现在页面上，
+    但不能混进"引擎总数"，更不能有一个能点的连接按钮。
+
+    Draw Things 已从这张名单里出去（2026-11-06 W-B 接入），所以这里同时钉住
+    反方向的那半件事：它现在必须在清单侧的 `items` 里，而不是在未接入名单里。
+    只测"comfyui 还在"是不够的——那等于允许有人把已接入的引擎一直挂着"未接入"。
+    """
     body = as_admin.get("/api/models").json()
     s = as_admin.get("/api/models/stats").json()
     codes = {e["code"] for e in body["unintegrated_engines"]}
-    assert {"comfyui", "draw-things"} <= codes
+    assert "comfyui" in codes
+    assert "draw-things" not in codes, "Draw Things 已接入，别再挂在未接入名单里"
     assert codes.isdisjoint({i["engine_code"] for i in body["items"]})
     assert codes.isdisjoint({i["provider"] for i in body["items"]})
+    assert any(i["provider"] == "draw_things" for i in body["items"])
     for e in s["unintegrated_engines"]:
         assert "未接入" in e["note"]
 

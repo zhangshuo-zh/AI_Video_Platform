@@ -1,7 +1,11 @@
 """本地 adapter 的命令构造与产物校验（W09）。
 
 这一层只回答两个问题：**用什么 argv 起进程**、**跑完后什么算成功**。
-它不碰数据库、不写 Job 状态——那些仍由 worker.py 统一收尾。
+它不写数据库、不写 Job 状态——那些仍由 worker.py 统一收尾。
+一处例外要写明（W-B 起）：本机服务型引擎需要读 `engine_instance` 里那一行
+**配置**（端点），走的是 `engines.probe()`，只读不写。为什么不干脆把端点
+塞进 job 参数：那等于让客户端能指定"这条作业往哪台机器发"，而端点是管理员
+配的设施，不是作业输入。
 
 四条硬约束：
 
@@ -25,11 +29,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import adapters
+import engines
 import runtime
 from config import JOBS_DIR
 from paths import resolve_within, within
 
 CLOUD_RUNNER = Path(__file__).resolve().parent / "cloud_run.py"
+ENGINE_HTTP_RUNNER = Path(__file__).resolve().parent / "engine_http_run.py"
 
 class RunnerUnavailable(Exception):
     """运行时缺东西：解释器／入口／权重／模型目录。"""
@@ -262,6 +268,50 @@ def _mflux(job, params: dict, outputs: Path) -> RunSpec:
               "width": width, "height": height, "steps": steps})
 
 
+# ---------- 本机常驻服务型引擎（W-B：Draw Things）----------
+# 与上面几档的区别只在"怎么把活儿交出去"：这里是往一个已经在跑的本地服务
+# 发一次 HTTP，产物从响应体的 base64 里落盘。请求与落盘都在子进程
+# （`engine_http_run.py`）里做，worker 侧沿用 `_pump` 那套超时与取消，
+# 长不出第二套执行封装。
+DRAW_THINGS_PATH = "/sdapi/v1/txt2img"
+
+
+def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
+    status = engines.probe("draw_things")
+    if status.state != "ok":
+        # unknown（没登记实例）与 missing（登记了但连不上）都由 engines 分好档，
+        # 这里只转述，不再各写一套"不可用"的措辞。
+        raise RunnerUnavailable(f"Draw Things 现在不能用：{status.detail}")
+    endpoint = status.values.get("endpoint") or ""
+    out = outputs / f"{job['id']}-draw_things.png"
+    receipt = outputs / f"{job['id']}-draw-things-receipt.json"
+    request_path = outputs / f"{job['id']}-draw-things-request.json"
+
+    body = {"prompt": job["prompt_snapshot"],
+            "width": int(params.get("width", 1024)),
+            "height": int(params.get("height", 1024)),
+            "steps": int(params.get("steps", 16))}
+    negative = str(params.get("negative_prompt") or "").strip()
+    if negative:
+        body["negative_prompt"] = negative
+    if params.get("guidance_scale") is not None:
+        body["guidance_scale"] = float(params["guidance_scale"])
+    if params.get("seed") is not None:
+        body["seed"] = int(params["seed"])
+
+    request = {"endpoint": endpoint, "path": DRAW_THINGS_PATH, "body": body,
+               "output": str(out), "receipt": str(receipt), "timeout": 600}
+    request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+    argv = [sys.executable, str(ENGINE_HTTP_RUNNER), str(request_path)]
+    return RunSpec(
+        runner="draw_things", argv=argv, cwd=outputs, expected=[out], media="image",
+        meta={"adapter": "draw_things", "model": model_code, "endpoint": endpoint,
+              "engine_model": status.values.get("model") or "",
+              "request_path": str(request_path), "result_path": str(receipt),
+              "body": body})
+
+
 # ---------- 音频两腿（VoxCPM2 配音 / ACE-Step 1.5 音乐）----------
 # 权重都走 mlx-community 的量化转换，不拉官方整包：
 #   openbmb/VoxCPM2 主文件 4,580,080,592B（卡面 gated=false、apache-2.0），
@@ -415,6 +465,8 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         return _mlx_video(job, params, outputs)
     if capability == "image" and provider == "mflux":
         return _mflux(job, params, outputs)
+    if capability == "image" and provider in ("draw_things", "drawthings"):
+        return _draw_things(job, params, outputs, model)
     if capability == "tts" and provider in ("voxcpm2", "voxcpm"):
         return _voxcpm(job, params, outputs)
     if capability == "music" and provider in ("ace-step", "acestep", "ace_step"):
@@ -432,7 +484,7 @@ def has_branch(capability: str, provider: str) -> bool:
     if capability == "video":
         return provider in ("fastmetal", "mlx-video")
     if capability == "image":
-        return provider == "mflux"
+        return provider in ("mflux", "draw_things")
     if capability == "tts":
         return provider in ("voxcpm2", "voxcpm")
     if capability == "music":
