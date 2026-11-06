@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
+import { bindModalDismiss, bindOverlayDismiss, confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -952,7 +952,7 @@ export default {
       });
 
       root.querySelector('#np-cancel').addEventListener('click', closeNew);
-      newModal.addEventListener('click', (e) => { if (e.target === newModal) closeNew(); });
+      bindOverlayDismiss(newModal, closeNew);
       // Escape 统一走 util 里那一个实现：绑在弹窗元素上时，打开弹窗后没把焦点
       // 送进去就永远收不到 keydown（另外四个弹窗最早都是这么漏的）
       bindModalDismiss(newModal, closeNew);
@@ -1028,7 +1028,7 @@ export default {
     });
 
     root.querySelector('#ed-cancel').addEventListener('click', closeEdit);
-    editModal.addEventListener('click', (e) => { if (e.target === editModal) closeEdit(); });
+    bindOverlayDismiss(editModal, closeEdit);
     bindModalDismiss(editModal, closeEdit);
     [edName, edTags].forEach((el) => {
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter') edSave.click(); });
@@ -1157,7 +1157,7 @@ export default {
     });
 
     root.querySelector('#mem-close').addEventListener('click', () => { memModal.hidden = true; });
-    memModal.addEventListener('click', (e) => { if (e.target === memModal) memModal.hidden = true; });
+    bindOverlayDismiss(memModal, () => { memModal.hidden = true; });
     // 成员弹窗原来只能点外面或"关闭"钮，键盘撤不回来——四个缺 Escape 的弹窗之一
     bindModalDismiss(memModal, () => { memModal.hidden = true; });
 
@@ -1240,7 +1240,7 @@ export default {
       if (e.key === 'Enter' && !okBtn.disabled) okBtn.click();
     });
     root.querySelector('#del-cancel').addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    bindOverlayDismiss(modal, closeModal);
     bindModalDismiss(modal, closeModal);
 
     okBtn.addEventListener('click', async () => {
@@ -1286,7 +1286,7 @@ export default {
       tagOk.disabled = false;
     });
     root.querySelector('#tag-cancel')?.addEventListener('click', () => { tagModal.hidden = true; });
-    tagModal?.addEventListener('click', (e) => { if (e.target === tagModal) tagModal.hidden = true; });
+    bindOverlayDismiss(tagModal, () => { tagModal.hidden = true; });
     // Escape 原来只绑在输入框上：焦点一旦在"加标签/取消"钮上就撤不回来
     if (tagModal) bindModalDismiss(tagModal, () => { tagModal.hidden = true; });
     tagInput?.addEventListener('keydown', (e) => {
@@ -1335,7 +1335,7 @@ export default {
       await doBatch('delete', { confirm: bdConfirm.value.trim() });
     });
     root.querySelector('#bd-cancel')?.addEventListener('click', () => { bdModal.hidden = true; });
-    bdModal?.addEventListener('click', (e) => { if (e.target === bdModal) bdModal.hidden = true; });
+    bindOverlayDismiss(bdModal, () => { bdModal.hidden = true; });
     if (bdModal) bindModalDismiss(bdModal, () => { bdModal.hidden = true; });
 
     /* ---------- 去创作中心：只跳转，不在这里写集和分镜 ---------- */

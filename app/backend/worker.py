@@ -33,6 +33,7 @@ import select
 import resource
 import signal
 import socket
+import sqlite3
 import subprocess
 import threading
 import sys
@@ -56,7 +57,7 @@ from config import (ALLOW_MOCK, FFMPEG_BIN, RESOURCE_CLASSES, WORKER_LEASE_SECON
                     WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE,
                     WORKER_MAX_RUNTIME_SECONDS, WORKER_POLL)
 from paths import describe as describe_path
-from repositories.jobs import jobs
+from repositories.jobs import JobOwnershipLost, jobs
 
 STOP = False
 
@@ -335,6 +336,35 @@ def _tail(path: Path, limit: int = 800) -> str:
         return ""
 
 
+def _db_guard(log):
+    """心跳/续租/查状态的库访问兜底：锁冲突绝不能变成「杀死正在跑的模型」。
+
+    `pipeline.advance_run` 的长事务会持有 SQLite 写锁，而 `db.get_conn` 的
+    timeout 只有 5 秒。过去 `_pump` 里这三个调用是裸的：一次
+    `sqlite3.OperationalError: database is locked` 就冒泡出 `_pump`，
+    `_run_spec` 的 finally 无条件 `_terminate(proc)`，于是一条本来好好的
+    作业被一次锁等待判成 internal_error。这里把锁冲突降级为「这一拍没读到」，
+    作业继续跑；锁一释放，下一拍自动续上租约。
+    """
+    state = {"misses": 0}
+
+    def call(fn, *args, default=None, label="", **kwargs):
+        try:
+            value = fn(*args, **kwargs)
+            state["misses"] = 0
+            return value
+        except sqlite3.OperationalError as exc:
+            state["misses"] += 1
+            misses = state["misses"]
+            if misses == 1 or misses % 25 == 0:
+                _write(log, f"[库锁] {label or getattr(fn, '__name__', 'db')} "
+                            f"这一拍没拿到库（连续 {misses} 拍）：{exc}；"
+                            "作业继续跑，不因此终止子进程")
+            return default
+
+    return call
+
+
 def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
     """把子进程输出边跑边写进日志；每 0.2 秒续租并看一次取消。
 
@@ -346,6 +376,7 @@ def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
     """
     fd = proc.stdout.fileno()
     last_beat = 0.0
+    db = _db_guard(log)
     while True:
         if STOP:
             _terminate(proc)
@@ -355,7 +386,7 @@ def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
             raise JobFailure("run_timeout",
                              f"执行超过上限 {WORKER_MAX_RUNTIME_SECONDS} 秒，已终止；"
                              f"先看日志再决定是否重试")
-        status = jobs.status_of(job["id"])
+        status = db(jobs.status_of, job["id"], label="查取消状态")
         if status == "cancel_requested":
             _terminate(proc)
             raise Cancelled("收到取消请求")
@@ -368,9 +399,10 @@ def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
             log.flush()
         # 续租与心跳不能挂在"没输出"上：模型连续刷进度条时管道一直 ready，
         # 如果只在 else 分支续租，租约到期就会被恢复逻辑误判成 worker 死了。
-        jobs.renew(job["id"], wid, WORKER_LEASE_SECONDS)
+        db(jobs.renew, job["id"], wid, WORKER_LEASE_SECONDS, label="续租")
         if time.monotonic() - last_beat >= 2:
-            jobs.heartbeat(wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION)
+            db(jobs.heartbeat, wid, os.getpid(), job["id"],
+               adapters.MANIFEST_VERSION, label="心跳")
             last_beat = time.monotonic()
         if proc.poll() is not None:
             # 进程已退出，但管道里可能还有尾巴；再读一轮由 select 处理
@@ -458,14 +490,42 @@ class _RssWatch:
         return self.peak_kb
 
 
+def _signal_process_group(proc, sig: int) -> None:
+    """给整棵子进程树发信号，而不是只发给最外层那个 python。
+
+    `_run_spec` 用 `start_new_session=True` 起子进程，于是 pgid == pid；
+    FastMetal / mflux 都是「外层 python 再起算子进程」，只 terminate 外层
+    会留下孙进程继续占资源、甚至把文件写回已经清理过的 outputs/。
+    老路径（没有独立会话的 Popen，例如测试里的替身）退回单进程信号：
+    绝不能对着 worker 自己所在的进程组发 SIGTERM。
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+    if pgid is not None and pgid == proc.pid:
+        try:
+            os.killpg(pgid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        if sig == signal.SIGTERM:
+            proc.terminate()
+        else:
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def _terminate(proc, grace: float = 5.0) -> None:
     if proc.poll() is not None:
         return
-    proc.terminate()
+    _signal_process_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _signal_process_group(proc, signal.SIGKILL)
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
@@ -492,6 +552,7 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
             spec.argv, cwd=str(spec.cwd), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, shell=False,
+            start_new_session=True,
         )
     except OSError as exc:
         raise JobFailure("adapter_start_failed",
@@ -645,10 +706,11 @@ def process(job, wid: str, limits: dict | None = None) -> None:
     spec = None
     extra: dict = {}
     with log_path.open("a", encoding="utf-8") as log:
+        db = _db_guard(log)
         _write(log, f"job #{job['id']} {job['capability']}/{job['execution_mode']} "
                     f"{job['provider_code']}/{job['model_code']} worker={wid}")
-        jobs.heartbeat(wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION,
-                       limits=limits, resources=_node_resources())
+        db(jobs.heartbeat, wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION,
+           limits=limits, resources=_node_resources(), label="起始心跳")
         try:
             jobs.set_running(job["id"], wid)
             if jobs.status_of(job["id"]) == "cancel_requested":
@@ -685,6 +747,11 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                     _write(log, "验证记录：真实调用已登记")
                 except Exception as exc:
                     _write(log, f"验证记录未写入：{exc}")
+        except JobOwnershipLost as exc:
+            # 终态已经被租约恢复或另一个收尾动作拿走：库里那一行就是真相，
+            # 这里绝不能再写一次把它盖掉，也不该再演成 internal_error。
+            _write(log, f"状态：本次结果作废，不写库（{exc}）")
+            _write(log, "产物仍在 outputs/；请按库里的终态处理，不要自动重试")
         except Cancelled as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             # 云端任务可能在子进程被杀之前已经建好；回执文件若有一份，
@@ -741,8 +808,8 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                       resources=_resources(cpu_start, elapsed,
                                            child_cpu_start, extra=extra))
         finally:
-            jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
-                           resources=_node_resources())
+            db(jobs.heartbeat, wid, os.getpid(), None, adapters.MANIFEST_VERSION,
+               resources=_node_resources(), label="收尾心跳")
 
 
 def run_once(wid: str | None = None, limits: dict | None = None) -> int | None:

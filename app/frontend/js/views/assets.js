@@ -87,15 +87,15 @@ function cardHtml(a) {
     <div class="asset-card" data-open="${a.id}" title="打开 ${escapeHtml(a.name)}">
       <div class="asset-cover">
         ${coverOf(a)
-          ? `<img src="${coverOf(a)}" alt="${escapeHtml(a.name)} 的封面" loading="lazy"
-                 data-preview="${coverOf(a)}">`
+          ? `<img src="${escapeHtml(coverOf(a))}" alt="${escapeHtml(a.name)} 的封面" loading="lazy"
+                 data-preview="${escapeHtml(coverOf(a))}">`
           : `<span class="asset-noimg">${kindIcon(a.kind)}</span>`}
         ${isGlobal ? '<span class="asset-scope">全局</span>' : ''}
       </div>
       <div class="asset-body">
         <button class="asset-title" data-open="${a.id}">${escapeHtml(a.name)}</button>
         <div class="asset-tags">
-          <span class="chip plain">${a.kind_label}</span>
+          <span class="chip plain">${escapeHtml(a.kind_label || '')}</span>
           ${(a.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join('')}
           ${(a.tags || []).length > 3 ? `<span class="chip gray">＋${a.tags.length - 3}</span>` : ''}
         </div>

@@ -37,7 +37,7 @@ from repositories.content import assets, episodes as episode_repo, profiles, sho
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
-from repositories.jobs import jobs as job_repo
+from repositories.jobs import jobs as job_repo, retry_reason
 from repositories.model_center import model_center as registration_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
@@ -1233,23 +1233,12 @@ def job_retry_batch(project_id: int, episode_id: int, *, user_id: int | None = N
     skipped: list[dict] = []
     for shot_id in sorted(latest):
         row = latest[shot_id]
-        status = row["status"]
-        if status == "succeeded":
+        # 能不能重投只有 `repositories.jobs.retry_reason()` 一处说了算。
+        # 批量额外收紧两档（结果未知、云端计费）用开关传进去，不再手抄状态集合。
+        reason = retry_reason(row, allow_cloud=False, allow_attention=False)
+        if reason:
             skipped.append({"shot_id": shot_id, "job_id": int(row["id"]),
-                            "reason": "这一镜最新的作业已经成功，不需要重投"})
-            continue
-        if status in ("queued", "starting", "running", "cancel_requested"):
-            skipped.append({"shot_id": shot_id, "job_id": int(row["id"]),
-                            "reason": "这一镜还有在跑或排队的作业，等它出结果"})
-            continue
-        if status == "needs_attention":
-            skipped.append({"shot_id": shot_id, "job_id": int(row["id"]),
-                            "reason": "待核对的作业不自动重投：结果可能已经发生在供应商那一边，"
-                                      "先去生成中心核对那条再说"})
-            continue
-        if row["execution_mode"] == "cloud":
-            skipped.append({"shot_id": shot_id, "job_id": int(row["id"]),
-                            "reason": "云端重试要逐次确认计费，请在生成中心对这一条单独重试"})
+                            "reason": reason})
             continue
         if len(retried) >= int(limit):
             skipped.append({"shot_id": shot_id, "job_id": int(row["id"]),

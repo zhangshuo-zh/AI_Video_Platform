@@ -26,6 +26,21 @@ AGENT_ACTION = "agent_action"
 # 因为"执行这组参数"是不可拆的一件事——拆开就出现"批了一半的步骤"。
 AGENT_ACTION_ANCHOR = "execute"
 
+# 「可以被人审的作业」的列清单与判据：单项目版与多项目版共用一份，
+# 只差作用域（`j.project_id = ?` / `IN (...)`）和窗口层。各写一份的话，
+# 改一次判据（例如以后要排除某种 provider）就得记得改两处。
+_JOB_QUEUE_COLUMNS = """j.id AS job_id, j.project_id, j.capability, j.kind,
+          j.execution_mode, j.provider_code, j.model_code,
+          j.shot_id, j.episode_id, j.status,
+          j.result_paths_json, j.finished_at,
+          s.seq AS shot_seq, e.seq AS episode_seq, e.title AS episode_title"""
+_JOB_QUEUE_FROM = """FROM job j
+          LEFT JOIN shot s ON s.id = j.shot_id
+          LEFT JOIN episode e ON e.id = j.episode_id"""
+_JOB_QUEUE_WHERE = """j.status = 'succeeded'
+          AND j.capability IN ('image','video')
+          AND j.result_paths_json NOT IN ('', '[]')"""
+
 
 class ReviewRepository:
     # 审核对象的三档。挂在类上是为了调用方写 `reviews.DOCUMENT`——
@@ -181,18 +196,10 @@ class ReviewRepository:
         """
         with get_conn() as conn:
             return conn.execute(
-                """SELECT j.id AS job_id, j.project_id, j.capability, j.kind,
-                          j.execution_mode, j.provider_code, j.model_code,
-                          j.shot_id, j.episode_id, j.status,
-                          j.result_paths_json, j.finished_at,
-                          s.seq AS shot_seq, e.seq AS episode_seq, e.title AS episode_title
-                     FROM job j
-                     LEFT JOIN shot s ON s.id = j.shot_id
-                     LEFT JOIN episode e ON e.id = j.episode_id
+                f"""SELECT {_JOB_QUEUE_COLUMNS}
+                     {_JOB_QUEUE_FROM}
                     WHERE j.project_id = ?
-                      AND j.status = 'succeeded'
-                      AND j.capability IN ('image','video')
-                      AND j.result_paths_json NOT IN ('', '[]')
+                      AND {_JOB_QUEUE_WHERE}
                     ORDER BY j.id DESC
                     LIMIT ?""",
                 (project_id, min(max(limit, 1), 200))).fetchall()
@@ -214,21 +221,12 @@ class ReviewRepository:
         with get_conn() as conn:
             return conn.execute(
                 f"""SELECT * FROM (
-                        SELECT j.id AS job_id, j.project_id, j.capability, j.kind,
-                               j.execution_mode, j.provider_code, j.model_code,
-                               j.shot_id, j.episode_id, j.status,
-                               j.result_paths_json, j.finished_at,
-                               s.seq AS shot_seq, e.seq AS episode_seq,
-                               e.title AS episode_title,
+                        SELECT {_JOB_QUEUE_COLUMNS},
                                ROW_NUMBER() OVER (PARTITION BY j.project_id
                                                   ORDER BY j.id DESC) AS rn
-                          FROM job j
-                          LEFT JOIN shot s ON s.id = j.shot_id
-                          LEFT JOIN episode e ON e.id = j.episode_id
+                          {_JOB_QUEUE_FROM}
                          WHERE j.project_id IN ({marks})
-                           AND j.status = 'succeeded'
-                           AND j.capability IN ('image','video')
-                           AND j.result_paths_json NOT IN ('', '[]')
+                           AND {_JOB_QUEUE_WHERE}
                      ) WHERE rn <= ? ORDER BY project_id, job_id DESC""",
                 [*ids, cap]).fetchall()
 

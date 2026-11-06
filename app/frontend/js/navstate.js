@@ -16,6 +16,17 @@ export function getSub(viewId) {
   return state.get(viewId);
 }
 
+/**
+ * 当前二级标签下标，越界/非数字时回 0。
+ *
+ * 页签顺序的真相在 `modules.js`，`tabs` 由视图传入；这里只做一次越界兜底，
+ * 免得渲染用 3、提示条却算成 0（四个视图过去各写一份，其中一份已经这么漂了）。
+ */
+export function currentSubTab(viewId, tabs) {
+  const raw = Number(getSub(viewId) ?? 0);
+  return Number.isInteger(raw) && raw >= 0 && raw < tabs.length ? raw : 0;
+}
+
 /** 详情深链：#assets/1/a57 里那个 57。undefined 表示停在列表。 */
 export function setParam(viewId, value) {
   if (value === undefined || value === null || value === '') params.delete(viewId);

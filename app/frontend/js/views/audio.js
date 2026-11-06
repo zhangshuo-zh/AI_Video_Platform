@@ -6,7 +6,7 @@
  * 真实 VoxCPM2 / ACE-Step 运行时不在本机时，提交会明确说缺什么，不假装出音频。
  */
 import { api } from '../api.js';
-import { getSub, setSub } from '../navstate.js';
+import { currentSubTab, getSub, setSub } from '../navstate.js';
 import { store } from '../store.js';
 import { bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow } from '../util.js';
 import { jobLabel } from '../validation.js';
@@ -36,12 +36,8 @@ let shotReqId = 0;
 // `runners.build()` 有没有这一条分支。前端写死一份，三处任何一处变了这话就是假的。
 let audioCaps = null;
 const capOf = (code) => (audioCaps?.rows || []).find((r) => r.code === code) || null;
-// 页签下标只在这里做一次兜底：地址里出现越界的 sub 时按第 0 个渲染，
-// 提示条也要落在同一个下标上，否则一边算 3、一边算 0，话刚写上去就被自己清掉。
-const currentTab = () => {
-  const raw = getSub('audio') ?? 0;
-  return TABS[raw] ? raw : 0;
-};
+// 页签下标统一走 `currentSubTab`：地址里出现越界的 sub 时按第 0 个渲染，
+// 提示条也落在同一个下标上，否则一边算 3、一边算 0，话刚写上去就被自己清掉。
 const noticeKeyOf = (pid, tab) => `${pid}:${tab}`;
 const STATUS = {
   draft: ['草稿', 'gray'], queued: ['排队中', 'blue'],
@@ -58,7 +54,7 @@ export default {
         <p>音频素材按项目与集组织；去项目中心选一个再回来。</p>
       </div></div></section>`;
     }
-    const tab = currentTab();
+    const tab = currentSubTab('audio', TABS);
     // 读不到能力表不挡这一页：照常列台账，只是按钮退回旧行为（按 canWrite 画）
     try { audioCaps = await api.audioCapabilities(); } catch (e) { audioCaps = null; }
     const key = noticeKeyOf(project.id, tab);
@@ -195,7 +191,7 @@ export default {
         box.innerHTML = '<option value="">不挂镜头</option>';
         audioNotice = `这一集的镜头读不出来：${err.message || err}`;
         // 与提交失败同一把 key：换页签/换项目就该收走，留在本页才看得见
-        audioNoticeKey = noticeKeyOf(store.currentId, currentTab());
+        audioNoticeKey = noticeKeyOf(store.currentId, currentSubTab('audio', TABS));
         return;
       }
       const select = root.querySelector('#audio-shot');
@@ -229,7 +225,7 @@ export default {
           // 缺运行时是这一档的常见结果，用页内提示说明缺什么；
           // 弹 alert 会挡住下一次操作，也看不到别的素材状态
           audioNotice = `送进队列失败：${e.message}`;
-          audioNoticeKey = noticeKeyOf(store.currentId, currentTab());
+          audioNoticeKey = noticeKeyOf(store.currentId, currentSubTab('audio', TABS));
           btn.disabled = false;
           refresh();
           return;

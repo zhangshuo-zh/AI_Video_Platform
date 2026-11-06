@@ -73,7 +73,15 @@ jobs:
         working-directory: .
         run: python tools/make_release_baseline.py --check --pytest-log /tmp/pytest.log
 
-      # 第三道门：文档自己的结构。目录、锚点、修订速览、跨册引用、历史不丢、图有没有孤儿，
+      # 第三道门：前端 JS 能不能加载。无构建链的项目改完 JS 没有任何本地
+      # 解析器兜底，模板字符串被拆断只会在浏览器控制台留一句不带文件名的
+      # SyntaxError。这个脚本用 CHROME_BIN 或常见安装位置找浏览器，
+      # ubuntu-latest 自带 google-chrome。
+      - name: 前端 JS 加载检查
+        working-directory: .
+        run: python tools/js_load_check.py
+
+      # 第四道门：文档自己的结构。目录、锚点、修订速览、跨册引用、历史不丢、图有没有孤儿，
       # 全是"写完没人回头对"的那类账——规矩只有挂在 CI 上才算立住（《写作与引用规范》§11）。
       - name: 文档结构门禁
         working-directory: .

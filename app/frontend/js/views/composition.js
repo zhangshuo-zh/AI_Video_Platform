@@ -9,7 +9,7 @@
  */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { getSub, setParam, setSub } from '../navstate.js';
+import { currentSubTab, getSub, setParam, setSub } from '../navstate.js';
 import {
   bindModalDismiss, bindSubChips, escapeHtml, errorBox, subChipRow,
 } from '../util.js';
@@ -46,11 +46,6 @@ const KIND = { dialogue: '台词', narration: '旁白', music: '音乐', sfx: '�
 let openId = null;
 let notice = '';
 let noticeKey = '';
-
-const currentTab = () => {
-  const raw = getSub('composition') ?? 0;
-  return raw >= 0 && raw < TABS.length ? raw : 0;
-};
 
 /**
  * 跳到另一个视图。app:go 的 detail 是一个视图 id 字符串（app.js 的
@@ -135,7 +130,7 @@ function detailHtml(d) {
     <div class="card-body">
       ${d.error_message ? `<div class="bar bad"><p>${escapeHtml(d.error_message)}</p></div>` : ''}
       ${d.status === 'succeeded' && d.artifact_url ? `
-        <video class="cp-video" controls preload="metadata" src="${d.artifact_url}"></video>
+        <video class="cp-video" controls preload="metadata" src="${escapeHtml(d.artifact_url)}"></video>
         <div class="cp-meta">
           <span><b>${d.width}×${d.height}</b> · ${fmtDuration(d.duration_ms)} · ${fmtBytes(d.bytes)}</span>
           <span class="mono" title="sha256">${escapeHtml(d.sha256)}</span>
@@ -243,7 +238,7 @@ export default {
         <p>成片按项目与集组织；去项目中心选一个再回来。</p>
       </div></div></section>`;
     }
-    const tab = currentTab();
+    const tab = currentSubTab('composition', TABS);
     const key = `${project.id}:${tab}`;
     if (noticeKey !== key) { notice = ''; noticeKey = ''; }
     let list = [];

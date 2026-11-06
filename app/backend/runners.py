@@ -435,7 +435,7 @@ def _cloud(job, params: dict, outputs: Path, adapter) -> RunSpec:
     argv 里只有请求文件路径；密钥值不进来，日志里也没有可泄露的东西。
     base URL 一律从环境变量读，清单里只留变量名。
     """
-    key_env = adapters.effective_key_env(adapter.code, "", adapter.capability, "cloud")
+    key_env = adapters.resolved_key_env(adapter.code, adapter.capability, "cloud")
     if not adapters.key_present(key_env):
         raise RunnerUnavailable(f"环境变量 {key_env} 没有值；云端作业不能起")
 

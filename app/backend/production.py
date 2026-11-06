@@ -647,7 +647,12 @@ def shot_workbench(shot_id: int) -> dict:
             "anchor": row["anchor"]}
 
     def _formal(rows):
-        """正式产物＝最新一条"成功且签过通过"的作业。与成片取片同一口径。"""
+        """图像/视频的「正式产物」展示字段＝最新一条"成功且签过通过"的作业。
+
+        注意：**合成判定不读它**。成片只认"每镜最新一条成功视频"（`MAX(id)`），
+        签字是独立条件；把"签过 approved"混进合成选择器，会出现
+        "最新那条还没签、更早签过的顶上来"→ 工作台说能合成、成片却拒收。
+        """
         for job in sorted(rows, key=lambda r: (str(r["finished_at"] or ""), int(r["id"])),
                           reverse=True):
             if job["status"] == "succeeded" and (signs.get(int(job["id"])) or {}).get(
@@ -656,8 +661,14 @@ def shot_workbench(shot_id: int) -> dict:
         return None
 
     formal_image, formal_video = _formal(image_jobs), _formal(video_jobs)
-    stale_video = bool(formal_video and services.job_source_stale(
-        formal_video, shot=shot))
+    # 与 `composition/timeline.build()` 同一个出处：最新一条成功视频作业。
+    # `can_compose` 与「源已变」都读它，签字单独算。
+    video_by_shot = job_repo.latest_succeeded_videos_by_shot(int(shot["episode_id"]))
+    latest_video = video_by_shot.get(int(shot_id))
+    signed_video = bool(latest_video is not None and (
+        signs.get(int(latest_video["id"])) or {}).get("decision") == "approved")
+    stale_video = bool(latest_video and services.job_source_stale(
+        latest_video, shot=shot))
 
     asset_ids = sorted(services.shot_asset_ids(shot))
     variant_ids = sorted(services.shot_variant_ids(shot))
@@ -688,8 +699,10 @@ def shot_workbench(shot_id: int) -> dict:
     check = precheck.shot_precheck(shot_id)
     blockers = [i for i in check["items"] if i["level"] == precheck.BLOCK]
     compose_ready = {
+        # 展示口径：有没有一条签过通过的正式视频。
         "video_ok": formal_video is not None,
-        "signed_ok": formal_video is not None,      # 正式的定义里就含"签过通过"
+        # 判定口径：最新那条成功视频签过没有（与成片取片同一条）。
+        "signed_ok": signed_video,
         "source_ok": not stale_video,
         "audio_ok": all(c["status"] == "ready" for c in clips) if clips else True,
         "audio_note": ("" if not clips else
@@ -697,7 +710,8 @@ def shot_workbench(shot_id: int) -> dict:
         "engine_note": ("配音/音乐执行引擎尚未接入，音频段只能登记台账"
                         if not any(v["runner_wired"] for v in audio_wired.values()) else ""),
         "blockers": blockers,
-        "can_compose": formal_video is not None and not stale_video and not blockers,
+        "can_compose": (latest_video is not None and signed_video
+                        and not stale_video and not blockers),
     }
 
     return {

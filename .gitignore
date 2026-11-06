@@ -3,3 +3,10 @@ __pycache__/
 data/
 *.pyc
 .DS_Store
+
+# 本地测试/门禁的临时目录（pytest 的 basetemp、浏览器检查的库副本）
+.pytest-tmp/
+.pytest_cache/
+
+# 项目本地的记忆与临时产物，不进代码仓库
+.workbuddy/

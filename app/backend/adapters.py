@@ -608,6 +608,27 @@ def effective_key_env(provider: str, configured: str = "",
     return "FV_KEY_" + provider.upper().replace("-", "_").replace(" ", "_")
 
 
+def resolved_key_env(provider: str, capability: str, backend: str,
+                     row=None) -> str:
+    """这条槽位到底从哪个环境变量读密钥——展示与执行的唯一出处。
+
+    `health()`／`has_key()` 已经拿着配置行，直接把 row 传进来；执行链
+    （`runners._cloud`）只有 provider，就按 (capability, backend) 现查槽位。
+    过去执行链把 configured 写死成空串，于是管理员填的自定义变量名只在
+    界面生效，真正发请求时回落到清单建议名：界面说「密钥就绪」、作业却
+    起不来；两个变量都有值时更会用上一个没被确认过的密钥。
+    """
+    if row is None:
+        from repositories.providers import providers   # 延迟导入，避开 adapters ↔ repositories 环
+        row = providers.slot(capability, backend)
+    configured = ""
+    if row is not None and "key_env" in row.keys():
+        # 槽位换了 provider 时，旧行里那个变量名不属于新 provider，回落清单名。
+        if (row["provider"] or "").strip() == (provider or "").strip():
+            configured = row["key_env"] or ""
+    return effective_key_env(provider, configured, capability, backend)
+
+
 def key_present(env_name: str) -> bool:
     """只看有没有，不看值；空名字自然算没有。"""
     return bool(env_name) and bool(os.environ.get(env_name))
@@ -715,7 +736,7 @@ def health(row) -> dict:
                         "source": adapter.source, "params_source": adapter.params_source},
             "key_env": ""}
     if backend == "cloud":
-        env = effective_key_env(provider, row["key_env"], capability, backend)
+        env = resolved_key_env(provider, capability, backend, row)
         base["key_env"] = env
         if not env:
             return {**base, "state": "unconfigured", "detail": "没有可用的密钥变量名"}

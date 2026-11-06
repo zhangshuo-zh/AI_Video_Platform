@@ -37,7 +37,8 @@ from paths import resolve_within
 from repositories.audio import clips
 from repositories.content import assets, episodes, shots
 from repositories.documents import documents as docs
-from repositories.jobs import jobs as job_repo
+from repositories.jobs import (RETRYABLE_JOB_STATUSES, jobs as job_repo,
+                               retry_reason)
 from repositories.pipeline import (NODE_ATTENTION, NODE_CANCELLED, NODE_DONE,
                                    NODE_FAILED, NODE_FINAL, NODE_PENDING,
                                    NODE_REVIEW, NODE_RUNNING, NODE_SKIPPED,
@@ -651,15 +652,26 @@ def tick(limit: int = 20) -> dict:
 def advance_run(run_id: int) -> dict:
     """把一条运行推进一步。重复调用是安全的：每一步都按当前真状态现算。
 
-    整段包在一个事务里（`BEGIN IMMEDIATE`）：两个进程同时推进同一条运行时，
-    后到的那个会等前一个提交，读到的一定是最新状态；而"同一个节点被派两次"
-    由 `try_begin()` 的原子转态挡住，不依赖这把锁。
+    **写事务只包「库内状态推进」**：读 run/节点、同步真状态、分层算出该派
+    哪些节点、给运行收尾。建 Job、建成片、跑 ffprobe 都不在事务里——它们
+    要么发 HTTP 探测、要么起子进程，最长能占住写锁几十秒；而 `db.get_conn`
+    只等 5 秒，另一条连接（包括 worker 每 0.2 秒的续租心跳）就会撞
+    `database is locked`。
+
+    派发改成两阶段：事务内用 `try_begin()` 原子转态占住这一格并把请求记下来
+    （所以两个进程同时推进时仍只有一个能派），提交后立刻把请求发出去再回写
+    job_id。中途崩了，这一格停在 running 且 job_id 为空，下一轮
+    `_sync_job_nodes` 会明说成「需要重试」——这是可见、可恢复的失败，好过
+    「Job 建好了、节点却不知道」那样重复扣费。
 
     派发是**分层**的：`_dispatch_ready` 拿的依赖快照是这一层开始时的状态，
     所以一层只放出"前置在本层之前就已经完成"的节点。内部检查节点是当场做完的，
     于是要循环到"这一层没有新东西可放"为止——否则读项目→读集→查分镜这种
     纯检查链，要点三次"推进"才走完一格，界面上看就是卡住。
     """
+    pending_jobs: list[tuple[dict, object, str]] = []
+    pending_compose: list[tuple[dict, str]] = []
+    probes = _prefetch_export_probes(run_id)
     with transaction():
         run = pipeline_repo.get_run(run_id)
         if run is None:
@@ -676,11 +688,59 @@ def advance_run(run_id: int) -> dict:
         _sync_review_nodes(run, nodes)
         for _ in range(MAX_LAYERS):
             nodes = pipeline_repo.nodes_for_run(run_id)
-            if not _dispatch_ready(run, nodes):
+            if not _dispatch_ready(run, nodes, pending_jobs=pending_jobs,
+                                   pending_compose=pending_compose, probes=probes):
                 break
         nodes = pipeline_repo.nodes_for_run(run_id)
         _finalize(run, nodes)
+    # 写锁已经放开：下面这些动作可能发 HTTP、起 ffprobe，但不再挡别人的写。
+    # 仍在同一次调用里同步做完，所以 advance_run 返回时节点与 Job 已经对齐。
+    for node, key in pending_compose:
+        _commit_composition(run, node, key)
+    for node, payload, key in pending_jobs:
+        _commit_submission(run, node, payload, key)
     return run_view(run_id)
+
+
+def _prefetch_export_probes(run_id: int) -> dict[int, object]:
+    """事务外把 `export_validate` 要用的 ffprobe 先跑掉。
+
+    `validators.inspect` 起子进程（最长 30 秒），放在 `BEGIN IMMEDIATE` 里
+    等于让所有写连接排队。这里全程只读，失败也只把异常带回去让节点明确失败；
+    没覆盖到的节点仍走事务内那条现场探测（兼容直接调 `_dispatch_ready` 的调用方）。
+    """
+    try:
+        nodes = pipeline_repo.nodes_for_run(run_id)
+        by_key = _node_map(nodes)
+        from composition import validators
+        from composition.service import view as composition_view
+        from repositories.compositions import compositions
+
+        probes: dict[int, object] = {}
+        for row in nodes:
+            node = dict(row)
+            if node["node_type"] != "export_validate" or node["status"] != NODE_PENDING:
+                continue
+            if not all(by_key.get(d, {}).get("status") == NODE_DONE
+                       for d in _deps_of(node)):
+                continue
+            job_id = _upstream_job(node, by_key)
+            if job_id is None:
+                continue
+            comp = compositions.by_job(job_id)
+            if comp is None:
+                continue
+            try:
+                view = composition_view(comp["id"])
+                target = jobfiles.resolve_artifact(view.get("output_path") or "")
+                if target is None:
+                    continue
+                probes[node["id"]] = validators.inspect(target)
+            except Exception as exc:
+                probes[node["id"]] = exc
+        return probes
+    except Exception:
+        return {}
 
 
 def _node_map(nodes) -> dict[str, dict]:
@@ -820,11 +880,14 @@ def _find_approval(node: dict, node_input: dict):
     return None
 
 
-def _dispatch_ready(run, nodes) -> int:
+def _dispatch_ready(run, nodes, *, pending_jobs=None, pending_compose=None,
+                    probes=None) -> int:
     """把"依赖都完成了"的 pending 节点派出去。返回这一层派了几个。
 
     依赖状态取自传进来的那份快照，所以一层之内刚完成的节点不会立刻放出下游；
     调用方按层循环（见 `advance_run`），每层重读一次。
+    `pending_jobs`／`pending_compose` 由 `advance_run` 传入：真正建 Job／成片的
+    动作要等写事务提交后再做，本函数只负责在事务里原子占住这一格。
     """
     by_key = _node_map(nodes)
     dispatched = 0
@@ -838,20 +901,22 @@ def _dispatch_ready(run, nodes) -> int:
         if not all(by_key.get(d, {}).get("status") == NODE_DONE for d in deps):
             continue                       # 前置没完成：blocked（现算，不入库）
         dispatched += 1
-        _execute_node(run, node, by_key)
+        _execute_node(run, node, by_key, pending_jobs=pending_jobs,
+                      pending_compose=pending_compose, probes=probes)
     return dispatched
 
 
-def _execute_node(run, node: dict, by_key: dict) -> None:
+def _execute_node(run, node: dict, by_key: dict, *, pending_jobs=None,
+                  pending_compose=None, probes=None) -> None:
     ntype = node["node_type"]
     if ntype == "export_compose":
-        _submit_composition_node(run, node)
+        _submit_composition_node(run, node, pending=pending_compose)
     elif ntype in JOB_NODES:
-        _submit_job_node(run, node, by_key)
+        _submit_job_node(run, node, by_key, pending=pending_jobs)
     elif ntype in REVIEW_NODES:
         _arm_review_node(run, node, by_key)
     else:
-        _run_internal_node(run, node, by_key)
+        _run_internal_node(run, node, by_key, probes=probes)
 
 
 def _idempotency_key(run, node: dict) -> str:
@@ -915,12 +980,13 @@ def _deps_of(node) -> list[str]:
         return []
 
 
-def _submit_job_node(run, node: dict, by_key: dict) -> None:
-    """提交一条生成作业，并把 Job ID 记到节点上。**两步在同一个事务里**（调用方开着）。
+def _submit_job_node(run, node: dict, by_key: dict, pending=None) -> None:
+    """在写事务里原子占住这一格，把「建 Job」的请求交给调用方到事务外执行。
 
-    顺序是：原子转态 → 建 Job → 回写 job_id → 记事件。
-    事务保证不存在"Job 建好了、节点不知道"这个中间态；`try_begin()` 的 rowcount
-    保证连点两次重试只有一个能赢。
+    顺序是：原子转态 →（事务外）建 Job → 回写 job_id → 记事件。
+    `try_begin()` 保证连点两次重试只有一个能赢；幂等键保证即使重放也只建
+    一条 Job。事务只保护「这一格归谁」，不把 `submit_job` 里的 HTTP 探测
+    与参数校验关在写锁里。
     """
     if not pipeline_repo.try_begin(node["id"]):
         return                             # 别人已经抢走了这一格
@@ -948,12 +1014,6 @@ def _submit_job_node(run, node: dict, by_key: dict) -> None:
             return
         params[missing[0]] = found
     key = _idempotency_key(run, node)
-    existing = job_repo.by_key(key)
-    if existing is not None:
-        pipeline_repo.attach_job(node["id"], existing["id"])
-        pipeline_repo.add_event(run["id"], node["id"], "job_submitted",
-                                {"job_id": existing["id"], "reused": True})
-        return
     payload = SimpleNamespace(
         project_id=run["project_id"], episode_id=run["episode_id"],
         shot_id=node_input.get("shot_id"), capability=capability,
@@ -965,6 +1025,24 @@ def _submit_job_node(run, node: dict, by_key: dict) -> None:
         input_refs=[{"pipeline_run_id": run["id"], "node_key": node["node_key"],
                      "node_type": node["node_type"]}],
         estimate=None, user_confirmed_cloud=False, priority=0, idempotency_key=key)
+    if pending is not None:
+        pending.append((dict(node), payload, key))
+        return
+    _commit_submission(run, node, payload, key)
+
+
+def _commit_submission(run, node: dict, payload, key: str) -> None:
+    """事务外真正建 Job 并回写节点。
+
+    先认幂等键：上一轮事务提交了、进程却没来得及建单时，重放不会排出第二条
+    Job（云端那条尤其不能重复扣费）。
+    """
+    existing = job_repo.by_key(key)
+    if existing is not None:
+        pipeline_repo.attach_job(node["id"], existing["id"])
+        pipeline_repo.add_event(run["id"], node["id"], "job_submitted",
+                                {"job_id": existing["id"], "reused": True})
+        return
     try:
         job = services.submit_job(payload, run["created_by"])
     except services.JobInvalid as exc:
@@ -976,7 +1054,7 @@ def _submit_job_node(run, node: dict, by_key: dict) -> None:
         return
     pipeline_repo.attach_job(node["id"], job["id"])
     pipeline_repo.add_event(run["id"], node["id"], "job_submitted", {
-        "job_id": job["id"], "capability": capability,
+        "job_id": job["id"], "capability": payload.capability,
         "provider": job["provider_code"], "model": job["model_code"],
         "execution_mode": job["execution_mode"]})
 
@@ -1032,18 +1110,27 @@ def compose_shot_jobs(run) -> dict[int, int] | None:
     return by_shot or None
 
 
-def _submit_composition_node(run, node: dict) -> None:
-    """成片合成节点：建时间线＋成片行＋Job，三步一个事务（在 composition 里）。
+def _submit_composition_node(run, node: dict, pending=None) -> None:
+    """成片合成节点：事务里只原子占住这一格，真正的建单在事务外。
 
     它和生成节点的区别只有"参数从哪来"：生成走模型白名单，合成走时间线。
     幂等同样用 `pl-<run>-<key>-a<n>`：同一次运行重放不会排出两个版本。
+    `create_composition` 要建时间线、验素材、起 Job，不该占着写锁做。
     """
     if not pipeline_repo.try_begin(node["id"]):
         return
+    key = _idempotency_key(run, node)
+    if pending is not None:
+        pending.append((dict(node), key))
+        return
+    _commit_composition(run, node, key)
+
+
+def _commit_composition(run, node: dict, key: str) -> None:
+    """事务外建时间线＋成片行＋Job，再把 job_id 回写到节点。"""
     from composition.service import (CompositionConflict, CompositionInvalid,
                                      CompositionMissing, create as create_composition)
 
-    key = _idempotency_key(run, node)
     existing = job_repo.by_key(key)
     if existing is not None:
         from repositories.compositions import compositions
@@ -1172,7 +1259,7 @@ def _upstream_job(node: dict, by_key: dict) -> int | None:
     return None
 
 
-def _run_internal_node(run, node: dict, by_key: dict) -> None:
+def _run_internal_node(run, node: dict, by_key: dict, probes=None) -> None:
     """内部检查节点：调度器当场做完，不排队、不花钱。
 
     读文件与读库都在事务里——这些都是**只读**，回滚不需要撤销任何东西；
@@ -1286,7 +1373,13 @@ def _run_internal_node(run, node: dict, by_key: dict) -> None:
             target = jobfiles.resolve_artifact(view["output_path"])
             if target is None:
                 raise _NodeFail("output_missing", "最终成片文件不在了")
-            info = validators.inspect(target)
+            # ffprobe 由 `advance_run` 在事务外预取；没预取到（例如直接调本函数）
+            # 才退回现场探测，行为与改动前一致。
+            info = probes.get(node["id"]) if probes else None
+            if info is None:
+                info = validators.inspect(target)
+            elif isinstance(info, Exception):
+                raise _NodeFail("probe_failed", f"成片探测失败：{info}")
             if info["bytes"] != view["bytes"]:
                 raise _NodeFail("output_changed", "最终成片的大小与记录不一致")
             status, output = NODE_DONE, {
@@ -1443,7 +1536,8 @@ def cancel_run(run_id: int, reason: str = "") -> dict:
     return run_view(run_id)
 
 
-RETRYABLE_JOB_STATUSES = ("failed", "cancelled", "needs_attention")
+# 可重试作业的状态集合由 repositories.jobs 统一定义，上面直接 import 进来：
+# 外部引用 `pipeline.RETRYABLE_JOB_STATUSES` 拿到的仍是同一个元组。
 
 
 def retry_gate(node, run, job=None) -> str:
@@ -1472,9 +1566,10 @@ def retry_gate(node, run, job=None) -> str:
             job = job_repo.get(node["job_id"])
         if job is None:
             return "关联的作业已经不在了，没法重试"
-        if job["status"] not in RETRYABLE_JOB_STATUSES:
+        reason = retry_reason(job)
+        if reason:
             return (f"作业 #{job['id']} 现在是「{JOB_STATUSES.get(job['status'], job['status'])}」，"
-                    f"只有失败、已取消或待核对的作业能重试")
+                    f"只有失败、已取消或待核对的作业能重试；{reason}")
     return ""
 
 

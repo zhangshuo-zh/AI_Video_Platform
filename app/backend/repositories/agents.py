@@ -240,6 +240,26 @@ class AgentRepository:
             return conn.execute("SELECT * FROM agent_step WHERE run_id = ? "
                                 "ORDER BY seq", (int(run_id),)).fetchall()
 
+    def steps_for_runs(self, run_ids: list[int]) -> dict[int, list[sqlite3.Row]]:
+        """一次取回多条运行的步骤，按 run_id 分组（仍是 seq 顺序）。
+
+        列表页与概览过去对每条运行各调一次 `steps()`：200 条运行就是 200 次
+        回库，概览还会对前 20 条再重复查一遍。`0041` 已有
+        `idx_agent_step_run(run_id, seq)`，一条 `IN` 查询直接命中。
+        """
+        ids = sorted({int(r) for r in run_ids if r is not None})
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM agent_step WHERE run_id IN ({marks}) "
+                "ORDER BY run_id, seq", ids).fetchall()
+        grouped: dict[int, list[sqlite3.Row]] = {i: [] for i in ids}
+        for row in rows:
+            grouped[int(row["run_id"])].append(row)
+        return grouped
+
     def update_step(self, step_id: int, patch: dict) -> sqlite3.Row:
         """逐字段更新一步。列名白名单写死在这里：
         把外部传来的键直接拼进 SET 就是 SQL 注入的门，哪怕来源是 worker。

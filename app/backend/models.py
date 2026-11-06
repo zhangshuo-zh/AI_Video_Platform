@@ -431,6 +431,12 @@ class JobOut(BaseModel):
     attempt: int = 1
     superseded_by_job_id: int | None = None
     retry_count: int = 0
+    # 服务端下发的「这一行现在能做什么」：前端不再自己按状态集合猜，
+    # 否则会出现「钮在、点下去必吃 409」。用 Optional 是为了不经过 from_row
+    # 的老构造点不被误标成 False——前端只在拿到布尔值时才采信。
+    cancelable: bool | None = None
+    retryable: bool | None = None
+    retry_hint: str = ""
     actual_cost_micros: int | None = None
     delta_micros: int | None = None
     attention_reason: str = ""
@@ -440,9 +446,12 @@ class JobOut(BaseModel):
 
     @classmethod
     def from_row(cls, row) -> "JobOut":
+        from repositories.jobs import retry_reason   # 延迟导入，避开 models ↔ repositories 环
+
         prompt = row["prompt_snapshot"] or ""
         keys = row.keys()
         cost = row["cost_micros"]
+        hint = retry_reason(row)
         actual = row["actual_cost_micros"] if "actual_cost_micros" in keys else None
         return cls(
             id=row["id"], project_id=row["project_id"],
@@ -473,7 +482,12 @@ class JobOut(BaseModel):
             attempt=int(row["attempt"] or 1) if "attempt" in keys else 1,
             superseded_by_job_id=(row["superseded_by_job_id"]
                                   if "superseded_by_job_id" in keys else None),
-            retry_count=int(row.get("retry_count") or 0) if hasattr(row, "get") else 0,
+            # 仓储给的是 sqlite3.Row，没有 .get()：一律按 keys() 判断，
+            # 否则「重试过几次」会静默恒为 0（与 production.py 里那条注释同理）。
+            retry_count=int(row["retry_count"] or 0) if "retry_count" in keys else 0,
+            cancelable=row["status"] in ("queued",) + JOB_RUNNING,
+            retryable=not hint,
+            retry_hint=hint,
             actual_cost_micros=actual,
             delta_micros=(None if actual is None or cost is None else int(actual) - int(cost)),
             attention_reason=(row["attention_reason"] or "") if "attention_reason" in keys else "",

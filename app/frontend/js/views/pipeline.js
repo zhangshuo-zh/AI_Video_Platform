@@ -12,7 +12,7 @@
  */
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { getSub, setSub, setParam } from '../navstate.js';
+import { currentSubTab, getSub, setSub, setParam } from '../navstate.js';
 import { agoText, bindModalDismiss, bindSubChips, confirmDanger, errorBox, escapeHtml, run, subChipRow } from '../util.js';
 import { publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
@@ -72,11 +72,6 @@ const SEASON_ITEM_TONE = {
   completed: 'green', completed_with_errors: 'amber',
 };
 const RES_LABEL = { text: '文本', image: '图片', video: '视频', audio: '音频', compose: '合成' };
-
-const currentTab = () => {
-  const raw = getSub('pipeline') ?? 0;
-  return raw >= 0 && raw < TABS.length ? raw : 0;
-};
 
 function eventText(ev) {
   const p = ev.payload || {};
@@ -577,7 +572,7 @@ export default {
         <p>产线运行按项目与集组织；去项目中心选一个再回来。</p>
       </div></div></section>`;
     }
-    const tab = currentTab();
+    const tab = currentSubTab('pipeline', TABS);
     const key = `${project.id}:${tab}`;
     if (noticeKey !== key) { notice = ''; noticeKey = ''; }
     const HEAD_DESC = [
@@ -733,7 +728,7 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('pipeline', i); refresh(); });
 
-    if (currentTab() === 2) {
+    if (currentSubTab('pipeline', TABS) === 2) {
       bindSeasons(root, refresh);
       return;
     }
@@ -773,7 +768,7 @@ export default {
 
     const act = async (label, fn, okText) => {
       if (!(await run(label, fn))) return;
-      notice = okText; noticeKey = `${store.current.id}:${currentTab()}`;
+      notice = okText; noticeKey = `${store.current.id}:${currentSubTab('pipeline', TABS)}`;
       refresh();
     };
     root.querySelector('[data-advance]')?.addEventListener('click', () =>

@@ -17,7 +17,7 @@ import services
 import worker
 from config import JOBS_DIR
 from db import get_conn
-from repositories.jobs import jobs
+from repositories.jobs import JobOwnershipLost, jobs
 
 
 def _submit(c, project_id, **kw):
@@ -179,6 +179,17 @@ def test_worker_消失后作业不永挂_可重试(as_role, clean_queue, seeded)
     assert jobs.get(job["id"])["status"] == "failed"
     assert jobs.get(job["id"])["error_code"] == "worker_lost"
 
+    # 旧 worker 只是被拖过租约、其实还活着：回来写终态必须被明确拒绝，
+    # 不能静默地把库里那条 failed 盖成 succeeded（日志与库会各说一套）。
+    with pytest.raises(JobOwnershipLost):
+        jobs.succeed(job["id"], "w-dead", "", [], 10)
+    assert jobs.get(job["id"])["status"] == "failed"
+
+    # retry_count 是仓储算出来的派生列，sqlite3.Row 没有 .get()：
+    # 模型层按 keys() 取值，重试行挂回原行后这一格必须是 1，不能恒为 0。
+    listed = c.get(f"/api/jobs?project_id={seeded['project_id']}").json()
+    assert any(r["id"] == job["id"] and r["retry_count"] == 1 for r in listed)
+
 
 def test_恢复不动租约未过期的活(as_role, clean_queue, seeded):
     """周期恢复是个双刃剑：活着的 worker 每 0.2 秒续租，不能被当成"死了"。"""
@@ -202,8 +213,10 @@ def test_别人的_worker_id_改不动一条作业的终态(as_role, clean_queue
     claimed = jobs.claim_next("w-owner", 60)
     assert claimed is not None and claimed["id"] == job["id"]
 
-    # 冒名者：id 对、worker 不对 → 一个字段都不该动
-    jobs.cancelled(job["id"], "w-imposter", "别人来收尾")
+    # 冒名者：id 对、worker 不对 → 一个字段都不该动，而且要明确报「归属丢了」，
+    # 不许静默返回一句「写好了」骗上层（旧 worker 被租约收走时同理）。
+    with pytest.raises(JobOwnershipLost):
+        jobs.cancelled(job["id"], "w-imposter", "别人来收尾")
     row = jobs.get(job["id"])
     assert row["status"] == "starting"
     assert row["worker_id"] == "w-owner"

@@ -99,8 +99,10 @@ def test_成片单独占一类不与视频抢(queue):
     one = job_repo.claim_next("e1-v", 60, limits=limits)
     two = job_repo.claim_next("e1-f", 60, limits=limits)
     assert (one["id"], two["id"]) == (v["id"], f["id"])
-    for row in (one, two):
-        _finish(row["id"], "e1-x")
+    # 终态写入带 `AND worker_id = ?` 归属守卫：谁领的就得由谁收尾，
+    # 两行都用同一个临时 wid 现在会被明确判成「归属丢了」。
+    for row, wid in ((one, "e1-v"), (two, "e1-f")):
+        _finish(row["id"], wid)
 
 
 def test_两个worker同时领只有一条拿到(queue):

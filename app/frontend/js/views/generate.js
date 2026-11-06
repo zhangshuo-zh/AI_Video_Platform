@@ -8,7 +8,7 @@
  */
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { escapeHtml, run, errorBox, confirmDanger, bindModalDismiss, formatMoney }
+import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney }
   from '../util.js';
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
@@ -90,10 +90,17 @@ function rowHtml(job) {
   // 就能出这一行，不隐的话只读的人每行都挂着三个点了必 403 的钮。
   const canCancel = store.can('job:cancel');
   const canAct = store.can('job:submit');
-  const actionCancel = JOB_ACTIVE.includes(job.status) && canCancel
+  // 「能不能取消/重试」由服务端下发（`JobOut.cancelable/retryable`）。
+  // 老服务端没有这两个字段时才退回本地集合——本地集合只是兜底，不再是判据。
+  const cancelable = typeof job.cancelable === 'boolean'
+    ? job.cancelable : JOB_ACTIVE.includes(job.status);
+  const retryable = typeof job.retryable === 'boolean'
+    ? job.retryable : JOB_FINISHED_BAD.includes(job.status);
+  const retryHint = job.retry_hint ? ` title="${escapeHtml(job.retry_hint)}"` : '';
+  const actionCancel = cancelable && canCancel
     ? `<button class="btn xs" data-cancel="${job.id}">取消</button>` : '';
-  const actionRetry = JOB_FINISHED_BAD.includes(job.status) && canAct
-    ? `<button class="btn xs" data-retry="${job.id}">重试</button>` : '';
+  const actionRetry = retryable && canAct
+    ? `<button class="btn xs" data-retry="${job.id}"${retryHint}>重试</button>` : '';
   // 待核对的云端作业先核对再谈重试：那笔钱可能已经花了，默认重试是最坏的建议
   const actionReconcile = job.status === 'needs_attention' && canAct
     ? `<button class="btn xs" data-reconcile="${job.id}">核对</button>` : '';
@@ -142,22 +149,23 @@ function jobCostCell(job) {
     return `<span class="t-dim">预计 ${amount}</span>
       <span class="t-desc">不计费</span>`;
   }
-  const note = job.billable_status === 'known' ? '已确认' : '待核对';
+  // 账单中文标签也由服务端下发（`billable_status_label`），本地只做兜底，
+  // 免得界面与账本各有一套说法（比如 known 一处写「已确认」一处写「已核价」）。
+  const note = job.billable_status_label
+    || (job.billable_status === 'known' ? '已确认' : '待核对');
   return `<b>${amount}</b><span class="t-desc">${note}</span>`;
 }
 
 function emptyHtml() {
   if (state.q || state.status || state.capability || state.mode || state.projectId) {
-    return `<div class="empty"><div class="empty-t">没有符合条件的作业</div>
-      <p>换一个状态或项目看看；作业一提交就会出现在这里。</p></div>`;
+    return emptyBox('没有符合条件的作业',
+      '<p>换一个状态或项目看看；作业一提交就会出现在这里。</p>');
   }
-  return `<div class="empty">
-    <div class="empty-t">队列是空的</div>
+  return emptyBox('队列是空的', `
     <p>到分镜里挑一条镜头提交，或在这里直接提交一条作业。本地一次只跑一个，
        云端可并发提交、串行落库；配音与音乐也排这一条队。</p>
     <p><button class="btn primary" data-new-job>提交第一条作业</button></p>
-    <p class="hint">提交前先跑一遍基准清单，速度数字才是真的。</p>
-  </div>`;
+    <p class="hint">提交前先跑一遍基准清单，速度数字才是真的。</p>`);
 }
 
 function statsHtml() {
@@ -618,21 +626,27 @@ export default {
       // 也等于让人误以为"我能取消别人的作业"。
       const canCancel = store.can('job:cancel');
       const canAct = store.can('job:submit');
+      // 与列表同一口径：服务端说能不能，前端只说「你有没有这个权限」。
+      const cancelable = typeof job.cancelable === 'boolean'
+        ? job.cancelable : JOB_ACTIVE.includes(job.status);
+      const retryable = typeof job.retryable === 'boolean'
+        ? job.retryable : JOB_FINISHED_BAD.includes(job.status);
+      const retryTitle = job.retry_hint ? ` title="${escapeHtml(job.retry_hint)}"` : '';
       const actions = [
-        JOB_ACTIVE.includes(job.status) && canCancel
+        cancelable && canCancel
           ? `<button class="btn" data-cancel="${job.id}">取消作业</button>` : '',
         job.status === 'needs_attention' && canAct
           ? `<button class="btn primary" data-reconcile="${job.id}">核对账单</button>` : '',
-        JOB_FINISHED_BAD.includes(job.status) && canAct
-          ? `<button class="btn" data-retry="${job.id}">重试（新建一行）</button>` : '',
+        retryable && canAct
+          ? `<button class="btn" data-retry="${job.id}"${retryTitle}>重试（新建一行）</button>` : '',
         canMarkAttention && canAct
           ? `<button class="btn" data-attention="${job.id}">标记待核对</button>` : '',
       ].filter(Boolean).join('');
       // 动作区空着有两种原因，不能拿同一句话糊过去：一种是"这条已经跑完了"，
       // 另一种是"你能看，但这个档位不让你动"。后者不写出来，人只会对着空白反复点。
       const blocked = !actions && (
-        (JOB_ACTIVE.includes(job.status) && !canCancel)
-        || ((JOB_FINISHED_BAD.includes(job.status) || job.status === 'needs_attention') && !canAct));
+        (cancelable && !canCancel)
+        || ((retryable || job.status === 'needs_attention') && !canAct));
       const actionsHint = blocked
         ? '这里没有你能按的钮：取消要 job:cancel，重试／核对要 job:submit。'
         : '已结束，可关闭。';

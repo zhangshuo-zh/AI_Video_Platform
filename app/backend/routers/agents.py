@@ -130,7 +130,13 @@ def list_runs(project_id: int, limit: int = 50,
               user=Depends(require_permission("project:read"))) -> dict:
     access.ensure(user, project_id, "read")
     rows = agents.agent_runs.list_by_project(project_id, limit=max(1, min(limit, 200)))
-    return {"items": [agents.run_row_view(r, agents.agent_runs.steps(r["id"]))
+    # 一条 IN 查询取齐所有步骤，再一次读回行内 Job：列表与详情给出同一份字段，
+    # 不再出现「列表里 job_status 是空串、详情里却有值」。
+    steps_by_run = agents.agent_runs.steps_for_runs([r["id"] for r in rows])
+    job_ids = [s["job_id"] for steps in steps_by_run.values()
+               for s in steps if s["job_id"]]
+    jobs_by_id = agents.job_repo.get_many(job_ids, with_derived=False) if job_ids else {}
+    return {"items": [agents.run_row_view(r, steps_by_run.get(r["id"], []), jobs_by_id)
                       for r in rows],
             "status_labels": agents.RUN_STATUS_LABEL}
 

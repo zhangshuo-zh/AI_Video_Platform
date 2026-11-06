@@ -13,8 +13,8 @@ import { gotoEntry } from '../goto.js';
 
 
 import { store } from '../store.js';
-import { getSub, setSub } from '../navstate.js';
-import { bindSubChips, escapeHtml, errorBox, run, subChipRow } from '../util.js';
+import { currentSubTab, getSub, setSub } from '../navstate.js';
+import { bindSubChips, emptyBox, escapeHtml, errorBox, run, subChipRow } from '../util.js';
 import { checklistHtml } from './review-checklist.js';
 import { bindActions, renderActions } from './review-actions.js';
 import { DECISION_TONE } from '../validation.js';
@@ -41,10 +41,6 @@ const HEAD_SUB = {
   2: '智能体要执行的动作，批准与驳回只在这一栏落笔',
 };
 const TABS = ['文档审核', '产物审核', '动作审批'];
-const currentTab = () => {
-  const raw = getSub('review') ?? 0;
-  return raw >= 0 && raw < TABS.length ? raw : 0;
-};
 
 export default {
   subIndex: 0,
@@ -57,7 +53,7 @@ export default {
         <p>审核按项目汇总；去项目中心选一个再回来。</p>
       </div></div></section>`;
     }
-    const tab = currentTab();
+    const tab = currentSubTab('review', TABS);
     const head = `<div class="page-head">
         <h1>审核中心</h1>
         <p>${HEAD_SUB[tab] || '审核'} · ${escapeHtml(project.name)}</p>
@@ -99,8 +95,8 @@ export default {
           <thead><tr><th>文档</th><th>最新校验</th><th>问题</th><th>错误 / 警告</th>
             <th class="r">已签</th><th class="r"></th></tr></thead>
           <tbody>${rows}</tbody>
-        </table></div>` : `<div class="empty"><div class="empty-t">还没有可审的文档</div>
-          <p>小说／剧本建好并写出正文后，就会出现在这里。</p></div>`}
+        </table></div>` : emptyBox('还没有可审的文档',
+          '<p>小说／剧本建好并写出正文后，就会出现在这里。</p>')}
       </div>
       ${openDocId ? '<div id="review-detail" class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读报告…</p></div></div>' : ''}
       ${canSign ? '' : '<p class="hint">你只有查看权限；签字需要 review:sign。</p>'}
@@ -167,9 +163,9 @@ export default {
           <thead><tr><th>作业</th><th>能力 / 模型档</th><th class="r">产物</th>
             <th>结论</th><th class="r">完成时间</th><th class="r"></th><th class="r">批量</th></tr></thead>
           <tbody>${rows}</tbody>
-        </table></div>` : `<div class="empty"><div class="empty-t">还没有可审的产物</div>
-          <p>关键帧或镜头视频跑成功之后会出现在这里。本机没有图像运行时时，
-            这一栏会一直是空的——那是环境没配，不是页面坏了。</p></div>`}
+        </table></div>` : emptyBox('还没有可审的产物',
+          `<p>关键帧或镜头视频跑成功之后会出现在这里。本机没有图像运行时时，
+            这一栏会一直是空的——那是环境没配，不是页面坏了。</p>`)}
       </div>
       ${openJobId ? '<div id="job-review-detail" class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读产物…</p></div></div>' : ''}
       ${canSign ? '' : '<p class="hint">你只有查看权限；签字需要 review:sign。</p>'}
@@ -180,8 +176,8 @@ export default {
     if (!store.current) return;
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('review', i); refresh(); });
-    if (currentTab() === 1) return this.mountJobs(root, refresh);
-    if (currentTab() === 2) return bindActions(root, refresh);
+    if (currentSubTab('review', TABS) === 1) return this.mountJobs(root, refresh);
+    if (currentSubTab('review', TABS) === 2) return bindActions(root, refresh);
     root.querySelectorAll('[data-open-review]').forEach((btn) => {
       btn.addEventListener('click', () => {
         openDocId = Number(btn.dataset.openReview);

@@ -26,9 +26,8 @@ def has_key(row, env_name: str = "") -> bool:
         # 本地运行时不用密钥；不要因为环境里恰好有个同名变量就显示"已配置"
         return False
     if not env_name:
-        env_name = adapters.effective_key_env(
-            row["provider"], row["key_env"] if "key_env" in row.keys() else "",
-            row["capability"], row["backend"])
+        env_name = adapters.resolved_key_env(
+            row["provider"], row["capability"], row["backend"], row)
     return adapters.key_present(env_name)
 
 

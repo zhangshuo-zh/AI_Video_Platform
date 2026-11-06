@@ -97,11 +97,12 @@ footer {
 <body>
 <main>
 <h1>AI 视频生产平台 文档写作与引用规范</h1>
-<ul><li>文档类型：元文档。规定 <code>文档/</code> 与 <code>设计稿.md</code> 怎么写、怎么互相指、事实住在哪一册</li><li>版本：v1.0（2026-11-05），对应设计稿 v0.117</li><li>适用对象：改文档的人与改代码的人（同一轮里两者必须一起改）</li><li>本册不声明可算数字：路由数、测试数、表数、迁移号一律见《发布基线.md》</li></ul>
+<ul><li>文档类型：元文档。规定 <code>文档/</code> 与 <code>设计稿.md</code> 怎么写、怎么互相指、事实住在哪一册</li><li>版本：v1.1（2026-11-06），对应设计稿 v0.124</li><li>适用对象：改文档的人与改代码的人（同一轮里两者必须一起改）</li><li>本册不声明可算数字：路由数、测试数、表数、迁移号一律见《发布基线.md》</li></ul>
 <h2>修订记录</h2>
+<p>| 2026-11-06 | v1.1 | 门禁从六查补到八查（目录锚点、留档头部此前没写进本册）；补两条只能靠人守的账，去掉东家表里重复的册名 | §11、附录 A |</p>
 <div class="table-wrap"><table><thead><tr><th>日期</th><th>版本</th><th>一句话结论</th><th>详见</th></tr></thead><tbody><tr><td>2026-11-05</td><td>v1.0</td><td>首次成册：唯一东家表、每册骨架、目录与锚点、速览＋详录、引用写法、门禁六查</td><td>§1—§12</td></tr></tbody></table></div>
 <h2>目录</h2>
-<ol><li><a href="#修订记录">修订记录</a></li><li><a href="#1-这一册解决什么">1. 这一册解决什么</a></li><li><a href="#2-事实只有一个东家">2. 事实只有一个东家</a></li><li><a href="#3-每册的固定骨架">3. 每册的固定骨架</a></li><li><a href="#4-目录什么时候必须有">4. 目录：什么时候必须有</a></li><li><a href="#5-修订记录速览表变更详录">5. 修订记录：速览表＋变更详录</a></li><li><a href="#6-引用写法">6. 引用写法</a></li><li><a href="#7-数字与状态的写法">7. 数字与状态的写法</a></li><li><a href="#8-配图规则">8. 配图规则</a></li><li><a href="#9-句子与表格">9. 句子与表格</a></li><li><a href="#10-术语对照">10. 术语对照</a></li><li><a href="#11-门禁doc_structure_checkpy">11. 门禁：doc_structure_check.py</a></li><li><a href="#12-已知缺口">12. 已知缺口</a></li></ol>
+<ol><li><a href="#修订记录">修订记录</a></li><li><a href="#1-这一册解决什么">1. 这一册解决什么</a></li><li><a href="#2-事实只有一个东家">2. 事实只有一个东家</a></li><li><a href="#3-每册的固定骨架">3. 每册的固定骨架</a></li><li><a href="#4-目录什么时候必须有">4. 目录：什么时候必须有</a></li><li><a href="#5-修订记录速览表变更详录">5. 修订记录：速览表＋变更详录</a></li><li><a href="#6-引用写法">6. 引用写法</a></li><li><a href="#7-数字与状态的写法">7. 数字与状态的写法</a></li><li><a href="#8-配图规则">8. 配图规则</a></li><li><a href="#9-句子与表格">9. 句子与表格</a></li><li><a href="#10-术语对照">10. 术语对照</a></li><li><a href="#11-门禁doc_structure_checkpy">11. 门禁：doc_structure_check.py</a></li><li><a href="#12-已知缺口">12. 已知缺口</a></li><li><a href="#附录-a-变更详录">附录 A 变更详录</a></li></ol>
 <h2>1. 这一册解决什么</h2>
 <p>三个问题，都是现测的——数字用 <code>tools/doc_structure_check.py</code> 的同一套判据 量改造前的仓库（<code>git show HEAD:</code> 那 20 份），不是估的：</p>
 <ul><li><strong>读不动。</strong> 正文里超过 400 字的行 <strong>232 行</strong>；《设计稿》全册 55% 的字数是一张 96 行的</li></ul>
@@ -113,7 +114,7 @@ footer {
 <p>本册给的是<strong>可检查</strong>的规矩，不是风格偏好。每条后面都写了它靠什么守住， 守不住的东西写进 §12 当已知缺口，不假装已经管住。</p>
 <h2>2. 事实只有一个东家</h2>
 <p>一类事实只许一册能写，别处只许引用。这是全库最重要的一条， <code>§6</code> 的引用写法和 <code>§11</code> 的门禁都为它服务。</p>
-<div class="table-wrap"><table><thead><tr><th>事实</th><th>唯一东家</th><th>别册允许的写法</th></tr></thead><tbody><tr><td>路由数、测试数、表数、迁移号、端点口径</td><td>《发布基线.md》（<code>tools/make_release_baseline.py</code> 现算生成）</td><td>「见《发布基线》§X」；只有需求概要与系统设计按门禁要求各留一行读数</td></tr><tr><td>表、列、索引、约束</td><td>《数据字典.md》</td><td>「列口径见《数据字典》§X」</td></tr><tr><td>界面逐屏怎么操作</td><td>《系统使用说明书.md》《生产工作台使用说明书.md》《模型中心使用说明书.md》</td><td>互相指，不重述字段表</td></tr><tr><td>接口、状态机、组件、实现取舍</td><td>《系统设计说明书.md》</td><td>「实现见《系统设计》§X」</td></tr><tr><td>产品需求、交互规范、验收口径</td><td>《需求概要说明书.md》</td><td>「需求原文见《需求概要》§X」</td></tr><tr><td>决策与分期</td><td>《设计稿.md》正文 《设计稿》§0—§8</td><td>修订记录只写一句话结论</td></tr><tr><td>演练与样例</td><td>《黄金样例与故障演练.md》</td><td>指过去，别抄步骤</td></tr><tr><td>阻塞项与未验证项</td><td><code>tools/release_blockers.json</code>（生成进《发布基线》）</td><td>不许在正文另列一张阻塞表</td></tr><tr><td>某一轮工作包的过程记录</td><td><code>文档/开发/**</code></td><td>只作历史留档，当前口径一律指回主干册</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>事实</th><th>唯一东家</th><th>别册允许的写法</th></tr></thead><tbody><tr><td>路由数、测试数、表数、迁移号、端点口径</td><td>《发布基线.md》（<code>tools/make_release_baseline.py</code> 现算生成）</td><td>「见《发布基线》§X」；只有需求概要与系统设计按门禁要求各留一行读数</td></tr><tr><td>表、列、索引、约束</td><td>《数据字典.md》</td><td>「列口径见《数据字典》§X」</td></tr><tr><td>界面逐屏怎么操作</td><td>《系统使用说明书.md》《生产工作台使用说明书.md》《模型中心使用说明书.md》</td><td>互相指，不重述字段表</td></tr><tr><td>接口、状态机、组件、实现取舍</td><td>《系统设计说明书.md》</td><td>「实现见《系统设计》§X」</td></tr><tr><td>产品需求、交互规范、验收口径</td><td>《需求概要说明书.md》</td><td>「需求原文见《需求概要》§X」</td></tr><tr><td>决策与分期</td><td>《设计稿.md》正文（《设计稿》§0—§8）</td><td>修订记录只写一句话结论</td></tr><tr><td>演练与样例</td><td>《黄金样例与故障演练.md》</td><td>指过去，别抄步骤</td></tr><tr><td>阻塞项与未验证项</td><td><code>tools/release_blockers.json</code>（生成进《发布基线》）</td><td>不许在正文另列一张阻塞表</td></tr><tr><td>某一轮工作包的过程记录</td><td><code>文档/开发/**</code></td><td>只作历史留档，当前口径一律指回主干册</td></tr></tbody></table></div>
 <p><strong>为什么值得钉成规矩</strong>：上一轮「来源下拉念英文」那条缺陷，病根就是视图里又抄了一份枚举表； 文档同理——第二份定义迟早漂，而漂了没人报错。</p>
 <h2>3. 每册的固定骨架</h2>
 <p>顺序固定，缺项就写「本册无」，不许直接跳过小节：</p>
@@ -163,14 +164,24 @@ footer {
 <h2>10. 术语对照</h2>
 <div class="table-wrap"><table><thead><tr><th>术语</th><th>意思</th><th>别再这么写</th></tr></thead><tbody><tr><td>清单</td><td><code>adapters.py</code> 里的适配器规格（能力、后端、参数、计价、出处）</td><td>「配置表」「模型列表」</td></tr><tr><td>档</td><td>清单里的一个 <code>model_code</code></td><td>「版本」（版本另有其义）</td></tr><tr><td>槽位</td><td>能力 × 后端，共十行</td><td>「模型」</td></tr><tr><td>登记</td><td>这台机器上某一档的实例记录，住 <code>model_registration</code></td><td>「安装」「配置」</td></tr><tr><td>默认轨</td><td><code>provider_config.is_default=1</code> 那一行，选路的唯一来源</td><td>「主模型」</td></tr><tr><td>建议轨／备用轨</td><td>调用策略里给人看的配置，不参与选路</td><td>「备选默认」</td></tr><tr><td>健康</td><td>环境齐不齐（目录、解释器、脚本、权重或密钥变量）</td><td>「可用」</td></tr><tr><td>验证</td><td>凭什么认为真能产出（五类出处，只追加）</td><td>「测试通过」</td></tr><tr><td>生产可用</td><td>已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收</td><td>「配好了」</td></tr><tr><td>产线／人工</td><td>两种生产模式，共用同一份预检</td><td>「自动／手动」</td></tr><tr><td>签</td><td>审核中心的人工签字，只落那一处</td><td>「确认」「批准」</td></tr></tbody></table></div>
 <h2>11. 门禁：doc_structure_check.py</h2>
-<p><code>python3 tools/doc_structure_check.py</code> 查六件事，任何一件红就不许提交 （<code>--report</code> 只报数不判红，<code>--only refs</code> 单看一项）：</p>
-<ol><li><strong>目录</strong>：该有目录的册必须有，条目数＝二级标题数（<code>## 目录</code> 自己不列）。</li><li><strong>头部版本号</strong>：主干册有 <code>- 版本：vX.Y（YYYY-MM-DD）</code>，格式能被《发布基线》读到。</li></ol>
+<p><code>python3 tools/doc_structure_check.py</code> 查<strong>八件事</strong>，任何一件红就不许提交 （<code>--report</code> 只报数不判红，<code>--only refs</code> 单看一项）：</p>
+<ol><li><strong>目录</strong>：该有目录的册必须有，条目数＝二级标题数（<code>## 目录</code> 自己不列）。</li><li><strong>目录锚点</strong>（输出里的 1b）：每条目录的锚点必须真落在那一册的某个二级标题上。</li></ol>
+<p>加这一条是因为改标题而不重生成锚点时，目录看起来完好、点下去不动。</p>
+<ol><li><strong>头部版本号</strong>：主干册有 <code>- 版本：vX.Y（YYYY-MM-DD）</code>，格式能被《发布基线》读到。</li></ol>
 <p>《发布基线》自己不查——它是生成物，版本＝生成日期＋commit，再手写一个号就是第二份版本号。</p>
-<ol><li><strong>修订速览</strong>：一行 ≤120 字，「详见」列非空。</li><li><strong><code>§</code> 引用</strong>：裸写只许指本册；<code>《册名》§N</code> 的目标小节必须存在；</li></ol>
+<ol><li><strong>修订速览</strong>：一行 ≤120 字，「详见」列非空。表头那<strong>四列</strong>也要数：</li></ol>
+<p><code>REV_ROW_RE</code> 只认四列行，所以残留的三列表头配四列数据照样全绿（v1.1 那轮就在 《黄金样例与故障演练》扫出这么一张）。</p>
+<ol><li><strong><code>§</code> 引用</strong>：裸写只许指本册；<code>《册名》§N</code> 的目标小节必须存在；</li></ol>
 <p>带路径的册名（<code>《开发/x/03-业务验收记录.md》</code>）与外部《任务书》都认。</p>
 <ol><li><strong>历史不丢</strong>：速览表与《附录 X 变更详录》按（版本, 日期）成对对账，</li></ol>
-<p>少一条就是搬丢了历史——这是本轮唯一能自动证明"压的是排版、不是记录"的检查。</p>
+<p>少一条就是搬丢了历史——这是门禁唯一能自动证明"压的是排版、不是记录"的检查。</p>
+<ol><li><strong>留档头部</strong>（输出里的 5b）：<code>文档/开发/**</code> 每份的头部必须同时写着「历史留档」</li></ol>
+<p>与「当前口径在哪一册」。留档册里那些"三处落点""默认指本地"看着都像当前口径， 从搜索结果撞进来的读者会上当。</p>
 <ol><li><strong>图</strong>：正文引用的文件必须存在；没被引用的图必须在《需求概要》§7.2 历史表里有名。</li></ol>
+<p><strong>门禁查不到、只能靠人守的两处</strong>（都真踩过）：</p>
+<ul><li>头部那一行 <code>- 版本：vX.Y</code> 与<strong>最新一条速览行</strong>是否一致。第 3 条只查格式；</li></ul>
+<p>写代码那一轮加了 v0.123 的速览行却忘了改头部，于是设计稿自己印 v0.122、 《发布基线》印 v0.123，<code>--check</code> 全绿——它比的是"基线头部 vs 现算的速览最大值"。</p>
+<ul><li>速览表的表头列数（上一条刚说的那件事）。</li></ul>
 <p>配套门禁不变：<code>make_release_baseline.py --check</code>（数字一致）、 <code>tools/js_load_check.py</code>（前端模块能加载）、<code>pytest</code>、两套真浏览器验收。</p>
 <h2>12. 已知缺口</h2>
 <p>本册写了但<strong>这一轮没管住</strong>的，如实列出来：</p>
@@ -182,6 +193,18 @@ footer {
 <p>改了就不叫留档。代价是历史文本里的引用仍然要读者自己认。</p>
 <ul><li><strong>外部《任务书》的编号</strong>不随仓库分发，引用一律标「外部」，无法校验目标存在。</li><li><strong>附录字母</strong>按各册已有附录顺延（系统使用说明书的详录是附录 E），</li></ul>
 <p>门禁按"变更详录"这个名字认，不认字母。</p>
+<h2>附录 A 变更详录</h2>
+<h3>v1.1（2026-11-06）</h3>
+<p><strong>门禁的说明追平门禁本身</strong>（本册是元文档，这一轮不改任何一册的正文，只改规矩）。</p>
+<ul><li><strong>§11 从六条补到八条</strong>：<code>doc_structure_check.py</code> 里一直有 <code>check_toc_anchors</code>（输出标号 1b）</li></ul>
+<p>与 <code>check_archive_header</code>（标号 5b）两个函数，每次跑都印出两行结果， 而本册只写"查六件事"——<strong>说明比门禁少两条</strong>，等于新人照本册写、CI 因为一条没听说过的规矩判红。 现在按输出的实际标号排成 1、1b、3…6、5b、8。</p>
+<ul><li><strong>新增「门禁查不到、只能靠人守的两处」</strong>：① 头部版本号与最新速览行不一致（本轮实测：</li></ul>
+<p>设计稿头部 v0.122、速览与详录已 v0.123，三道门禁全绿）；② 速览表的表头列数 （本轮实测：《黄金样例与故障演练》顶上残留一行三列 <code>| 日期 | 版本 | 改动 |</code> 配四列数据行）。 第 4 条里也补了一句让下次写速览表的人数列。</p>
+<ul><li><strong>§2 东家表去掉重复的册名</strong>：原文"《设计稿.md》正文 《设计稿》§0—§8"是同一次</li></ul>
+<p>"给裸 <code>§N</code> 补册名"的机械改写留下的重复，读起来像两个出处。 这一条本身也说明：机械补册名会造出新的"第二份"，<strong>改完要回头读一遍渲染结果</strong>。</p>
+<ul><li>§5 的四条硬规矩一字未改。</li></ul>
+<h3>v1.0（2026-11-05）</h3>
+<p><strong>首次成册</strong>。三个问题是现测的（§1）：超过 400 字的正文行 232 行、全库 <code>§</code> 引用 923 处里 44 处裸写指别册加 133 处多册歧义、该有目录而没有的册 11 份。本册定下唯一东家表（§2）、 每册固定骨架（§3）、目录与锚点（§4）、修订记录拆速览＋详录（§5）、引用写法（§6）、 数字与状态写法（§7）、配图规则（§8）、句子与表格（§9）、术语对照（§10）、 门禁六查（§11）、如实列出没管住的（§12）。配套脚本：<code>tools/doc_structure_check.py</code>（新门禁） 与 <code>tools/build_doc_html.py</code>（导出）。同轮落地：20 份各加目录、184 处引用补册名、 修订表拆成速览＋详录（设计稿 v0.118）。</p>
 </main>
 <footer>由 <code>tools/build_doc_html.py</code> 生成 · 源文件：写作与引用规范.md · 图片已内嵌，单文件可直接分发</footer>
 </body>

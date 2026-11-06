@@ -1027,9 +1027,14 @@ def overview(project_ids: list[int]) -> dict:
     自己"顺手算一下"，而其中两个（可用配置、驻留）平台根本没有可数的落库列。
     """
     runs = agent_runs.recent(project_ids, limit=200)
+    # 一次取齐：步骤与行内 Job 都按 run 批量读，列表与详情不再是两份字段。
+    steps_by_run = agent_runs.steps_for_runs([r["id"] for r in runs])
+    job_ids = [s["job_id"] for steps in steps_by_run.values()
+               for s in steps if s["job_id"]]
+    jobs_by_id = job_repo.get_many(job_ids, with_derived=False) if job_ids else {}
     counts = {key: 0 for key in RUN_STATUS_LABEL}
     for run in runs:
-        counts[run_status(run, agent_runs.steps(run["id"]))] += 1
+        counts[run_status(run, steps_by_run.get(run["id"], []))] += 1
     cards = config_cards()
     usable = sum(1 for c in cards["cards"] if c["health_state"] == "ok")
     pending = len(agent_runs.awaiting_steps(project_ids, limit=200))
@@ -1042,7 +1047,8 @@ def overview(project_ids: list[int]) -> dict:
         "caliber": ("运行数＝看得见的项目里最近 200 条；进行中＝在算计划＋执行中；"
                     "待审批＝正在等人签的步骤条数（不是运行条数）；"
                     "可用配置＝健康现查为 ok 的文本轨条数（本地＋云端两档）"),
-        "runs": [run_row_view(r, agent_runs.steps(r["id"])) for r in runs[:20]],
+        "runs": [run_row_view(r, steps_by_run.get(r["id"], []), jobs_by_id)
+                 for r in runs[:20]],
         "tools": agent_tools.labels(),
         "events": [_event_view(e) for e in agent_runs.recent_events(20)],
         "configs": cards,

@@ -23,7 +23,7 @@ from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, CostBucket,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut)
 from repositories.content import episodes
-from repositories.jobs import jobs
+from repositories.jobs import jobs, retry_reason
 from repositories.projects import projects as project_repo
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -272,9 +272,9 @@ def cancel_job(job_id: int, user=Depends(require_permission("job:cancel"))) -> J
              status_code=http_status.HTTP_202_ACCEPTED)
 def retry_job(job_id: int, user=Depends(require_permission("job:submit"))) -> JobOut:
     row = _load(job_id, user)
-    if row["status"] not in ("failed", "cancelled", "needs_attention"):
-        raise HTTPException(status_code=409,
-                            detail="只有失败、已取消或待核对的作业可以重试")
+    reason = retry_reason(row)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     # 新行复制参数快照，原行的日志/耗时/错误一个字段都不动
     return JobOut.from_row(jobs.retry(row, user["id"]))
 

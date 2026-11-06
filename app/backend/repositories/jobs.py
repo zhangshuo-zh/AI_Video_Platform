@@ -62,6 +62,80 @@ BILLABLE_WHERE = ("cost_micros IS NOT NULL AND currency IS NOT NULL "
                   "AND billable_status IN ('known','pending_reconciliation')")
 
 
+def clamp_limit(value, low: int = 1, high: int = 200) -> int:
+    """仓储层统一的 LIMIT 上界：不指望每个路由都记得夹一次。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return low
+    return min(max(n, low), high)
+
+
+def _like_escape(text: str) -> str:
+    """把 LIKE 的通配符转义成字面量。
+
+    `%`/`_` 混进用户输入会让过滤悄悄变宽（搜 `%` 命中全部），
+    而"宁可少给"正是前缀过滤存在的理由。
+    """
+    return str(text).replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
+# 一条作业现在能不能重试：状态集合只在这里写一份。
+# 单条重试、产线节点、批量重投都走 `retry_reason()`，别再各抄一份。
+JOB_ACTIVE_STATUSES = ("queued", "starting", "running", "cancel_requested")
+RETRYABLE_JOB_STATUSES = ("failed", "cancelled", "needs_attention")
+
+
+def retry_reason(row, *, allow_cloud: bool = True,
+                 allow_attention: bool = True) -> str:
+    """空串＝可以重试；否则返回给人看的那句原话。
+
+    唯一出处：`routers/jobs.py` 的单条重试、`pipeline.retry_gate()` 的产线格、
+    `services.job_retry_batch()` 的批量重投都调它。批量把两档额外收紧是**有意**
+    的业务规则（结果未知时自动重投可能重复扣费、云端要逐次确认计费），
+    用开关表达，而不是另写一套状态集合让两边慢慢漂移。
+    """
+    status = row["status"]
+    if status in JOB_ACTIVE_STATUSES:
+        return "这条作业还在跑或排队中，等它出结果"
+    if status == "succeeded":
+        return "这条作业已经成功，不需要重试"
+    if status not in RETRYABLE_JOB_STATUSES:
+        return "只有失败、已取消或待核对的作业可以重试"
+    if status == "needs_attention" and not allow_attention:
+        return ("待核对的作业不自动重投：结果可能已经发生在供应商那一边，"
+                "先去生成中心核对那条再说")
+    keys = row.keys() if hasattr(row, "keys") else ()
+    mode = row["execution_mode"] if "execution_mode" in keys else ""
+    if mode == "cloud" and not allow_cloud:
+        return "云端重试要逐次确认计费，请在生成中心对这一条单独重试"
+    return ""
+
+
+class JobOwnershipLost(RuntimeError):
+    """终态写入时归属已丢。
+
+    `recover_stale()` 会把超时作业的 `worker_id` 清成 NULL 并替它收尾。
+    旧 worker 只是被长事务/机器暂停拖过租约、其实还活着时，回来写终态会
+    匹配 0 行。过去四个终态方法都不看 rowcount，于是日志写「succeeded」、
+    库里停在 `failed(worker_lost)`，产物与状态三处不一致且没有任何告警。
+    """
+
+    def __init__(self, job_id: int, worker_id: str, terminal: str):
+        super().__init__(
+            f"作业 #{job_id} 的终态 {terminal} 没有写入（worker={worker_id}）："
+            "归属已被租约恢复或另一个收尾动作拿走，本次结果作废")
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.terminal = terminal
+
+
+def _require_owned(cur, job_id: int, worker_id: str, terminal: str) -> None:
+    """终态 UPDATE 必须恰好命中一行；0 行＝这次收尾不再是它的了。"""
+    if cur.rowcount != 1:
+        raise JobOwnershipLost(job_id, worker_id, terminal)
+
+
 class JobRepository:
     def create(self, data: dict) -> sqlite3.Row:
         with get_conn() as conn:
@@ -95,6 +169,30 @@ class JobRepository:
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()
 
+    def _latest_by_shot(self, episode_id: int, capability: str,
+                        statuses: tuple[str, ...] | None = None
+                        ) -> dict[int, sqlite3.Row]:
+        """每镜 id 最大的那条作业；`statuses` 给了就只在这些状态里取。
+
+        「这一镜用哪条」与「这一镜卡在哪」只差一个状态过滤，SQL 形状必须
+        一模一样——各写一份，迟早一处按 `MAX(id)`、另一处按 `finished_at`。
+        """
+        sql = """SELECT j.* FROM job j
+                   JOIN (SELECT shot_id, MAX(id) AS mid FROM job
+                          WHERE episode_id = ? AND capability = ?
+                            AND shot_id IS NOT NULL{extra}
+                          GROUP BY shot_id) t ON t.mid = j.id"""
+        args: list = [int(episode_id), capability]
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            sql = sql.format(extra=f" AND status IN ({marks})")
+            args += list(statuses)
+        else:
+            sql = sql.format(extra="")
+        with get_conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return {int(row["shot_id"]): row for row in rows}
+
     def latest_succeeded_videos_by_shot(self, episode_id: int) -> dict[int, sqlite3.Row]:
         """这一集每一镜**最新一条成功的视频作业**。键是 shot_id。
 
@@ -107,15 +205,7 @@ class JobRepository:
 
         失败的尝试不进来看——它本来就没有产物可用。
         """
-        with get_conn() as conn:
-            rows = conn.execute(
-                """SELECT j.* FROM job j
-                    JOIN (SELECT shot_id, MAX(id) AS mid FROM job
-                           WHERE episode_id = ? AND capability = 'video'
-                             AND shot_id IS NOT NULL AND status = 'succeeded'
-                           GROUP BY shot_id) t ON t.mid = j.id""",
-                (episode_id,)).fetchall()
-        return {int(row["shot_id"]): row for row in rows}
+        return self._latest_by_shot(episode_id, "video", ("succeeded",))
 
     def submission_counts(self, project_ids: list[int] | None) -> list[dict]:
         """谁提交了多少条作业（按 `created_by` 分组）。
@@ -185,15 +275,7 @@ class JobRepository:
         就会出现一处按 `MAX(id)`、另一处按 `finished_at`，
         于是同一个镜头在这两个页面上一个说"卡住"、一个说"没事"。
         """
-        with get_conn() as conn:
-            rows = conn.execute(
-                """SELECT j.* FROM job j
-                    JOIN (SELECT shot_id, MAX(id) AS mid FROM job
-                           WHERE episode_id = ? AND capability = ?
-                             AND shot_id IS NOT NULL
-                           GROUP BY shot_id) t ON t.mid = j.id""",
-                (episode_id, capability)).fetchall()
-        return {int(row["shot_id"]): row for row in rows}
+        return self._latest_by_shot(episode_id, capability)
 
     def get(self, job_id: int) -> sqlite3.Row | None:
         with get_conn() as conn:
@@ -283,14 +365,14 @@ class JobRepository:
         if refs_prefix:
             # 前缀里出现 LIKE 的通配符要转义掉：`%` 混进来会让过滤悄悄变宽，
             # 而那正好是这条存在的理由（宁可少给）的反面
-            escaped = refs_prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
             conds.append("""input_refs_json LIKE ? ESCAPE '\\'""")
-            args.append(escaped + "%")
+            args.append(_like_escape(refs_prefix) + "%")
         if keyword:
-            # 只搜 id 与提示词：日志/产物正文不在这张表里，不能假装搜得到
-            conds.append("(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ?)")
-            args += [keyword, f"%{keyword}%"]
-        args.append(min(max(limit, 1), 200))
+            # 只搜 id 与提示词：日志/产物正文不在这张表里，不能假装搜得到。
+            # keyword 与 refs_prefix 守同一条纪律：通配符一律转义后再进 LIKE。
+            conds.append("""(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ? ESCAPE '\\')""")
+            args += [keyword, f"%{_like_escape(keyword)}%"]
+        args.append(clamp_limit(limit))
         # 管理员看全部、又没加任何筛选时 conds 是空的；直接拼会得到
         # "WHERE  ORDER BY" 这种语法错误（W08 真浏览器第一轮就打出来了）
         where = " AND ".join(conds) or "1"
@@ -391,7 +473,7 @@ class JobRepository:
                 resources: dict | None = None,
                 provider_request_id: str | None = None) -> None:
         with get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """UPDATE job SET status = 'succeeded', finished_at = datetime('now','localtime'),
                           elapsed_ms = ?, return_code = ?, log_path = ?,
                           result_paths_json = ?, error_code = NULL, error_message = NULL,
@@ -403,6 +485,7 @@ class JobRepository:
                  json.dumps(result_paths, ensure_ascii=False),
                  self._resources(resources), provider_request_id, job_id, worker_id),
             )
+            _require_owned(cur, job_id, worker_id, "succeeded")
 
     def fail(self, job_id: int, worker_id: str, error_code: str, message: str,
              log_path: str = "", return_code: int | None = None,
@@ -411,7 +494,7 @@ class JobRepository:
         """失败**不动成本列**：一条云端作业失败时，供应商可能已经计过费；
         这里替人把金额清零，账就再也对不上了（数据字典 §5.3「禁止」）。"""
         with get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """UPDATE job SET status = 'failed', finished_at = datetime('now','localtime'),
                           error_code = ?, error_message = ?, log_path = ?,
                           return_code = ?, elapsed_ms = ?, resources_json = ?,
@@ -422,6 +505,7 @@ class JobRepository:
                 (error_code, message[:2000], log_path, return_code, elapsed_ms,
                  self._resources(resources), provider_request_id, job_id, worker_id),
             )
+            _require_owned(cur, job_id, worker_id, "failed")
 
     def cancelled(self, job_id: int, worker_id: str, message: str = "",
                   log_path: str = "", elapsed_ms: int | None = None,
@@ -437,7 +521,7 @@ class JobRepository:
         用同一条规则。调用方（worker.process）本来就传着自己那一份 wid。
         """
         with get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = datetime('now','localtime'),
                           error_code = 'cancelled', error_message = ?, log_path = ?,
                           elapsed_ms = ?, resources_json = ?, lease_until = NULL, worker_id = NULL,
@@ -447,6 +531,7 @@ class JobRepository:
                 (message[:2000], log_path, elapsed_ms, self._resources(resources),
                  provider_request_id, job_id, worker_id),
             )
+            _require_owned(cur, job_id, worker_id, "cancelled")
 
     def needs_attention(self, job_id: int, worker_id: str, error_code: str, message: str,
                         reason: str, log_path: str = "", return_code: int | None = None,
@@ -459,7 +544,7 @@ class JobRepository:
         由人在详情里核对；核对动作在 `reconcile()`，不自动重投。
         """
         with get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """UPDATE job SET status = 'needs_attention',
                           finished_at = datetime('now','localtime'),
                           error_code = ?, error_message = ?, attention_reason = ?,
@@ -473,6 +558,7 @@ class JobRepository:
                  elapsed_ms, self._resources(resources), provider_request_id,
                  job_id, worker_id),
             )
+            _require_owned(cur, job_id, worker_id, "needs_attention")
 
     def reconcile(self, job_id: int, decision: str, actual_cost_micros: int | None,
                   note: str, user_id: int | None) -> sqlite3.Row | None:
@@ -893,12 +979,20 @@ class JobRepository:
                     WHERE status IN ('starting','running','cancel_requested')
                     ORDER BY id"""
             ).fetchall()
+            # 「待核对作业」只认 status 一列。云端作业建单就是
+            # pending_reconciliation、终态也不改它，旧口径把这一档 OR 进来，
+            # 结果是每条云端成功作业都让面板 +1，人点进去又被 reconcile 的
+            # status 闸挡回 409——数字和能做的事对不上。
             attention = conn.execute(
                 """SELECT COUNT(*) AS n FROM job
-                    WHERE status = 'needs_attention'
-                       OR (execution_mode = 'cloud'
-                           AND billable_status = 'pending_reconciliation'
-                           AND status IN ('succeeded','failed','cancelled'))"""
+                    WHERE status = 'needs_attention'"""
+            ).fetchone()["n"]
+            # 账单没核清是另一件事，单独给一个读数，界面文案要说明是账单。
+            unreconciled = conn.execute(
+                """SELECT COUNT(*) AS n FROM job
+                    WHERE execution_mode = 'cloud'
+                      AND billable_status = 'pending_reconciliation'
+                      AND status IN ('succeeded','failed','cancelled')"""
             ).fetchone()["n"]
             expired = conn.execute(
                 """SELECT COUNT(*) AS n FROM job
@@ -942,6 +1036,7 @@ class JobRepository:
             "running_jobs": running_rows,
             "expired_leases": int(expired or 0),
             "needs_attention": int(attention or 0),
+            "unreconciled_cloud": int(unreconciled or 0),
         }
 
 

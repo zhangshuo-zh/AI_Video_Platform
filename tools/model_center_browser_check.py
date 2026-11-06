@@ -22,19 +22,19 @@ import sys
 import time
 from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parents[1] / "app" / "backend"
-TMP = Path("/tmp/mc_browser")
-PORT = 8010
-BASE = f"http://127.0.0.1:{PORT}"
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _harness as H
+
+BACKEND = H.BACKEND
+TMP = H.temp_dir("fv-mc-")
+PORT = H.free_port()
+BASE = f"http://127.0.0.1:{PORT}"
 
 
 def prepare_env():
     """必须在 import 后端模块之前设好：config.py 在导入时就把环境变量读成常量。"""
-    if TMP.exists():
-        shutil.rmtree(TMP)
-    TMP.mkdir(parents=True)
+    # TMP 每次随机新建，不需要先 rmtree；上一轮的库不会撞进来。
+    TMP.mkdir(parents=True, exist_ok=True)
     shutil.copy(BACKEND / "data" / "platform.db", TMP / "platform.db")
     for suffix in ("-wal", "-shm"):
         src = BACKEND / "data" / f"platform.db{suffix}"
@@ -532,28 +532,11 @@ addEventListener('unhandledrejection', (e) => window.__errs.push('promise: ' + S
 def start_chrome(port):
     """无头 Chrome：profile 每次全新，免得 ES module 被上一轮的缓存钉住
     （改完前端却看到旧界面，就是这个坑踩出来的）。"""
-    profile = "/tmp/mc_cdp_profile"
-    if Path(profile).exists():
-        shutil.rmtree(profile)
-    return subprocess.Popen(
-        ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-         "--headless=new", "--disable-gpu", "--no-sandbox",
-         f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
-         "--window-size=1440,1000", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return H.launch_chrome(port)
 
 
 def wait_server():
-    import urllib.request
-
-    for _ in range(80):
-        try:
-            with urllib.request.urlopen(f"{BASE}/api/health", timeout=1) as r:
-                if r.status == 200:
-                    return
-        except Exception:
-            time.sleep(0.25)
-    raise SystemExit(f"8010 上的实例没起来")
+    H.wait_http(f"{BASE}/api/health")
 
 
 def go(cdp, url):

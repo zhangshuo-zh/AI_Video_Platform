@@ -39,6 +39,12 @@ def test_采样线程量得出这条作业自己的峰值():
     断言写成一个**下限**而不是等号：RSS 依机器与 Python 版本浮动，
     钉死一个数就是一条会在别人机器上乱红的用例。
     """
+    # 采样本就要靠系统的 `ps`。容器/沙箱里它可能直接被禁（本机实测
+    # PermissionError），那时 `_ps_rows()` 会诚实地返回空列表——用例要明说
+    # "这一档没取证"，而不是拿一个 0 去撞断言、把环境限制演成代码回归。
+    if not worker._ps_rows():
+        import pytest
+        pytest.skip("这台机器不给跑 ps；内存采样这一档无法取证")
     child = subprocess.Popen(
         [sys.executable, "-c",
          "b = bytearray(128 * 1024 * 1024); import time; time.sleep(2.0); print(len(b))"],

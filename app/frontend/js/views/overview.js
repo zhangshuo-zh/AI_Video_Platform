@@ -181,7 +181,7 @@ function dashCard(d, err) {
   }
   if (!d) return '';
   const chips = (list, cls) => list.length
-    ? list.filter((x) => x.count).map((x) => `<span class="chip ${cls}">${x.label} ${x.count}</span>`).join(' ')
+    ? list.filter((x) => x.count).map((x) => `<span class="chip ${cls}">${escapeHtml(x.label)} ${x.count}</span>`).join(' ')
     : '<span class="t-dim">—</span>';
   const costs = d.costs.length
     ? d.costs.map((c) => `<span class="chip green">${formatMoney(c.micros, c.currency)} · ${c.jobs} 条</span>`).join(' ')
@@ -206,7 +206,7 @@ function dashCard(d, err) {
         <div class="dash-chips">${costs}</div></div>
       <div><span class="grp">审核</span>
         <div class="dash-chips">${chips(d.gates, 'amber')}</div>
-        <div class="dash-chips">${d.signs.map((x) => `<span class="chip plain">${x.label} ${x.count}</span>`).join(' ') || '<span class="t-dim">还没有签字</span>'}</div></div>
+        <div class="dash-chips">${d.signs.map((x) => `<span class="chip plain">${escapeHtml(x.label)} ${x.count}</span>`).join(' ') || '<span class="t-dim">还没有签字</span>'}</div></div>
       <div><span class="grp">音频</span>
         <div class="dash-chips">${chips(d.audio, 'green')}</div></div>
     </div>

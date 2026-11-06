@@ -144,7 +144,14 @@ print(json.dumps({"paths": paths, "operations": operations,
                   "business": operations - auth_ops, "tables": tables}))
 """
     with tempfile.TemporaryDirectory() as tmp:
-        env = {**os.environ, "FASTVIDEO_DB": str(Path(tmp) / "probe.db"),
+        # 四样都指到临时目录：`create_app()` 会迁移、建 files/、git init 工作区。
+        # 只改 FASTVIDEO_DB 时，其余三样仍落在 backend/data/，所谓"只读门禁"
+        # 其实在仓库里写了目录——与 docstring 第 17 行自相矛盾。
+        env = {**os.environ,
+               "FASTVIDEO_DB": str(Path(tmp) / "probe.db"),
+               "FASTVIDEO_FILES": str(Path(tmp) / "files"),
+               "FASTVIDEO_WORKSPACE": str(Path(tmp) / "workspace"),
+               "FASTVIDEO_JOBS": str(Path(tmp) / "jobs"),
                "PYTHONDONTWRITEBYTECODE": "1"}
         out = run([sys.executable, "-c", probe], cwd=BACKEND, env=env)
     return json.loads(out)
@@ -155,10 +162,21 @@ def run_tests() -> tuple[int, str]:
 
     输出原样转发到本进程 stdout：CI 里这一步是"测试＋门禁"合一的，
     只把尾巴三行留给日志的话，用例挂了人看不到断言在哪。
+
+    `FASTVIDEO_PYTEST_TMPDIR` 可选：容器/沙箱里 `tempfile` 的探测删除
+    可能被宿主策略拦掉（实测会报 No usable temporary directory），
+    指定一个确定可写的目录后，子进程在 import pytest 之前就把它定下来。
     """
+    args = ["-q", "--tb=line", "-p", "no:cacheprovider"]
+    tmpdir = os.environ.get("FASTVIDEO_PYTEST_TMPDIR")
+    if tmpdir:
+        code = ("import sys, tempfile; tempfile.tempdir = sys.argv[1]; "
+                "import pytest; raise SystemExit(pytest.main(sys.argv[2:]))")
+        cmd = [sys.executable, "-c", code, tmpdir, *args]
+    else:
+        cmd = [sys.executable, "-m", "pytest", *args]
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=line", "-p", "no:cacheprovider"],
-        capture_output=True, text=True, cwd=BACKEND,
+        cmd, capture_output=True, text=True, cwd=BACKEND,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     text = proc.stdout + proc.stderr
     sys.stdout.write(text)
@@ -356,6 +374,19 @@ def check_docs(facts: dict) -> int:
         if name in ASSERT_BASELINE:
             if f"{facts['passed']} passed" not in text:
                 fails.append(f"{where}: 缺「{facts['passed']} passed」")
+            # 只查"声明当前基线"的那几行：文档头部（前 20 行）与测试表。
+            # 正文里的「977→1037」「v0.97 交付时 628」是修订历史，不能要求它们
+            # 等于今天；但头部或测试表里还留着 936，就该红。
+            stale: set[int] = set()
+            for idx, line in enumerate(text.splitlines()):
+                if idx >= 20 and "后端单元／集成" not in line:
+                    continue
+                for num in re.findall(r"(\d+)\s+passed", line):
+                    if int(num) != facts["passed"]:
+                        stale.add(int(num))
+            if stale:
+                fails.append(f"{where}: 残留旧测试数 {sorted(stale)}"
+                             f"（基线 {facts['passed']}，历史修订行已豁免）")
             if str(facts["business"]) not in text or str(facts["operations"]) not in text:
                 fails.append(f"{where}: 业务/总路由数与基线不一致（{facts['business']}/{facts['operations']}）")
     if facts["migration"] >= 22:

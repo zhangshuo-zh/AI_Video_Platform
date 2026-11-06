@@ -179,6 +179,31 @@ export function bindModalDismiss(modal, close) {
 }
 
 /**
+ * 遮罩点击关闭 ＋ Escape 关闭，一次绑好。
+ *
+ * 过去每个弹窗各写一句 `addEventListener('click', (e) => { if (e.target === m) close(); })`，
+ * 21 处逐字重复，且只有一半顺手绑了 Escape——同一个弹窗用鼠标点外面能关、
+ * 按 Esc 却关不掉。新代码一律用这一个；旧的逐处替换可以慢慢来，
+ * 因为少绑一次不会改变既有行为，只是少一条重复。
+ */
+export function bindOverlayDismiss(modal, close) {
+  if (!modal) return;
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  bindModalDismiss(modal, close);
+}
+
+/**
+ * 空态卡片：标题 + 一段说明。`body` 是 HTML（调用方负责转义与按钮）。
+ *
+ * 过去几十处各写一遍 `<div class="empty"><div class="empty-t">…</div><p>…</p></div>`，
+ * 改一次结构要动十几个文件。新代码一律用它；老调用点可以逐处替换——
+ * 输出与原结构逐字一致，替换不改变 DOM，只是少抄一层 div。
+ */
+export function emptyBox(title, body = '') {
+  return `<div class="empty"><div class="empty-t">${title}</div>${body}</div>`;
+}
+
+/**
  * 「多久前」的唯一写法：按 天／小时／分钟／秒 给一级读得出来的量级。
  *
  * 原来有两份：`views/models.js` 直接拼 `${age_seconds}s 前`，

@@ -18,51 +18,33 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
-import threading
 import time
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "app" / "frontend"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-PORT = 8051
+import _harness as H
+
+PORT = H.free_port()
+DEBUG_PORT = H.free_port()
+while DEBUG_PORT == PORT:
+    DEBUG_PORT = H.free_port()
 BASE = f"http://127.0.0.1:{PORT}"
 
 
-def serve_frontend() -> ThreadingHTTPServer:
-    handler = partial(SimpleHTTPRequestHandler, directory=str(FRONTEND))
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+def serve_frontend():
+    return H.serve_static(FRONTEND, PORT)[0]
 
 
-def launch_chrome(profile: Path) -> subprocess.Popen:
-    return subprocess.Popen(
-        ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-         "--headless=new", "--disable-gpu", "--no-first-run",
-         "--no-default-browser-check", f"--user-data-dir={profile}",
-         f"--remote-debugging-port={PORT + 1}", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def launch_chrome(profile: Path):
+    return H.launch_chrome(DEBUG_PORT, profile)
 
 
 def cdp_target_url() -> str:
-    import urllib.request
-
-    for _ in range(60):
-        try:
-            data = json.loads(urllib.request.urlopen(
-                f"http://127.0.0.1:{PORT + 1}/json").read())
-            for tab in data:
-                if tab.get("type") == "page":
-                    return tab["webSocketDebuggerUrl"]
-        except Exception:
-            time.sleep(0.2)
-    raise SystemExit("拿不到 Chrome 的调试端口")
+    return H.wait_cdp(DEBUG_PORT)
 
 
 def main() -> int:
@@ -70,14 +52,12 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
-    import tempfile
-
     from proto_cdp_check import CDP
 
     files = sorted(str(p.relative_to(FRONTEND)).replace("\\", "/")
                    for p in (FRONTEND / "js").rglob("*.js"))
     httpd = serve_frontend()
-    profile = Path(tempfile.mkdtemp(prefix="jscheck-"))
+    profile = H.temp_dir("jscheck-")
     chrome = launch_chrome(profile)
     try:
         cdp = CDP(cdp_target_url())
