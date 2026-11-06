@@ -1198,20 +1198,32 @@ function openForm(regId, preset) {
       enabled: modal.querySelector('#mf-enabled').checked,
     };
     submit.disabled = true;
-    let ok;
-    if (regId) {
-      const patch = { ...body };
-      delete patch.provider; delete patch.model_code;
-      delete patch.capability; delete patch.backend;
-      // source 跟着这四个键一起固定：界面没有独立的"人话运行位置"输入，
-      // 放它进 patch 会把接口侧手工标的 remote 静默改回本地。
-      delete patch.source;
-      ok = await run('保存登记', () => api.patchModel(regId, patch));
-    } else {
-      ok = await run('登记', () => api.createModel(body));
+    try {
+      if (regId) {
+        const patch = { ...body };
+        delete patch.provider; delete patch.model_code;
+        delete patch.capability; delete patch.backend;
+        // source 跟着这四个键一起固定：界面没有独立的"人话运行位置"输入，
+        // 放它进 patch 会把接口侧手工标的 remote 静默改回本地。
+        delete patch.source;
+        await api.patchModel(regId, patch);
+      } else {
+        await api.createModel(body);
+      }
+    } catch (e) {
+      // 表单里的错就写在表单里。全局 `run()` 用 alert，headless 下会被自动
+      // 关掉、人只看到"点了没反应"；而 422 的文案本来就是写给填表人看的
+      // （例如「这一档已经登记过了，要改就编辑那一条」），原样贴进来最有用。
+      // 401 不贴：那是"会话过期"，由统一闸门去弹登录，不该混进表单错误。
+      if (!(e && e.status === 401)) {
+        err.textContent = (e && e.message) ? e.message : String(e);
+      }
+      submit.disabled = false;
+      return;
     }
     submit.disabled = false;
-    if (ok) { modal.hidden = true; window.dispatchEvent(new CustomEvent('app:refresh')); }
+    modal.hidden = true;
+    window.dispatchEvent(new CustomEvent('app:refresh'));
   };
 }
 

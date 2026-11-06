@@ -315,6 +315,27 @@ def main():
         check("登记/编辑后仓库页出现「验收用底模」这一行", str(landed) == 'True',
               f"仓库页里有没有「验收用底模」这一行：{landed}")
 
+        # 重复登记：422 的原因要写在表单里，而不是只弹一个系统 alert。
+        # headless 下 alert 会被自动关掉，人只看到"点了没反应"；
+        # 而 422 的文案（「这一档已经登记过了…」）本来就是写给填表人看的。
+        P.click(cdp, "#mc-add")
+        time.sleep(0.4)
+        P.eval_js(cdp, """(() => {
+          const set = (id, v) => { const e = document.querySelector(id);
+                                   e.value = v;
+                                   e.dispatchEvent(new Event('change', {bubbles: true})); };
+          set('#mf-cap', 'image'); set('#mf-be', 'local');
+          set('#mf-prov', 'mflux'); set('#mf-model', 'flux1-schnell');
+          document.querySelector('#mf-submit').click();
+        })()""")
+        time.sleep(0.8)
+        dup = P.eval_js(cdp, "[document.querySelector('#mf-error').textContent,"
+                             " document.querySelector('#mc-form').hidden].join(' § ')")
+        check("重复登记的原因写在表单里，不弹系统框",
+              "已经登记过了" in str(dup) and str(dup).rstrip().endswith('§ false'),
+              f"回执 {dup}")
+        P.eval_js(cdp, "document.querySelector(\"[data-close='mc-form']\").click()")
+
         # 人工声明未核验必须标出来
         check("人工声明的标签带「未核验」提示",
               P.eval_js(cdp, "document.body.innerHTML.includes('人工声明')"))
