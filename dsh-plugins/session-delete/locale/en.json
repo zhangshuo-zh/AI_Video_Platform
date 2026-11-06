@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Delete",
+    "description": "Adds a delete action to the \"...\" menu of every sidebar session, removing that session's stored history permanently."
+  }
+}

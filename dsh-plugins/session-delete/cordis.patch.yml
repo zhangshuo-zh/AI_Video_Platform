@@ -1,0 +1,4 @@
+# dsh-session-delete bundle patch: one Host row mounting this package.
+- insert:
+    - id: session-delete
+      name: 'dsh-session-delete'
