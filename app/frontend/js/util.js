@@ -177,3 +177,21 @@ export function bindModalDismiss(modal, close) {
     if (fn) { e.preventDefault(); fn(); }
   }, true);
 }
+
+/**
+ * 「多久前」的唯一写法：按 天／小时／分钟／秒 给一级读得出来的量级。
+ *
+ * 原来有两份：`views/models.js` 直接拼 `${age_seconds}s 前`，
+ * `views/pipeline.js` 自己写了个只到小时的 agoText。
+ * 于是同一张 worker 表在两个页面一个念「46045s 前」一个念「12 小时前」，
+ * 而 46045 这种数还得人自己心算——心跳新旧是判断"要不要重启 worker"的依据，
+ * 不该让人做除法。
+ */
+export function agoText(seconds) {
+  const n = Number(seconds);
+  if (seconds == null || Number.isNaN(n) || n < 0) return '—';
+  if (n < 60) return `${n} 秒前`;
+  if (n < 3600) return `${Math.floor(n / 60)} 分钟前`;
+  if (n < 86400) return `${Math.floor(n / 3600)} 小时前`;
+  return `${Math.floor(n / 86400)} 天前`;
+}

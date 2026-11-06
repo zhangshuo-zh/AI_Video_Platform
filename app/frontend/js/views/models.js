@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import {
-  bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
+  agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
 import { HEALTH, VAL_BADGE, alertLabel } from '../validation.js';
@@ -675,7 +675,7 @@ function pageMonitor() {
       <td>${n.online ? '<span class="chip green">在线</span>' : '<span class="chip gray">离线</span>'}</td>
       <td>${n.current_job_id ? '#' + n.current_job_id : '<span class="hint">空闲</span>'}</td>
       <td class="hint">${escapeHtml(String(n.heartbeat_at || '').slice(0, 16))}
-        ${n.age_seconds != null ? `（${n.age_seconds}s 前）` : ''}</td>
+        ${agoText(n.age_seconds)}</td>
       <td class="hint">${escapeHtml(resChips(n))}</td>
     </tr>`;
 

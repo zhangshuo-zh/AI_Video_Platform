@@ -219,14 +219,34 @@ def main():
         })()""")
         f = [x.strip() for x in str(picks).split('§')]
         f += ['?'] * (10 - len(f))
-        check("Provider 与模型标识是下拉，选项取自清单（图像×本地＝mflux）",
+        # 期望值现从清单取，不写死 provider 名单：清单本轮就多加了一家
+        # （draw_things），写死的断言会红在测试自己头上，而不是红在真缺陷上。
+        # 期望值直接读清单那一份（`adapters.py` 是唯一出处）：
+        # 上一版把 provider 名单写死成 'mflux'，本轮清单多加了 draw_things，
+        # 断言就红在测试自己头上——红在数据变了、而不是红在行为错了。
+        # 期望值现从清单取（`GET /api/providers/manifest` 就是那份 adapters.py）。
+        # 上一版把 provider 名单写死成 'mflux'，本轮清单加了 draw_things 之后
+        # 断言红在测试自己头上——红在数据变了，而不是红在行为错了。
+        # 注意这里必须用 cdp.eval 而不是 P.eval_js：后者那层 try/catch 会把
+        # promise 包成"同步返回一个 Promise 对象"，awaitPromise 就只等到一个 {}。
+        want = str(cdp.eval(
+            "fetch('/api/providers/manifest').then((r) => r.json()).then((d) => {"
+            " const codes = (cap, be) => d.adapters.filter((a) =>"
+            " a.capability === cap && a.backend === be);"
+            " const loc = codes('image', 'local'), cld = codes('image', 'cloud');"
+            " return [loc.map((a) => a.code).join(','),"
+            " loc.length ? (loc[0].models || []).map((m) => m.code).join(',') : '',"
+            " cld.map((a) => a.code).join(',')].join(' § ');})")).split(' § ')
+        want += ['?'] * (3 - len(want))
+        check("Provider 与模型标识是下拉，选项等于清单里图像×本地那几家",
               f[0] == 'SELECT' and f[1] == 'SELECT'
-              and f[2] == 'mflux' and 'flux1-schnell' in f[3],
-              f"控件 {f[0]}/{f[1]}／本地档 {f[2]}／模型档 {f[3]}")
+              and f[2] == want[0] and f[3] == want[1] and 'mflux' in want[0],
+              f"控件 {f[0]}/{f[1]}／provider 界面「{f[2]}」清单「{want[0]}」／"
+              f"模型档 界面「{f[3]}」清单「{want[1]}」")
         check("只登记了名字的档（图像×云端）模型 ID 退回手填并写明原因",
-              'jimeng' in f[4] and f[5].startswith('手填·')
+              'jimeng' in want[2] and f[4] == want[2] and f[5].startswith('手填·')
               and '只登记了 provider 名' in f[5],
-              f"云端档 {f[4]}／那一格 {f[5]}")
+              f"provider 界面「{f[4]}」清单「{want[2]}」／那一格 {f[5]}")
         check("清单里没有的组合（文本×本地）不给人自己造键",
               '清单里没有这一档' in f[6] and '禁用' in f[6],
               f"那一格念的是「{f[6]}」")
@@ -315,13 +335,17 @@ def main():
         c2 = P.eval_js(cdp, "document.querySelectorAll('tr.mc-collapsed').length")
         check("引擎管理十行槽位都在（未配置的折成一行）", (b2 or 0) + (c2 or 0) == 10,
               f"已配置 {b2} ＋ 折叠 {c2}")
-        # 未接入的引擎：一行、有"未接入"徽章、且整行没有任何按钮
+        # 未接入的引擎：一行、有"未接入"徽章、且整行没有任何按钮。
+        # 行数不写死（Draw Things 接进来之后清单说"有这一档"，这里就不该再列它）：
+        # 拿接口那份名单当期望值，页面少画一行才会红，写死 2 只会红在测试自己。
+        want_off = int(cdp.eval("fetch('/api/models').then((r) => r.json())"
+                                ".then((d) => d.unintegrated_engines.length)") or 0)
         offline = P.eval_js(cdp, "document.querySelectorAll('tr.mc-offline').length")
         check("未接入引擎成行列出且没有可点的连接按钮",
               P.eval_js(cdp, "(() => { const rows = [...document.querySelectorAll('tr.mc-offline')];"
-                             "return rows.length >= 2 && rows.every(r =>"
+                             f"return rows.length === {want_off} && rows.every(r =>"
                              " r.textContent.includes('未接入') && !r.querySelector('button')); })()"),
-              f"未接入 {offline} 行")
+              f"页面 {offline} 行／接口 {want_off} 家")
         cards = P.eval_js(cdp, "document.querySelectorAll('#view-root .card').length")
         check("引擎收成一张表而不是 13 张卡", 0 < cards <= 3, f"整页 {cards} 张卡片")
         # 环境检查按钮（原系统设置那套功能没丢）
@@ -394,6 +418,20 @@ def main():
                              "return b ? b.textContent : ''; })()").__class__ is str,
               str(P.eval_js(cdp, "(() => { const b = document.querySelector("
                                  "'#mc-worker-history'); return b ? b.textContent : ''; })()"))[:60])
+        # 心跳那一格不许念裸秒。「46045s 前」要人自己除，而这一列的用处是判断
+        # "要不要重启 worker"；上一版两个页面各写一份（一处念 46045s 前、
+        # 一处念 12 小时前），所以这里两个面板都量。
+        ago_js = """(() => {
+          const td = [...document.querySelectorAll('#view-root table td')]
+            .map((x) => x.textContent.trim()).filter((x) => /前$/.test(x)).join(' ~ ');
+          return [td.slice(0, 70), /(^|[^0-9])\\d{3,}s\\s*前/.test(td) ? '有裸秒' : '无裸秒',
+                  /(秒|分钟|小时|天)前/.test(td) ? '1' : '0'].join(' § ');
+        })()"""
+        ago = str(P.eval_js(cdp, ago_js))
+        parts = ago.split(" § ")
+        check("worker 心跳念天／小时／分钟／秒，不念裸秒（运行监控）",
+              len(parts) == 3 and parts[1] == "无裸秒" and parts[2] == "1",
+              f"读到「{parts[0] if parts else ''}」／{parts[1] if len(parts) > 1 else '?'}")
         # 折叠不许改变响应本身：历史行还在 workers 里（点开时用的就是这一份）
         counts = P.eval_js(cdp, "(() => fetch('/api/worker/status').then("
                                 "r => r.json()).then(d => [d.workers.length, "
@@ -429,6 +467,12 @@ def main():
         else:
             check("整季页点开后能看见离线行（与运行监控同一档）",
                   True, "这一轮库里没有离线进程，折叠入口本来就不该出现")
+        # 同一句「多久前」在两个页面必须是同一个说法——两份定义就是这一轮的病根
+        ago2 = str(P.eval_js(cdp, ago_js))
+        parts2 = ago2.split(" § ")
+        check("整季页的 worker 心跳与运行监控同一个说法（不念裸秒）",
+              len(parts2) == 3 and parts2[1] == "无裸秒" and parts2[2] == "1",
+              f"读到「{parts2[0] if parts2 else ''}」／{parts2[1] if len(parts2) > 1 else '?'}")
 
         # 旧地址不失效（v0.111 拆成两页之后，旧地址仍落到第 0 页）
         go(cdp, f"{BASE}/#system-config")

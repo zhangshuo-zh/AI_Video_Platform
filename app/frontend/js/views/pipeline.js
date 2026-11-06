@@ -13,9 +13,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { getSub, setSub, setParam } from '../navstate.js';
-import {
-  bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow,
-} from '../util.js';
+import { agoText, bindModalDismiss, bindSubChips, confirmDanger, errorBox, escapeHtml, run, subChipRow } from '../util.js';
 import { publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
 import { diagnosisHtml } from './diagnosis.js';
@@ -295,13 +293,6 @@ function money(micros, currencies) {
   const cur = (currencies && currencies[0]) || 'CNY';
   const symbol = cur === 'CNY' ? '¥' : `${cur} `;
   return `${symbol}${value.toFixed(2)}`;
-}
-
-function agoText(seconds) {
-  if (seconds == null) return '—';
-  if (seconds < 60) return `${seconds} 秒前`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  return `${Math.floor(seconds / 3600)} 小时前`;
 }
 
 function workerPanel() {

@@ -524,6 +524,33 @@ def test_视图不再自己写第二份状态字典():
     assert not offenders, f"这些行又在视图里抄了一份作业状态表：{offenders}"
 
 
+def test_多久前只有util一处写法():
+    """「多久前」只许住 `js/util.js` 的 `agoText()`。
+
+    起因是使用侧指着运行监控那张 worker 表说「46045s 前不好算」。查下去病根不是单位，
+    是**同一件事有两份定义**：`views/models.js` 直接拼 `${age_seconds}s 前`，
+    `views/pipeline.js` 自己有个只到小时的 agoText——同一份 `/api/worker/status`
+    在两个页面念出两种精度。心跳新旧是判断"要不要重启 worker"的依据，不该让人做除法。
+
+    守的是"再写一份"这个动作，所以扫整个 views 目录而不是点那两个文件。
+    """
+    offenders = []
+    for f in (FRONTEND / "js" / "views").glob("*.js"):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            if re.search(r"function agoText", line):
+                offenders.append(f"{f.name}:{n} 又定义了一份 agoText")
+            elif re.search(r"\}s 前", line) or re.search(r"seconds\s*/\s*(60|3600)", line):
+                offenders.append(f"{f.name}:{n} 又手写了一遍相对时间")
+    assert not offenders, f"这些行在视图里另写了一份「多久前」：{offenders}"
+
+    # 反向半边：两张 worker 表必须真在调用那一处，不然扫描通过而行为没改
+    for name in ("models.js", "pipeline.js"):
+        text = (FRONTEND / "js" / "views" / name).read_text()
+        assert "agoText(" in text, f"{name} 的 worker 表没用 util.js 那一份 agoText"
+    util = (FRONTEND / "js" / "util.js").read_text()
+    assert "86400" in util, "util.js 的 agoText 没有天这一级，2 天前的行还会念成 66 小时"
+
+
 def test_样式表花括号配平():
     """app.css 必须括号配平，且不能出现"没有选择器的规则体"。
 
