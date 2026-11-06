@@ -580,7 +580,7 @@ def test_两次导入不互相覆盖(as_role, studio):
     assert len(images) == 2 and len(set(images)) == 2
 
 
-def test_删资产把形态图一起清掉(fresh_project, people):
+def test_删资产把形态图一起清掉(fresh_project, people, delete_guard):
     """0033 之后 `projects.asset_images()` 不再是一份完整清单——
     漏了这一处，形态图就会变成没人认领的孤儿文件。"""
     import services
@@ -894,7 +894,7 @@ def test_同项目作业再多也看得见刚生成的那几条(studio):
     assert asset_studio.recent_generations(pid, asset_id=999999, limit=12) == []
 
 
-def test_脏的图片清单不会把删除卡成半套(as_role, fresh_project, tmp_path):
+def test_脏的图片清单不会把删除卡成半套(as_role, fresh_project, tmp_path, delete_guard):
     """删资产时那份清单的解析必须走已有出处 `_images_of`。
 
     原来路由里手写 `json.loads` + 一段 unlink 循环：`ref_images` 里混进非字符串

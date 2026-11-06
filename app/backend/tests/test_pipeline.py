@@ -1165,3 +1165,37 @@ def test_发起弹窗读的是统一预检那一份结论(as_role, fresh_project
         assert isinstance(item["locate"], dict) and item["code"].startswith("pipeline.")
     jumped = [i for i in bad if i["locate"].get("shot_id") == int(shot["id"])]
     assert jumped, "阻塞项里那条坏引用该跳到这一镜的工作台"
+
+
+def test_派发中断_节点落成可重试的失败(mock_route, people):
+    """两阶段派发：事务里只占格，建 Job 在写锁外。
+
+    模拟「事务提交了、进程在建单前挂掉」：节点应当停在 running 且没有 job_id；
+    下一次推进由 `_sync_job_nodes` 明确判成 job_missing（可重试）——
+    这是可见、可恢复的失败，好过「Job 建好了、节点却不知道」那样重复扣费。
+    """
+    setup = _project(people, n_shots=1)
+    run_id = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                                 _template(FULL), people["editor"]["id"])["id"]
+    run = pipeline_repo.get_run(run_id)
+    nodes = pipeline_repo.nodes_for_run(run_id)
+    key = f"keyframe#s{setup['shot_ids'][0]}"
+    node = dict(next(n for n in nodes if n["node_key"] == key))
+
+    # 造「依赖已完成」：真实路径里这一格由 gate 签字放出，这里只测派发本身。
+    with get_conn() as conn:
+        conn.execute("UPDATE pipeline_node_run SET status = 'pending' WHERE id = ?",
+                     (node["id"],))
+
+    pending: list = []
+    pipeline._submit_job_node(run, node, pipeline._node_map(nodes), pending=pending)
+    assert len(pending) == 1, "事务内只该收集请求，不该建 Job"
+
+    fresh = {n["node_key"]: n for n in pipeline_repo.nodes_for_run(run_id)}[key]
+    assert fresh["status"] == "running" and fresh["job_id"] is None
+
+    # 进程「崩溃」：没人执行 pending 里的提交。下一拍必须明说这一格要重试。
+    pipeline._sync_job_nodes(run, pipeline_repo.nodes_for_run(run_id))
+    fresh = {n["node_key"]: n for n in pipeline_repo.nodes_for_run(run_id)}[key]
+    assert fresh["status"] == "failed"
+    assert fresh["error_code"] == "job_missing"

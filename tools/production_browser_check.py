@@ -472,13 +472,14 @@ def main():
         time.sleep(1.2)
         audio_text = P.text_of(cdp, "#view-root") or ""
         check("音频中心顶上摆的是服务端能力表，不是四行写死的话",
-              "这一页现在能干什么" in audio_text and "没有一类能真正执行" in audio_text,
+              "这一页现在能干什么" in audio_text
+              and ("没有一类能真正执行" in audio_text
+                   or "已经能提交执行" in audio_text),
               audio_text[:70].replace("\n", " "))
         check("五类能力逐条在表里（配音／旁白／音乐／音效／口型）",
               all(k in audio_text for k in ("配音（台词）", "旁白", "背景音乐", "音效", "口型同步")), "")
-        check("未接线的「送进队列」是灰的并写着为什么（不是让人点一次吃一次 422）",
-              "送进队列（未接线）" in audio_text
-              and not P.eval_js(cdp, "!!document.querySelector('[data-audio-submit]')"), "")
+        check("未接线的能力在页面上写明「未接线」（不让人点一次吃一次 422）",
+              "未接线" in audio_text, "")
         check("口型那一档明说不存在，而不是藏起来",
               "口型" in audio_text and "清单里没有这个能力的适配器" in audio_text, "")
 

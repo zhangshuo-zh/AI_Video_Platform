@@ -223,7 +223,7 @@ def test_引用清单只含看得见的项目(as_role, fresh_project):
     assert len(admin.get(f"/api/assets/{a['id']}/shots").json()) == 1
 
 
-def test_删资产只清它自己登记过的图(as_role, fresh_project):
+def test_删资产只清它自己登记过的图(as_role, fresh_project, delete_guard):
     from config import FILES_DIR
     pid = fresh_project("editor")
     a = _mk_asset(as_role("editor"), pid)

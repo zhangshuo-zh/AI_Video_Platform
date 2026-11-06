@@ -94,7 +94,7 @@ def test_fastmetal_空参数也照清单默认开fast_spatial(tmp_path, monkeypa
     assert "--fast-spatial" not in off.argv
 
 
-def test_fastmetal_缺权重时在起进程前失败(tmp_path, monkeypatch):
+def test_fastmetal_缺权重时在起进程前失败(tmp_path, monkeypatch, delete_guard):
     home = _fake_fastmetal(tmp_path)
     (home / "FastMetal-1.3B-QAD" / "vae" / "config.json").unlink(missing_ok=True)
     (home / "FastMetal-1.3B-QAD" / "vae").rmdir()

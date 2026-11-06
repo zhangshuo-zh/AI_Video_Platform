@@ -192,3 +192,25 @@ def fresh_project(app, people):
         return project_repo.create(f"临时_{uuid.uuid4().hex[:8]}", "", [],
                                    people[owner_role]["id"])["id"]
     return _make
+
+
+@pytest.fixture
+def delete_guard(tmp_path):
+    """环境不允许删文件时跳过「真的删东西」的用例。
+
+    本机与 CI 正常；容器/沙箱里 `unlink`／`rmtree` 可能被宿主策略拦成
+    EPERM／EISDIR，用例就从一个产品断言变成一条环境错误。这类用例量的
+    是「删资产有没有把图一起清掉」，不是「这台机器让不让删」——所以明说
+    跳过，别把环境限制演成回归。
+    """
+    probe_dir = tmp_path / ".delete-probe-dir"
+    probe_dir.mkdir()
+    probe = probe_dir / "x"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        # 删文件与删目录是两条不同的系统调用，沙箱可能只拦其中一条；
+        # 删除类用例两样都会用到，所以两样都探一次。
+        probe.unlink()
+        probe_dir.rmdir()
+    except OSError as exc:
+        pytest.skip(f"这个环境不允许删文件/目录（{exc}）；删除类用例无法取证")
