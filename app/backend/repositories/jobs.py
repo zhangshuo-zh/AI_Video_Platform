@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from db import get_conn
+import job_state
 from config import (RESOURCE_CLASSES, WORKER_MAX_GLOBAL,
                     WORKER_MAX_PER_RESOURCE)
 
@@ -80,10 +81,10 @@ def _like_escape(text: str) -> str:
     return str(text).replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
-# 一条作业现在能不能重试：状态集合只在这里写一份。
-# 单条重试、产线节点、批量重投都走 `retry_reason()`，别再各抄一份。
-JOB_ACTIVE_STATUSES = ("queued", "starting", "running", "cancel_requested")
-RETRYABLE_JOB_STATUSES = ("failed", "cancelled", "needs_attention")
+# 状态集合的真相在 `job_state` 那一张表里；这里留两个别名是为了
+# pipeline / routers / tests 的既有 import 不用跟着改。
+JOB_ACTIVE_STATUSES = job_state.ACTIVE
+RETRYABLE_JOB_STATUSES = job_state.RETRYABLE
 
 
 def retry_reason(row, *, allow_cloud: bool = True,

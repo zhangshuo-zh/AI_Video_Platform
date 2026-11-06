@@ -11,6 +11,41 @@ let firstPaint = true;
 // 这里是所有渲染的唯一入口，所以在这一处判一次，十四个视图一起受益。
 let renderSeq = 0;
 
+/**
+ * 重绘会替换整个 `#view-root`，焦点与滚动位置默认一起丢。
+ * 保存"人在哪、看到哪"，渲染后放回去——多数刷新（保存、切页签、轮询）
+ * 并不是人想换地方，只是数据变了。
+ */
+function captureFocus(root) {
+  const el = document.activeElement;
+  if (!el || el === document.body || !root.contains(el)) return null;
+  let sel = el.id ? `#${CSS.escape(el.id)}` : '';
+  if (!sel) {
+    for (const attr of ['data-k', 'data-field', 'data-act', 'data-i', 'name']) {
+      const v = el.getAttribute(attr);
+      if (v) { sel = `[${attr}="${CSS.escape(v)}"]`; break; }
+    }
+  }
+  if (!sel) return null;
+  const snap = { sel, start: null, end: null };
+  try {
+    snap.start = el.selectionStart;
+    snap.end = el.selectionEnd;
+  } catch { /* 不是文本控件 */ }
+  return snap;
+}
+
+function restoreFocus(root, snap) {
+  if (!snap) return;
+  const el = root.querySelector(snap.sel);
+  if (!el) return;
+  // preventScroll 让 focus 不再把页面拽回去；滚动位置由下面单独恢复。
+  try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+  if (snap.start != null && typeof el.setSelectionRange === 'function') {
+    try { el.setSelectionRange(snap.start, snap.end); } catch { /* 类型不支持选区 */ }
+  }
+}
+
 export function currentViewId() {
   return currentId;
 }
@@ -51,10 +86,36 @@ export async function renderView(id) {
   root.classList.toggle('cold', firstPaint);
   firstPaint = false;
 
+  // 同视图刷新（保存、轮询、app:refresh）保留焦点与滚动；换视图才归零。
+  const sameView = currentId === id;
+  const focusSnap = sameView ? captureFocus(root) : null;
+  const scrollY = sameView ? window.scrollY : 0;
+  const innerTop = sameView ? root.scrollTop : 0;
+  const innerLeft = sameView ? root.scrollLeft : 0;
+
   const html = await view.render();
   if (seq !== renderSeq) return;      // 已经有一次更晚的导航在跑了，这份作废
   root.innerHTML = html;
   view.mount?.(root);          // 视图自己绑事件，路由不掺和
+
+  root.scrollTop = innerTop;
+  root.scrollLeft = innerLeft;
+  restoreFocus(root, focusSnap);
+  if (sameView) {
+    // 内容高度可能晚一点才长回来（列表在 mount 里异步填），一次 scrollTo
+    // 会被浏览器钳到当前最大滚动位置。所以最多重试 6 次、每次 50ms，
+    // 到位就停——比"滚回顶部"和"死等"都好。
+    let tries = 0;
+    const restoreScroll = () => {
+      window.scrollTo(0, scrollY);
+      if (Math.abs(window.scrollY - scrollY) > 1 && tries < 6) {
+        tries += 1;
+        setTimeout(restoreScroll, 50);
+      }
+    };
+    restoreScroll();
+    requestAnimationFrame(restoreScroll);
+  }
 
   currentId = id;
   document.body.dataset.view = id;
@@ -77,5 +138,4 @@ export async function renderView(id) {
   if (param !== undefined) target += '/' + (subIndex ?? 0) + '/a' + param;
   else if (subIndex !== undefined) target += '/' + subIndex;
   if (location.hash !== target) history.replaceState(null, '', target);
-  window.scrollTo(0, 0);
 }

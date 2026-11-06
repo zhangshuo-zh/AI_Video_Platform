@@ -15,6 +15,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -120,12 +121,41 @@ def wait_cdp(debug_port: int, timeout: float = 30.0) -> str:
 
 def start_service(port: int, python: Path | None = None,
                   backend: Path = BACKEND) -> subprocess.Popen:
-    """用后端自己的 venv 起 uvicorn；日志丢掉，断言看接口与页面。"""
-    python = python or backend / ".venv" / "bin" / "python"
+    """用后端自己的 venv 起 uvicorn；没有 venv（CI 的干净 runner）就退回当前解释器。
+
+    原来写死 `.venv/bin/python`，CI 里 `pip install -r requirements.txt` 装的是
+    系统解释器，于是三套浏览器验收永远进不了流水线。
+    """
+    if python is None:
+        venv = backend / ".venv" / "bin" / "python"
+        python = venv if venv.exists() else Path(sys.executable)
     return subprocess.Popen(
         [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
          "--port", str(port), "--log-level", "warning"],
         cwd=str(backend), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+
+def prepare_backend_db(dst: Path, backend: Path = BACKEND) -> None:
+    """准备一份可用的测试库：有现役库就复制，没有就从迁移起一个并建 admin。
+
+    这一步是"浏览器验收能不能进 CI"的关键：原来无条件复制
+    `backend/data/platform.db`，干净 runner 上根本没有这个文件。
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    live = backend / "data" / "platform.db"
+    if live.exists():
+        shutil.copy(live, dst)
+        for suffix in ("-wal", "-shm"):
+            src = backend / "data" / f"platform.db{suffix}"
+            if src.exists():
+                shutil.copy(src, dst.with_name(dst.name + suffix))
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from migrate import migrate
+    migrate(verbose=False)
+    if not live.exists():
+        from bootstrap import ensure_admin
+        ensure_admin(verbose=False)
 
 
 def stop(proc, grace: float = 5.0) -> None:

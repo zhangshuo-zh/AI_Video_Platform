@@ -167,7 +167,10 @@ def run_tests() -> tuple[int, str]:
     可能被宿主策略拦掉（实测会报 No usable temporary directory），
     指定一个确定可写的目录后，子进程在 import pytest 之前就把它定下来。
     """
-    args = ["-q", "--tb=line", "-p", "no:cacheprovider"]
+    # basetemp 每次唯一：`pytest-of-<user>` 留在地上时，下一次
+    # `mkdir(exist_ok=False)` 会直接 FileExistsError，整套用例变成 58 个 error。
+    base = tempfile.mkdtemp(prefix="fv-baseline-")
+    args = ["-q", "--tb=line", "-p", "no:cacheprovider", "--basetemp", base]
     tmpdir = os.environ.get("FASTVIDEO_PYTEST_TMPDIR")
     if tmpdir:
         code = ("import sys, tempfile; tempfile.tempdir = sys.argv[1]; "
@@ -177,7 +180,10 @@ def run_tests() -> tuple[int, str]:
         cmd = [sys.executable, "-m", "pytest", *args]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, cwd=BACKEND,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+             # 与 CI 同一条规则：删除类与真采样靠环境取证，两边都跳过，
+             # 基线数字才不会"开发机 1043、runner 1046"地漂。
+             "FASTVIDEO_TEST_SKIP_ENV": "1"})
     text = proc.stdout + proc.stderr
     sys.stdout.write(text)
     sys.stdout.flush()

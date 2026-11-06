@@ -630,9 +630,15 @@ async function boot() {
   window.addEventListener('app:go', (e) => goView(e.detail));
   // 轻提示的统一出口：视图只派事件，不各自攒一个浮层
   window.addEventListener('app:toast', (e) => toast(e.detail?.text || ''));
-  window.addEventListener('app:refresh', async () => {
-    syncChrome();
-    await goView(currentViewId() || 'overview');
+  let refreshTimer = 0;
+  window.addEventListener('app:refresh', () => {
+    // 一次操作常连发两三条（保存 + 刷新列表 + 切集）。合并成一次重绘，
+    // 既少闪一下，也不让刚恢复的焦点被下一次重绘再冲掉。
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      syncChrome();
+      await goView(currentViewId() || 'overview');
+    }, 80);
   });
   // 会话过期的出口（W02-a）：api.js 认到 401 就派这条。原来只有启动那一次
   // 会去挂登录闸门，之后过期只会弹一句"失败：未登录"，人没地方重登。

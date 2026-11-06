@@ -72,18 +72,14 @@ def prepare_env():
     # TMP 由 `_harness.temp_dir` 每次新建（随机后缀），不需要再清一遍；
     # 原来写死 /tmp/ag_browser，重启后上一轮的库还在，只能先 rmtree。
     TMP.mkdir(parents=True, exist_ok=True)
-    shutil.copy(BACKEND / "data" / "platform.db", TMP / "platform.db")
-    for suffix in ("-wal", "-shm"):
-        src = BACKEND / "data" / f"platform.db{suffix}"
-        if src.exists():
-            shutil.copy(src, TMP / f"platform.db{suffix}")
+    # 顺序要紧：config.py 在 import 时就把这些读成常量，所以先设环境变量，
+    # 再迁库；否则迁移会跑到默认的 backend/data/platform.db 上。
     os.environ["FASTVIDEO_DB"] = str(TMP / "platform.db")
     os.environ["FASTVIDEO_FILES"] = str(TMP / "files")
     os.environ["FASTVIDEO_JOBS"] = str(TMP / "jobs")
     os.environ["FASTVIDEO_WORKSPACE"] = str(TMP / "workspace")
-    sys.path.insert(0, str(BACKEND))
-    from migrate import migrate
-    migrate(verbose=False)
+    # 有现役库就复制副本；没有（CI 的干净 runner）就从迁移起一个并建 admin。
+    H.prepare_backend_db(TMP / "platform.db")
 
 
 def mint_admin_session():

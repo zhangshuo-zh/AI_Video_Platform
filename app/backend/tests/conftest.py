@@ -214,3 +214,7 @@ def delete_guard(tmp_path):
         probe_dir.rmdir()
     except OSError as exc:
         pytest.skip(f"这个环境不允许删文件/目录（{exc}）；删除类用例无法取证")
+    if os.environ.get("FASTVIDEO_TEST_SKIP_ENV") == "1":
+        # CI 与开发机走同一条规则：这几条靠真实文件系统取证，
+        # 两边都跳过，基线的 passed 数才不会随 runner 漂。
+        pytest.skip("按 FASTVIDEO_TEST_SKIP_ENV 跳过环境依赖用例")

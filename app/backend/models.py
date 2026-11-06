@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+import job_state
+
 # 五类能力：固定，前端按这个顺序渲染，不靠库里查出来的顺序
 CAPABILITIES: dict[str, str] = {
     "text": "文本",
@@ -339,8 +341,8 @@ JOB_STATUSES: dict[str, str] = {
     "needs_attention": "待核对",
 }
 
-JOB_RUNNING = ("starting", "running", "cancel_requested")
-JOB_FINISHED = ("succeeded", "failed", "cancelled", "needs_attention")
+JOB_RUNNING = job_state.IN_FLIGHT
+JOB_FINISHED = job_state.FINISHED
 
 
 class JobEstimateIn(BaseModel):
@@ -485,7 +487,7 @@ class JobOut(BaseModel):
             # 仓储给的是 sqlite3.Row，没有 .get()：一律按 keys() 判断，
             # 否则「重试过几次」会静默恒为 0（与 production.py 里那条注释同理）。
             retry_count=int(row["retry_count"] or 0) if "retry_count" in keys else 0,
-            cancelable=row["status"] in ("queued",) + JOB_RUNNING,
+            cancelable=job_state.can("cancel", row["status"]),
             retryable=not hint,
             retry_hint=hint,
             actual_cost_micros=actual,

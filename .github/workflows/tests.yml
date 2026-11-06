@@ -64,6 +64,10 @@ jobs:
       - name: 全量测试
         # shell: bash 才有 pipefail——默认那层不置管道退出码，pytest 挂了会被 tee 盖成成功
         shell: bash
+        env:
+          # 与开发机同一条规则：删除类与 ps 采样靠真实环境取证，两边都跳过，
+          # 基线的 passed 数才不会随 runner 漂（详见 conftest.delete_guard）。
+          FASTVIDEO_TEST_SKIP_ENV: "1"
         run: python -m pytest -q | tee /tmp/pytest.log
 
       # 第二道门：四份说明书里的测试数／路由数／表数／迁移号，必须与这份代码现算一致。
@@ -81,7 +85,24 @@ jobs:
         working-directory: .
         run: python tools/js_load_check.py
 
-      # 第四道门：文档自己的结构。目录、锚点、修订速览、跨册引用、历史不丢、图有没有孤儿，
+      # 第四道门：三套真浏览器验收。它们起真实服务 + 无头 Chrome，
+      # 量的是"页面真的能点、数字与服务端一致"，不是只 import 一下。
+      # 此前只在本机跑，所以本轮 4 个前端问题都是手点才发现的。
+      # 干净 runner 上没有现役库，脚本会从迁移起一个并建 superadmin
+      # （tools/_harness.py 的 prepare_backend_db）。
+      - name: 真浏览器验收（智能体中心）
+        working-directory: .
+        run: python tools/agents_browser_check.py
+
+      - name: 真浏览器验收（模型中心）
+        working-directory: .
+        run: python tools/model_center_browser_check.py
+
+      - name: 真浏览器验收（产线／生成／工作台）
+        working-directory: .
+        run: python tools/production_browser_check.py
+
+      # 第五道门：文档自己的结构。目录、锚点、修订速览、跨册引用、历史不丢、图有没有孤儿，
       # 全是"写完没人回头对"的那类账——规矩只有挂在 CI 上才算立住（《写作与引用规范》§11）。
       - name: 文档结构门禁
         working-directory: .

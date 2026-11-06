@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 import access
 import error_catalog
+import job_state
 import jobfiles
 import services
 from config import WORKER_ONLINE_SECONDS
@@ -262,7 +263,8 @@ def mark_attention(job_id: int, payload: JobAttentionIn,
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)
 def cancel_job(job_id: int, user=Depends(require_permission("job:cancel"))) -> JobOut:
     row = _load(job_id, user)
-    if row["status"] in JOB_FINISHED:
+    # 能不能取消只看状态机那张表：原来这里另抄了一份 JOB_FINISHED。
+    if not job_state.can("cancel", row["status"]):
         raise HTTPException(status_code=409, detail="这条作业已经结束，不能再取消")
     updated = jobs.request_cancel(job_id)
     return JobOut.from_row(updated)
