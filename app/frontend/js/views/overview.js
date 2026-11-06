@@ -32,6 +32,8 @@ function todoStrip(data) {
       sub: '点进去看是哪一条' },
     { n: c.needs_attention || 0, label: '待核对账单', go: 'generate', tone: 'warn',
       sub: '云端结果等人判' },
+    { n: c.signed_ready || 0, label: '已签字待合成', go: 'composition', tone: 'warn',
+      sub: '签完就能拼一条' },
     { n: c.runs_active || 0, label: '进行中的运行', go: 'pipeline',
       sub: '还没收尾的产线' },
   ];
@@ -49,6 +51,32 @@ function todoStrip(data) {
       <b>${it.n}</b><span>${it.label}</span><em>${it.sub}</em>
     </button>`).join('')}</div>` : '';
   return downBar + cards;
+}
+
+/**
+ * 出片速度：只念服务端现算的那一份，前端不二次折算。
+ * 没有样本就说"还没有成功作业"——给个 0 秒/镜会被当成"快得离谱"。
+ */
+function throughputRows(t) {
+  if (!t || !t.samples) {
+    return `<div class="row" style="justify-content:space-between">
+        <span class="note">出片速度</span>
+        <span class="chip gray">还没有成功作业</span>
+      </div>`;
+  }
+  const put = (label, value) => `<div class="row" style="justify-content:space-between">
+      <span class="note">${label}</span>
+      <span class="num" style="font-size:12px">${value}</span>
+    </div>`;
+  // 组标题不能省：两行孤零零的数字，人不知道它们量的是同一件事。
+  return `<div class="row" style="justify-content:space-between">
+      <span class="note">出片速度</span>
+      <span class="chip plain">${t.samples} 条样本</span>
+    </div>`
+    + put('单镜视频耗时', t.video_avg_sec == null ? '—' : `${t.video_avg_sec}s`)
+    // 缺镜头时长就算不出"每分钟成片"，明说缺什么，别把这一行悄悄吞掉。
+    + put('每分钟成片', t.per_minute_sec == null ? '缺镜头时长' : `${t.per_minute_sec}s`)
+    + `<p class="note">${escapeHtml(t.caliber)}</p>`;
 }
 
 /**
@@ -158,6 +186,7 @@ export default {
               <span class="note">受限模型（H3 音画同生）</span>
               <span class="chip plain">未启用</span>
             </div>
+            ${throughputRows(todo?.throughput)}
             <hr class="sep">
             <p class="note">同时最多 1 个本地作业，其余排队。云端 API 可并发提交、串行落库。</p>
           </div>

@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -143,7 +144,10 @@ print(json.dumps({"paths": paths, "operations": operations,
                   "health": health, "auth": auth,
                   "business": operations - auth_ops, "tables": tables}))
 """
-    with tempfile.TemporaryDirectory() as tmp:
+    # 不用 TemporaryDirectory：它在退出时删目录，受限环境里删除会被拦，
+    # 于是整个门禁被一个"临时文件没清掉"噎死（traceback 盖住真正的检查结果）。
+    tmp = tempfile.mkdtemp(prefix="fv-probe-")
+    try:
         # 四样都指到临时目录：`create_app()` 会迁移、建 files/、git init 工作区。
         # 只改 FASTVIDEO_DB 时，其余三样仍落在 backend/data/，所谓"只读门禁"
         # 其实在仓库里写了目录——与 docstring 第 17 行自相矛盾。
@@ -154,6 +158,8 @@ print(json.dumps({"paths": paths, "operations": operations,
                "FASTVIDEO_JOBS": str(Path(tmp) / "jobs"),
                "PYTHONDONTWRITEBYTECODE": "1"}
         out = run([sys.executable, "-c", probe], cwd=BACKEND, env=env)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return json.loads(out)
 
 
