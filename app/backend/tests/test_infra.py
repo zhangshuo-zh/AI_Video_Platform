@@ -631,3 +631,47 @@ def test_告警标签和后端告警码对齐():
         assert "alertLabel(" in src, f"{name} 没走唯一出口"
         assert "const ALERT_CODE" not in src and "const ALERT_LABEL" not in src, \
             f"{name} 又抄了一份告警标签"
+
+
+def test_同视图重绘不重播入场动画():
+    """切项目、保存、轮询都会走同一条重绘路径，它不许重播 `view-in`。
+
+    病根：`router.js` 用 `root.classList.toggle("cold", firstPaint)` 决定要不要压掉
+    入场动画，而 `firstPaint` 首屏之后恒为 false——于是每一次同视图刷新都重播一遍
+    `view-in`（整块从透明+裁切变成不透明），而切项目一次连发两三条 refresh，
+    肉眼就是连续闪屏。
+
+    这条读源码而不是走浏览器：动画只在真浏览器里看得见，但"判据有没有带上
+    sameView"在源码层面就能钉死，且比开一次 CDP 快三个数量级。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "router.js").read_text()
+    code = "\n".join(line for line in js.split("\n")
+                      if not line.strip().startswith(("//", "*", "/*")))
+    # 入场动画的判据必须同时看首屏与同视图刷新
+    assert "firstPaint || sameView" in code, (
+        "cold 的判据又只判首屏了：同视图重绘会重播入场动画（切项目闪屏）")
+    # sameView 必须算在 cold 之前——顺序反了它当时还是 undefined
+    i_same = code.index("const sameView =")
+    i_cold = code.index("classList.toggle('cold'")
+    assert i_same < i_cold, "sameView 算在 cold 之后了，判据拿到的是旧值"
+
+
+def test_切项目不连发三次整页重绘():
+    """切一次项目不许派三条 refresh 各重绘一遍。
+
+    原来 `store.select()` 派三次 `app:refresh`（立刻一次、loadEpisodes 回来一次、
+    openProject + load 回来一次），每次都是整页 `innerHTML` 重写。
+    即使动画已压掉，三次整页重写本身也会让列表闪、焦点丢。
+    这条钉"最多三条，且立刻那条不许少"：切项目不能白屏等网络。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "store.js").read_text()
+    seg = js[js.index("  select(id) {"):]
+    seg = seg[:seg.index("\n  },")]
+    n = seg.count("app:refresh")
+    assert n <= 3, f"select() 派了 {n} 次 app:refresh，每次都是整页重写"
+    # 立刻重绘那一次必须在（切项目不能白屏等网络）
+    assert "先立刻重绘" in seg, "切项目不再立刻重绘了：点下去会像没反应"

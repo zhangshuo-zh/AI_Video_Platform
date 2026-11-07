@@ -82,13 +82,22 @@ export async function renderView(id) {
   }
 
   const root = document.getElementById('view-root');
-  // 首屏不淡入：浏览器本身已经有一次白→内容的过程，再叠一层只显得更慢。
-  // 给挂载点打标记，CSS 据此跳过入场动画；用户主动切页时才淡。
-  root.classList.toggle('cold', firstPaint);
+
+  // 同视图刷新（保存、轮询、app:refresh、切项目）保留焦点与滚动；换视图才归零。
+  // **必须算在 cold 之前**：入场动画的判据要用到它（见下）。
+  const sameView = currentId === id;
+
+  // 入场动画只在"人主动换了一页"时播。三档写清：
+  //   首屏（firstPaint）  不播——浏览器本身已有一次白→内容，叠加只会更慢；
+  //   同视图重绘（sameView）不播——保存、轮询、**切项目**都会走到这里，
+  //                       播一遍就是闪一下（整块从透明+裁切变不透明），
+  //                       而切项目一次连发两三条 refresh，肉眼就是连续闪屏；
+  //   换视图              播——这时整页内容确实换了，淡入帮人接住这次跳转。
+  // 原来这里只判 `firstPaint`：首屏之后它恒为 false，于是每一次同视图刷新
+  // 都会重播 `view-in`（`.cold` 只压在首屏），切项目就闪。
+  root.classList.toggle('cold', firstPaint || sameView);
   firstPaint = false;
 
-  // 同视图刷新（保存、轮询、app:refresh）保留焦点与滚动；换视图才归零。
-  const sameView = currentId === id;
   const focusSnap = sameView ? captureFocus(root) : null;
   const scrollY = sameView ? window.scrollY : 0;
   const innerTop = sameView ? root.scrollTop : 0;
