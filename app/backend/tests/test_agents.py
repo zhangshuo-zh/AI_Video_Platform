@@ -621,3 +621,221 @@ def test_智能体不越过发起人权限(as_role, plan_server, ag_scene, peopl
     assert "权限" in after["error_message"]
     assert assets.exists_name(ag_scene["project_id"], "character",
                               "越权登记的角色") is False
+
+
+def test_事件的每一档都有中文名(as_role):
+    """23 档 `event_type` 的中文名只许有一份，而且必须与清单同长。
+
+    原来它只住在界面（`views/agents.js` 的 `EVENT_LABEL`），服务端不下发，
+    两份之间没有任何守卫：清单加一档，界面会安静地少说一句"发生了什么"，
+    而那一句恰好是事件时间线唯一的内容（《系统设计说明书》§16 第 27 条）。
+    现在中文名在 `agents.EVENT_LABEL`，随列表与详情下发；这条用例钉的就是
+    "两把字典的键集合必须相等"——少一档红，多写一档不存在的也红。
+    """
+    import agents
+    from repositories.agents import EVENT_TYPES
+
+    assert set(agents.EVENT_LABEL) == set(EVENT_TYPES), (
+        "事件清单与中文名对不上：缺 "
+        + str(sorted(set(EVENT_TYPES) - set(agents.EVENT_LABEL)))
+        + "／多 " + str(sorted(set(agents.EVENT_LABEL) - set(EVENT_TYPES))))
+    # 空白标签等于"少说一档"，与缺键一样严重
+    assert all(str(v).strip() for v in agents.EVENT_LABEL.values())
+    # 23 这个数不写死：它由 EVENT_TYPES 决定，写死只是给下一次加档添一条要改的地方
+    assert len(agents.EVENT_LABEL) == len(EVENT_TYPES) == 23
+
+
+def test_事件中文名随响应下发(as_role):
+    """界面不再自己抄一份——服务端不给，它就只能显示事件码。
+
+    这一条要走 HTTP：只在服务层加了字典、忘了在响应里带出去，
+    const 就在那儿摆着而界面永远拿不到（这是本仓库踩过的那类"加了字段没改 schema"）。
+    """
+    import agents
+
+    c = as_role("admin")
+    listed = c.get("/api/agent/runs", params={"project_id": 1})
+    assert listed.status_code == 200, listed.text
+    labels = listed.json()["event_labels"]
+    assert labels == agents.EVENT_LABEL, "列表没带上事件中文名"
+    # 详情也带（时间线在详情里画）
+    runs = listed.json()["items"]
+    if runs:
+        detail = c.get(f"/api/agent/runs/{runs[0]['id']}").json()
+        assert detail["event_labels"] == agents.EVENT_LABEL
+
+
+def test_审批有效期四档都说得出秒数与标签(as_role):
+    """接口给的是**秒数 + 标签**两个字段，不是二选一。
+
+    原来 `default_valid_seconds` 回的是标签字符串（`dict(VALID_CHOICES).get(86400)`
+    取到 "24 小时"），而字段名说 `_seconds`——界面拿它去比 `<option value>`，
+    永远对不上，于是默认档静默落到第一项。这正是 §16 第 28 条登记的那处
+    "界面上的承诺比代码少一步"。
+    """
+    from routers.agents import DEFAULT_VALID_SECONDS, VALID_CHOICES
+
+    c = as_role("admin")
+    body = c.get("/api/agent/plan-options",
+                 params={"project_id": 1}).json()
+    choices = body["approval_choices"]
+    # 四档一档不少，且每档两个字段都在
+    assert len(choices) == len(VALID_CHOICES) == 4
+    assert all(isinstance(x["seconds"], int) and x["label"] for x in choices)
+    assert [(x["seconds"], x["label"]) for x in choices] == list(VALID_CHOICES)
+    # 默认那一档：类型必须是 int（界面要拿它比 value），值必须是四档之一
+    assert isinstance(body["default_valid_seconds"], int), (
+        "default_valid_seconds 必须是秒数，不是标签：" + repr(body["default_valid_seconds"]))
+    assert body["default_valid_seconds"] == DEFAULT_VALID_SECONDS
+    assert body["default_valid_seconds"] in [x["seconds"] for x in choices]
+    # 标签另给一格，别让界面自己拼
+    assert body["default_valid_label"] == dict(VALID_CHOICES)[DEFAULT_VALID_SECONDS]
+
+
+def test_界面不再自己抄事件中文名与有效期档位():
+    """守住"第二份定义"：这两样谁也不许在 js 里再写一遍。
+
+    读源码而不是走浏览器：这两个字典在 DOM 上看不出来，
+    而它们恰恰是"清单改了界面少说一档"的地方。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
+          / "agents.js").read_text()
+    # 事件中文名：只许留函数与说明，字典本体必须已经删掉
+    assert "const EVENT_LABEL = {" not in js, "界面又抄了一份事件中文名"
+    assert "eventLabel(" in js, "界面应当按服务端下发的表念"
+    # 有效期：不许再写死"默认是哪一档"，也不许自己造一条档位。
+    # 只查代码行（去掉注释与空行）：注释里复述旧写法是说明，不是第二份定义。
+    code = "\n".join(line for line in js.split("\n")
+                      if not line.strip().startswith(("//", "*", "/*")))
+    assert "=== 86400" not in code, "默认档还写死在前端"
+    assert "seconds: 86400" not in code, "档位还写死在前端"
+
+
+def test_签字回执要显示出来(as_role):
+    """服务端回的 note（"批准已记下，下一拍执行"）必须被界面用上。
+
+    原来它一个字都没显示：`util.run()` 只在失败时说话，成功时静默刷新，
+    于是人签完只看到列表变了，不知道成没成、接下来等什么。
+    这条读源码——那个 note 在 DOM 上不一定抓得到（取决于当时有没有待签项），
+    而"界面有没有接住这个字段"是源码层面就能钉死的事。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
+          / "review-actions.js").read_text()
+    # 必须真的接收 signAgentStep 的返回值并把它交出去（现在落在模块变量 `flash`）
+    assert "out.note" in js, "签字回执没被接住"
+    assert "flash = { tone: 'ok'" in js, "成功回执没有落到模块状态里"
+    # 回执必须画在**这一栏顶部**而不是详情卡里：签完那一步就离开待批队列，
+    # 详情卡整块消失——写进卡片等于"签成了，但你看不到它说的话"。
+    assert "bar ${flash.tone}" in js, "成功回执要按全站的成功样式显示"
+    # 而且它必须出现在 renderActions 的模板里（不在 detailHtml 里）
+    head, _, tail = js.partition("function detailHtml")
+    assert "${flashBar}" in head, "回执要画在动作审批那一栏，不是某一张卡片里"
+    # 后端的 note 里确实有"下一拍"这句人话（别把它删成空串）
+    from pathlib import Path as _P
+
+    backend = (_P(__file__).resolve().parents[1] / "routers" / "review.py").read_text()
+    assert "worker 的下一拍" in backend
+
+
+def test_付费步骤批准之后才带得动云端确认(as_role, clean_queue, plan_server, ag_scene, monkeypatch):
+    """`text_job_submit` 是 risk=paid：那一步的"云端计费确认"从哪来。
+
+    原来 `agent_tools` 恒传 `user_confirmed_cloud=False`，于是**默认轨一旦指向云端，
+    这类步骤注定失败**——失败原因是"没有人能替人做那次确认"，这不算保护，
+    是让这条路永远走不通（《系统设计说明书》§16 第 25 条）。
+
+    现在确认由审核中心那条批准提供：它落库、绑参数指纹。所以这里要钉两件事：
+    ① 签字之前这一步不执行；② 签字之后才带着确认去提交。
+    用 monkeypatch 记账而不是真跑一条云端作业——本条测的是"确认传没传到"
+    （真调用那一条腿由 mock／假适配器那条用例管）。
+    """
+    import agents
+    import agent_tools
+    import services
+    from models import JobSubmitIn
+
+    plan_server.reply = json.dumps([
+        {"tool": "text_job_submit",
+         "args": {"capability": "text", "prompt": "这一条会被真的提交吗"},
+         "why": "写一段说明"}
+    ])
+    seen = []
+    # **只在步骤执行期**换成记账版：算计划那一枪也走 `submit_job`，
+    # 一上来就换掉会让"发起运行"这一步自己先失败（第一版就这么写的）。
+    real_submit = services.submit_job
+    armed = {"on": False}
+
+    def spy(payload, created_by):
+        if not armed["on"]:
+            return real_submit(payload, created_by)
+        seen.append({"confirmed": bool(payload.user_confirmed_cloud)})
+        raise services.JobInvalid("测试里不真排作业：只记这一次调用的确认位")
+
+    monkeypatch.setattr(services, "submit_job", spy)
+    c = as_role("admin")
+    run = _start(c, ag_scene)
+    # 算计划那条作业得真跑完（`agents.tick()` 只认终态为成功的计划作业），
+    # 与 `test_计划回来落成步骤` 同一条路。
+    assert worker.run_once("w-paid") == run["plan_job_id"]
+    agents.tick()
+    step = next((s for s in agent_runs.steps(run["id"])), None)
+    assert step is not None, "计划没有落成步骤"
+    assert step["status"] == "awaiting_approval", f"付费步骤没有停下来等人批：{step['status']}"
+    armed["on"] = True      # 从这里起，任何一次提交都记下来（不该发生）
+    assert step["risk"] == "paid"
+    # ① 还没签：一步都不许执行，提交一次都不许发生
+    for _ in range(3):
+        agents.tick()
+    assert seen == [], f"没签字就提交了作业：{seen}"
+
+    # 审批卡要把"这一步会花钱"说出来——授权得让人看得见，不能靠猜
+    card = c.get(f"/api/agent-steps/{step['id']}/review").json()
+    assert card["paid"] is True
+    assert "计费" in card["cloud_confirm_note"]
+
+    # ② 签字之后：带着确认去提交，那一枪才发得出去
+    signed = c.post(f"/api/agent-steps/{step['id']}/review-sign",
+                    json={"anchor": "execute", "decision": "approved",
+                          "note": "同意花这一次的钱"})
+    assert signed.status_code == 200, signed.text
+    # 推进到执行那一步：提交被我们的 spy 拦下，但它已经过去了，确认位必须为真
+    for _ in range(4):
+        agents.tick()
+    assert seen, "签了字却一次都没走到提交"
+    assert seen[0]["confirmed"] is True, (
+        "签过字的付费步骤仍然没有带云端确认——路上又变回 False 了")
+
+
+def test_只读步骤不带云端确认(as_role, clean_queue, plan_server, ag_scene, monkeypatch):
+    """反向半边：没有签字的那一类步骤，`cloud_confirmed` 必须是假。
+
+    只读步骤从 `pending` 直接进场（不经过审批）。若它也带着确认，
+    那么"确认"这件事就退化成了一个恒真的字段，闸门形同虚设。
+    """
+    import agents
+
+    plan_server.reply = _fix_episode(PLAN_READ, ag_scene["episode_id"])
+    c = as_role("admin")
+    run = _start(c, ag_scene)
+    assert worker.run_once("w-read") == run["plan_job_id"]
+    captured = {}
+
+    real = agent_tools.execute
+
+    def spy(tool_code, args, ctx):
+        captured.update(ctx)
+        return real(tool_code, args, ctx)
+
+    agent_tools.execute = spy
+    try:
+        for _ in range(6):
+            agents.tick()
+    finally:
+        agent_tools.execute = real
+    assert captured, "只读步骤没有执行"
+    assert captured.get("cloud_confirmed") is False, (
+        "没签过字的只读步骤也带了云端确认：闸门成了摆设")

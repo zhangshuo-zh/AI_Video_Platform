@@ -1199,3 +1199,49 @@ def test_派发中断_节点落成可重试的失败(mock_route, people):
     fresh = {n["node_key"]: n for n in pipeline_repo.nodes_for_run(run_id)}[key]
     assert fresh["status"] == "failed"
     assert fresh["error_code"] == "job_missing"
+
+
+def test_产线事件的每一档都有中文名(as_role, fresh_project):
+    """17 档产线事件的中文名也只许有一份，且必须与 0031 的 CHECK 同长。
+
+    原来它只住在界面（`views/pipeline.js` 的 `EVENT_LABEL`），与迁移里的 CHECK
+    各写一份、中间没有任何守卫——清单加一档，界面会安静地把一句话变成事件码。
+    与智能体那 23 档同一类问题，同一轮一并收回服务端。
+    """
+    import re
+    from pathlib import Path
+    import pipeline
+
+    # 判据取**迁移里的 CHECK 原文**而不是另抄一份清单：
+    # 抄一份清单来比字典，等于造出第三个定义，它自己也会漂。
+    sql = (Path(__file__).resolve().parents[1] / "migrations"
+           / "0031_shot_source_version.sql").read_text()
+    block = re.search(r"event_type\s+TEXT NOT NULL CHECK \(event_type IN \((.*?)\)\)",
+                      sql, re.S)
+    assert block, "0031 里找不到 pipeline_event.event_type 的 CHECK"
+    declared = set(re.findall(r"'([a-z_]+)'", block.group(1)))
+    assert set(pipeline.EVENT_LABELS) == declared, (
+        "产线事件清单与中文名对不上：缺 "
+        + str(sorted(declared - set(pipeline.EVENT_LABELS)))
+        + "／多 " + str(sorted(set(pipeline.EVENT_LABELS) - declared)))
+    assert all(str(v).strip() for v in pipeline.EVENT_LABELS.values())
+
+
+def test_产线事件中文名随详情下发(as_role, people):
+    """界面不再自己抄一份——服务端不给，它就只能显示事件码。
+
+    走 HTTP：只在服务层加了字典、忘了写进 `run_view` 的返回，
+    常量就摆在那儿而界面永远拿不到。
+    """
+    import pipeline
+
+    setup = _project(people, n_shots=1)
+    run = pipeline.create_run(setup["project_id"], setup["episode_id"], 1,
+                              people["editor"]["id"])
+    got = as_role("admin").get(f"/api/pipeline/runs/{run['id']}").json()
+    assert got["event_labels"] == pipeline.EVENT_LABELS
+    # 那一条 run_created 事件必须能翻出中文名，而不是原样显示 event_type
+    types = {e["event_type"] for e in got["events"]}
+    assert types, "新起的运行一条事件都没有"
+    assert all(t in got["event_labels"] for t in types), (
+        "有事件码没有中文名：" + str(sorted(types - set(got["event_labels"]))))

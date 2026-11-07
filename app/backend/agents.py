@@ -71,6 +71,29 @@ STEP_STATUS_LABEL = {
     STEP_SKIPPED: "跳过", STEP_CANCELLED: "作废", STEP_EXPIRED: "审批过期",
 }
 
+
+
+# 事件类型的中文名。**这是唯一一份**：原来它只住在界面（`views/agents.js` 的
+# `EVENT_LABEL`），服务端不下发，于是库里的 CHECK 与界面标签之间没有任何守卫——
+# 清单改了，界面会安静地少说一档，而那句话正好是「这一条发生了什么」。
+# 这正是《写作与引用规范》§2 说的"第二份定义"那一类（此前登记在《系统设计说明书》§16 第 27 条）。
+# 现在中文名收在服务端，随 `GET /agent/runs`（列表）与详情一起下发；
+# `tests/test_agents.py::test_事件的每一档都有中文名` 比 EVENT_TYPES 与这本字典的键
+# **且只比它们**——少一档就红，多写一档不存在的也红。
+EVENT_LABEL = {
+    "run_created": "已发起", "plan_requested": "去算计划",
+    "plan_ready": "计划回来了", "plan_failed": "计划失败",
+    "run_started": "开始推进", "run_paused": "已暂停",
+    "run_resumed": "已恢复", "run_cancelled": "已取消",
+    "run_completed": "已完成", "run_failed": "运行失败",
+    "step_ready": "步骤就绪", "step_started": "执行中",
+    "step_succeeded": "步骤成功", "step_failed": "步骤失败",
+    "step_skipped": "步骤跳过", "step_retried": "步骤重试",
+    "step_expired": "审批过期",
+    "approval_requested": "在等你批", "approval_granted": "已批准",
+    "approval_rejected": "已驳回", "job_submitted": "排了一条作业",
+    "preflight_warning": "提示", "tool_rejected": "工具被拒",
+}
 JOB_TERMINAL_FAILED = ("failed", "cancelled", "needs_attention")
 
 
@@ -435,6 +458,9 @@ def detail(run_id: int, user) -> dict:
     out = run_row_view(run, steps, _job_map(jobs, plan_job))
     out["plan_job"] = _job_brief(plan_job)
     out["events"] = [_event_view(e) for e in agent_runs.events(run_id)]
+    # 事件中文名随详情一起下发（见 `EVENT_LABEL` 上面那段）：界面不再自己维护一份，
+    # "清单改了、界面少说一档"这件事因此没有发生的余地。
+    out["event_labels"] = EVENT_LABEL
     if plan_job is not None and plan_job["status"] in JOB_TERMINAL_FAILED:
         out["failure"] = {"where": "算计划", "code": plan_job["error_code"],
                           "message": plan_job["error_message"]}
@@ -613,6 +639,13 @@ def approval_view(step_id: int, user) -> dict:
                                           snapshot.get("model", ""),
                                           snapshot.get("backend", "")),
         "model_snapshot": snapshot,
+        # 这一步批下去会不会花钱、要不要人明确点头。审核中心据此**专门**写一句话——
+        # 因为"批准"在这个平台上同时是"我同意花这笔钱"，那句话不能靠人自己猜。
+        "paid": step["risk"] == "paid",
+        "cloud_confirm_note": (
+            "批准这一步同时等于确认按供应商计费：签完之后才可能真的发生一笔费用。"
+            "参数一改（指纹变了）旧批准失效，这笔确认也随之失效，平台会重新问一次。"
+            if step["risk"] == "paid" else ""),
         "expires_at": step["approval_expires_at"] or "",
         "signed": [{"decision": s["decision"], "note": s["note"],
                     "signed_by": s["signed_by"], "signed_at": s["signed_at"]}
@@ -818,9 +851,24 @@ def _execute(run, step) -> None:
     因为前者通常说明"平台改了白名单而旧运行还带着旧计划"，
     那是运维要单独看见的一类，混进"作业失败"里就查不动了。
     """
+    # 这一步是不是**人签过字**的。只有 `STEP_APPROVED` 会走到这里还带这个状态：
+    # 待批的步骤走的是 `_advance` 的 STEP_AWAITING 那一支（不执行），
+    # 只读步骤从 STEP_PENDING 直接进场（没签过）。
+    #
+    # 为什么要把它传给工具：花钱的那一步（比如排一条云端文本作业）在
+    # `services.submit_job()` 那里有一道"人已确认计费"的闸。原来 agent_tools
+    # 恒传 `user_confirmed_cloud=False`，于是**默认轨一旦指向云端，这类步骤
+    # 就注定失败**——而失败原因是"没有人能替人做那次确认"。
+    #
+    # 现在这个确认由**审核中心那一次签字**提供：批准本身就是"我知道这一步要花钱，
+    # 我同意"。签字落库、绑参数指纹（`review_item.base_version = args_hash`），
+    # 参数一改旧批准自动失效——所以这个"确认"不是一句口头答应，
+    # 而是一条读得回来、对得上参数的记录。
+    authorized = step["status"] == STEP_APPROVED
     ctx = {"run_id": int(run["id"]), "seq": int(step["seq"]),
            "project_id": int(run["project_id"]),
-           "episode_id": run["episode_id"], "actor_id": run["created_by"]}
+           "episode_id": run["episode_id"], "actor_id": run["created_by"],
+           "cloud_confirmed": authorized}
     args = loads(step["args_json"], {})
     agent_runs.update_step(step["id"], {"status": STEP_RUNNING})
     agent_runs.add_event("step_started", run_id=run["id"], step_id=step["id"],

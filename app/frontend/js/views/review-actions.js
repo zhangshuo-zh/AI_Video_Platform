@@ -28,6 +28,9 @@ const DECISIONS = [
 let cache = { queue: [], anchor: 'execute' };
 let openStepId = null;
 let note = '';
+// 签字成功的那一句回执。存成模块变量而不是直接写进 DOM：重绘会换掉整块节点，
+// 写进旧节点的文字人看不到（见签字那一支的注解）。下一次打开另一步时清掉。
+let flash = null;
 
 export function actionsTabAvailable() {
   return true;
@@ -61,8 +64,17 @@ export async function renderActions(project) {
         data-open-action="${s.id}">${s.id === openStepId ? '收起' : '查看并签'}</button></td>
     </tr>`).join('');
 
+  // 签字回执画在**这一栏顶部**，不画在详情卡里：签完那一步就离开待批队列，
+  // 详情卡整块消失——回执写进卡片等于"签成了，但你看不到它说的话"。
+  // 这也是它存在模块变量里的原因（`flash` 的注解）。
+  const flashBar = flash
+    ? `<div class="card"><div class="bar ${flash.tone}">${escapeHtml(flash.text)}`
+      + `<button class="btn xs" data-dismiss-flash style="margin-left:8px">知道了</button>`
+      + '</div></div>'
+    : '';
   return `
     ${err ? `<div class="card"><div class="bar bad">读不到待审批动作：${escapeHtml(err.message)}</div></div>` : ''}
+    ${flashBar}
     <div class="card">
       <div class="card-head"><h2>等你审批的动作</h2>
         <span class="sub">批准的是那一组参数：参数一改指纹就变，旧批准自动作废</span></div>
@@ -100,6 +112,9 @@ function detailHtml(d) {
         ${signed ? '' : ''}（批准会绑在这一串上）<br>
         <b>有效期到：</b>${escapeHtml(d.expires_at || '未设')}</p>
       <p class="modal-meta">${escapeHtml(d.binding || '')}</p>
+      ${d.paid ? `<p class="bar warn" style="border:1px solid var(--warn-line);
+          background:var(--warn-soft);padding:8px 12px;border-radius:10px">
+        <b>这一步会花钱。</b>${escapeHtml(d.cloud_confirm_note || '')}</p>` : ''}
       <p class="hint">已签记录：${signed}</p>
       <label class="modal-label" for="action-note" style="margin-top:14px">批注（可选，会跟着签字落库）</label>
       <textarea class="ctl" id="action-note" rows="2"
@@ -112,10 +127,17 @@ function detailHtml(d) {
 }
 
 export async function bindActions(root, refresh) {
+  // 回执可以手动关掉：它是「刚才那一下的结果」，不是常驻状态。
+  root.querySelector('[data-dismiss-flash]')?.addEventListener('click', () => {
+    flash = null;
+    refresh();
+  });
   root.querySelectorAll('[data-open-action]').forEach((btn) => {
     btn.addEventListener('click', () => run('读取这一步', async () => {
       const id = Number(btn.dataset.openAction);
       openStepId = openStepId === id ? null : id;
+      // 点开另一步＝在看另一件事，上一条回执不该跟过来
+      flash = null;
       await refresh();
     }));
   });
@@ -132,17 +154,33 @@ export async function bindActions(root, refresh) {
       // 锚点用服务端给的那个，不在前端写死字面量：
       // 将来多一个可签点时，前端不该还在签 `execute`
       errEl.hidden = true;
+      let signReceipt = '';
       const ok = await run('签字', async () => {
-        await api.signAgentStep(openStepId, {
+        const out = await api.signAgentStep(openStepId, {
           anchor: cache.anchor, decision: btn.dataset.sign, note: noteEl.value.trim(),
         });
+        // 服务端回的 note 是给人看的一句话（"批准已记下，worker 的下一拍会执行"），
+        // 原来它**一个字都没被显示**：`run()` 只在失败时说话，成功时静默刷新。
+        // 于是人签完只看到列表刷新，不知道签成了没有、接下来该等什么——
+        // 那正是《系统设计说明书》§16 第 28 条登记的那处"界面没做到它说的那句话"。
+        // 现在收下它，签完留在这一栏顶部；失败了才换成错误话术。
+        signReceipt = (out && out.note) || '';
         note = '';
-        await refresh();
       });
       // run() 已经把原话弹出来了；这里再留一行是因为弹窗关掉之后人还会回到这一屏，
-      // 那时唯一的提示应该是页面上的这一句，而不是"刚才好像弹过什么东西"
-      if (!ok) {
-        errEl.hidden = false;
+      // 那时唯一的提示应该是页面上的这一句，而不是"刚才好像弹过什么东西"。
+      //
+      // **成功那一支要写进模块变量、由重绘带回来**：上面 `await refresh()` 已经把
+      // 整块重画了，此刻 `errEl` 指向的是**已经被替换掉**的那个节点——往里写文字
+      // 写的是一个已经不在文档里的元素，人什么也看不见（第一版就是这么写的，
+      // 真浏览器验收当场抓到「回执为空」）。失败那一支反而没这个问题：
+      // 失败时 `refresh()` 没跑，节点还活着。
+      errEl.hidden = false;
+      if (ok) {
+        flash = { tone: 'ok', text: signReceipt || '签名已记下。这一栏会在下次刷新时更新。' };
+        await refresh();
+      } else {
+        errEl.className = 'bar bad';
         errEl.textContent = '这一笔没有签成。原因已经说过一次，'
                           + '改一改再试；参数被动过（指纹变了）就会重新回到待审批。';
       }

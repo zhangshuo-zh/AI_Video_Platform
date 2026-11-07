@@ -667,11 +667,19 @@ async function boot() {
   }
   await startApp();
   // 20 秒刷一次就够了：这不是实时看板，只是让人知道队列还有没有人在推
+  // 页面不可见时停掉：后台标签页没有"让人知道"的对象，白发的请求只会
+  // 让 worker_status 的查询（队列聚合 + worker 心跳镜像）整夜空转。
+  // visibilitychange 回来时立即补一次，不让人回来先看 20 秒前的旧数。
   setInterval(async () => {
-    if (!appStarted) return;
+    if (!appStarted || document.hidden) return;
     await store.loadWorker();
     paintWorker();
   }, 20000);
+  document.addEventListener('visibilitychange', async () => {
+    if (!appStarted || document.hidden) return;
+    await store.loadWorker();
+    paintWorker();
+  });
 }
 
 boot();

@@ -42,21 +42,27 @@ const HEALTH_TONE = {
   ok: 'green', missing: 'red', unknown: 'amber', unconfigured: 'gray',
   unregistered: 'red',
 };
-const EVENT_LABEL = {
-  run_created: '已发起', plan_requested: '去算计划', plan_ready: '计划回来了',
-  plan_failed: '计划失败', run_started: '开始推进', run_paused: '已暂停',
-  run_resumed: '已恢复', run_cancelled: '已取消', run_completed: '已完成',
-  run_failed: '运行失败', step_ready: '步骤就绪', step_started: '执行中',
-  step_succeeded: '步骤成功', step_failed: '步骤失败', step_skipped: '步骤跳过',
-  step_retried: '步骤重试', step_expired: '审批过期',
-  approval_requested: '在等你批', approval_granted: '已批准',
-  approval_rejected: '已驳回', job_submitted: '排了一条作业',
-  preflight_warning: '提示', tool_rejected: '工具被拒',
-};
+/**
+ * 事件类型的中文名**不在这里**：它由服务端随响应下发（`agents.EVENT_LABEL`，
+ * 详情与列表都带 `event_labels` 这个键）。
+ *
+ * 这一段原来是一份 23 档的手抄字典，与库里 `agent_event.event_type` 的 CHECK 各写一份，
+ * 中间没有任何守卫——清单加一档，界面会安静地少说一句"发生了什么"，
+ * 而那一句恰恰是事件时间线唯一的内容。这类"同一枚举两份定义"是本仓库反复在修的形状
+ * （《写作与引用规范》§2），所以标签收回服务端。
+ *
+ * `eventLabel()` 保留一层兜底：万一响应没带（老版本后端），原样显示事件码，
+ * 而不是显示空白——空白的下一步永远是"这是不是坏了"。
+ */
+function eventLabel(eventType) {
+  return (cache.eventLabels || {})[eventType] || eventType;
+}
 
 // 一次 render 把这一屏要读的几份缓存下来；mount 里的交互不重新发请求，
 // 免得点一下筛选就把整页读请求打一遍（同模型中心的做法）
-let cache = { overview: null, configs: null, tools: null };
+let cache = { overview: null, configs: null, tools: null,
+              // 事件中文名来自服务端（见 `eventLabel` 上面那段），不在这里手抄。
+              eventLabels: {} };
 let openRunId = null;
 
 const chip = (tone, text) => `<span class="chip ${tone}">${escapeHtml(text)}</span>`;
@@ -124,7 +130,7 @@ function eventRows(events) {
     <thead><tr><th class="num">时间</th><th>事件</th><th>说明</th></tr></thead>
     <tbody>${events.slice(0, 20).map((e) => `<tr>
       <td class="num t-desc">${escapeHtml((e.created_at || '').slice(5, 16))}</td>
-      <td>${chip('gray', EVENT_LABEL[e.event_type] || e.event_type)}</td>
+      <td>${chip('gray', eventLabel(e.event_type))}</td>
       <td class="t-desc">${escapeHtml(eventText(e))}</td></tr>`).join('')}</tbody>
     </table></div>`;
 }
@@ -205,6 +211,12 @@ function detailHtml(d) {
 /** 发起弹窗：先把"走哪条轨、送什么出去、什么价"念出来，再要那句目标。 */
 function createModal(episodes, policies, options) {
   const route = (options && options.route) || {};
+  // 有效期档位与默认档都来自接口（`/api/agent/plan-options`）。
+  // 这里原来写死成一条固定档（秒数取 86400、标签取「24 小时」）：接口明明给了四档，
+  // 弹窗只显示一档——那正是《系统设计说明书》§16 第 28 条登记的那处
+  // 「界面上的承诺比代码少一步」。
+  const choices = (options && options.approval_choices) || [];
+  const defaultValid = (options && options.default_valid_seconds) || null;
   const confirmLine = `<span id="ag-cloud-line" hidden>
       <label class="modal-label" for="ag-cloud"
         style="display:flex;gap:8px;align-items:flex-start;margin-top:12px">
@@ -234,8 +246,8 @@ function createModal(episodes, policies, options) {
         </select>
         <label class="modal-label" for="ag-valid" style="margin-top:12px">批准的有效期</label>
         <select class="ctl" id="ag-valid">
-          ${(options.approval_choices || []).map((c) => `<option value="${c.seconds}"${
-            c.seconds === 86400 ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+          ${choices.map((c) => `<option value="${c.seconds}"${
+            c.seconds === defaultValid ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
         </select>
         <p class="modal-meta" id="ag-route">正在读路线与计价…</p>
         ${confirmLine}
@@ -476,9 +488,14 @@ export default {
           api.episodes(store.current.id),
           store.can('system:config') ? api.modelPolicies() : Promise.resolve({ items: [] }),
         ]);
+        // 有效期档位也得先从接口取：这一步原来完全没调 plan-options，
+        // 直接把一条写死的 24 小时塞进弹窗。现在档位表与默认档都由服务端说。
+        const qs = new URLSearchParams({
+          project_id: String(store.current.id), goal: '', scene_key: '',
+        }).toString();
+        const opts = await api.agentPlanOptions(qs);
         const slot = root.querySelector('#ag-modal-slot');
-        slot.innerHTML = createModal(episodes, policies.items || [],
-          { route: {}, approval_choices: [{ seconds: 86400, label: '24 小时' }] });
+        slot.innerHTML = createModal(episodes, policies.items || [], opts || {});
         const modal = slot.querySelector('#ag-modal');
         modal.hidden = false;
         bindModal(modal, refresh, policies.items || []);
@@ -502,6 +519,9 @@ async function renderDetail(root) {
     holder.outerHTML = `<div class="card" id="ag-run-detail">${errorBox('读运行详情', err)}</div>`;
     return;
   }
+  // 先把服务端给的事件标签收进缓存，再画：`detailHtml` 里那一栏要用它。
+  // 详情没带（老后端）就保留上一次的，仍没有就原样显示事件码。
+  if (d.event_labels) cache.eventLabels = d.event_labels;
   holder.outerHTML = `<div class="card" id="ag-run-detail">${detailHtml(d)}</div>`;
   const card = document.getElementById('ag-run-detail');
   const again = () => window.dispatchEvent(new CustomEvent('app:refresh'));

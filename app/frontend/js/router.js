@@ -2,6 +2,7 @@
 import views from './views/index.js';
 import { getParam, getSub, setParam, setSub } from './navstate.js';
 import { MODULES } from './modules.js';
+import { escapeHtml } from './util.js';
 
 let currentId = null;
 let firstPaint = true;
@@ -93,7 +94,25 @@ export async function renderView(id) {
   const innerTop = sameView ? root.scrollTop : 0;
   const innerLeft = sameView ? root.scrollLeft : 0;
 
-  const html = await view.render();
+  // 视图 render 抛错必须在这里落地，不能让它变成一条未捕获的 Promise 拒绝：
+  // 那样页面会**停在上一屏不动**（root.innerHTML 根本没执行），人看到的是
+  // "点了没反应"，控制台里才有一行红字。宁可摆一张"这一页没渲染出来"的卡片。
+  let html;
+  try {
+    html = await view.render();
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    console.error(`[router] ${id} 渲染失败`, err);
+    root.classList.toggle('cold', false);
+    root.innerHTML = `<section class="view on">
+      <div class="page-head"><h1>${escapeHtml(MODULES.find((m) => m.id === id)?.label || id)}</h1></div>
+      <div class="card"><div class="empty">
+        <div class="empty-t">这一页没有渲染出来</div>
+        <p>${escapeHtml(err && err.message ? err.message : String(err))}</p>
+        <p class="hint">数据接口出错时页面会走到这里；刷新一次浏览器（Cmd+R）通常能恢复。</p>
+      </div></div></section>`;
+    return;
+  }
   if (seq !== renderSeq) return;      // 已经有一次更晚的导航在跑了，这份作废
   root.innerHTML = html;
   view.mount?.(root);          // 视图自己绑事件，路由不掺和

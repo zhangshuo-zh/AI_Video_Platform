@@ -345,6 +345,18 @@ def main():
         P.eval_js(cdp, "[...document.querySelectorAll('#action-detail [data-sign]')]"
                        ".find(b => b.dataset.sign === 'approved')?.click()")
         time.sleep(2.2)
+        # 签字回执必须显示出来（2026-11-07 修的那处「界面没做到它说的那句话」）。
+        # 原来服务端回的 note 一个字都没被显示：`run()` 只在失败时说话，
+        # 人签完只看到列表刷新，不知道成没成、接下来等什么。
+        # 回执画在**这一栏顶部**（签完那一步就离开待批队列，详情卡整块消失，
+        # 写进卡片等于"签成了，但你看不到它说的话"）。
+        receipt = P.eval_js(cdp, "(() => { const e = document.querySelector('#view-root .bar.ok');"
+          "return e && !e.hidden ? e.className + '|' + e.textContent.trim() : ''; })()") or ""
+        check("签完把服务端的回执显示出来了（成功样式，不是错误条）",
+              str(receipt).startswith("bar ok|") and len(str(receipt)) > 8,
+              f"回执「{receipt}」")
+        check("回执里说清了接下来会发生什么（下一拍执行，不是立刻）",
+              "下一拍" in str(receipt) or "执行" in str(receipt), f"回执「{receipt}」")
         signed = P.eval_js(cdp, "document.querySelector('#action-detail')?.innerText || ''")
         check("签完这一卡收掉了（步骤不再出现在等人批那一列）",
               "等你审批" not in signed or "没有" in signed or signed == "",
@@ -371,6 +383,22 @@ def main():
         P.eval_js(cdp, "document.querySelector('[data-ag-new]')?.click()")
         time.sleep(1.6)
         check("发起弹窗能打开", P.has(cdp, "#ag-modal:not([hidden])"))
+        # 审批有效期四档都得在，默认那一档要和服务端说的一致（2026-11-07 修）。
+        # 原来弹窗只摆一档写死的「24 小时」，而接口明明给了四档。
+        validity = P.eval_js(cdp, "(() => { const s = document.querySelector('#ag-valid');"
+          "if (!s) return '';"
+          "return [...s.options].map(o => o.value + ':' + o.textContent.trim()).join('|')"
+          " + '#' + (s.selectedOptions[0] || {}).value; })()") or ""
+        opts_part, _, picked = str(validity).partition("#")
+        check("审批有效期四档都在（不是只写死一档）",
+              len([x for x in opts_part.split("|") if x]) == 4,
+              f"下拉 {opts_part}")
+        # 走脚本进程取（`api_get` 的注解：`eval_js` 不等 Promise，
+        # 在页面里 fetch 拿到的是个 Pending——那不是验证，是假绿灯）。
+        wanted = str(api_get(f"/api/agent/plan-options?project_id={scene['project_id']}",
+                             token).get("default_valid_seconds"))
+        check("默认有效期取的是服务端说的那一档", str(picked) == str(wanted),
+              f"选中 {picked}／服务端 {wanted}")
         route_line = P.eval_js(cdp, "document.querySelector('#ag-route')?.innerText || ''")
         check("目标还短时先把话说住，不去读一条注定失败的路线",
               "写清楚" in route_line, route_line[:50])

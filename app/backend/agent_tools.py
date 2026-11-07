@@ -373,7 +373,16 @@ def _text_job_submit(args: dict, ctx: dict) -> dict:
         # 这里刻意不给 Agent 传 execution_mode 的参数：
         # "换成云端那一轨"必须是一次看得见的选择，不是模型顺手加的一个字段。
         prompt=args["prompt"], params={}, input_refs=[],
-        idempotency_key=key, user_confirmed_cloud=False)
+        idempotency_key=key,
+        # 这个字段不是"Agent 替人做决定"，而是**转述人已经做过的那个决定**：
+        # `_execute` 只在步骤状态是「已批准」时才把 `cloud_confirmed` 置真，
+        # 而那意味着审核中心里有一条绑着本步骤参数指纹的批准记录。
+        #
+        # 上一版这里恒传 False，理由是"授权不由 Agent 代答"——那句话对，但结论错了：
+        # 它让**默认轨指向云端时这类步骤注定失败**，而这不是保护，是让这条路
+        # 永远走不通（《系统设计说明书》§16 第 25 条如实登记过）。
+        # 现在授权由签字提供，Agent 仍然不代答——它只是把签字这件事带进来。
+        user_confirmed_cloud=bool(ctx.get("cloud_confirmed")))
     try:
         job = services.submit_job(payload, user["id"])
     except services.JobInvalid as exc:
@@ -386,10 +395,10 @@ def _text_job_submit(args: dict, ctx: dict) -> dict:
         "provider_code": job["provider_code"],
         "model_code": job["model_code"],
         "idempotency_key": key,
-        # 云端那一轨在这里仍然会被 `submit_job` 拦住（user_confirmed_cloud=False
-        # 且没有确认单）。这不是设计缺陷，是设计：**默认轨若解析到云端，
-        # 这一步就注定失败，而失败原因是"人要逐次确认计费"**——
-        # 那正是说明书 §3.2 要的授权，不由 Agent 代答。
+        # 走到这里说明这一枪发得出去。云端那一轨能发出去，靠的是审核中心那条
+        # 绑着参数指纹的批准记录（见上面 `user_confirmed_cloud` 那段）——
+        # 不是 Agent 自己勾了一个框。
+        "cloud_confirmed": bool(ctx.get("cloud_confirmed")),
         "note": ("作业已排进生成中心那一个队列；状态、日志、成本与产物都在那里看，"
                  "智能体表里不复制这些事实"),
     }

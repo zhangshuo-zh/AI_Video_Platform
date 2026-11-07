@@ -95,6 +95,28 @@ NODE_STATUS_LABELS = {
     "cancelled": "已取消",
 }
 
+
+
+# 产线事件的中文名。**与智能体事件同一类决定**（见 `agents.EVENT_LABEL` 上面那段）：
+# 原来这份字典只住在 `views/pipeline.js`，与库里的 CHECK 各写一份，中间没有守卫——
+# 0026 的 CHECK 收 15 档，界面少说一档就会变成事件码。
+# 现在收在服务端，随 `GET /pipeline/runs/{id}` 下发 `event_labels`；
+# `tests/test_pipeline.py::test_产线事件的每一档都有中文名` 比 0026 的 CHECK 与这本字典。
+#
+# 注意它**不是**智能体那 23 档：两张表各有一套事件，名字也不同（产线叫「节点完成」，
+# 智能体叫「步骤成功」）。共用一本字典会逼着两边叫同一个名字，那是另一种错。
+EVENT_LABELS = {
+    "run_created": "发起运行", "run_started": "开始生产",
+    "run_paused": "暂停", "run_resumed": "恢复",
+    "run_cancelled": "取消", "run_completed": "全部完成",
+    "run_failed": "运行失败",
+    "preflight_warning": "生产前检查提醒",
+    "job_submitted": "提交作业",
+    "node_ready": "节点就绪", "node_started": "开始执行",
+    "node_completed": "节点完成", "node_failed": "节点失败",
+    "node_skipped": "节点跳过", "node_retried": "重试这一格",
+    "node_waiting_review": "等待签字", "node_attention": "待人工核对",
+}
 RUN_STATUS_LABELS = {
     "running": "生产中", "waiting_review": "待审核", "attention": "待人工核对",
     "paused": "已暂停", "cancelled": "已取消", "completed": "已完成",
@@ -1753,6 +1775,9 @@ def run_view(run_id: int, *, with_events: bool = True) -> dict:
                   for row in rows],
         "events": ([_event_view(e) for e in pipeline_repo.events_for_run(run_id)]
                    if with_events else []),
+        # 事件中文名随详情下发：界面不再自己维护一份 17 档的字典
+        # （那份与 0031 的 CHECK 之间没有任何守卫）。
+        "event_labels": EVENT_LABELS,
         "started_at": run["started_at"] or "", "finished_at": run["finished_at"] or "",
         "created_at": run["created_at"], "updated_at": run["updated_at"],
     }

@@ -32,8 +32,16 @@ router = APIRouter(prefix="/api", tags=["agents"])
 
 # 审批有效期的人话档位。写在这里而不是界面里，是为了"最长多久"这句话只有一处：
 # 说明书 §3.4 要"有效期"，而 0041 的 CHECK 已把 60—604800 秒钉死
+# 审批有效期的人话档位。写在这里而不是界面里，是为了"最长多久"这句话只有一处：
+# 说明书 §3.4 要"有效期"，而 0041 的 CHECK 已把 60—604800 秒钉死。
+#
+# `DEFAULT_VALID_SECONDS` 单独成一个常量：原来"默认那一档"是界面自己写死的
+# （`c.seconds === 86400 ? " selected"`），接口那头也各写了一遍 `dict(...).get(86400)`——
+# 同一个"默认是 24 小时"在三处各说一次。现在只在这里定义，接口原样下发，
+# 界面按数值比较后选中。
 VALID_CHOICES = ((3600, "1 小时"), (21600, "6 小时"), (86400, "24 小时"),
                  (604800, "7 天"))
+DEFAULT_VALID_SECONDS = 86400
 
 
 def _visible_ids(user) -> list[int]:
@@ -93,7 +101,11 @@ def plan_options(project_id: int, goal: str = "", scene_key: str = "",
     route = agents.plan_route(scene_key)
     return {"route": route, "approval_choices": [
         {"seconds": s, "label": label} for s, label in VALID_CHOICES],
-        "default_valid_seconds": dict(VALID_CHOICES).get(86400, "24 小时"),
+        # 这一格原来回的是**标签**（`dict(VALID_CHOICES).get(86400)` 取到 "24 小时"），
+        # 而字段名说 `_seconds`——界面把字符串塞进 `<option selected>` 比较，永远对不上。
+        # 现在回秒数，标签另给一格：两个键各说一件事，谁也不替谁回答。
+        "default_valid_seconds": DEFAULT_VALID_SECONDS,
+        "default_valid_label": dict(VALID_CHOICES).get(DEFAULT_VALID_SECONDS, ""),
         "needs_cloud_confirm": bool(route.get("needs_cloud_confirm")),
         "blockers": [] if route.get("ok") else [route.get("reason")]}
 
@@ -138,7 +150,10 @@ def list_runs(project_id: int, limit: int = 50,
     jobs_by_id = agents.job_repo.get_many(job_ids, with_derived=False) if job_ids else {}
     return {"items": [agents.run_row_view(r, steps_by_run.get(r["id"], []), jobs_by_id)
                       for r in rows],
-            "status_labels": agents.RUN_STATUS_LABEL}
+            "status_labels": agents.RUN_STATUS_LABEL,
+            # 事件中文名两处都给同一把表：列表页不画事件，但多下发一个键比
+            # "只有详情有"更省事——将来列表要加一栏时间线就不必再改协议。
+            "event_labels": agents.EVENT_LABEL}
 
 
 @router.get("/agent/runs/{run_id}")

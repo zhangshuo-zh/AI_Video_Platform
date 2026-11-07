@@ -41,16 +41,22 @@ const TYPE_LABEL = {
   export_compose: '成片合成', export_validate: '成片验收', export_review: '成片审核',
 };
 const FINISHED = ['completed', 'completed_with_errors', 'failed', 'cancelled'];
-const EVENT_LABEL = {
-  run_created: '发起运行', run_started: '开始生产',
-  preflight_warning: '生产前检查提醒',
-  job_submitted: '提交作业', node_completed: '节点完成',
-  node_skipped: '节点跳过', node_failed: '节点失败',
-  node_attention: '待人工核对', node_waiting_review: '等待签字',
-  node_retried: '重试这一格', run_paused: '暂停',
-  run_resumed: '恢复', run_cancelled: '取消',
-  run_completed: '全部完成', run_failed: '运行失败',
-};
+/**
+ * 产线事件的中文名**不在这里**：它由服务端随详情下发（`pipeline.EVENT_LABELS`，
+ * `GET /pipeline/runs/{id}` 的 `event_labels` 键）。
+ *
+ * 这一段原来是一份 17 档的手抄字典，与 `0031_shot_source_version.sql` 里
+ * `pipeline_event.event_type` 的 CHECK 各写一份，中间没有任何守卫——
+ * 清单加一档，界面会安静地把一句话变成事件码。与智能体那 23 档同一类问题
+ * （《写作与引用规范》§2「第二份定义」），同一轮一并收回服务端。
+ *
+ * 兜底：响应没带（老后端）就原样显示事件码，不显示空白。
+ */
+let eventLabels = {};
+
+function eventLabel(eventType) {
+  return eventLabels[eventType] || eventType;
+}
 
 // 打开的运行与同一句提示都要跨重绘活着；提示带上「项目 × 页签」的键，
 // 换项目或换页签就收走——同一个失败的提示不该跟着人到下一个项目。
@@ -75,7 +81,7 @@ const RES_LABEL = { text: '文本', image: '图片', video: '视频', audio: '�
 
 function eventText(ev) {
   const p = ev.payload || {};
-  const base = EVENT_LABEL[ev.event_type] || ev.event_type;
+  const base = eventLabel(ev.event_type);
   const who = ev.node_label || ev.node_key;
   if (ev.event_type === 'run_created') {
     return `${base} · ${p.template || '模板'} v${p.version ?? ''} · ${p.nodes ?? '?'} 个节点 · ${p.shots ?? 0} 镜`;
@@ -743,6 +749,9 @@ export default {
         const detail = await api.pipelineRun(openRunId);
         // 详情是异步读的：读回来时人可能已经切走或换了项目
         if (!detailHost.isConnected) return;
+        // 事件中文名来自服务端（见 `eventLabel` 上面那段）。先收进模块状态再画，
+        // 因为 `eventText()` 在渲染过程中就要用；老后端没带就保留上一次的。
+        if (detail.event_labels) eventLabels = detail.event_labels;
         detailHost.innerHTML = detailHtml(detail);
       } catch (e) {
         if (!detailHost.isConnected) return;
