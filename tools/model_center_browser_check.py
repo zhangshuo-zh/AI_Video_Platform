@@ -576,7 +576,7 @@ def main():
         time.sleep(1.2)
         req_after = P.eval_js(cdp, """(() => {
           const row = [...document.querySelectorAll('tr.policy')]
-            .find(r => r.dataset.key === 'character_variant');
+            .find(r => r.dataset.key === 'scene_prompt');
           return row ? [...row.querySelectorAll('[data-req]:checked')]
             .map(c => c.dataset.req).join(',') : '';
         })()""")
