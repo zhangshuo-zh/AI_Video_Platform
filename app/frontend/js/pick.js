@@ -89,6 +89,28 @@ export function enhanceSelect(sel) {
     if (!list.hidden) paint();
   };
 
+  /** 浮层该多宽：至少与按钮等宽，按钮装不下最长选项时再放宽到刚好够。
+   *
+   * 原来这里写死 `${Math.max(width, 160)}px`——160 是个拍出来的下限，
+   * 当时想的是「按钮太窄时浮层别挤成一团」。但它对**按钮本来就够宽**的场合
+   * 是纯多余：模型仓库那两个筛选下拉 120px，浮层被顶到 160px，看着比控件宽一截，
+   * 而里面的字（全部类型/文本/图像…）根本没溢出。
+   *
+   * 现在改成「按钮宽度」与「最长选项文字宽度」取大：按钮够宽就等宽（浮层与控件
+   * 对齐，最好看），按钮太窄才加宽到文字放得下（不会截断选项）。
+   * 量文字用 canvas，不往 DOM 里塞隐藏元素——那会在每次打开时触发一次重排。
+   */
+  const measureText = (text) => {
+    const cs = getComputedStyle(list);
+    const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const ctx = measureText.ctx || (measureText.ctx = (() => {
+      const c = document.createElement('canvas');
+      return c.getContext('2d');
+    })());
+    ctx.font = font;
+    return Math.ceil(ctx.measureText(text).width);
+  };
+
   const open = () => {
     if (sel.disabled) return;
     if (active && active.sel === sel) { closeActive(); return; }
@@ -98,7 +120,10 @@ export function enhanceSelect(sel) {
     btn.setAttribute('aria-expanded', 'true');
     // 先按宽度与方位摆好再量高度：放不下时向上翻。
     const r = btn.getBoundingClientRect();
-    list.style.minWidth = `${Math.max(Math.round(r.width), 160)}px`;
+    // 最长那条选项要多宽（含左右内边距 10+10 与圆角余量 4）
+    const longest = Math.max(0, ...[...sel.options]
+      .map((o) => measureText(o.textContent || ''))) + 24;
+    list.style.minWidth = `${Math.max(Math.round(r.width), longest)}px`;
     list.style.left = `${Math.round(r.left)}px`;
     const h = list.offsetHeight;
     const below = window.innerHeight - r.bottom - 8;

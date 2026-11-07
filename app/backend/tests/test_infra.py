@@ -774,3 +774,21 @@ def test_模型仓库筛选下拉有不折行的宽度():
     assert js.count('class="ctl repo-filter"') == 2, "两个筛选下拉没都带上 repo-filter 类"
     assert ".repo-filter{width:" in css, "没给显式宽度（原生按最短选项算 92px 会折行）"
     assert "white-space:nowrap" in css, "自绘按钮没压住折行"
+
+def test_下拉浮层宽度跟着按钮与最长选项定():
+    """浮层不该比按钮宽——除非按钮窄到装不下选项文字。
+
+    原来写死 `${Math.max(width, 160)}px`：160 这个下限对按钮本来就够宽的场合
+    是纯多余（模型仓库那两个筛选下拉 120px，浮层被顶到 160px，看着比控件宽一截，
+    而里面的字根本没溢出）。现在改成「按钮宽度」与「最长选项文字宽度」取大。
+
+    这条钉住那个 160 不许回来：它是拍出来的数，不是量出来的。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "pick.js").read_text()
+    code = "\n".join(line for line in js.split("\n")
+                      if not line.strip().startswith(("//", "*", "/*")))
+    assert "Math.max(Math.round(r.width), 160)" not in code, "浮层宽度又写死 160 了"
+    assert "measureText" in code, "没按选项文字量宽度"
+    assert "list.style.minWidth" in code
