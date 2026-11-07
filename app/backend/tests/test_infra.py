@@ -759,3 +759,18 @@ def test_侧栏底部不再挂快速跳转提示():
     assert "快速跳转" not in visible, "侧栏底部又挂上快速跳转提示了"
     assert "'k'" in js and "pal.hidden ? open() : close()" in js, (
         "⌘K 快捷键没了：撤的该是提示，不是功能")
+
+def test_模型仓库筛选下拉有不折行的宽度():
+    """「全部类型／全部来源」两个下拉必须有显式宽度，且自绘按钮不许折行。
+
+    病根：原生 `<select>` 没给宽度时按**最短选项**算宽（实测四字只给 92px），
+    夜间主题换成自绘按钮后 pick.js 把这个宽度照抄过去，文字就折成两行。
+    给 .repo-filter 一个够放一行文字＋箭头的宽度，并压住 nowrap。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views" / "models.js").read_text()
+    css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text()
+    assert js.count('class="ctl repo-filter"') == 2, "两个筛选下拉没都带上 repo-filter 类"
+    assert ".repo-filter{width:" in css, "没给显式宽度（原生按最短选项算 92px 会折行）"
+    assert "white-space:nowrap" in css, "自绘按钮没压住折行"

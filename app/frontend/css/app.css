@@ -624,6 +624,10 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    比 1134px 的表格容器宽出 100px 并顶掉最后一列。下拉的可见文字最多十来个字，
    给 200px 足够；选项超长时浏览器自己省略，鼠标停在选项上仍看得全。 */
 .policy select.ctl{max-width:168px}
+/* 模型仓库顶上「全部类型／全部来源」两个筛选：原生 <select> 按最短选项算宽，
+   实测只给 92px，自绘按钮照抄后就折成两行。给足一行文字＋箭头的宽度。 */
+.repo-filter{width:120px;flex:none}
+.fv-pick .repo-filter,.fv-pick-btn{white-space:nowrap}
 /* 健康那句长解释（"环境变量 X 没有值；改完要重启服务"）不在主行显示：
    一句 30 字的话能把一行撑成三层楼，整表就废了。它出现在两处——
    徽章的 title 里，以及点开这一槽后的细节行里。 */

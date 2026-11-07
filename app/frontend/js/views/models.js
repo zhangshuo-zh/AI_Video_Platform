@@ -363,12 +363,16 @@ function pageRepo() {
     <div class="card-body" style="padding-bottom:0">
       <div class="filters" style="display:flex;gap:8px;flex-wrap:wrap">
         <input class="ctl" id="repo-search" placeholder="搜索显示名、模型标识或 provider…" style="min-width:230px">
-        <select class="ctl" id="repo-cap">
+        <!-- 两个筛选下拉要显式给宽度：浏览器原生 <select> 会按**最短选项**算宽
+             （实测这四个字只给 92px），夜间主题换成自绘按钮后照抄了这个宽度，
+             「全部类型／全部来源」就折成两行。给足一行文字 + 箭头的最小宽度，
+             并禁止换行，白天与夜间就都不折了。 -->
+        <select class="ctl repo-filter" id="repo-cap">
           <option value="">全部类型</option>
           ${Object.entries(cache.catalog.capabilities)
             .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}
         </select>
-        <select class="ctl" id="repo-source">
+        <select class="ctl repo-filter" id="repo-source">
           <option value="">全部来源</option>
           ${Object.entries(sourceLabels())
             .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}
