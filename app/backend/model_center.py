@@ -109,6 +109,11 @@ def health_row(reg: dict) -> dict:
     `backend` 折回清单轴（`_manifest_axis`）：不折的话 `adapters.health()` 里
     `find(capability, "remote", provider)` 恒为空，一行正常登记的远程自建会拿到
     "这个 provider 没有登记适配器"——那不是事实，只是两套取值的对照没做。
+
+    **remote 的 `health` 本身不可信**：平台查不了别人的机器（`_health_of()` 就是
+    因此对 remote 提前返回 unknown）。这个函数的产出只用于两件事：给
+    `env_check` 落一条记录、让清单里的参数与计价按折回后的轴找到。谁要拿它回答
+    "这一档现在能不能用"，请走 `_health_of()`。
     """
     return {"capability": reg["capability"], "backend": _manifest_axis(reg["backend"]),
             "provider": reg["provider"], "model": reg.get("model_code", ""),
@@ -208,10 +213,13 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
                  for r in regs}
     # 只查"已登记的那几组槽位×档"验证记录：目录里没登记的档不需要它们的验证历史，
     # 而 model_validation 只追加不改——不过滤的话窗口函数要扫全部历史再丢掉 99%。
-    # 槽位按**折回后的轴**给：`reg_index` 里的键已经是折过的，两边必须同一口径。
-    # 0043 起验证矩阵按档分区，键就是这里的四元组——不再需要"投影成三元组"
+    # 0043 起验证矩阵按档分区，键就是四元组——不再需要"投影成三元组"
     # 再在 `_slot_model_matches` 里比一次 model：查询结果只含这一档的记录。
-    slots = set(reg_index)
+    # 0045 起**槽位的 backend 用登记行自己的值**（remote 也照常取），
+    # 不用 `reg_index` 那把折回后的键：折回只用于查清单的参数与计价，
+    # 验证记录记在登记行自己名下。两条轴混在一起就会拿本地记录替远端背书。
+    slots = {(r["capability"], r["backend"], r["provider"], r["model_code"])
+             for r in regs}
     index = (verification if verification is not None
              else _verification_index(slots))
     used: set[int] = set()
@@ -247,7 +255,7 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
         if spec is not None:
             rows.append(_registered_row(adapter, spec, reg, index, probe=probe))
         else:
-            rows.append(_orphan_row(reg, probe=probe))
+            rows.append(_orphan_row(reg, probe=probe, verification=index))
     return rows
 
 
@@ -261,8 +269,9 @@ def item_for(reg: dict) -> dict | None:
     登记刚被并发撤掉）。
     """
     cap, provider, code = reg["capability"], reg["provider"], reg["model_code"]
-    axis = _manifest_axis(reg["backend"])
-    index = _verification_index({(cap, axis, provider, code)})
+    # 0045：验证矩阵的槽位用**登记行自己的 backend**（与 catalog() 同一口径）。
+    # `_manifest_axis()` 那把折回只用于查 adapter 与它的参数、计价。
+    index = _verification_index({(cap, reg["backend"], provider, code)})
     adapter = _find_adapter(cap, reg["backend"], provider)
     spec = None
     if adapter is not None:
@@ -270,7 +279,7 @@ def item_for(reg: dict) -> dict | None:
     if spec is not None:
         return _registered_row(adapter, spec, dict(reg), index)
     # 清单里没有这一档：与 catalog() 同一判定——孤儿行，不是"清单未登记"
-    return _orphan_row(dict(reg))
+    return _orphan_row(dict(reg), verification=index)
 
 
 def _tags_of(capability: str, spec: dict, reg: dict | None, kinds: set[str]) -> list[dict]:
@@ -322,24 +331,30 @@ def _base_spec_fields(adapter, spec) -> dict:
 
 def _registered_row(adapter, spec, reg, verification: dict | None = None,
                    *, probe: bool = False) -> dict:
-    remote = reg["backend"] == "remote"
-    if remote:
-        # 0021 的 model_validation 表 CHECK 只认 local/cloud，remote 这一档**留不下痕**。
-        # 于是按 provider×backend 去取矩阵会把本地同 provider 的记录错认成它的——
-        # 那等于拿另一台机器的凭据给这台远程服务背书。宁可空着。
-        kinds: set[str] = set()
-    elif verification is None:
-        kinds = verified_kinds(adapter.capability, adapter.backend, adapter.code,
+    # 0045：验证记录按**登记行的 backend** 取，remote 也照常取。
+    # 0045 之前这里对 remote 硬置空集，理由是"0021 的 CHECK 只认 local/cloud，
+    # 按 provider×backend 取会拿本地同 provider 的记录错认成它的"。
+    # 现在表认 remote 了，那个错认不存在——按 (provider, backend='remote') 取的
+    # 就是它自己的记录。`adapter.backend` 是**折回后**的清单轴（remote→local），
+    # 拿它去查会把两条轴混起来，所以这里显式用 `reg["backend"]`。
+    backend = reg["backend"]
+    if verification is None:
+        kinds = verified_kinds(adapter.capability, backend, adapter.code,
                                reg["model_code"])
     else:
-        kinds = _kinds_of(verification, adapter.capability, adapter.backend,
+        kinds = _kinds_of(verification, adapter.capability, backend,
                           adapter.code, reg["model_code"])
     # 0043：验证矩阵按档分区，`kinds` 已经只含这一档自己的记录——
     # "换档不背书"是查询的形状，不再需要 `_slot_model_matches` 在读点上补刀。
     # 这里仍要回答"这一档是不是槽位当前那一档"（status_detail 要点名解释），
     # 所以查一次槽位拿当前 model，但只用于文案，不参与 kinds 的判定。
     slot_model = _slot_current_model(adapter)
-    same_model = slot_model == reg["model_code"]
+    # 「这一档是不是槽位当前那一档」只对**选型层管得着的两档**成立（local／cloud）——
+    # `provider_config` 是十行固定（能力×本地／云端），里面没有 remote 这一档。
+    # 对 remote 要求"它是槽位当前那一档"等于要求它永不为真：槽位里根本不会有它。
+    # 0045 起 remote 走"有真调用／产物验收凭据就算数"，与其它两档同一把尺子，
+    # 只是不参与槽位比对。
+    same_model = (reg["backend"] == "remote") or (slot_model == reg["model_code"])
     health = _health_of(reg, probe)
     return {
         **_base_spec_fields(adapter, spec),
@@ -404,9 +419,22 @@ def find_adapter(capability: str, backend: str, provider: str):
 _find_adapter = find_adapter
 
 
-def _orphan_row(reg, *, probe: bool = False) -> dict:
-    """登记了、清单里却没有这一档。参数与计价一律不猜，界面必须标出来。"""
+def _orphan_row(reg, *, probe: bool = False, verification: dict | None = None) -> dict:
+    """登记了、清单里却没有这一档。参数与计价一律不猜，界面必须标出来。
+
+    **验证痕迹照认**（0045）：这一档在清单里没有规格，不等于它的验证记录不存在——
+    `model_validation` 记录的是"这一档自己跑过真作业"，与清单里有没有它的参数表
+    是两件事。原来这里恒回空集（`kind` 也是 `orphan`），于是 remote 自建这类
+    清单外登记永远显示"一条验证记录都没有"，与 §4.5 的说法自相矛盾。
+    清单仍然管参数与计价：`params`／`prices` 一律空，这条不变。
+    """
     adapter = _find_adapter(reg["capability"], reg["backend"], reg["provider"])
+    if verification is None:
+        kinds = verified_kinds(reg["capability"], reg["backend"], reg["provider"],
+                               reg["model_code"])
+    else:
+        kinds = _kinds_of(verification, reg["capability"], reg["backend"],
+                          reg["provider"], reg["model_code"])
     spec = {"image_inputs": [], "params": [], "prices": []}
     return {
         "kind": "orphan", "capability": reg["capability"], "backend": reg["backend"],
@@ -422,13 +450,14 @@ def _orphan_row(reg, *, probe: bool = False) -> dict:
         "home_env": adapter.home_env if adapter else "",
         "key_env_hint": adapter.key_env if adapter else "",
         "image_inputs": [], "params": [],
-        "tags": _tags_of(reg["capability"], spec, reg, set()),
+        "tags": _tags_of(reg["capability"], spec, reg, kinds),
         "health": adapters.health(health_row(reg), probe_service=probe,
                                  probe_timeout=engines.LIST_TIMEOUT_SECONDS),
-        "validation_kinds": [],
+        "validation_kinds": sorted(kinds),
         "status": "registration_only",
         "status_detail": "清单里没有这个 provider／这一档：参数不猜、运行方式不猜，"
-                         "提交侧会被拒",
+                         "提交侧会被拒"
+                         + ("（已有验证记录，但清单缺规格这件事不变）" if kinds else ""),
         "created_at": reg["created_at"], "updated_at": reg["updated_at"],
     }
 
@@ -455,6 +484,13 @@ def _status_of(reg, adapter, health: dict, kinds: set[str], same_model: bool) ->
     顺序是刻意的：先看启没停，再看环境，最后才谈验证。
     引擎在线不代表模型可用，模型文件在也不代表工作流依赖齐——
     所以这里任何一档都不许往上跳。
+
+    **remote 这一档要单独说**（0045）：它是"局域网另一台机器上的服务"，
+    平台**天生查不了**它的健康（`_health_of()` 恒回 unknown，理由是本机不查
+    别人的文件系统）。所以不能把它塞进下面那条 `unknown → unchecked` 的链——
+    那会让它永远显示"未检查"，而"未检查"的意思是"你去点一下就知道了"，
+    点多少次都还是 unknown，等于把一个结构事实说成一个待办。
+    对 remote，健康这一环**不再是前置条件**，能证明它行不行的是验证凭据本身。
     """
     if not reg["enabled"]:
         return "disabled"
@@ -463,6 +499,13 @@ def _status_of(reg, adapter, health: dict, kinds: set[str], same_model: bool) ->
     if health["state"] == "missing":
         # 缺的东西分两类：密钥没值＝连不上；本地缺文件＝依赖/权重不齐
         return "connection_failed" if reg["backend"] == "cloud" else "dependency_missing"
+    if reg["backend"] == "remote":
+        # 健康恒 unknown，不作为判定条件：只看证据齐不齐。
+        # `same_model` 对 remote 恒真（见 `_registered_row`），因为选型层的十行
+        # 里没有它这一档——要求"它是槽位当前那一档"等于要求它永不为真。
+        if not ({"real_call", "artifact_review"} & kinds):
+            return "unverified"
+        return "available"
     if health["state"] == "unconfigured":
         return "not_installed"
     if health["state"] == "unknown":

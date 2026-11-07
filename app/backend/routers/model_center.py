@@ -32,9 +32,12 @@ from repositories.model_center import RegistrationError, model_center
 
 router = APIRouter(prefix="/api", tags=["model-center"])
 
-# provider_config（0003）与 model_validation（0021）的 CHECK 都只认 local/cloud。
-# remote 是登记层新加的运行位置，本轮不接验证：想留痕得先扩验证表，那是独立改动。
-_VERIFIABLE_BACKENDS = ("local", "cloud")
+# 验证表认哪些 backend。**不在这里数一遍**：0045 起 model_validation 的 CHECK
+# 与登记层的 REG_SOURCES 是同一套取值（local／cloud／remote），第二份枚举就是
+# 第二把会漂的尺子——这个文件里已经有过一次教训（见 test_枚举的说法只有一份出处）。
+# 原来只认 local/cloud，于是 remote 登记"验不了也留不下痕"；那不是设计选择，
+# 是表装不下那个值。0045 扩了 CHECK 之后两边取值相同。
+_VERIFIABLE_BACKENDS = tuple(REG_SOURCES)
 
 
 def _json_list(raw) -> list:
@@ -241,15 +244,27 @@ def check_model(reg_id: int, user=Depends(require_permission("system:config"))):
 
     这一枪不发请求、不加载权重，所以它永远不能把状态推到"可用"——
     可用要求 real_call 或 artifact_review，那是另一回事。
+
+    留痕时 `backend` 写**登记行自己的值**（0045），不写折回后的清单轴：
+    `mc.health_row()` 折回是为了让 `adapters.health()` 找得到适配器，
+    而记录该记在谁名下是另一件事。remote 那一档尤其不能写成 local，
+    否则这条凭据会混进本地的验证史里。
     """
     row = _row_or_404(reg_id)
     if row["backend"] not in _VERIFIABLE_BACKENDS:
         raise HTTPException(
             status_code=422,
-            detail="远程自建服务本轮不接验证：0021 的 model_validation 只认 local/cloud。"
-                   "要接它得先扩验证表，那是一个独立改动，不在模型中心这一轮。")
+            detail=f"这个运行位置（{row['backend']}）不在验证表认的取值里。"
+                   "model_validation 的 CHECK 只认 local／cloud／remote 三档。")
     try:
-        result = validations.env_check(mc.health_row(dict(row)), user["id"])
+        # 结论走 `mc._health_of()` 而不是 `adapters.health(mc.health_row(...))`：
+        # 后者会把 backend 折回清单轴，remote 那一档因此被当成"本地同 provider"去查，
+        # 得到的是**另一台机器的健康结论**。`_health_of()` 对 remote 直接回 unknown
+        # （本机不查别人的文件系统），这才是这一档真实的结论。
+        probe_row = {"capability": row["capability"], "backend": row["backend"],
+                     "provider": row["provider"], "model": row["model_code"]}
+        result = validations.env_check(probe_row, user["id"],
+                                       health=mc._health_of(dict(row)))
     except validations.ValidationInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ValidationOut.from_row(result["validation"])
@@ -578,6 +593,11 @@ def probe_engine(instance_id: int,
     按 (capability, backend, provider) 索引、装不下实例这个形状——那条理由是对的，
     结论（所以就不留了）不是。于是全平台没有地方能回答"这台 Draw Things
     上周还连不连得上"。现在 `engine_probe_log`（0042）按 instance_id 记，形状对得上。
+
+    **两张历史表不合并**（同一轮的结论）：主体不同——那边是"这一档凭什么能用"的
+    验证凭据，这里是"这个端点上一次被问"的探测事件；`state` 枚举也不是两套说法，
+    而是这边（ok/missing/unknown）为那边六档的真子集。硬合成一张公共事件表，
+    等于逼这张表接受它永远产不出的三档。
 
     留痕**只在这里与建实例那一次**发生；`GET /api/engines` 是读路径，一次都不写
     （它只读最近一条，用来把"上次什么时候探的"摆出来）。这条边界与

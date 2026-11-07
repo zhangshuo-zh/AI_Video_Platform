@@ -340,12 +340,14 @@ def test_云端单价与清单不一致就拒(as_role, studio, provider_state):
     assert _queued_count(studio["pid"]) == before   # 一条都没多
 
 
-def test_单价对得上就按清单重建那张单子(as_role, studio, provider_state):
+def test_单价对得上就按清单重建那张单子(as_role, studio, provider_state,
+                                  register_tier):
     """正例：与清单一致的价格 + 勾了确认 → 建作业，成本由服务端算。"""
     with get_conn() as conn:
         conn.execute("""UPDATE provider_config SET provider='deepseek',
                                model='deepseek-flash', enabled=1
                         WHERE capability='text' AND backend='cloud'""")
+    register_tier("text", "cloud", "deepseek", "deepseek-flash")
     c = as_role("editor")
     r = c.post(f"/api/projects/{studio['pid']}/asset-generations", json={
         "operation": "character_profile", "target_asset_id": studio["aid"],

@@ -1108,7 +1108,8 @@ function pageMonitor() {
 
 /* ================= 弹窗 ================= */
 const MODALS = `
-  <div class="modal" id="mc-detail" hidden>
+  <div class="modal" id="mc-detail" hidden role="dialog" aria-modal="true"
+       aria-labelledby="mc-detail-title">
     <div class="modal-box wide">
       <div class="modal-head neutral" id="mc-detail-title">模型详情</div>
       <div class="modal-body"><div id="mc-detail-body"></div></div>
@@ -1119,7 +1120,8 @@ const MODALS = `
     </div>
   </div>
 
-  <div class="modal" id="mc-form" hidden>
+  <div class="modal" id="mc-form" hidden role="dialog" aria-modal="true"
+       aria-labelledby="mc-form-title">
     <div class="modal-box wide">
       <div class="modal-head neutral" id="mc-form-title">登记模型</div>
       <div class="modal-body">
@@ -1171,15 +1173,17 @@ const MODALS = `
     </div>
   </div>
 
-  <div class="modal" id="mc-resolve" hidden>
+  <div class="modal" id="mc-resolve" hidden role="dialog" aria-modal="true"
+       aria-labelledby="mc-resolve-title">
     <div class="modal-box wide">
-      <div class="modal-head neutral">场景候选</div>
+      <div class="modal-head neutral" id="mc-resolve-title">场景候选</div>
       <div class="modal-body"><div id="mc-resolve-body"></div></div>
       <div class="modal-actions"><button class="btn" data-close="mc-resolve">关闭</button></div>
     </div>
   </div>
 
-  <div class="modal" id="val-modal" hidden>
+  <div class="modal" id="val-modal" hidden role="dialog" aria-modal="true"
+       aria-labelledby="val-title">
     <div class="modal-box wide">
       <div class="modal-head neutral" id="val-title">验证记录</div>
       <div class="modal-body">

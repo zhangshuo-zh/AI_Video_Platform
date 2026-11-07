@@ -195,6 +195,37 @@ def fresh_project(app, people):
 
 
 @pytest.fixture
+def register_tier(app):
+    """显式提交要的登记：`register_tier("video","local","fastmetal","fastmetal-1.3b-qad")`。
+
+    2026-11-07 起 `submit_job` 的显式那一支要求「这一档在模型仓库登记过」
+    （原来要求"与 provider_config 槽位逐字相等"，那条把同能力多引擎钉死了）。
+    于是所有**显式指定 provider/model** 的用例都要先登记一行——这个 fixture
+    就是把那一步收成一句，用完自己清掉，不给别的用例留行。
+    """
+    made: list[int] = []
+
+    def _make(capability: str, backend: str, provider: str, model_code: str,
+              *, enabled: bool = True, source: str = "") -> int:
+        from repositories.model_center import model_center as _mc
+        row = _mc.create({
+            "capability": capability, "backend": backend, "provider": provider,
+            "model_code": model_code, "source": source or backend,
+            "display_name": "", "version": "", "artifact_path": "",
+            "remote_model_id": "", "enabled": 1 if enabled else 0, "note": "",
+            "capabilities": [], "created_by": None,
+        })
+        made.append(row["id"])
+        return row["id"]
+
+    yield _make
+    from db import get_conn
+    with get_conn() as conn:
+        for rid in made:
+            conn.execute("DELETE FROM model_registration WHERE id = ?", (rid,))
+
+
+@pytest.fixture
 def delete_guard(tmp_path):
     """环境不允许删文件时跳过「真的删东西」的用例。
 

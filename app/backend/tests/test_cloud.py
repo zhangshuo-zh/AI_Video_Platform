@@ -290,7 +290,8 @@ def test_runner_请求文件只有变量名没有密钥值(tmp_path, monkeypatch
 
 
 def test_worker_云端文本端到端写请求ID与用量(tmp_path, monkeypatch, mock_api,
-                                             provider_state, clean_queue, fresh_project):
+                                             provider_state, clean_queue, fresh_project,
+                                             register_tier):
     monkeypatch.setenv("DEEPSEEK_API_KEY", SECRET)
     monkeypatch.setenv("DEEPSEEK_BASE_URL", _base(mock_api))
     monkeypatch.setenv("no_proxy", "127.0.0.1")
@@ -302,6 +303,7 @@ def test_worker_云端文本端到端写请求ID与用量(tmp_path, monkeypatch,
                           model='deepseek-flash', enabled=1, is_default=0,
                           key_env='DEEPSEEK_API_KEY'
                         WHERE capability='text' AND backend='cloud'""")
+    register_tier("text", "cloud", "deepseek", "deepseek-flash")
 
     pid = fresh_project("editor")
     payload = JobSubmitIn(
@@ -330,7 +332,8 @@ def test_worker_云端文本端到端写请求ID与用量(tmp_path, monkeypatch,
 
 
 def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, mock_api,
-                                             provider_state, clean_queue, fresh_project):
+                                             provider_state, clean_queue, fresh_project,
+                                             register_tier):
     """错误码前缀不能拼两次——拼两次会让"结果未知"伪装成"失败，可重试"。
 
     `cloud_run.py` 给 5xx 的码就叫 `provider_unavailable`／`provider_error`，
@@ -342,6 +345,7 @@ def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, m
     monkeypatch.setenv("DEEPSEEK_BASE_URL", _base(mock_api))
     monkeypatch.setenv("no_proxy", "127.0.0.1")
     mock_api.scenario = "deepseek_500_with_id"
+    register_tier("text", "cloud", "deepseek", "deepseek-flash")
 
     import db
     with db.get_conn() as conn:
@@ -371,11 +375,12 @@ def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, m
 
 
 def test_云端401失败也留请求ID(tmp_path, monkeypatch, mock_api,
-                              provider_state, clean_queue, fresh_project):
+                              provider_state, clean_queue, fresh_project, register_tier):
     monkeypatch.setenv("DEEPSEEK_API_KEY", SECRET)
     monkeypatch.setenv("DEEPSEEK_BASE_URL", _base(mock_api))
     monkeypatch.setenv("no_proxy", "127.0.0.1")
     mock_api.scenario = "deepseek_401"
+    register_tier("text", "cloud", "deepseek", "deepseek-flash")
 
     import db
     with db.get_conn() as conn:

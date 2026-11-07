@@ -13,7 +13,7 @@ from repositories.jobs import jobs as job_repo
 
 
 @pytest.fixture
-def audio_route(monkeypatch, provider_state):
+def audio_route(monkeypatch, provider_state, register_tier):
     monkeypatch.setattr(services.adapters, "health",
                         lambda row: {"state": "ok", "detail": "测试可达",
                                      "adapter": None, "key_env": ""})
@@ -29,6 +29,9 @@ def audio_route(monkeypatch, provider_state):
                   SET provider = 'ace-step', model = 'ace-step-1.5',
                       enabled = 1, is_default = 1, key_env = ''
                 WHERE capability = 'music' AND backend = 'local'""")
+    # 显式提交要求这一档在模型仓库登记过（2026-11-07 起）：音频这两类都走显式
+    register_tier("tts", "local", "voxcpm2", "voxcpm2")
+    register_tier("music", "local", "ace-step", "ace-step-1.5")
 
 
 def _make_clip(client, pid, ep, shot, kind="dialogue", text="你迟了三年。"):

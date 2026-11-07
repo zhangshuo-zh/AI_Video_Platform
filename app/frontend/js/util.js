@@ -165,16 +165,72 @@ export function bindSubChips(root, onPick) {
 const closers = new WeakMap();
 let escBound = false;
 
+/* 焦点陷阱（无障碍）：弹窗开着时 Tab 不许跑到背后那一屏去。
+ *
+ * 原来只有 Escape 一条键盘路径——鼠标用户察觉不到，键盘与读屏用户会直接
+ * 撞到"Tab 到底下表格里去了，回不来"。这里补的是最小可用的一套：
+ *   ① 打开时把焦点移进弹窗（第一个可聚焦元素，没有就聚焦容器本身）；
+ *   ② Tab／Shift+Tab 在弹窗内的可聚焦元素之间循环；
+ *   ③ 关闭时把焦点还给打开它的那个元素（`document.activeElement` 快照）。
+ *
+ * 不引库、不改 DOM 结构：`.modal` 加 `role="dialog" aria-modal="true"` 由各
+ * 视图自己写在模板里（已经有一半这么写了），这里只管键盘与焦点。
+ */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
+  + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const lastFocus = new WeakMap();   // modal → 打开前持有焦点的元素
+
+function focusables(modal) {
+  return [...modal.querySelectorAll(FOCUSABLE)]
+    .filter((el) => el.offsetParent !== null || el === document.activeElement);
+}
+
+function trapTab(modal) {
+  const list = focusables(modal);
+  if (!list.length) return;
+  const first = list[0];
+  const last = list[list.length - 1];
+  const active = document.activeElement;
+  if (!modal.contains(active)) { first.focus(); return; }
+  if (active === last) { last.blur(); first.focus(); }
+  else if (active === first) { first.blur(); last.focus(); }
+}
+
 export function bindModalDismiss(modal, close) {
   closers.set(modal, close);
+  // 打开时记下"焦点原来在哪"，关的时候还回去；并主动把焦点移进弹窗。
+  // 用 hidden 属性判可见性：所有弹窗都是 `hidden` 切换，没有其它显隐机制。
+  if (!modal.dataset.focusBound) {
+    modal.dataset.focusBound = '1';
+    const observer = new MutationObserver(() => {
+      if (modal.hidden) {
+        const back = lastFocus.get(modal);
+        lastFocus.delete(modal);
+        if (back && back.isConnected) back.focus();
+      } else if (!lastFocus.has(modal)) {
+        lastFocus.set(modal, document.activeElement);
+        const target = focusables(modal)[0] || modal;
+        // 容器本身要可聚焦才接得住焦点：补 tabindex，不然 focus() 是空操作
+        if (target === modal && !modal.hasAttribute('tabindex')) {
+          modal.setAttribute('tabindex', '-1');
+        }
+        target.focus();
+      }
+    });
+    observer.observe(modal, { attributes: true, attributeFilter: ['hidden'] });
+  }
   if (escBound) return;
   escBound = true;
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
     const open = [...document.querySelectorAll('.modal:not([hidden])')];
     if (!open.length) return;
-    const fn = closers.get(open[open.length - 1]);
-    if (fn) { e.preventDefault(); fn(); }
+    const top = open[open.length - 1];
+    if (e.key === 'Escape') {
+      const fn = closers.get(top);
+      if (fn) { e.preventDefault(); fn(); }
+      return;
+    }
+    if (e.key === 'Tab') trapTab(top);
   }, true);
 }
 

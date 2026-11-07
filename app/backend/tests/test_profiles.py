@@ -66,11 +66,13 @@ def test_参数必须过适配器白名单_凭据不收(as_role, provider_state,
     assert unbound.status_code == 422 and "不能带参数" in unbound.json()["detail"]
 
 
-def test_改模板不影响已提交作业的快照(as_role, provider_state, clean_queue, fresh_project):
+def test_改模板不影响已提交作业的快照(as_role, provider_state, clean_queue,
+                                  fresh_project, register_tier):
     pid = fresh_project()
     _put_video(as_role("admin"), local={"provider": "fastmetal",
                                         "model": "fastmetal-1.3b-qad",
                                         "enabled": True})
+    register_tier("video", "local", "fastmetal", "fastmetal-1.3b-qad")
     c = as_role("editor")
     profile = _make(c, pid, params={"width": 448, "height": 832}).json()
 

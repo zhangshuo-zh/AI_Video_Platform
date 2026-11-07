@@ -23,6 +23,7 @@ from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOu
                     ProviderOut, ProviderUpdate, ValidationIn, ValidationOut,
                     provider_slot_version)
 from repositories.config_log import record as config_log_record
+from repositories.model_center import model_center as registration_repo
 from repositories.providers import has_key, providers
 from repositories.validation import validations as validation_repo
 
@@ -114,6 +115,51 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             validation_state=badge, validation_at=at,
             models=[m.as_dict() for m in adapter.models] if adapter else [],
         ))
+
+    # 2026-11-07 起：**登记过但不在槽位里的档也要列**。
+    #
+    # 提交侧的显式那一支已经放开（判据从"与槽位逐字相等"改成"已登记 ∧ 已启用
+    # ∧ 清单有适配器"），所以界面上必须看得见这些档——否则放开只对 curl 有效，
+    # 生成中心的下拉还是那十条。同能力第二档（比如 fastmetal 的 5B）以前根本
+    # 选不到，想切只能去改默认轨再改回来。
+    #
+    # 三件事不放松：
+    #   ① 只列**清单里有适配器**的档——参数白名单在 adapters.py，没有它不能拼命令；
+    #   ② 只列**已启用**的登记（`model_registration.enabled`）；
+    #   ③ 与槽位重复的不再列一遍（槽位那份已经在上面的循环里，且带槽位级的健康）。
+    slot_keys = {(r["capability"], r["backend"], r["provider"], r["model"])
+                 for r in providers.all()}
+    extra: list[dict] = []
+    for reg in registration_repo.registrations():
+        key = (reg["capability"], reg["backend"], reg["provider"], reg["model_code"])
+        if key in slot_keys or not reg["enabled"]:
+            continue
+        adapter = adapters.find(reg["capability"], reg["backend"], reg["provider"])
+        if adapter is None:
+            continue
+        extra.append({"reg": reg, "adapter": adapter, "key": key})
+    if extra:
+        # 这些档的验证史同样按档定向查：它们不在 provider_config 里，
+        # 但 `model_validation` 是按 (能力, 后端, provider, model) 落的。
+        matrix2 = validation_repo.latest_matrix({e["key"] for e in extra}, by_model=True)
+        for e in extra:
+            reg, adapter = e["reg"], e["adapter"]
+            row = {"capability": reg["capability"], "backend": reg["backend"],
+                   "provider": reg["provider"], "model": reg["model_code"]}
+            health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
+            badge, at = validations.badge(validations.summary_for(
+                row, matrix2.get(e["key"], {})))
+            out.append(ProviderOptionOut(
+                capability=reg["capability"],
+                capability_label=CAPABILITIES.get(reg["capability"], reg["capability"]),
+                backend=reg["backend"],
+                backend_label=BACKENDS.get(reg["backend"], reg["backend"]),
+                provider=reg["provider"], model=reg["model_code"],
+                adapter_label=adapter.label,
+                health_state=health["state"], health_detail=health["detail"],
+                validation_state=badge, validation_at=at,
+                models=[m.as_dict() for m in adapter.models],
+            ))
     if ALLOW_MOCK:
         # 演示/自测开关（FASTVIDEO_ALLOW_MOCK=1，生产默认关闭）打开时，给每类能力补一条
         # 身份写明"不执行模型"的假槽位。为什么非要它进这份清单：这台机器上文本轨被

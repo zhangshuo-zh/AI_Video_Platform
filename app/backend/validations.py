@@ -129,9 +129,17 @@ def from_job(job_id: int, kind: str, created_by: int | None,
     return {"ok": True, "validation": row}
 
 
-def env_check(row, created_by: int | None) -> dict:
-    """跑一次环境检查并留痕。结论仍来自 `adapters.health()`，这里只负责记录。"""
-    health = adapters.health(row)
+def env_check(row, created_by: int | None, health: dict | None = None) -> dict:
+    """跑一次环境检查并留痕。结论默认来自 `adapters.health()`，这里只负责记录。
+
+    `health` 是给**结论不由 `adapters.health()` 说得出来**的调用方留的口子：
+    远程自建（backend='remote'）那一档，`adapters.health()` 拿本机文件系统
+    去回答别人的机器，得到的永远是"清单里没这一家"或一条错位的结论——
+    它的真相是"平台查不了，归引擎实例那张表"，由 `model_center._health_of()`
+    回答。传进来就用它，不传仍走 `adapters.health()`（其余五档的老路径一字未改）。
+    """
+    if health is None:
+        health = adapters.health(row)
     adapter = health.get("adapter") or {}
     record = repo.record({
         "capability": row["capability"], "backend": row["backend"],

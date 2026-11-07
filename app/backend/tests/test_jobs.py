@@ -365,10 +365,96 @@ def test_真适配器缺运行时明确失败(as_role, provider_state, clean_que
     assert "adapter_unavailable" in logs["text"]
 
 
-def test_参数白名单在提交时挡掉(as_role, provider_state, clean_queue, seeded):
+def test_显式指定不再被槽位绑死_同能力第二档也能选(as_role, provider_state,
+                                          clean_queue, seeded, register_tier):
+    """2026-11-07 放开的那条：显式指定的判据从"与 provider_config 槽位逐字相等"
+    改成"已登记 ∧ 已启用 ∧ 清单有适配器"。
+
+    改之前，`provider_config` 是十行固定（5 类能力 × 本地／云端），一格只装一个
+    provider，所以同能力永远只能选一档——想对比 mflux 与 Draw Things 就得改默认轨
+    再改回来，而改默认轨是有后果的动作（`is_default` 是 `resolve_provider()`
+    的唯一输入）。这条钉的是：**槽位决定"不说的时候走哪条"，不再兼任允许清单**。
+    """
+    admin = as_role("admin")
+    # 槽位配成 1.3B：不说的时候走它
+    _put_video(admin, local={"provider": "fastmetal", "model": "fastmetal-1.3b-qad",
+                             "enabled": True, "is_default": True})
+    # 5B 也登记并启用：它**不在槽位里**，但平台上真有这一档。
+    # 这正是改之前做不到的那件事——同一 provider 的两档以前只能二选一，
+    # 因为显式那一支要求"与 provider_config 槽位逐字相等"。
+    register_tier("video", "local", "fastmetal", "fastmetal-5b-qad")
+
+    c = as_role("editor")
+    r = c.post("/api/jobs", json={
+        "project_id": seeded["project_id"], "capability": "video",
+        "prompt": "换 5B 那一档试试", "execution_mode": "local",
+        "provider_code": "fastmetal", "model_code": "fastmetal-5b-qad",
+        "params": {},
+    })
+    assert r.status_code == 202, r.text
+    assert r.json()["provider_code"] == "fastmetal"
+    assert r.json()["model_code"] == "fastmetal-5b-qad"
+
+    # 而不传这三件时，仍然只走槽位那一条（默认轨的唯一来源没变）
+    d = c.post("/api/jobs", json={
+        "project_id": seeded["project_id"], "capability": "video",
+        "prompt": "不指定就走默认", "params": {},
+    })
+    assert d.status_code == 202, d.text
+    assert d.json()["model_code"] == "fastmetal-1.3b-qad"
+
+
+def test_提交下拉能看见登记过的第二档(as_role, provider_state, clean_queue,
+                                  seeded, register_tier):
+    """放开了提交侧，界面也必须跟得上（`GET /api/providers/available`）。
+
+    这条钉的是"放开只对 curl 有效"那种半成品：判据换了而候选清单没换，
+    生成中心的下拉还是那十条，同能力第二档照样选不到。
+
+    同时钉两条**不放松**的底线：清单里没有适配器的档不列（参数白名单是硬前提），
+    停用的登记不列（人可以用它把某一档关掉而不撤登记）。
+    """
+    admin = as_role("admin")
+    _put_video(admin, local={"provider": "fastmetal", "model": "fastmetal-1.3b-qad",
+                             "enabled": True, "is_default": True})
+    register_tier("video", "local", "fastmetal", "fastmetal-5b-qad")
+    # 清单外 provider：登记了但平台没有它的参数白名单，不许列
+    register_tier("image", "local", "no-such-provider", "x1")
+
+    c = as_role("editor")
+    out = c.get("/api/providers/available").json()
+    video = [o for o in out if o["capability"] == "video" and o["backend"] == "local"]
+    models = {o["model"] for o in video}
+    assert "fastmetal-5b-qad" in models, f"第二档没进候选：{models}"
+    assert "fastmetal-1.3b-qad" in models, "槽位那一档别被挤掉"
+    # 清单外 provider 不许出现
+    assert not [o for o in out if o["provider"] == "no-such-provider"], \
+        "清单里没有适配器的登记不该进候选——平台不会替它猜参数"
+
+
+def test_显式指定要求这一档真的登记过(as_role, provider_state, clean_queue, seeded):
+    """放开的反面：**没登记过就还是一片 422**。
+
+    判据换的是"允许清单"这一环，不是"能不能跑"这一环——登记行回答的正是
+    "这台机器上真有这一档"，没有它平台不该替一个没登记的东西建作业。
+    """
+    c = as_role("editor")
+    r = c.post("/api/jobs", json={
+        "project_id": seeded["project_id"], "capability": "image",
+        "prompt": "没登记也想过", "execution_mode": "local",
+        "provider_code": "mflux", "model_code": "flux1-schnell", "params": {},
+    })
+    assert r.status_code == 422
+    assert "没有登记" in r.json()["detail"], r.json()["detail"]
+
+
+def test_参数白名单在提交时挡掉(as_role, provider_state, clean_queue, seeded,
+                             register_tier):
     admin = as_role("admin")
     _put_video(admin, local={"provider": "fastmetal", "model": "fastmetal-5b-qad",
                              "enabled": True})
+    # 显式指定要求这一档在模型仓库登记过（2026-11-07 起）
+    register_tier("video", "local", "fastmetal", "fastmetal-5b-qad")
     c = as_role("editor")
     base = {"provider_code": "fastmetal", "model_code": "fastmetal-5b-qad",
             "execution_mode": "local"}
@@ -385,9 +471,11 @@ def test_参数白名单在提交时挡掉(as_role, provider_state, clean_queue,
     assert r.status_code == 202, r.text
 
 
-def test_云端视频必须显式确认(as_role, provider_state, clean_queue, seeded):
+def test_云端视频必须显式确认(as_role, provider_state, clean_queue, seeded,
+                             register_tier):
     admin = as_role("admin")
     _put_video(admin, cloud={"provider": "wan", "model": "wan2.7-t2v", "enabled": True})
+    register_tier("video", "cloud", "wan", "wan2.7-t2v")
     c = as_role("editor")
     base = {"provider_code": "wan", "model_code": "wan2.7-t2v",
             "execution_mode": "cloud", "params": {}}

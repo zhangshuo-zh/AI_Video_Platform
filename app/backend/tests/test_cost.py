@@ -56,10 +56,12 @@ def _make_job(project_id, **over):
     return jobs.create(data)
 
 
-def test_云端必须先确认量价_金额由服务端算(as_role, provider_state, clean_queue, fresh_project):
+def test_云端必须先确认量价_金额由服务端算(as_role, provider_state, clean_queue,
+                                  fresh_project, register_tier):
     pid = fresh_project()
     admin = as_role("admin")
     _put_video(admin, cloud={"provider": "wan", "model": "wan2.7-t2v", "enabled": True})
+    register_tier("video", "cloud", "wan", "wan2.7-t2v")
     c = as_role("editor")
 
     # 只勾确认、不给量价：不落库

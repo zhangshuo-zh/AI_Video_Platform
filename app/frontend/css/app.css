@@ -1435,6 +1435,43 @@ pre.diff.ai{max-height:min(46vh,420px);overflow:auto;margin:6px 0 2px}
   .ai-price{grid-template-columns:minmax(0,1fr)}
 }
 
+/* ---------- ≤640px：手机竖屏的一道闸 ----------
+   原来最低断点是 860px，再窄就没有专门的处理，只有 `.table-wrap` 的横向滚动。
+   380px（iPhone 竖屏）上会撞两件事：
+   ① `.form-grid` 是 `max-content minmax(0,1fr)`——字段名那一列按最长的那个
+      撑开，弹窗里"云端调用已确认计费"这种十几个字的标签能把右列压到只剩半格；
+   ② 表格横向滚动时人看不出还有内容（没有滚动提示），
+      且 `.table-wrap` 的 `-webkit-overflow-scrolling` 在老 Safari 上不生效。
+   这一档改成单列：字段名在上、控件占满一行，弹窗内边距与按钮尺寸都收一档。 */
+@media (max-width:640px){
+  /* 单列表单：label 靠左、控件满宽。flex-direction 那一套是给 .pf-row 的，
+     .form-grid 是 grid，必须换列定义而不是换方向 */
+  .form-grid{grid-template-columns:minmax(0,1fr);gap:6px}
+  .form-grid > label,.form-grid > .pf-label{justify-self:start;white-space:normal}
+  .form-grid > label.top,.form-grid > .pf-label.top{padding-top:0}
+  /* 表单项之间的间距别再靠 gap：单列后每对(label,控件)之间要近、每对之间要远 */
+  .form-grid > label + *{margin-top:-2px}
+  /* 弹窗铺满且内边距收一档，380px 上不至于只剩 300px 可用宽度 */
+  .modal{padding:8px}
+  .modal-box{padding:14px;border-radius:12px}
+  .modal-box.wide{max-height:calc(100vh - 16px)}
+  .modal-actions{gap:6px;flex-wrap:wrap}
+  .modal-actions .btn{flex:1 1 auto;justify-content:center}
+  /* 表格：给横向滚动一条可见的边（阴影提示还有内容），并把单元格再收紧一档 */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;background:
+    linear-gradient(to right,var(--panel) 30%,rgba(0,0,0,0)) left center,
+    linear-gradient(to right,rgba(0,0,0,0),var(--panel) 70%) right center;
+    background-repeat:no-repeat;background-size:24px 100%;background-attachment:local,local}
+  th,td{padding:6px 8px}
+  /* 页头与卡片头在 380px 上不要挤成两行：标题一行、操作换行在下 */
+  .page-head h1{font-size:19px}
+  .card-head h2{font-size:14px}
+  /* 概览那条带子是 flex，不是 grid：窄屏让它两列对齐就行 */
+  .mc-strip{gap:4px 16px;padding:10px 12px}
+  .mc-strip .st{font-size:11px}
+  .kv-grid{grid-template-columns:minmax(0,1fr)}
+}
+
 /* ---------- W12：分镜表与资产引用 ---------- */
 /* 内容列是这一页的主读项，给它最多的余量；提示词压成一行灰字——
    两段都换行时一行能长到三行，一屏只看得见五镜 */

@@ -2019,14 +2019,29 @@ def submit_job(payload, created_by: int | None) -> dict:
     elif explicit:
         if not (mode and provider and model):
             raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")
-        row = provider_repo.slot(capability, mode)
-        if row is None:
-            raise JobInvalid(f"{capability} 没有 {mode} 这一轨")
-        if (row["provider"], row["model"]) != (provider, model):
-            raise JobInvalid(f"这次指定的 {provider}/{model} 与配置槽位 "
-                             f"{row['provider']}/{row['model']} 不一致；请先改配置")
-        if not row["enabled"]:
-            raise JobInvalid("这个槽位没有启用")
+        # 显式那一支不再要求"与 provider_config 槽位逐字相等"（2026-11-07 放开）。
+        #
+        # 原来这条要求把"同能力只能用一档"钉死在了提交契约上：`provider_config`
+        # 是十行固定（5 类能力 × 本地／云端），一格只装一个 provider，所以
+        # Draw Things 与 mflux 只能二选一——想对比两种采样器就得改默认轨再改回来，
+        # 而改默认轨是有后果的动作（`is_default` 是 `resolve_provider()` 的唯一输入）。
+        #
+        # 现在改成"**已登记 ∧ 已启用 ∧ 清单有适配器**"就放行，三件事各有出处：
+        #   * 已登记：`model_registration` 那一行在——这是"这台机器上真有这一档"；
+        #   * 已启用：登记行的 `enabled`——人可以用它把某一档停掉而不撤登记；
+        #   * 清单有适配器：参数白名单在 `adapters.py`，没有它平台不会拼命令。
+        # 槽位仍然决定**不说的时候**走哪条（默认轨唯一来源没变），只是不再
+        # 兼任"允许清单"。`resolve_provider()` 一个字没改。
+        reg = registration_repo.find_registration(capability, mode, provider, model)
+        if reg is None:
+            raise JobInvalid(
+                f"{capability} · {mode} 上没有登记 {provider}/{model}。"
+                "显式指定只接受「模型仓库」里登记过的档——"
+                "先在模型中心登记它，或者不传这三件走默认轨")
+        if not reg["enabled"]:
+            raise JobInvalid(
+                f"{provider}/{model} 这条登记已停用（enabled=0）："
+                "显式指定也走不了停用的档，请到模型仓库把它启用")
         if capability == "video" and mode == "cloud" and not payload.user_confirmed_cloud:
             raise JobInvalid("云端视频要逐镜头确认按供应商计费")
         adapter = adapters.find(capability, mode, provider)

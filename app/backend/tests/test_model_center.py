@@ -350,13 +350,68 @@ def test_本地模型健康就绪才算可用缺一件就点名(as_admin, clean_
     assert item["status"] == "dependency_missing"
 
 
-def test_远程自建服务本轮不许留验证痕(as_admin, clean_registrations):
+def test_远程自建也能留验证痕(as_admin, clean_registrations):
+    """0045：远程自建（backend='remote'）的记录能落库，且**只认它自己名下的**。
+
+    0045 之前这条是反过来的——`model_validation` 的 CHECK 只认 local/cloud，
+    于是这一档的"环境检查"直接 422，目录里它的 kinds 被硬置成空集，
+    状态永远停在 unverified，每次都要向人解释"不是坏了"。
+
+    这一条要钉三件事：
+    ① 环境检查能跑完并留痕（结论是 unknown——本机不查别人的文件系统），
+       且记录写的是 `backend='remote'` 不是折回后的 local；
+    ② `unknown` **不算证据**，所以它进不了 `validation_kinds`（这是对的，
+       不是漏了）——真正能证明 remote 可用的是 real_call／artifact_review；
+    ③ 本地同 provider 同模型档的记录不许替它背书。
+    """
     rid = as_admin.post("/api/models", json={
-        "capability": "image", "backend": "remote", "provider": "sdxl-api",
-        "model_code": "sdxl-1"}).json()["id"]
+        "capability": "image", "backend": "remote", "provider": "mflux",
+        "model_code": "flux1-schnell"}).json()["id"]
+
+    # ① 环境检查能跑完、能留痕，且记录在 remote 名下
     r = as_admin.post(f"/api/models/{rid}/check")
-    assert r.status_code == 422
-    assert "只认 local/cloud" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["backend"] == "remote", \
+        f"记录要写在登记行自己的轴上；写成 local 会混进本地验证史：{body}"
+    assert body["kind"] == "env_check"
+    assert body["state"] == "unknown", \
+        "本机查不了别人的机器，环境检查的结论只能是 unknown"
+
+    # ② unknown 不算证据：这一档仍然不是「可用」
+    item = _item_of_remote(as_admin.get("/api/models").json()["items"],
+                           "mflux", "flux1-schnell")
+    assert item["validation_kinds"] == [], \
+        f"unknown 不该被当成可用凭据：{item['validation_kinds']}"
+    assert item["status"] == "unverified"
+
+    # ③ 本地同 provider 同模型档的记录不许替它背书
+    val_repo.record({"capability": "image", "backend": "local", "provider": "mflux",
+                     "model": "flux1-schnell", "kind": "real_call", "state": "ok"})
+    item = _item_of_remote(as_admin.get("/api/models").json()["items"],
+                           "mflux", "flux1-schnell")
+    assert "real_call" not in item["validation_kinds"], \
+        "本地记录不能当成远程自建的凭据——两条轴各记各的"
+    assert item["status"] == "unverified"
+
+    # ④ 它自己的 real_call 才是凭据：remote 的健康恒 unknown，但那不再挡路
+    val_repo.record({"capability": "image", "backend": "remote", "provider": "mflux",
+                     "model": "flux1-schnell", "kind": "real_call", "state": "ok"})
+    item = _item_of_remote(as_admin.get("/api/models").json()["items"],
+                           "mflux", "flux1-schnell")
+    assert "real_call" in item["validation_kinds"]
+    assert item["status"] == "available", \
+        f"有真调用凭据就该给可用，否则这一档永远等一个不可能到来的健康结论：" \
+        f"{item['status_detail']}"
+
+
+def _item_of_remote(items, provider, model_code):
+    """按 provider／model 找那一行——remote 与本地可能同 provider，所以还要看 backend。"""
+    for it in items:
+        if (it["provider"] == provider and it["model_code"] == model_code
+                and it["backend"] == "remote"):
+            return it
+    raise AssertionError(f"目录里没有 remote 那一行：{provider}/{model_code}")
 
 
 # ---------------------------------------------------------------- 策略与路由

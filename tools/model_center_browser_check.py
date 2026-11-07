@@ -734,6 +734,79 @@ def main():
         check("夜间下拉是自绘深色浮层（不是系统浅色菜单）",
               str(pick).startswith('rgb(36, 31, 27)'), f"底色/文字/选项 {pick}")
 
+        # 弹窗的会话语义与焦点陷阱（2026-11-07 无障碍收口）。
+        # 原来四个弹窗都没有 role／aria-modal，Tab 会一路走到底下表格里回不来；
+        # util.bindModalDismiss 现在补了"打开时移进焦点 + Tab 循环 + 关闭时还回去"。
+        go(cdp, f"{BASE}/#models/0")
+        time.sleep(0.6)
+        pd = P.eval_js(cdp, """(() => {
+          const ids = ['mc-detail','mc-form','mc-resolve','val-modal'];
+          return ids.map((id) => { const m = document.getElementById(id);
+            return m ? [id, m.getAttribute('role'), m.getAttribute('aria-modal'),
+                        !!m.getAttribute('aria-labelledby')].join(':') : id + ':MISSING'; }).join(' | ');
+        })()""") or ""
+        check("四个弹窗都有 dialog 语义（role／aria-modal／aria-labelledby）",
+              all('dialog:true:true' in seg for seg in str(pd).split(' | ')),
+              str(pd)[:200])
+
+        focus = P.eval_js(cdp, """(async () => {
+          // 用 #mc-form（登记弹窗）而不是 #mc-detail：前者有十几个可聚焦控件，
+          // Tab 循环才测得出来。#mc-detail 在没人打开具体一档时只有「关闭」一个按钮，
+          // 那种情况下"循环"没有意义——那不是缺陷，是页面上真的只有一个可聚焦元素。
+          const modal = document.querySelector('#mc-form');
+          modal.hidden = false;
+          await new Promise((r) => setTimeout(r, 80));
+          const inside = modal.contains(document.activeElement);
+          const list = [...modal.querySelectorAll(
+            'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])')]
+            .filter((el) => el.offsetParent !== null);
+          let looped = false;
+          if (list.length > 1) {
+            list[list.length - 1].focus();
+            document.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', bubbles:true}));
+            looped = modal.contains(document.activeElement) && document.activeElement === list[0];
+          }
+          modal.hidden = true;
+          return inside + '|' + looped + '|' + list.length;
+        })()""") or ""
+        fp = str(focus).split('|')
+        check("打开弹窗时焦点进得来，Tab 到底会循环回第一个",
+              len(fp) == 3 and fp[0] == 'true' and fp[1] == 'true' and int(fp[2]) > 1,
+              f"焦点在弹窗内={fp[0] if fp else '?'}／循环={fp[1] if len(fp)>1 else '?'}"
+              f"／可聚焦 {fp[2] if len(fp)>2 else '?'} 个")
+
+        cdp.cmd("Emulation.setDeviceMetricsOverride", width=380, height=800,
+                deviceScaleFactor=2, mobile=True)
+        # 弹窗默认 hidden：hidden 的元素拿不到计算样式，要先让它显示出来再量
+        P.eval_js(cdp, "document.querySelector('#mc-form').hidden = false")
+        time.sleep(0.5)
+        narrow = P.eval_js(cdp, """(() => {
+          // 先确认视口真的改了（CDP 的 override 不生效时这里会露馅：
+          // 那说明是测量方法有问题，不是 CSS 有问题——两者要分开，别修错地方）
+          const w = window.innerWidth;
+          const mq = window.matchMedia('(max-width: 640px)').matches;
+          // 只量**弹窗里**那个 .form-grid：能力轨的细节行是表格里的
+          // <tr class="mc-detail"><td><div class="form-grid">，它在 380px 上
+          // 本来就在横向滚动的表格里，不该拿它当窄屏断点的判据。
+          const fg = document.querySelector('#mc-form .form-grid');
+          if (!fg) return 'NONE';
+          const cols = getComputedStyle(fg).gridTemplateColumns.split(' ').length;
+          const doc = document.documentElement;
+          const overflow = doc.scrollWidth - doc.clientWidth;
+          return [w, mq, cols, overflow].join('|');
+        })()""") or "NONE"
+        np_ = str(narrow).split('|')
+        check("380px 视口生效（innerWidth 与媒体查询都对上）",
+              len(np_) == 4 and int(np_[0]) <= 400 and np_[1] == 'true',
+              f"innerWidth {np_[0] if np_ else '?'}／max-width:640px 命中 "
+              f"{np_[1] if len(np_)>1 else '?'}")
+        check("380px 上表单收成单列且页面不横向溢出",
+              len(np_) == 4 and np_[2] == '1' and int(np_[3]) <= 2,
+              f"列数 {np_[2] if len(np_)>2 else '?'}／横向溢出 {np_[3] if len(np_)>3 else '?'}px")
+        P.eval_js(cdp, "document.querySelector('#mc-form').hidden = true")
+        cdp.cmd("Emulation.clearDeviceMetricsOverride")
+        time.sleep(0.4)
+
         errors = P.eval_js(cdp, "window.__errs || []") or []
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
         bad = [r for r in results if not r[1]]

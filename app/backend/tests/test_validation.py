@@ -114,14 +114,19 @@ def test_云端真实调用要先有计费确认(fresh_project, clean_queue):
 
 
 def test_生产可用要环境齐且真调用过且产物验收通过():
-    """直接喂同槽位记录，验服务端口径的阶梯：三档齐了才算，缺一档都不行。"""
-    slot = {"capability": "image", "backend": "local", "provider": "mflux"}
-    val_repo.record({**slot, "model": "m", "kind": "env_check", "state": "ok"})
+    """直接喂同槽位记录，验服务端口径的阶梯：三档齐了才算，缺一档都不行。
+
+    0043 起 `summary_for` 按档取：喂记录的 `model` 与查询行给的 `model` 必须一致，
+    否则拿到的全是 never（这正是"换档不背书"要的效果）。这里两边都写 `m`。
+    """
+    slot = {"capability": "image", "backend": "local", "provider": "mflux",
+            "model": "m"}
+    val_repo.record({**slot, "kind": "env_check", "state": "ok"})
     summary = validations.summary_for(slot)
     assert summary["production_ready"] is False          # 只有环境检查
     assert validations.badge(summary)[0] == "env_check"
 
-    val_repo.record({**slot, "model": "m", "kind": "real_call", "state": "ok"})
+    val_repo.record({**slot, "kind": "real_call", "state": "ok"})
     summary = validations.summary_for(slot)
     # 环境齐＋真调用过还不够：链路产出过文件不等于文件被人看过
     assert summary["production_ready"] is False
