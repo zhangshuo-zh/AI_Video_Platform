@@ -712,3 +712,50 @@ def test_重绘当场就补自绘下拉():
     i_mount = code.index("view.mount?.(root)")
     i_pick = code.index("applyPicks(root)")
     assert i_mount < i_pick, "applyPicks 要在 mount 之后（视图可能刚插了 select）"
+
+def test_顶栏不再重复显示_worker_状态():
+    """worker 在线与否已在侧栏底部有一行，顶栏不许再摆一颗同名胶囊。
+
+    两处同名同状态，人还得想「这俩是不是不一样」。撤顶栏那一颗，
+    留侧栏那份（它更全：带灯，且和队列、常驻模型排在一起）。
+    """
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[2] / "frontend" / "index.html").read_text()
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "app.js").read_text()
+    assert 'id="worker-pill"' not in html, "顶栏那颗 worker 胶囊又回来了"
+    assert "worker-pill" not in js, "app.js 还在找一颗已不存在的胶囊"
+    # 侧栏那一份必须还在（撤的不是状态本身）
+    assert 'id="worker-label"' in html and 'id="worker-dot"' in html
+
+
+def test_侧栏队列那行也有圆点():
+    """队列那行原来没有点，与上面两行的圆点对不齐，看着像漏画了一个图标。
+
+    点表达的是「队列有没有活」，与 worker 点不是同一件事（在不在线），
+    所以各有各的点、各用各的亮法，不合并成一颗。
+    """
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[2] / "frontend" / "index.html").read_text()
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "app.js").read_text()
+    assert 'id="queue-dot"' in html, "队列那行又没点了"
+    assert "queue-dot" in js and "queueDot.className" in js, "队列的点没人画"
+
+
+def test_侧栏底部不再挂快速跳转提示():
+    """`⌘K 快速跳转` 那行小字收掉了，但功能必须还在。
+
+    撤的是提示，不是入口：按 ⌘K / Ctrl+K 仍能唤起命令面板。
+    这条同时钉两件事，免得下次有人「顺着搜索结果」把快捷键一起删了。
+    """
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[2] / "frontend" / "index.html").read_text()
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "app.js").read_text()
+    # 只查可见行：HTML 注释里说明「这行为什么撤」是必要的，不该被判成提示还在。
+    visible = "\n".join(line for line in html.split("\n")
+                          if "<!--" not in line and "-->")
+    assert "快速跳转" not in visible, "侧栏底部又挂上快速跳转提示了"
+    assert "'k'" in js and "pal.hidden ? open() : close()" in js, (
+        "⌘K 快捷键没了：撤的该是提示，不是功能")

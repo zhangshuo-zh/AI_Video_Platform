@@ -12,26 +12,35 @@ import { applyPicks, restorePicks } from './pick.js';
 
 /* ---------------- worker 状态条 ---------------- */
 
-/** 顶栏胶囊、侧栏小圆点、队列计数三处一起画；读不到状态就保持"未接入"。 */
+/** 侧栏三行状态一起画：worker 点＋文字、常驻模型、队列点＋文字。
+ *
+ * 顶栏那颗 worker 胶囊 2026-11-07 撤了：左下角已经有同名同状态的一行，
+ * 同一件事摆两处，人还得想「这俩是不是不一样」。侧栏这一份更全（还带点），
+ * 所以留侧栏、撤顶栏。
+ *
+ * 读不到状态就保持「未接入」——不拿 0 冒充「队列空闲」。
+ */
 function paintWorker() {
   const w = store.worker;
   const dot = document.getElementById('worker-dot');
   const label = document.getElementById('worker-label');
-  const pill = document.getElementById('worker-pill');
+  const queueDot = document.getElementById('queue-dot');
   const queue = document.getElementById('queue-label');
-  if (!dot || !label || !pill) return;
+  if (!dot || !label) return;
 
   const online = !!w?.online;
   dot.className = 'dot ' + (online ? 'live' : 'idle');
   label.textContent = online ? '本地 worker 在线' : '本地 worker 未接入';
-  pill.textContent = online ? '本地 worker 在线' : '本地 worker 未接入';
-  pill.classList.toggle('accent', online);
 
   if (queue) {
     const q = w?.queue || { queued: 0, running: 0 };
-    queue.textContent = (q.queued + q.running) > 0
+    const busy = (q.queued + q.running) > 0;
+    queue.textContent = busy
       ? `队列 等待 ${q.queued} · 运行 ${q.running}`
       : '队列 空闲';
+    // 队列那行的点：有活就亮，空闲就灰着。它与 worker 点说的不是一件事
+    // （worker 在不在线 vs 队列有没有活），所以各用各的，不合并。
+    if (queueDot) queueDot.className = 'dot ' + (busy ? 'live' : 'idle');
   }
 }
 

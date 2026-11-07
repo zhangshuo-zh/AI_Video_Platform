@@ -132,8 +132,13 @@
     <div class="side-foot">
       <div><span class="dot idle" id="worker-dot"></span><span id="worker-label">本地 worker 未接入</span></div>
       <div><span class="dot idle"></span>常驻模型 关</div>
-      <div class="t-dim" id="queue-label">队列 未接入</div>
-      <div class="t-dim"><span class="kbd">⌘K</span> 快速跳转</div>
+      <!-- 队列这行原来没有点，和上面两行的圆点对不齐，看着像"漏了一个图标"。
+           它的点表达的是"队列有没有活"，与 worker 点不是同一件事，所以给一档自己的
+           颜色：有活时亮，空闲时与她俩一样灰着。 -->
+      <div class="t-dim"><span class="dot idle" id="queue-dot"></span><span id="queue-label">队列 未接入</span></div>
+      <!-- ⌘K 快速跳转的**提示**收掉了（2026-11-07）：功能还在，快捷键照旧，
+           但常驻在侧栏底部那行小字与上面几行状态不是一类东西，读着突兀。
+           命令面板本身没有任何入口变化——按 ⌘K / Ctrl+K 仍能唤起。 -->
     </div>
   </aside>
 
@@ -170,7 +175,6 @@
             <svg class="i-sun" aria-hidden="true"><use href="#ic-sun"/></svg>
             <svg class="i-moon" aria-hidden="true"><use href="#ic-moon"/></svg>
           </button>
-          <span class="tag-chip" id="worker-pill">本地 worker 未接入</span>
           <div class="avatar-wrap">
             <button class="avatar" id="user-btn" type="button"
                     aria-haspopup="menu" aria-expanded="false" title="账户">张</button>
