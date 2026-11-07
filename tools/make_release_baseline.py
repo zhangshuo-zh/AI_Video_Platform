@@ -346,7 +346,14 @@ CAP_LABELS = {"text": "文本", "image": "图像", "video": "视频",
 
 
 def preserve_baseline_line(pattern: str) -> str:
-    """重生成时保留人工填写的行（演练、备注）。找不到就给占位。"""
+    """重生成时保留**人工登记**的行（演练、备注）。找不到就给占位。
+
+    为什么是"保留"而不是"现算"：这几行记的是"那一轮真跑过什么"，由验收的人
+    在《黄金样例与故障演练》里落笔后回填，脚本不重跑三套浏览器（那是几分钟，
+    且当前工作树可能正被别的会话改动，跑出来的数不代表这一册登记的那一轮）。
+    代价是它**不会自己变新**——所以 `build_md` 里那行明写"人工登记、重生成不
+    自动更新"，别让"最近一次"四个字把旧读数冒充成当前观测（《写作与引用规范》§13.1）。
+    """
     if BASELINE.exists():
         m = re.search(pattern, BASELINE.read_text(encoding="utf-8"), re.M)
         if m:
@@ -432,7 +439,7 @@ def build_md(facts: dict) -> str:
     a(f"- 最近一次 Job 故障演练：{facts['drill_job']}")
     a(f"- 最近一次备份恢复演练：{facts['drill_backup']}")
     a(f"- 最近一次产线故障演练：{facts['drill_pipeline']}")
-    a(f"- 最近一次真浏览器验收：{facts['drill_browser']}")
+    a(f"- 真浏览器验收（人工登记，重生成基线不会自动更新）：{facts['drill_browser']}")
     a("")
     return "\n".join(lines) + "\n"
 
@@ -521,7 +528,11 @@ def main() -> None:
              "drill_job": preserve_baseline_line(r"Job 故障演练：(.+)$"),
              "drill_backup": preserve_baseline_line(r"备份恢复演练：(.+)$"),
              "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$"),
-             "drill_browser": preserve_baseline_line(r"真浏览器验收：(.+)$")}
+             # 匹配两种写法：旧的「最近一次真浏览器验收：」与新的
+             # 「真浏览器验收（人工登记…）：」——后者是 v1.2 写作规范之后改的，
+             # 括注里带冒号但不含读数，正则只取最后一个冒号之后的内容。
+             "drill_browser": preserve_baseline_line(
+                 r"真浏览器验收(?:（[^）]*）)?：(.+)$")}
     if check:
         # 目标机基准是"另一台机器上才量得出"的数：本机全绿不能替它签字。
         # 一条未跑时只告警（本机开发本来跑不了），但若有人据此标了
