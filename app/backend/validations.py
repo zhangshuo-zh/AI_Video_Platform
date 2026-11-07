@@ -168,12 +168,20 @@ def summary_for(row, latest: dict | None = None) -> dict:
     """某一槽位的五类 provenance 摘要。界面按这个决定敢不敢说"生产可用"。
 
     `latest` 是给"一整页槽位一起渲染"的调用方留的口子：传 `repo.latest_matrix()`
-    里那一格（`{(能力,后端,供应商): {档: 行}}`），五个槽位档就是一趟查询；
-    不传则自己按槽位读（单槽位调用，比如刚验证完只看这一条）。
-    判断规则只有一份，两种走法读的是同一批行。
+    里那一格，五个槽位档就是一趟查询；不传则自己按槽位读（单槽位调用，
+    比如刚验证完只看这一条）。判断规则只有一份，两种走法读的是同一批行。
+
+    0043 起自带读路径**按档取**：row 的 `model` 就是这一槽位当前选的那一档，
+    记录里 model 不是它的根本不参与判定——"1.3B 验过不等于 5B 验过"是
+    WHERE 的形状，不再是调用方自觉对一遍的纪律。显式传了 `latest` 的
+    （列表页批量渲染）仍然信传入值：那些调用方已经按档给了。
     """
     if latest is None:
-        latest = repo.latest_by_kind(row["capability"], row["backend"], row["provider"])
+        # row 可能是没有 model 列的调用方字典（测试夹具、脚本）：按档取的前提是
+        # 这一行真的带档。没有就不筛——与 0043 之前的口径一致，而不是抛错。
+        model = row["model"] if "model" in row.keys() else None
+        latest = repo.latest_by_kind(row["capability"], row["backend"],
+                                     row["provider"], model)
 
     def brief(kind: str) -> dict:
         rec = latest.get(kind)

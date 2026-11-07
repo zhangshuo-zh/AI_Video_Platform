@@ -135,44 +135,48 @@ def _health_of(reg: dict, probe: bool = False) -> dict:
                            probe_timeout=engines.LIST_TIMEOUT_SECONDS)
 
 
-def verified_kinds(capability: str, backend: str, provider: str) -> set[str]:
-    """这一轨上已经落过的验证出处（real_call / artifact_review / …）。
+def verified_kinds(capability: str, backend: str, provider: str,
+                   model: str = "") -> set[str]:
+    """这一槽位**这一档**已经落过的验证出处（real_call / artifact_review / …）。
 
     用它决定人工声明能不能从"未核验"升级成"已验证"。
-    注意口径：验证记录是按**槽位**（capability×backend×provider）落的，
-    不是按模型档——同一 provider 换了一档模型，旧记录不该替新档背书，
-    所以调用方必须再比一次记录里的 model 是不是同一档。
 
-    2026-11-07 改：原来这里是 `for row in vrepo.list_recent(200)` ——一次目录构建
-    要为每个已登记行全表扫一遍，而且**第 201 条之后的历史验证会静默失效**
-    （`list_recent` 的 limit 被 `min(limit, 200)` 夹死）。现在走
-    `latest_matrix()` 那条现成的窗口查询并按槽位取，一次查询覆盖整张目录。
+    0043 起按档取：验证记录的"档"升为索引维度（`idx_validation_slot_model`），
+    `latest_matrix(by_model=True)` 直接按 (capability, backend, provider, model)
+    给最新——"1.3B 验过不等于 5B 验过"从此是查询的形状。原来的读点补丁
+    （调用方拿槽位矩阵后再比一次记录里的 model）随 0043 撤掉：
+    分区键里就是 model，查询结果已经只含这一档的记录。
+
+    `model` 给空串时匹配"记录里 model 也是空串"的历史行——那是早期
+    env_check 没记档时留下的组，只与"槽位也没填 model"的配置互相对应。
     """
     from repositories.validation import validations as vrepo
 
-    latest = vrepo.latest_matrix().get((capability, backend, provider), {})
+    latest = vrepo.latest_matrix(by_model=True).get(
+        (capability, backend, provider, model), {})
     return {kind for kind, row in latest.items() if row["state"] == "ok"}
 
 
-def _verification_index(slots: set[tuple[str, str, str]] | None = None
-                        ) -> dict[tuple[str, str, str], dict[str, dict]]:
-    """一次查询拿"这些槽位各自的每档最新验证"，供 `catalog()` 复用。
+def _verification_index(slots: set | None = None) -> dict[tuple, dict[str, dict]]:
+    """一次查询拿"这些槽位×档各自的每类最新验证"，供 `catalog()` 复用。
 
     与 `verified_kinds()` 同一份数据，区别只是调用次数：一次目录构建里有几十行，
-    每行再各查一次就是给"打开一页"买几十趟回库。矩阵一次读完后按槽位取，
+    每行再各查一次就是给"打开一页"买几十趟回库。矩阵一次读完后按键取，
     口径不变、查询数从 O(行数) 降到 1。
 
-    `slots` 由调用方按"已登记的那几组能力×后端×供应商"给（`catalog()` 就是这么做的）：
-    不给过滤条件时窗口函数要把**全部历史**先算一遍再丢掉绝大多数，而
-    `model_validation` 只追加不改，历史越长"打开模型中心"越慢。
+    `slots` 由调用方按"已登记的那几组能力×后端×供应商×模型档"给
+    （`catalog()` 就是这么做的）：不给过滤条件时窗口函数要把**全部历史**
+    先算一遍再丢掉绝大多数，而 `model_validation` 只追加不改，
+    历史越长"打开模型中心"越慢。0043 起键是四元组——分档是查询的形状。
     """
     from repositories.validation import validations as vrepo
 
-    return vrepo.latest_matrix(slots)
+    return vrepo.latest_matrix(slots, by_model=True)
 
 
-def _kinds_of(index: dict, capability: str, backend: str, provider: str) -> set[str]:
-    latest = index.get((capability, backend, provider), {})
+def _kinds_of(index: dict, capability: str, backend: str, provider: str,
+              model: str) -> set[str]:
+    latest = index.get((capability, backend, provider, model), {})
     return {kind for kind, row in latest.items() if row["state"] == "ok"}
 
 
@@ -202,14 +206,12 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
     reg_index = {(r["capability"], _manifest_axis(r["backend"]), r["provider"],
                   r["model_code"]): r
                  for r in regs}
-    # 只查"已登记的那几组槽位"验证记录：目录里没登记的档不需要它们的验证历史，
+    # 只查"已登记的那几组槽位×档"验证记录：目录里没登记的档不需要它们的验证历史，
     # 而 model_validation 只追加不改——不过滤的话窗口函数要扫全部历史再丢掉 99%。
     # 槽位按**折回后的轴**给：`reg_index` 里的键已经是折过的，两边必须同一口径。
-    # 注意 reg_index 的键是**四元组**（多了 model_code，用来认领具体那一档），
-    # 而验证记录按三元组落槽位——这里要投影一次，直接把四元组传下去会在
-    # 拼 SQL 时多绑一个参数。
-    slots = {(cap, backend, provider)
-             for cap, backend, provider, _model in reg_index}
+    # 0043 起验证矩阵按档分区，键就是这里的四元组——不再需要"投影成三元组"
+    # 再在 `_slot_model_matches` 里比一次 model：查询结果只含这一档的记录。
+    slots = set(reg_index)
     index = (verification if verification is not None
              else _verification_index(slots))
     used: set[int] = set()
@@ -247,6 +249,28 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
         else:
             rows.append(_orphan_row(reg, probe=probe))
     return rows
+
+
+def item_for(reg: dict) -> dict | None:
+    """单条登记的联表视图——`catalog()` 的一行，只为这一条算。
+
+    2026-11-07 审查 P2-6：写操作（登记/编辑）回读只要**这一档**的形状，
+    原来却把整张目录重算一遍（几十趟回库 + 每行健康探测）。这里按
+    `catalog()` 完全相同的判据拼出同一行（折回轴、验证矩阵、孤儿判定都一致），
+    只是范围收窄到一条登记。返回 None＝这一档在当前目录里不存在（极少见：
+    登记刚被并发撤掉）。
+    """
+    cap, provider, code = reg["capability"], reg["provider"], reg["model_code"]
+    axis = _manifest_axis(reg["backend"])
+    index = _verification_index({(cap, axis, provider, code)})
+    adapter = _find_adapter(cap, reg["backend"], provider)
+    spec = None
+    if adapter is not None:
+        spec = next((m.as_dict() for m in adapter.models if m.code == code), None)
+    if spec is not None:
+        return _registered_row(adapter, spec, dict(reg), index)
+    # 清单里没有这一档：与 catalog() 同一判定——孤儿行，不是"清单未登记"
+    return _orphan_row(dict(reg))
 
 
 def _tags_of(capability: str, spec: dict, reg: dict | None, kinds: set[str]) -> list[dict]:
@@ -305,11 +329,17 @@ def _registered_row(adapter, spec, reg, verification: dict | None = None,
         # 那等于拿另一台机器的凭据给这台远程服务背书。宁可空着。
         kinds: set[str] = set()
     elif verification is None:
-        kinds = verified_kinds(adapter.capability, adapter.backend, adapter.code)
+        kinds = verified_kinds(adapter.capability, adapter.backend, adapter.code,
+                               reg["model_code"])
     else:
-        kinds = _kinds_of(verification, adapter.capability, adapter.backend, adapter.code)
-    # 验证记录按槽位落，换档不背书：只有记录里 model 就是这一档时才算它验过
-    same_model, slot_model = _slot_model_matches(adapter, reg)
+        kinds = _kinds_of(verification, adapter.capability, adapter.backend,
+                          adapter.code, reg["model_code"])
+    # 0043：验证矩阵按档分区，`kinds` 已经只含这一档自己的记录——
+    # "换档不背书"是查询的形状，不再需要 `_slot_model_matches` 在读点上补刀。
+    # 这里仍要回答"这一档是不是槽位当前那一档"（status_detail 要点名解释），
+    # 所以查一次槽位拿当前 model，但只用于文案，不参与 kinds 的判定。
+    slot_model = _slot_current_model(adapter)
+    same_model = slot_model == reg["model_code"]
     health = _health_of(reg, probe)
     return {
         **_base_spec_fields(adapter, spec),
@@ -403,23 +433,20 @@ def _orphan_row(reg, *, probe: bool = False) -> dict:
     }
 
 
-def _slot_model_matches(adapter, reg) -> tuple[bool, str]:
-    """这一档是不是这个槽位当前真正在用的那一档。
+def _slot_current_model(adapter) -> str:
+    """这一槽位（能力×后端）当前配置的 model，没配过返回空串。
 
-    验证记录只到 provider 粒度（`model_validation` 按 capability×backend×provider 索引），
-    所以换档之后旧记录不能替新档说话。这里比的是登记行的 model_code 与
-    provider_config 里那一行的 model；槽位没配时返回 (False, "")（没配过就等于没验过）。
-    第二个返回值是槽位当前指向的模型标识——给 status_detail 点名"当前是哪一档"用，
-    避免调用方为了拼一句人话再把槽位查一遍。
+    0043 之后它只剩一个用途：回答"这一档是不是槽位当前那一档"
+    （status_detail 的解释文案与 `_status_of` 的 same_model 半边）。
+    验证该不该背书已经由查询本身回答了——矩阵按档分区，
+    记录里不是这一档的根本不会出现在 `kinds` 里。
     """
     from repositories.providers import providers
 
     slot = providers.slot(adapter.capability, adapter.backend)
     if slot is None:
-        return False, ""
-    return (slot["provider"] or "").strip() == reg["provider"] \
-        and (slot["model"] or "").strip() == reg["model_code"], \
-        (slot["model"] or "").strip()
+        return ""
+    return (slot["model"] or "").strip()
 
 
 def _status_of(reg, adapter, health: dict, kinds: set[str], same_model: bool) -> str:

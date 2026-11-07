@@ -777,6 +777,52 @@ def test_撤登记与撤实例都不再要求中文口令(as_admin):
     assert as_admin.delete(f"/api/engines/{eid}?confirm=true").status_code == 200
 
 
+def test_选路三件事留变更痕_撤登记在案(as_admin, clean_registrations):
+    """0044：审计不做（v0.87 裁定），但 is_default 是选路的唯一来源，
+    它变了没人说得清是谁、之前是什么——三个写点各记一行，先钉撤登记这笔。
+
+    不外键是有意的：登记行没了，痕还得 standalone 地站着。"""
+    rid = as_admin.post("/api/models", json={
+        "capability": "video", "backend": "local", "provider": "fastmetal",
+        "model_code": "fastmetal-1.3b-qad"}).json()["id"]
+    assert as_admin.delete(f"/api/models/{rid}?confirm=1").status_code == 200
+
+    out = as_admin.get("/api/config-changes").json()
+    hit = [r for r in out["items"]
+           if r["subject"] == "model_registration"
+           and r["subject_key"] == "video/local/fastmetal/fastmetal-1.3b-qad"]
+    assert hit, f"撤登记要留痕：{out['items'][:3]}"
+    assert hit[0]["action"] == "delete"
+    assert str(rid) in str(hit[0]["payload"])
+
+
+def test_能力轨保存只记变了的行且点名默认轨变更(as_admin, provider_state):
+    """整批保存是十行一起 PUT：痕只记实际变了的行，否则"发生了什么"
+    被九行没变的噪声淹掉。默认轨的 before/after 要进 payload。"""
+    rows = as_admin.get("/api/providers").json()
+    # seed 里 video/local 本来就是默认（0014 归位）但 provider/model 是空串——
+    # 把它配上：provider 与 model 都变，这才是"给默认轨填上真身"这一步。
+    body = []
+    for r in rows:
+        item = {k: r[k] for k in ("id", "provider", "model", "enabled", "is_default")}
+        item["key_env"] = r["key_env_custom"]
+        item["notes"] = r["notes"]
+        if r["capability"] == "video" and r["backend"] == "local":
+            item.update(provider="fastmetal", model="fastmetal-1.3b-qad", enabled=True)
+        body.append(item)
+    assert as_admin.put("/api/providers", json=body).status_code == 200
+
+    out = as_admin.get("/api/config-changes").json()
+    hits = [r for r in out["items"] if r["subject"] == "provider_slot"]
+    video_hits = [r for r in hits if r["subject_key"] == "video/local"]
+    assert video_hits, f"video/local 的默认轨变更要留痕：{hits[:3]}"
+    summary = video_hits[0]["summary"]
+    assert "fastmetal" in summary and "fastmetal-1.3b-qad" in summary, summary
+    # 没变的行不记：痕里不该出现 text/local（这一批它什么都没改）
+    assert not [r for r in hits if r["subject_key"] == "text/local"], \
+        "没变的行不该进痕——那是在制造噪声"
+
+
 def test_清单轴上只折一次(as_admin):
     """`remote` 折回 `local` 的判据只许有一处，而且要下发给界面。
 

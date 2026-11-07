@@ -149,10 +149,17 @@ def test_产物验收必须有明确结论(fresh_project, clean_queue):
     assert "必须给出结论" in str(exc.value)
 
 
-def test_产物验收不通过也留痕且不点亮生产可用(fresh_project, clean_queue):
+def test_产物验收不通过也留痕且不点亮生产可用(fresh_project, clean_queue,
+                                              provider_state):
     pid = fresh_project("editor")
     slot = provider_repo.slot("video", "local")
-    # 三条记录都必须落在 slot 的 provider 上（默认种子是空串），summary 才能对上号
+    # 先把槽位指到要验的那一档（0043：summary 按"当前那一档"取记录——
+    # 槽位没填 model 时按档取会落进"model=空串"那一组，与按 1.3B 落的记录对不上；
+    # 这也正是换档不背书想要的形状）。
+    provider_repo.replace_many([{
+        "id": slot["id"], "provider": "fastmetal", "model": "fastmetal-1.3b-qad",
+        "enabled": True, "is_default": True, "key_env": "", "notes": ""}])
+    slot = provider_repo.slot("video", "local")
     prov = slot["provider"]
     job = _succeeded_job(pid, artifact=b"broken-frames", provider=prov)
     # 先把三档铺垫齐，再记一次"不通过"，看生产可用是否被错误点亮
@@ -179,6 +186,27 @@ def test_产物验收不通过也留痕且不点亮生产可用(fresh_project, c
     assert ok["state"] == "ok"
     summary = validations.summary_for(slot)
     assert summary["production_ready"] is True
+
+
+def test_换档后槽位的生产可用不背别的档():
+    """0043 的正主用例：同一 provider 验过 1.3B，槽位换到 5B 之后，
+    能力轨那一格不许再亮——「生产可用」认的是**当前档自己的记录**，
+    而不是这一 provider 历史上随便哪一档。这与模型仓库的 same_model
+    判据是同一把尺子（换档不背书的全链兑现）。"""
+    slot = {"capability": "video", "backend": "local", "provider": "fastmetal"}
+    for kind in ("env_check", "real_call", "artifact_review"):
+        val_repo.record({**slot, "model": "fastmetal-1.3b-qad", "kind": kind, "state": "ok"})
+    # 槽位还指着 1.3B：三档都亮
+    now = {**slot, "model": "fastmetal-1.3b-qad"}
+    assert validations.summary_for(now)["production_ready"] is True
+
+    # 槽位换到 5B：一条记录都没变，但生产可用必须熄灭
+    after = {**slot, "model": "fastmetal-5b-qad"}
+    summary = validations.summary_for(after)
+    assert summary["production_ready"] is False
+    assert summary["real_call"]["state"] == "never", \
+        "5B 自己没有记录，就该是 never——不许拿 1.3B 的记录冒充"
+    assert validations.badge(summary)[0] == "never"
 
 
 def test_产物验收要产物可读且云端要先确认计费(fresh_project, clean_queue):

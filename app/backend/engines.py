@@ -13,7 +13,10 @@
    压根不接受写配置，探测里若带写请求只会得到 404 并把"服务在不在"和
    "我们请求姿势对不对"混成一件事。
 2. **不把结论落库**（CR-ENGINE-001 v1.1 边界②）。返回值给界面现读现显示；
-   要留历史就写 `model_validation` 的 `env_check` 事件，那是另一条现成的路。
+   要留历史就写 `engine_probe_log`（0042）——实例探测的事件表，形状对得上
+   （instance_id ＋ state ＋ detail），`POST /api/engines/{id}/probe` 与建实例
+   都会顺手记一条。`model_validation` 别再接这个活：它的键是
+   (capability, backend, provider) 的验证凭据，不是"某条端点在某次探了"。
 3. **超时短**。5 秒。服务没起时 TCP 连接多半立刻被拒，真连上不回话才是少数；
    探测卡在设置页里十秒钟，人只会以为页面坏了。
 

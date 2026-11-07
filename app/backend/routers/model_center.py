@@ -24,6 +24,7 @@ from models import (BACKENDS, CAPABILITIES, EngineInstanceIn,
                     EngineInstancePatch, ModelPolicyIn, ModelRegistrationIn,
                     ModelRegistrationPatch, POLICY_PREFERENCES, REG_SOURCES,
                     ValidationOut)
+from repositories.config_log import record as config_log_record
 from repositories.engine_instances import (CONNECTION_TYPES, SUPPORTED_CONNECTION_TYPES,
                                            EngineInstanceError, engine_instances,
                                            engine_probe_log)
@@ -68,11 +69,17 @@ def _row_or_404(reg_id: int):
 
 def _item_of(reg_id: int) -> dict:
     """改完之后回这一档的**联表视图**（而不是库里的裸行）：
-    界面拿到的和列表页是同一份形状，不用自己再拼一次健康与标签。"""
-    for item in mc.catalog():
-        if item.get("registration_id") == reg_id:
-            return item
-    return {}
+    界面拿到的和列表页是同一份形状，不用自己再拼一次健康与标签。
+
+    2026-11-07 审查 P2-6：写操作一次只改一条登记，回读却把**整张目录**重算
+    一遍（每个服务型引擎一行探测、几十趟回库）——写路径不该为回读一句话
+    付整页的钱。现在只算目标那一条：先查登记行，再按同一套拼行函数出单行。
+    """
+    reg = model_center.registration(reg_id)
+    if reg is None:
+        return {}
+    item = mc.item_for(dict(reg))
+    return item or {}
 
 
 @router.get("/models")
@@ -204,7 +211,7 @@ def patch_model(reg_id: int, payload: ModelRegistrationPatch,
 
 @router.delete("/models/{reg_id}")
 def remove_model(reg_id: int, confirm: str = "",
-                 _=Depends(require_permission("system:config"))) -> dict:
+                 user=Depends(require_permission("system:config"))) -> dict:
     """撤登记。**不删权重文件、不动历史作业、不清验证记录**。
 
     要 confirm 是因为人常把"移除登记"理解成"删掉模型"；
@@ -217,6 +224,13 @@ def remove_model(reg_id: int, confirm: str = "",
             detail="要撤登记请带 confirm=1（或 confirm=true／yes）。这一步只删除这条登记："
                    "权重文件仍在盘上，历史作业与验证记录一律不动。")
     model_center.delete(row["id"])
+    # 0044：撤登记可能把默认轨正指着的那一档撤掉——这一笔尤其要留痕。
+    config_log_record(
+        "model_registration",
+        f"{row['capability']}/{row['backend']}/{row['provider']}/{row['model_code']}",
+        "delete", f"撤了登记 #{row['id']}",
+        {"registration_id": row["id"], "display_name": row["display_name"]},
+        created_by=user["id"])
     return {"removed": row["id"],
             "note": "只撤了登记；权重文件、job 历史与 model_validation 记录都还在"}
 
@@ -337,9 +351,43 @@ def save_policies(payload: list[ModelPolicyIn],
 
     n = model_center.save_policies([
         {**item.model_dump(), "updated_by": user["id"]} for item in payload])
+    # 0044：策略是"建议轨/备用轨提示"的来源，改了什么要能回头看——
+    # 只记启用或带建议轨的行：未启用的空策略改个标签不值得一行痕。
+    for item in payload:
+        if not (item.enabled or item.slot_provider):
+            continue
+        config_log_record(
+            "model_policy", item.scene_key, "update",
+            f"{'启用' if item.enabled else '未启用'}"
+            f"｜建议轨 {item.slot_provider or '—'}/{item.slot_model or '—'}"
+            f"｜备用轨 {item.fallback_provider or '—'}",
+            {"required": item.required, "preference": item.preference,
+             "cloud_confirm_required": item.cloud_confirm_required},
+            created_by=user["id"])
     return {"saved": n,
             "note": "策略只改配置：默认轨的唯一来源仍是 provider_config.is_default，"
                     "备用轨不会自动顶上"}
+
+
+@router.get("/config-changes")
+def list_config_changes(limit: int = 50,
+                        _=Depends(require_permission("system:config"))) -> dict:
+    """选路配置的变更痕（0044）。最近改了什么：谁、什么时候、从什么改成什么。
+
+    只读。这是"最小变更痕"的出口，不是通用审计——业务表大部分写路径
+    仍然没有痕（v0.87 裁定），这张表只收选路三件事：
+    能力轨整批保存、撤登记、策略整批保存。
+    """
+    from repositories.config_log import recent
+
+    rows = [dict(r) for r in recent(limit)]
+    # payload_json 是写进库的 JSON 串：读出来解析好再给，界面不用自己 json.loads
+    for r in rows:
+        try:
+            r["payload"] = json.loads(r.pop("payload_json") or "{}")
+        except ValueError:
+            r["payload"] = {}
+    return {"items": rows}
 
 
 @router.get("/model-policies/resolve/{scene_key}")

@@ -55,9 +55,23 @@ class ValidationRepository:
                                 (cur.lastrowid,)).fetchone()
 
     def latest(self, capability: str, backend: str, provider: str,
-               kind: str | None = None) -> sqlite3.Row | None:
-        """某槽位最近一次验证（kind=None＝不分类型，取最后一条）。"""
+               kind: str | None = None, model: str | None = None) -> sqlite3.Row | None:
+        """某槽位最近一次验证（kind=None＝不分类型，取最后一条）。
+
+        `model` 给了就按档取（0043）：记录里的 model 必须逐字相等——
+        "1.3B 验过不等于 5B 验过"从此是 WHERE 的形状。不给保持旧口径
+        （槽位内不分档），给还没升维的调用方留一条路。
+        """
         with get_conn() as conn:
+            if model is not None:
+                conds = ["capability = ?", "backend = ?", "provider = ?", "model = ?"]
+                args: list = [capability, backend, provider, model]
+                if kind is not None:
+                    conds.append("kind = ?")
+                    args.append(kind)
+                return conn.execute(
+                    f"SELECT * FROM model_validation WHERE {' AND '.join(conds)}"
+                    " ORDER BY id DESC LIMIT 1", tuple(args)).fetchone()
             if kind is None:
                 return conn.execute(
                     """SELECT * FROM model_validation
@@ -67,17 +81,21 @@ class ValidationRepository:
             return conn.execute(_LATEST_SQL, (capability, backend, provider, kind)).fetchone()
 
     def latest_by_kind(self, capability: str, backend: str,
-                       provider: str) -> dict[str, sqlite3.Row]:
-        """一次取回五类各自的最新记录。槽位健康那一列要同时用五档，逐类查会打五次。"""
+                       provider: str, model: str | None = None) -> dict[str, sqlite3.Row]:
+        """一次取回五类各自的最新记录。槽位健康那一列要同时用五档，逐类查会打五次。
+
+        `model` 透传给 `latest()`：给了就按档取（0043）。能力轨那一列要回答
+        "当前这一档能不能用"，所以 `summary_for` 会带上槽位当前的 model。
+        """
         out: dict[str, sqlite3.Row] = {}
         for kind in ("env_check", "mock", "real_call", "target_machine", "artifact_review"):
-            row = self.latest(capability, backend, provider, kind)
+            row = self.latest(capability, backend, provider, kind, model)
             if row is not None:
                 out[kind] = row
         return out
 
-    def latest_matrix(self, slots: set[tuple[str, str, str]] | None = None
-                      ) -> dict[tuple[str, str, str], dict[str, sqlite3.Row]]:
+    def latest_matrix(self, slots: set | None = None, *, by_model: bool = False
+                      ) -> dict[tuple, dict[str, sqlite3.Row]]:
         """每个「能力×后端×供应商」槽位的五档最新验证。
 
         为什么要有这一条：`summary_for` 每个槽位要读五档，槽位有十个就是五十趟
@@ -90,9 +108,20 @@ class ValidationRepository:
         而这张表只追加不改（表头的纪律一），跑一年之后"打开模型中心"每次都
         要扫全表。模型中心的目录只关心"已登记的那些槽位"，把它们传进来就只算那几组；
         设置页的十个槽位是固定的也能传。不给参数的调用（脚本、单点查）结果不变。
+
+        `by_model`（0043）：分档取最新。默认 False 保持旧口径——同一槽位不分档、
+        全混着取一条；True 时窗口按 (…, model, kind) 分组，键升成
+        (capability, backend, provider, model)——"1.3B 验过不等于 5B 验过"
+        从此是查询的形状，而不是每个读点各写一遍的补丁。给 `slots` 时 WHERE
+        仍按三元组收窄（四元组的 model 不进 WHERE），分区在收窄后的行内
+        按 model 切开：旧档的最新记录仍然查得到（历史不丢），只是不再替
+        别的档说话。
         """
+        partition = ("v.capability, v.backend, v.provider"
+                     + (", v.model" if by_model else "")
+                     + ", v.kind")
         sql = ("SELECT * FROM (SELECT v.*, ROW_NUMBER() OVER ("
-               " PARTITION BY v.capability, v.backend, v.provider, v.kind"
+               f" PARTITION BY {partition}"
                " ORDER BY v.id DESC) AS rn FROM model_validation v")
         args: list = []
         if slots:
@@ -103,15 +132,17 @@ class ValidationRepository:
             sql += " WHERE " + " OR ".join(
                 "(v.capability = ? AND v.backend = ? AND v.provider = ?)"
                 for _ in slots)
-            for cap, backend, provider in sorted(slots):
-                args.extend([cap, backend, provider])
+            for entry in sorted(slots):
+                args.extend(entry[:3])
         sql += ") WHERE rn = 1"
         with get_conn() as conn:
             rows = conn.execute(sql, tuple(args)).fetchall()
-        out: dict[tuple[str, str, str], dict[str, sqlite3.Row]] = {}
+        out: dict[tuple, dict[str, sqlite3.Row]] = {}
         for row in rows:
-            out.setdefault((row["capability"], row["backend"], row["provider"]), {})[
-                row["kind"]] = row
+            key = ((row["capability"], row["backend"], row["provider"], row["model"])
+                   if by_model else
+                   (row["capability"], row["backend"], row["provider"]))
+            out.setdefault(key, {})[row["kind"]] = row
         return out
 
     # 一页最多回多少条。这不是"表里只有这么多"——它是**一次响应**的边界，

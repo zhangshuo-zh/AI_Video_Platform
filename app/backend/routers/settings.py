@@ -22,6 +22,7 @@ from deps import require_permission, require_user
 from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
                     ProviderOut, ProviderUpdate, ValidationIn, ValidationOut,
                     provider_slot_version)
+from repositories.config_log import record as config_log_record
 from repositories.providers import has_key, providers
 from repositories.validation import validations as validation_repo
 
@@ -37,6 +38,13 @@ def _slot_key(row) -> tuple[str, str, str]:
     return (row["capability"], row["backend"], row["provider"])
 
 
+def _slot_model_key(row) -> tuple[str, str, str, str]:
+    """0043：验证矩阵按档分区后的键。`row` 是 provider_config 的一行，
+    它的 `model` 就是这一槽位当前选的那一档——记录里不是这个 model 的
+    根本不会进这一格：能力轨的"生产可用"只认当前档自己的记录。"""
+    return (row["capability"], row["backend"], row["provider"], row["model"])
+
+
 def _row_out(row, matrix: dict | None = None) -> ProviderOut:
     # 超时用列表档（0.8 秒）：这一条是"打开一页"的路径，服务型引擎那一格只是顺带，
     # 不该因为某台服务半死就让人等满 5 秒。要问到底请点引擎实例那一行的「探测」
@@ -45,7 +53,7 @@ def _row_out(row, matrix: dict | None = None) -> ProviderOut:
     env = health["key_env"] if row["backend"] == "cloud" else ""
     # matrix 给了就从里取（一整页一次批量读）；这一格不在矩阵里＝这个槽位从没验证过，
     # 要传**空字典**而不是 None——传 None 会让 summary_for 自己再打五趟查询去确认"没有"。
-    latest = matrix.get(_slot_key(row), {}) if matrix is not None else None
+    latest = matrix.get(_slot_model_key(row), {}) if matrix is not None else None
     summary = validations.summary_for(row, latest)
     return ProviderOut.from_row(row, has_key(row, env), env, health, summary)
 
@@ -55,8 +63,11 @@ def list_providers(_=Depends(require_permission("system:config"))) -> list[Provi
     # 十个槽位 × 五档 = 原来五十趟回库；现在一条窗口函数读完（模型与密钥页每次进都走这）。
     # 传 slots 是**定向**：provider_config 只有十行且键固定，把十个槽位给它，
     # 窗口函数就只在十组里挑最新，不必先把整张 model_validation 算一遍再丢弃。
-    slots = {(r["capability"], r["backend"], r["provider"]) for r in providers.all()}
-    matrix = validation_repo.latest_matrix(slots)
+    # 0043 起键带 model：窗口按 (槽位, model, kind) 分区，"生产可用"只认
+    # 这一槽位当前那一档自己的记录，与模型仓库同一把尺子。
+    slots = {(r["capability"], r["backend"], r["provider"], r["model"])
+             for r in providers.all()}
+    matrix = validation_repo.latest_matrix(slots, by_model=True)
     return [_row_out(row, matrix) for row in providers.all()]
 
 
@@ -78,8 +89,11 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
     这里不含 key_env、notes 与本地运行时目录——那些是系统配置那一页的事。
     """
     # 同上：这一页只关心 provider_config 那十行的验证史，定向查。
+    # 0043：按档取——提交弹窗里的"已验证"说的是这一槽位当前那一档，
+    # 不是这一 provider 历史上随便哪一档。
     matrix = validation_repo.latest_matrix(
-        {(r["capability"], r["backend"], r["provider"]) for r in providers.all()})
+        {(r["capability"], r["backend"], r["provider"], r["model"])
+         for r in providers.all()}, by_model=True)
     out: list[ProviderOptionOut] = []
     for row in providers.all():
         if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
@@ -88,7 +102,7 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
         # 提交弹窗要读这一份，所以同样用列表档超时：一个端点不通不该让弹窗卡住。
         health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
-            row, matrix.get(_slot_key(row), {})))
+            row, matrix.get(_slot_model_key(row), {})))
         out.append(ProviderOptionOut(
             capability=row["capability"],
             capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
@@ -131,8 +145,10 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
     """
     defaults = {row["capability"]: row for row in providers.defaults()}
     # 这里只念默认那几行的验证徽章，需要的槽位更少——按实际要读的给。
+    # 0043：同样按档取，与另外两处同一把尺子。
     matrix = validation_repo.latest_matrix(
-        {(r["capability"], r["backend"], r["provider"]) for r in defaults.values()})
+        {(r["capability"], r["backend"], r["provider"], r["model"])
+         for r in defaults.values()}, by_model=True)
     out: list[CurrentProviderOut] = []
     for capability, label in CAPABILITIES.items():
         row = defaults.get(capability)
@@ -145,7 +161,7 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
             continue
         health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
-            row, matrix.get(_slot_key(row), {})))
+            row, matrix.get(_slot_model_key(row), {})))
         out.append(CurrentProviderOut(
             capability=capability, capability_label=label,
             backend=row["backend"], backend_label=BACKENDS.get(row["backend"], ""),
@@ -217,7 +233,7 @@ def record_job_validation(job_id: int, payload: ValidationIn,
 
 @router.put("/providers", response_model=list[ProviderOut])
 def save_providers(updates: list[ProviderUpdate],
-                   _=Depends(require_permission("system:config"))) -> list[ProviderOut]:
+                   user=Depends(require_permission("system:config"))) -> list[ProviderOut]:
     current = {row["id"]: row for row in providers.all()}
 
     # 只允许改已有的行：不认识的 id 直接拒，避免半截写入
@@ -281,4 +297,32 @@ def save_providers(updates: list[ProviderUpdate],
                             detail="每类能力都要选一个默认后端：" + "、".join(missing))
 
     providers.replace_many([item.model_dump() for item in updates])
+
+    # 0044：选路的最小变更痕。只记**变了的行**——十行全记会把"实际发生了什么"
+    # 淹进噪声。summary 一句话点名谁变了；默认轨变更把 before/after 都写进 payload。
+    for item in updates:
+        before = current[item.id]
+        after = item.model_dump()
+        changed = {k: (before[k], after.get(k))
+                   for k in ("provider", "model", "enabled", "is_default")
+                   if (before[k] if isinstance(before[k], int) else str(before[k]))
+                   != (after.get(k) if isinstance(after.get(k), int) else str(after.get(k) or ""))}
+        if not changed:
+            continue
+        key = f"{before['capability']}/{before['backend']}"
+        pieces = []
+        for field, (old, new) in changed.items():
+            if field == "is_default" and new:
+                pieces.append("设为默认轨")
+            elif field == "is_default":
+                pieces.append("取消默认")
+            else:
+                pieces.append(f"{field}: {old or '空'} → {new if new not in (None, '') else '空'}")
+        config_log_record(
+            "provider_slot", key, "update",
+            "；".join(pieces) or "字段有变化",
+            {"changed": {k: list(v) for k, v in changed.items()},
+             "is_default_before": bool(before["is_default"]),
+             "is_default_after": bool(after.get("is_default"))},
+            created_by=user["id"])
     return list_providers()
