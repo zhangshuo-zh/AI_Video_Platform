@@ -10,3 +10,9 @@ data/
 
 # 项目本地的记忆与临时产物，不进代码仓库
 .workbuddy/
+
+# 测试与基线工具偶尔会把临时文件落在仓库根或 app/backend（无名随机名，
+# 内容是探针字节）。不入库，也不再让 git status 一屏都是它们。
+/*?
+/app/backend/?*
+!/app/backend/*
