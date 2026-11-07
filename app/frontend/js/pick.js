@@ -36,6 +36,24 @@ export function enhanceSelect(sel) {
 
   const wrap = document.createElement('span');
   wrap.className = 'fv-pick';
+  // **宽高都照抄原生 `<select>`**，别让外壳按内容自由伸缩。
+  //
+  // 两处都会让布局跳一下，合起来就是切项目时「列表先一个大小、后又变一个」：
+  //   宽度——`.fv-pick` 是 `width:100%`，在 flex 容器里按内容撑开；原生控件
+  //         多半带固定宽度（项目中心排序下拉 `.proj-sort{width:112px}`），
+  //         实测整块从 318 缩到 296；
+  //   高度——原生靠浏览器默认行高约 31px，自绘按钮 `padding:8px 10px` 约 38px，
+  //         卡片头从 56 涨到 63，下面整块跟着下移 7px。
+  // 量出来写进 inline-style，替换前后就一致了。
+  const cs = getComputedStyle(sel);
+  if (cs.width && cs.width !== 'auto') {
+    wrap.style.width = cs.width;
+    wrap.style.flex = sel.style.flex || 'none';
+  }
+  if (cs.height && cs.height !== 'auto') wrap.style.height = cs.height;
+  if (cs.minWidth && cs.minWidth !== '0px') wrap.style.minWidth = cs.minWidth;
+  if (cs.maxWidth && cs.maxWidth !== 'none') wrap.style.maxWidth = cs.maxWidth;
+  const selHeight = cs.height && cs.height !== 'auto' ? cs.height : '';
   sel.parentNode.insertBefore(wrap, sel);
   wrap.appendChild(sel);
 
@@ -44,6 +62,8 @@ export function enhanceSelect(sel) {
   btn.className = 'fv-pick-btn';
   btn.setAttribute('aria-haspopup', 'listbox');
   btn.setAttribute('aria-expanded', 'false');
+  // 高度与原生控件一致：外壳定了高，按钮填满它（box-sizing:border-box 见 CSS）。
+  if (selHeight) btn.style.height = selHeight;
   wrap.appendChild(btn);
 
   const list = document.createElement('div');

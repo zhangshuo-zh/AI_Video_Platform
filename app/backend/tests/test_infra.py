@@ -675,3 +675,40 @@ def test_切项目不连发三次整页重绘():
     assert n <= 3, f"select() 派了 {n} 次 app:refresh，每次都是整页重写"
     # 立刻重绘那一次必须在（切项目不能白屏等网络）
     assert "先立刻重绘" in seg, "切项目不再立刻重绘了：点下去会像没反应"
+
+def test_自绘下拉照抄原生控件的宽高():
+    """夜间主题把 `<select>` 换成自绘按钮，两者的宽高必须一致。
+
+    病根：外壳 `.fv-pick` 是 `width:100%` 按内容撑开，原生 `<select>` 多半带固定
+    宽度（项目中心排序下拉 `.proj-sort{width:112px}`，实测 318→296）；高度上原生
+    靠浏览器默认行高约 31px，自绘按钮 `padding:8px 10px` 约 38px。
+    于是替换那一刻卡片头 56→63、整块跟着挪 —— 切项目时「列表先一个大小、
+    后又变一个大小」就是这两处叠加。
+
+    这条读源码：浏览器里量得出来，但"有没有抄宽度/高度"在源码层面就能钉死。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "pick.js").read_text()
+    code = "\n".join(line for line in js.split("\n")
+                      if not line.strip().startswith(("//", "*", "/*")))
+    assert "wrap.style.width = cs.width" in code, "外壳没抄原生宽度"
+    assert "wrap.style.height = cs.height" in code, "外壳没抄原生高度"
+    assert "btn.style.height = selHeight" in code, "按钮没跟外壳同高"
+
+
+def test_重绘当场就补自绘下拉():
+    """`router.renderView` 必须在同一次渲染里调 `applyPicks`，不能只靠 80ms 去抖。
+
+    `app.js` 的 MutationObserver 有 80ms 去抖；只靠它的话，每次重绘都会先
+    摆出原生控件、80ms 后才换成自绘的。同帧补一次，中间态就没有了。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "router.js").read_text()
+    code = "\n".join(line for line in js.split("\n")
+                      if not line.strip().startswith(("//", "*", "/*")))
+    assert "applyPicks(root)" in code, "路由没在渲染里补 applyPicks"
+    i_mount = code.index("view.mount?.(root)")
+    i_pick = code.index("applyPicks(root)")
+    assert i_mount < i_pick, "applyPicks 要在 mount 之后（视图可能刚插了 select）"

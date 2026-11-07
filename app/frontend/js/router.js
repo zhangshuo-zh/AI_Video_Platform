@@ -3,6 +3,7 @@ import views from './views/index.js';
 import { getParam, getSub, setParam, setSub } from './navstate.js';
 import { MODULES } from './modules.js';
 import { escapeHtml } from './util.js';
+import { applyPicks } from './pick.js';
 
 let currentId = null;
 let firstPaint = true;
@@ -125,6 +126,14 @@ export async function renderView(id) {
   if (seq !== renderSeq) return;      // 已经有一次更晚的导航在跑了，这份作废
   root.innerHTML = html;
   view.mount?.(root);          // 视图自己绑事件，路由不掺和
+  // 夜间主题的把 `<select>` 换成自绘下拉，必须**在这一次渲染里就做完**。
+  // 原来只靠 `app.js` 的 MutationObserver 补，带 80ms 去抖——于是每次重绘
+  // （包括切项目）都先摆出原生 select、80ms 后才换成自绘的那个，两者宽度不同
+  // （项目中心那个排序下拉：原生 112px、自绘 146px），列表跟着跳一次再跳回来。
+  // 人看到的就是"列表先一个大小，后来又变成另一个大小"。
+  // 这里同步补一次，把它压进同一帧；Observer 仍留着兜底（弹窗异步填充、
+  // 视图 mount 之后再插 select 的那些地方）。
+  applyPicks(root);
 
   root.scrollTop = innerTop;
   root.scrollLeft = innerLeft;
