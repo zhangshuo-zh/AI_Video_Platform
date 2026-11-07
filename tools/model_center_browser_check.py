@@ -402,13 +402,101 @@ def main():
                              " r.textContent.includes('未接入') && !r.querySelector('button')); })()"),
               f"页面 {offline} 行／接口 {want_off} 家")
         cards = P.eval_js(cdp, "document.querySelectorAll('#view-root .card').length")
-        check("引擎收成一张表而不是 13 张卡", 0 < cards <= 3, f"整页 {cards} 张卡片")
+        # 四张卡：顶部四数 ＋ 能力轨 ＋ 引擎（按 code 分组） ＋ 引擎实例（0040 端点表）。
+        # 上一版是 3，引擎实例那一格后端早就有接口、界面一直空着——补上它就多一张。
+        check("引擎收成一张表而不是 13 张卡", 0 < cards <= 4, f"整页 {cards} 张卡片")
+        # 引擎实例那一张：有"加实例"入口，端点列与探测/停用/撤实例按钮都在。
+        # 这张卡是 W-C 补的，之前 `engines.probe()` 的提示指向一个不存在的界面。
+        check("引擎实例有界面可加端点",
+              P.has(cdp, "#eng-add") and P.has(cdp, "#eng-endpoint") and P.has(cdp, "#eng-code"),
+              "加实例三格：引擎／端点／显示名")
+        inst_rows = P.eval_js(cdp, "document.querySelectorAll('tr.engine-inst').length")
+        check("引擎实例行带探测、停启用与撤实例",
+              P.eval_js(cdp, "(() => { const rows = [...document.querySelectorAll('tr.engine-inst')];"
+                             "return rows.every(r =>"
+                             " r.querySelector('[data-act-probe]')"
+                             " && r.querySelector('[data-act-toggle]')"
+                             " && r.querySelector('[data-act-uninst]')); })()"),
+              f"{inst_rows} 行实例")
+        # 连接方式只让选真有实现的那一档（2026-11-07 第三批，CR-010）。
+        # `grpc`／`cli` 存得进 0040 的 CHECK，但探测与执行都只写了 HTTP——
+        # 摆进下拉就是"选进去看不到任何行为"的选项。
+        conn = cdp.eval("""fetch('/api/engines').then((r) => r.json())
+          .then((d) => d.connection_types.join(",") + "|"
+                        + d.declared_connection_types.join(","))""")
+        supported, _, declared = str(conn).partition("|")
+        check("引擎实例只下发真有实现的连接方式",
+              supported == "local_http", f"能选的 {supported}／认的 {declared}")
+        check("CHECK 认的全集仍然另给一个键（历史行说得清）",
+              "grpc" in declared and "cli" in declared, f"认的 {declared}")
+        # 三个「缺东西」的状态名（同轮）：不再有两个只差前缀的「未登记」。
+        go(cdp, f"{BASE}/#models/0")
+        time.sleep(0.6)
+        repo_chips = P.eval_js(cdp, """(() => {
+          const chips = [...document.querySelectorAll("#repo-rows .chip")]
+            .map((c) => c.textContent.trim());
+          return [...new Set(chips)].join("|");
+        })()""") or ""
+        check("状态名里不再有两个只差前缀的「未登记」",
+              "|未登记" not in str(repo_chips) and "清单未登记" not in str(repo_chips),
+              f"仓库页徽章集合：{str(repo_chips)[:120]}")
+        go(cdp, f"{BASE}/#models/1")
+        time.sleep(0.6)
+
+        # 打开页面不连网：目录接口不出网，引擎那一格要么是"去现查"，要么是
+        # "N 秒前查的"。这一条钉的是"页面有没有在加载时偷偷发 HTTP"——
+        # 用 CDP 的网络日志数 `/api/models/probe` 与端点直连两条，比读文案可靠。
+        probe_calls = [u for u in P.eval_js(cdp, "performance.getEntriesByType('resource')"
+                                               ".map(e => e.name)") or []
+                       if "/api/models/probe" in u]
+        check("打开页面不自作主张去连引擎（没有自动 probe）",
+              not probe_calls, f"页面装载期间的 probe 请求 {len(probe_calls)} 次")
         # 环境检查按钮（原系统设置那套功能没丢）
         check("能力轨每行仍带环境检查与验证记录",
               P.has(cdp, "[data-env-check]") and P.has(cdp, "[data-val-history]"))
         P.click(cdp, "[data-val-history]")
         check("验证记录弹窗能打开", P.has(cdp, "#val-modal:not([hidden])"))
         P.click(cdp, "#val-close")
+
+        # 验证历史能翻页（2026-11-07 第二批）：接口原来只有 limit 且被夹在 200，
+        # "第 201 条之后读不到"在界面上完全不可见。现在响应头给总量、
+        # `before_id` 往前翻，界面必须把两件事都念出来。
+        go(cdp, f"{BASE}/#models/3")
+        time.sleep(0.8)
+        pager = P.eval_js(cdp, """(() => {
+          const card = [...document.querySelectorAll('.card')]
+            .find((c) => c.textContent.includes('最近验证留痕'));
+          if (!card) return '';
+          const right = card.querySelector('.card-head .right');
+          return right ? right.textContent.replace(/\\s+/g, ' ').trim() : '';
+        })()""") or ""
+        # 「共 N 条」必须来自响应头而不是数出来的行数：两者相等说明这一页是全量，
+        # 用行数冒充总量在数据少的时候看不出差别，数据一多就成了谎话。
+        check("验证历史说得出总条数（不是拿这一页的行数冒充）",
+              "共" in str(pager) and "条" in str(pager),
+              f"翻页条「{pager}」")
+        more = P.has(cdp, "#mc-val-older")
+        check("历史多于一页时给出「更早的」入口", bool(more),
+              f"这一页是否有更早入口：{bool(more)}／{pager}")
+        # 翻页是**局部**追加：行数变多、翻页条更新，而整页的 DOM 结构不换——
+        # 原来走 app:refresh 会把 worker 表一起重画，刚展开的离线进程也被折回。
+        # 用"表体节点引用不变 + 行数增加"钉住这件事：整页重绘的 tbody 是新节点。
+        if more:
+            before_rows = P.eval_js(cdp,
+                "document.querySelectorAll('#mc-val-rows tr').length")
+            tbody_ref = P.eval_js(cdp, "!!document.querySelector('#mc-val-rows')")
+            P.click(cdp, "#mc-val-older")
+            time.sleep(1.2)
+            after_rows = P.eval_js(cdp,
+                "document.querySelectorAll('#mc-val-rows tr').length")
+            tbody_after = P.eval_js(cdp, "!!document.querySelector('#mc-val-rows')")
+            check("翻「更早的」是局部追加：表体没被整页重绘换掉",
+                  tbody_ref and tbody_after and int(after_rows) > int(before_rows),
+                  f"行数 {before_rows} → {after_rows}／tbody 一直在：{tbody_ref and tbody_after}")
+        # 翻页那两条断言把页面挪到了监控页，下一段"保存能力轨"要在引擎页上跑，
+        # 所以先切回去（不给这一句，后面的 before 会量到 0 行，报一个假故障）。
+        go(cdp, f"{BASE}/#models/1")
+        time.sleep(0.8)
 
         # 一字不改地点「保存能力轨」必须成功。
         # 这一条是密度收口之后补的：没填 provider 的槽位折成 tr.mc-collapsed（不带
@@ -432,6 +520,77 @@ def main():
         check("调用策略有九个场景",
               P.eval_js(cdp, "document.querySelectorAll('tr.policy').length") == 9,
               str(P.eval_js(cdp, "document.querySelectorAll('tr.policy').length")) + " 行")
+        # 「配不出来」与「待配置」必须分开显示：image 轴没有任何一档登记过图片
+        # 输入参数，所以 character_variant 要的「图生图 + 参考图」在清单里没有来源。
+        # 同时钉住反向半边：清单能产出的能力（scene_prompt 只要文本生成）不许被误标。
+        marked = P.eval_js(
+            cdp, "(() => { const row = [...document.querySelectorAll('tr.policy')]"
+                 ".find(r => r.dataset.key === 'character_variant');"
+                 "return row ? row.innerText : ''; })()") or ""
+        check("清单里没有来源的必需能力标「清单缺能力」而不是「待配置」",
+              "清单缺能力" in marked,
+              "character_variant 那一格：" + str(marked).replace(chr(10), " | ")[:90])
+        scene_prompt = P.eval_js(
+            cdp, "(() => { const row = [...document.querySelectorAll('tr.policy')]"
+                 ".find(r => r.dataset.key === 'scene_prompt');"
+                 "return row ? row.innerText : ''; })()") or ""
+        check("清单能产出的能力不被误标成缺能力",
+              "清单缺能力" not in scene_prompt,
+              "scene_prompt 那一格：" + str(scene_prompt).replace(chr(10), " | ")[:90])
+        # 必需能力从只读 chip 放开成勾选（§5.4 一直教人"从「必需」降下来"，
+        # 服务端也早会写 required_json——缺的只是入口）。勾选项必须来自后端
+        # 下发的标签全集（producible），清单缺来源的那一项划灰仍在。
+        # 注意：image 轴的标签全集只有「文生图」——「图生图/参考图」在 image 轴
+        # 根本产不出来（这正是 §5.1 说的清单缺口），所以 character_variant 的
+        # 勾选项少、且种子勾着的两项不该出现。用 scene_prompt（text 轴全集有
+        # 「文本生成/结构化输出」，种子勾着「文本生成+结构化输出」）钉勾选形态。
+        req_ui = P.eval_js(cdp, """(() => {
+          const pick = (key) => [...document.querySelectorAll('tr.policy')]
+            .find(r => r.dataset.key === key);
+          const row = pick('scene_prompt');
+          const cv = pick('character_variant');
+          if (!row) return '{}';
+          return JSON.stringify({
+            boxes: row.querySelectorAll('[data-req]').length,
+            checked: [...row.querySelectorAll('[data-req]:checked')].map(c => c.dataset.req),
+            cv_boxes: cv ? cv.querySelectorAll('[data-req]').length : -1,
+          });
+        })()""") or "{}"
+        import json as _json
+        req = _json.loads(req_ui) if req_ui.startswith('{') else {}
+        check("必需能力已是勾选框，选项来自标签全集而非写死",
+              req.get('boxes', 0) >= 2 and '文本生成' in req.get('checked', []),
+              f"scene_prompt 勾选项 {req.get('boxes')} 个，勾着 {req.get('checked')}")
+        check("清单产不出的标签仍显示但划灰（不假装它是可勾的选项）",
+              req.get('cv_boxes', -1) >= 0 and req.get('cv_boxes', 0) < req.get('boxes', 0),
+              f"image 轴全集 {req.get('cv_boxes')} 项 vs text 轴 {req.get('boxes')} 项")
+        # 降一次必需项再存回去：走一遍真保存，钉住"写路径真的通"。
+        # （scene_prompt 种子勾着「文本生成+结构化输出」；降掉「结构化输出」
+        # 再存，界面刷新后那一格应只剩「文本生成」。）
+        P.eval_js(cdp, """(() => {
+          const row = [...document.querySelectorAll('tr.policy')]
+            .find(r => r.dataset.key === 'scene_prompt');
+          row.querySelector('[data-req="结构化输出"]').checked = false;
+        })()""")
+        P.click(cdp, "#save-policies")
+        time.sleep(1.2)
+        req_after = P.eval_js(cdp, """(() => {
+          const row = [...document.querySelectorAll('tr.policy')]
+            .find(r => r.dataset.key === 'character_variant');
+          return row ? [...row.querySelectorAll('[data-req]:checked')]
+            .map(c => c.dataset.req).join(',') : '';
+        })()""")
+        check("把「结构化输出」从必需里降下来能真的存进去",
+              '结构化输出' not in str(req_after),
+              f"保存后勾着的必需项：{req_after}")
+        # 存回去，别让降下来的配置留在副本库里影响后面断言
+        P.eval_js(cdp, """(() => {
+          const row = [...document.querySelectorAll('tr.policy')]
+            .find(r => r.dataset.key === 'scene_prompt');
+          row.querySelector('[data-req="结构化输出"]').checked = true;
+        })()""")
+        P.click(cdp, "#save-policies")
+        time.sleep(1.2)
         # 故意"启用但没选建议轨"：后端一次说清，界面必须把原话摊开
         P.eval_js(cdp, "document.querySelector('tr.policy [data-f=\"on\"]').click()")
         P.click(cdp, "#save-policies")

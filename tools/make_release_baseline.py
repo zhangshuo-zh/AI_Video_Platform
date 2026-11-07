@@ -184,7 +184,12 @@ print(json.dumps({"paths": paths, "operations": operations,
                "FASTVIDEO_FILES": str(Path(tmp) / "files"),
                "FASTVIDEO_WORKSPACE": str(Path(tmp) / "workspace"),
                "FASTVIDEO_JOBS": str(Path(tmp) / "jobs"),
-               "PYTHONDONTWRITEBYTECODE": "1"}
+               "PYTHONDONTWRITEBYTECODE": "1",
+               # 同 run_tests：/tmp 的删除探测被拦时子解释器起不来，
+               # 指到确定可写可删的目录（只读 /tmp 的容器同样受益）。
+               **{"TMPDIR": str(Path(tmp).parent),
+                  "TEMP": str(Path(tmp).parent),
+                  "TMP": str(Path(tmp).parent)}}
         try:
             out = run([sys.executable, "-c", probe], cwd=BACKEND, env=env)
         except (SystemExit, Exception) as exc:   # noqa: B014 — SystemExit 不是 Exception
@@ -224,7 +229,14 @@ def run_tests() -> tuple[int, str]:
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
              # 与 CI 同一条规则：删除类与真采样靠环境取证，两边都跳过，
              # 基线数字才不会"开发机 1043、runner 1046"地漂。
-             "FASTVIDEO_TEST_SKIP_ENV": "1"})
+             "FASTVIDEO_TEST_SKIP_ENV": "1",
+             # 子解释器启动时 tempfile 要在系统临时目录里做"建了再删"的探测；
+             # /tmp 只读或删除被宿主策略拦时，探测全失败会直接
+             # "No usable temporary directory" 起不来。指到 basetemp 旁边
+             # （本来就是个确定可写可删的目录），只读 /tmp 的容器同样受益。
+             **{"TMPDIR": str(Path(base).parent),
+                "TEMP": str(Path(base).parent),
+                "TMP": str(Path(base).parent)}})
     text = proc.stdout + proc.stderr
     sys.stdout.write(text)
     sys.stdout.flush()
