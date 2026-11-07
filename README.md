@@ -146,6 +146,11 @@ cd app/backend
 | 前端 JS | `python3 tools/js_load_check.py`（模块能不能加载；模块数由脚本现数，本文件不写死，一个失败都不许留） |
 | 界面行为 | `python3 tools/production_browser_check.py`、`tools/model_center_browser_check.py`、`tools/agents_browser_check.py`（各起库副本＋独立端口，不写开发库） |
 | 文档 | `python3 tools/doc_structure_check.py`（目录、锚点、跨册引用、修订记录格式、历史不丢、留档头部、图） |
+| 清临时目录 | `python3 tools/_harness.py --prune`（收 `.pytest-tmp` 下历史残留的 `fv-*`／`fvtest-*`／`test_*` 等，`--dry-run` 先看、`--keep 前缀` 点名保留） |
+
+三套真浏览器验收各建一个 50–110MB 的 Chromium profile，跑完由 `tools/_harness.py`
+的退出清理自动删掉（`FASTVIDEO_KEEP_TMP=1` 可留着排查）。**历史遗留的那一堆**用
+`--prune` 收一次——2026-11-07 实测收掉 1.6G／242 项。
 
 真模型跑没跑过，界面上「生产可用」那一列与《发布基线》§2 的矩阵说话；
 mock 只证明代码路径，不作为真实模型生产验证证据。

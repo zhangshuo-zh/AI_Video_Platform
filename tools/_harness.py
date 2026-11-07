@@ -10,6 +10,7 @@ macOS 的 `.app`（CI 的 ubuntu runner 直接跑不了）、临时目录写死
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shutil
@@ -57,17 +58,123 @@ def chrome_binary() -> str:
     raise SystemExit("找不到 Chrome/Chromium；装一个，或用 CHROME_BIN 指向可执行文件")
 
 
+# 本次进程建过的临时目录。**建了就要收**（见 `_cleanup_temp_dirs`）：
+# 一个 Chrome profile 是 50–110MB，浏览器验收跑一轮建一个，从不回收的话
+# `.pytest-tmp/` 一个月就能长到 1.6G——那不是磁盘太小，是这里少了一口气。
+_TEMP_DIRS: list[Path] = []
+_cleanup_hooked = False
+
+
+def _cleanup_temp_dirs() -> None:
+    """进程退出时把自己建的临时目录删掉。
+
+    三条边界，缺一条就会把这件事做坏：
+    1. **只删自己建的**：`_TEMP_DIRS` 里是本次进程 `mkdtemp` 出来的路径，
+       不按前缀扫目录——按前缀扫会把并行的另一轮验收正在用的目录一起删掉。
+    2. **失败不炸**：进程已经在退出了，删不掉（被占用、权限）只该留个念想，
+       不该让一个跑完的验收变成非零退出。删不掉的下次 `--prune` 会收。
+    3. **`FASTVIDEO_KEEP_TMP=1` 时整个跳过**：调试验收脚本时经常需要回头看
+       库副本与 Chrome profile，那时候"清理"反而是帮倒忙。
+    """
+    if os.environ.get("FASTVIDEO_KEEP_TMP") == "1":
+        return
+    while _TEMP_DIRS:
+        path = _TEMP_DIRS.pop()
+        # Chrome 被 terminate 之后还会短暂持有 profile 里的文件（写到一半的
+        # `Local State`、`Variations`），`rmtree` 在这种时刻会半途失败。
+        # 不重试的结果就是"每次都留下一个 12K 的残壳"——体积没关系，
+        # 但 `ls` 里永远多一条，人就会以为清理根本没生效。
+        for attempt in range(3):
+            shutil.rmtree(path, ignore_errors=True)
+            if not path.exists():
+                break
+            time.sleep(0.2 * (attempt + 1))
+
+
 def temp_dir(prefix: str = "fv-check-") -> Path:
-    """建一个本次运行独占的临时目录。
+    """建一个本次运行独占的临时目录，并登记进退出清理。
 
     `FASTVIDEO_CHECK_TMP` 可把它指到工作区内（沙箱里 `/tmp` 的删除可能被拦）；
     不设就退回系统临时目录。目录名带随机后缀，不会和上一轮撞。
+
+    返回的目录在进程正常退出时会被删掉；要留着看就把 `FASTVIDEO_KEEP_TMP=1`。
     """
+    global _cleanup_hooked
     base = os.environ.get("FASTVIDEO_CHECK_TMP")
     if base:
         Path(base).mkdir(parents=True, exist_ok=True)
-        return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
-    return Path(tempfile.mkdtemp(prefix=prefix))
+        path = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
+    else:
+        path = Path(tempfile.mkdtemp(prefix=prefix))
+    _TEMP_DIRS.append(path)
+    if not _cleanup_hooked:
+        # 用 atexit 而不是让每个脚本自己 finally：九个脚本里已经有六个
+        # 只 terminate 进程、忘了删目录（`.pytest-tmp` 里 110 个 fv-* 就是这么来的）。
+        # 收在一处，新脚本什么都不用做就自动带上这一条。
+        atexit.register(_cleanup_temp_dirs)
+        _cleanup_hooked = True
+    return path
+
+
+def prune_temp_dirs(base: Path | str | None = None, *, keep_prefix: str = "",
+                    dry_run: bool = False) -> tuple[int, int]:
+    """清掉历史残留的 `fv-*` 临时目录，返回 (删了几个, 释放多少 MB)。
+
+    `atexit` 只保证**以后**不再漏；已经躺在地上的那一堆还得有人收一次。
+    这就是那个"有人"——`python tools/_harness.py --prune` 调它。
+
+    只认 `fv-`／`jscheck-` 前缀（这些是 `temp_dir()` 的默认前缀与脚本传进去的），
+    `keep_prefix` 可以再点名保留某一族（比如正在排查某一轮的目录）。
+    """
+    root = Path(base) if base else Path(os.environ.get(
+        "FASTVIDEO_CHECK_TMP", ROOT / ".pytest-tmp"))
+    if not root.is_dir():
+        return 0, 0
+    removed = freed = 0
+    for path in root.iterdir():
+        if not _is_disposable(path):
+            continue
+        if keep_prefix and path.name.startswith(keep_prefix):
+            continue
+        size = (sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                if path.is_dir() else path.stat().st_size)
+        if not dry_run:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        removed += 1
+        freed += size
+    return removed, freed // (1024 * 1024)
+
+
+# 这些前缀/名字是"跑一轮就丢"的产物，`prune_temp_dirs` 认它们：
+#   fv-*        浏览器验收的库副本与 Chrome profile（`temp_dir()` 建的）
+#   jscheck-*   `js_load_check.py` 的 Chrome profile
+#   test_*      pytest 的 basetemp 用例目录（--basetemp 指到这儿时留下的）
+#   bt／chk     basetemp 跑多轮后 pytest 自己的分桶目录
+#   diag_*.py   一次性取证脚本——跑完就该没，留在仓库里只会被下次提交带上
+_DISPOSABLE_PREFIXES = (
+    "fv-", "fvtest-",           # `temp_dir()` 与 conftest 的测试库副本
+    "jscheck-",                 # js_load_check 的 Chrome profile
+    "test_",                    # pytest basetemp 的用例目录
+    "bt", "chk",                # basetemp 跑多轮后 pytest 自己的分桶
+    "full", "findfail",         # 手动排查轮留下的分桶（同 basetemp 形状）
+)
+_DISPOSABLE_SUFFIXES = (".py",)     # 仅配合 diag_ 前缀，见下
+
+
+def _is_disposable(path: Path) -> bool:
+    """这一条是不是"跑一轮就丢"的临时产物。
+
+    为什么要有判据而不是"清空目录"：`FASTVIDEO_CHECK_TMP` 可能被人指到一个
+    还放着别的东西的目录（比如整个 `/tmp`）。清空目录是破坏性的，
+    认名字才敢删——名字不认识的原样留着，删不干净好过删错。
+    """
+    name = path.name
+    if name.startswith("diag_") and path.is_file() and name.endswith(_DISPOSABLE_SUFFIXES):
+        return True
+    return path.is_dir() and name.startswith(_DISPOSABLE_PREFIXES)
 
 
 def serve_static(root: Path = FRONTEND, port: int | None = None
@@ -167,3 +274,37 @@ def stop(proc, grace: float = 5.0) -> None:
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+def _main(argv: list[str]) -> int:
+    """`python tools/_harness.py --prune [--dry-run] [--keep PREFIX]`
+
+    为什么收在这里：这些目录是这个模块建的，清理逻辑也该与它同住。
+    另起一个 `clean_tmp.py` 会让"谁负责回收"变成两个人都不管的事。
+    """
+    if "--prune" not in argv:
+        print("用法：python tools/_harness.py --prune [--dry-run] [--keep 前缀]")
+        print("  清掉 .pytest-tmp 下历史残留的 fv-*／jscheck-* 临时目录。")
+        print("  当前进程建的目录由 atexit 自动删；这条只收历史遗留。")
+        return 2
+    dry = "--dry-run" in argv
+    keep = ""
+    if "--keep" in argv:
+        idx = argv.index("--keep")
+        if idx + 1 < len(argv):
+            keep = argv[idx + 1]
+    root = Path(os.environ.get("FASTVIDEO_CHECK_TMP", ROOT / ".pytest-tmp"))
+    if not dry:
+        # 先把自己这一轮会建的也登记上，免得 prune 时正连着别的东西
+        _cleanup_temp_dirs()
+    removed, freed = prune_temp_dirs(root, keep_prefix=keep, dry_run=dry)
+    verb = "将删除" if dry else "已删除"
+    print(f"{verb} {removed} 个临时目录，约 {freed} MB（{root}）"
+          + (f"；保留前缀 {keep}*" if keep else ""))
+    if dry:
+        print("（--dry-run：什么都没动）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
