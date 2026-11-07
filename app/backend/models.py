@@ -255,6 +255,9 @@ class ProviderOut(BaseModel):
     # P0：把"凭什么认为能用"单独摆出来。health 只回答环境齐不齐，
     # validation 回答"最近一次真调用／假适配器／目标机基准是什么时候、结果如何"。
     validation: dict = {}
+    # 弱版本令牌，由路由用 `provider_slot_version` 现算填进来（表里没有这一列）。
+    # 界面存着它，保存时原样带回；对不上就是有人在中间改过这一行。
+    version: str = ""
 
     @classmethod
     def from_row(cls, row, has_key: bool, key_env: str, health: dict,
@@ -275,7 +278,36 @@ class ProviderOut(BaseModel):
             notes=row["notes"],
             health=health,
             validation=validation or {},
+            # 令牌现算：这一行"打开时是什么样"由内容决定，不另存一列。
+            version=provider_slot_version(row),
         )
+
+
+# ---------- 弱版本令牌（与 `asset_version`／`profile_version` 同一套做法） ----------
+
+
+def provider_slot_version(row) -> str:
+    """一行 `provider_config` 的令牌：时间 + 会被改的那六列。
+
+    为什么需要：`PUT /api/providers` 是**整批覆盖**（十行一起提交、一个事务写下去），
+    所以两个人同时打开这张配置页、各自改一行、先后保存，后保存的那一次会把
+    前一个人改的那一行**静默盖回旧值**——他看到的"已保存"是真的，只是他改的东西没了。
+    这不是理论风险：这一页是"配好一次就不常动"的那种页面，人打开它时
+    通常会花几分钟对着文档核对 provider 与密钥变量名。
+
+    为什么不用 `updated_at` 本身：那一列精度只到秒（`datetime('now','localtime')`），
+    两人同一秒内先后保存时它一模一样，闸就成了摆设。所以令牌压的是
+    "时间 + 内容"：内容真动过哈希必变，一字没改地再保存一次仍然通过（没有东西被覆盖）。
+    这套做法与 `models.asset_version` 一字不差，只是字段换成这一张表的六列。
+    """
+    keys = row.keys() if hasattr(row, "keys") else row
+
+    def get(k):
+        return (row[k] if k in keys else "") or ""
+
+    return _digest(str(get("updated_at")), str(get("capability")), str(get("backend")),
+                   str(get("provider")), str(get("model")), str(get("enabled")),
+                   str(get("is_default")), str(get("key_env")), str(get("notes")))
 
 
 class ProviderUpdate(BaseModel):
@@ -286,6 +318,10 @@ class ProviderUpdate(BaseModel):
     is_default: bool = False
     key_env: str = Field(default="", max_length=64)
     notes: str = Field(default="", max_length=500)
+    # 弱版本闸：界面把"我打开时看到的那一版"的令牌原样带回来（见 `provider_slot_version`）。
+    # 空＝不判，脚本与命令行调用不会因为多了这道闸就突然 409——与 `AssetIn.seen_version`
+    # 同一条边界：闸只拦"界面里两个人撞车"，不改变所有调用方的契约。
+    seen_version: str = Field(default="", max_length=32)
 
 
 class ProviderOptionOut(BaseModel):
@@ -1781,6 +1817,9 @@ class PipelineRunOut(BaseModel):
     document: dict | None = None
     nodes: list[PipelineNodeOut] = []
     events: list[PipelineEventOut] = []
+    # 事件中文名由服务端下发（`pipeline.EVENT_LABELS`）。原来只住在界面，
+    # 与 0031 的 CHECK 各写一份、中间没有守卫——清单加一档界面就少说一句。
+    event_labels: dict = {}
     started_at: str = ""
     finished_at: str = ""
     created_at: str

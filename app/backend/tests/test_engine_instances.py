@@ -95,7 +95,7 @@ def test_清单外的引擎被拒(as_role):
 
 
 def test_建实例_列表带现查健康_且探测不建Job(monkeypatch, as_role):
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "ok", "服务在线，当前模型 x.ckpt",
         {"endpoint": endpoint or SLOT, "model": "x.ckpt", "keys": 87}))
     c = as_role("admin")
@@ -119,21 +119,21 @@ def test_建实例_列表带现查健康_且探测不建Job(monkeypatch, as_role
     finally:
         blocked = c.delete(f"/api/engines/{instance_id}")
         assert blocked.status_code == 422, "没带 confirm 必须挡"
-        removed = c.delete(f"/api/engines/{instance_id}", params={"confirm": "撤实例"})
+        removed = c.delete(f"/api/engines/{instance_id}", params={"confirm": "1"})
         assert removed.status_code == 200
 
 
 def test_连不上时仍建成但带回原话(monkeypatch, as_role):
     """登记一台还没启动的服务是合法动作：界面要知道"留下了但连不上"，
     而不是把这件事做成 4xx——那会让人以为自己的地址写错了。"""
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "missing", "http://127.0.0.1:7906 连不上：拒绝连接", {}))
     c = as_role("admin")
     response = c.post("/api/engines", json={"engine_code": "draw_things",
                                             "endpoint": "http://127.0.0.1:7906"})
     assert response.status_code == 201
     assert "连不上" in response.json()["warning"]
-    c.delete(f"/api/engines/{response.json()['id']}", params={"confirm": "撤实例"})
+    c.delete(f"/api/engines/{response.json()['id']}", params={"confirm": "1"})
 
 
 def test_非管理员看不到实例(as_role):
@@ -143,7 +143,7 @@ def test_非管理员看不到实例(as_role):
 # ---------- 甲闸门 ----------
 
 def _gate_inputs(monkeypatch, live: str, artifact: str):
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "ok", "在线", {"endpoint": SLOT, "model": live}))
     monkeypatch.setattr(services.registration_repo, "find_registration",
                         lambda *a, **k: {"artifact_path": artifact})
@@ -173,7 +173,7 @@ def test_登记没填权重路径时说清缺什么(monkeypatch):
 
 
 def test_服务连不上时不放行(monkeypatch):
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "missing", "连不上：拒绝连接", {}))
     with pytest.raises(services.JobInvalid) as exc:
         services._service_engine_gate("image", "local", "draw_things",
@@ -233,7 +233,7 @@ def _job(job_id=91, **overrides):
 
 
 def test_draw_things的spec与请求文件(monkeypatch, tmp_path):
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "ok", "在线", {"endpoint": SLOT, "model": "m.ckpt"}))
     outputs = tmp_path / "outputs"
     outputs.mkdir()
@@ -251,7 +251,7 @@ def test_draw_things的spec与请求文件(monkeypatch, tmp_path):
 
 
 def test_服务不可用时不起进程(monkeypatch, tmp_path):
-    monkeypatch.setattr(engines, "probe", lambda code, endpoint="": engines.EngineStatus(
+    monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "unknown", "还没有登记启用中的引擎实例", {}))
     outputs = tmp_path / "outputs"
     outputs.mkdir()
@@ -376,3 +376,73 @@ def test_引擎规格有出处():
     assert adapter.home_env == "", "地址住在 engine_instance 表，不在环境变量"
     errors = adapters.validate_params(adapter, "noobai-xl-epsilon-11", {"width": 64})
     assert errors and "128" in errors[0], "128 这条实测下限要能拦住"
+
+
+def test_探测留痕只由显式动作写(as_role):
+    """0042：读路径一次都不写，显式探测才留痕。
+
+    这条守的是 0040 那条"健康不落库"不被打穿的边界——0040 不许落的是**当前状态**
+    （那会长出两份答案），0042 落的是**历史事件**（只追加、不参与判断）。
+    所以判据不是"有没有写库"，而是"读接口会不会写"。
+    """
+    import engines
+    from repositories.engine_instances import engine_probe_log
+
+    c = as_role("admin")
+    engines.forget_probes()
+    made = c.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": "http://127.0.0.1:7891"}).json()
+    iid = made["id"]
+    try:
+        # 建实例那一枪会留痕（source=create）——它是这台机器的第一个事实点
+        rows = engine_probe_log.recent(iid)
+        assert len(rows) == 1 and rows[0]["source"] == "create"
+        before = len(rows)
+
+        # 读列表三次：一条都不许新增
+        for _ in range(3):
+            item = next(i for i in c.get("/api/engines").json()["items"]
+                        if i["id"] == iid)
+            assert item["last_probe_source"] == "create"
+            assert item["last_probe_at"]
+        assert len(engine_probe_log.recent(iid)) == before, "读路径写了留痕"
+
+        # 手动探测：多一条，且 source=manual、带耗时
+        out = c.post(f"/api/engines/{iid}/probe").json()
+        assert "latency_ms" in out
+        rows = engine_probe_log.recent(iid)
+        assert len(rows) == before + 1
+        assert rows[0]["source"] == "manual"
+        assert rows[0]["latency_ms"] is not None
+        # 端点与引擎 code 冗余存了一份：实例被撤之后"当时探的是哪台"仍答得出来
+        assert rows[0]["endpoint"] == "http://127.0.0.1:7891"
+        assert rows[0]["engine_code"] == "draw_things"
+
+        # 历史列表接口：最新在前，带年龄
+        hist = c.get(f"/api/engines/{iid}/probes?limit=5").json()
+        assert len(hist["items"]) == 2
+        assert hist["items"][0]["source"] == "manual", "最新那条要排第一"
+        assert hist["items"][0]["age_seconds"] is not None
+        assert "不参与任何判断" in hist["note"]
+    finally:
+        c.delete(f"/api/engines/{iid}?confirm=1")
+
+
+def test_撤实例时探测历史跟着走(as_role):
+    """0042 的外键是 CASCADE：实例没了，它的探测史不该变成孤儿行。
+
+    但**历史作业不受影响**——那一条由 0040 保证（作业行冻结的是快照，不是外键）。
+    """
+    import db
+    from repositories.engine_instances import engine_probe_log
+
+    c = as_role("admin")
+    made = c.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": "http://127.0.0.1:7892"}).json()
+    iid = made["id"]
+    assert len(engine_probe_log.recent(iid)) >= 1
+    c.delete(f"/api/engines/{iid}?confirm=1")
+    with db.get_conn() as conn:
+        left = conn.execute("SELECT COUNT(*) FROM engine_probe_log WHERE instance_id = ?",
+                            (iid,)).fetchone()[0]
+    assert left == 0, "实例撤了，探测历史还在（外键没生效？）"

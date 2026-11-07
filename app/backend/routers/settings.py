@@ -12,14 +12,16 @@ P0 又加了一件事：**把"环境齐"和"真跑过"分开显示**。健康状
 """
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 import adapters
+import engines
 import validations
 from config import ALLOW_MOCK
 from deps import require_permission, require_user
 from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
-                    ProviderOut, ProviderUpdate, ValidationIn, ValidationOut)
+                    ProviderOut, ProviderUpdate, ValidationIn, ValidationOut,
+                    provider_slot_version)
 from repositories.providers import has_key, providers
 from repositories.validation import validations as validation_repo
 
@@ -36,7 +38,10 @@ def _slot_key(row) -> tuple[str, str, str]:
 
 
 def _row_out(row, matrix: dict | None = None) -> ProviderOut:
-    health = adapters.health(row)
+    # 超时用列表档（0.8 秒）：这一条是"打开一页"的路径，服务型引擎那一格只是顺带，
+    # 不该因为某台服务半死就让人等满 5 秒。要问到底请点引擎实例那一行的「探测」
+    # 或模型中心的「检查引擎连接」——那两条是人明确要求的现查。
+    health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
     env = health["key_env"] if row["backend"] == "cloud" else ""
     # matrix 给了就从里取（一整页一次批量读）；这一格不在矩阵里＝这个槽位从没验证过，
     # 要传**空字典**而不是 None——传 None 会让 summary_for 自己再打五趟查询去确认"没有"。
@@ -47,8 +52,11 @@ def _row_out(row, matrix: dict | None = None) -> ProviderOut:
 
 @router.get("/providers", response_model=list[ProviderOut])
 def list_providers(_=Depends(require_permission("system:config"))) -> list[ProviderOut]:
-    # 十个槽位 × 五档 = 原来五十趟回库；现在一条窗口函数读完（模型与密钥页每次进都走这）
-    matrix = validation_repo.latest_matrix()
+    # 十个槽位 × 五档 = 原来五十趟回库；现在一条窗口函数读完（模型与密钥页每次进都走这）。
+    # 传 slots 是**定向**：provider_config 只有十行且键固定，把十个槽位给它，
+    # 窗口函数就只在十组里挑最新，不必先把整张 model_validation 算一遍再丢弃。
+    slots = {(r["capability"], r["backend"], r["provider"]) for r in providers.all()}
+    matrix = validation_repo.latest_matrix(slots)
     return [_row_out(row, matrix) for row in providers.all()]
 
 
@@ -69,13 +77,16 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
     参数白名单跟着槽位一起回：界面按它渲染输入框，提交时后端再验一遍。
     这里不含 key_env、notes 与本地运行时目录——那些是系统配置那一页的事。
     """
-    matrix = validation_repo.latest_matrix()
+    # 同上：这一页只关心 provider_config 那十行的验证史，定向查。
+    matrix = validation_repo.latest_matrix(
+        {(r["capability"], r["backend"], r["provider"]) for r in providers.all()})
     out: list[ProviderOptionOut] = []
     for row in providers.all():
         if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
-        health = adapters.health(row)
+        # 提交弹窗要读这一份，所以同样用列表档超时：一个端点不通不该让弹窗卡住。
+        health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
             row, matrix.get(_slot_key(row), {})))
         out.append(ProviderOptionOut(
@@ -119,7 +130,9 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
     与密钥变量名，所以这里只回状态，不复用管理页那份带备注的对象。
     """
     defaults = {row["capability"]: row for row in providers.defaults()}
-    matrix = validation_repo.latest_matrix()
+    # 这里只念默认那几行的验证徽章，需要的槽位更少——按实际要读的给。
+    matrix = validation_repo.latest_matrix(
+        {(r["capability"], r["backend"], r["provider"]) for r in defaults.values()})
     out: list[CurrentProviderOut] = []
     for capability, label in CAPABILITIES.items():
         row = defaults.get(capability)
@@ -130,7 +143,7 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
                 adapter="", health_state="unconfigured",
                 health_detail="没有默认后端"))
             continue
-        health = adapters.health(row)
+        health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
             row, matrix.get(_slot_key(row), {})))
         out.append(CurrentProviderOut(
@@ -144,10 +157,23 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
 
 
 @router.get("/providers/validations", response_model=list[ValidationOut])
-def list_validations(limit: int = 50,
+def list_validations(response: Response, limit: int = 50,
+                     before_id: int | None = None,
                      _=Depends(require_permission("system:config"))) -> list[ValidationOut]:
-    """验证历史。只有管理员能看整份——detail 里会有本机路径与缺失项。"""
-    return [ValidationOut.from_row(r) for r in validation_repo.list_recent(limit)]
+    """验证历史（一页）。只有管理员能看整份——detail 里会有本机路径与缺失项。
+
+    **分页是这一版补的**：原来只有 `limit`，而仓库层把它夹在 200 以内，于是
+    "第 201 条之后的历史读不到"却没有任何提示——翻到底的人会以为历史只有这么多条。
+    现在两条路都给：`before_id` 拿上一页最后一条的 id 翻旧账（表只追加，
+    "比某条更早"是稳定边界）；总条数走响应头 `X-Total-Count`，界面据此说
+    "共 N 条，这一页 M 条"，而不是自己拿"少于 limit"猜到底有没有下一页。
+    响应体形状不变（仍是数组）——它已被浏览器验收与《模型中心使用说明书》按
+    "数组"引用，为了分页改成包一层对象会连带改掉一批读法。
+    """
+    rows = [ValidationOut.from_row(r)
+            for r in validation_repo.list_recent(limit, before_id)]
+    response.headers["X-Total-Count"] = str(validation_repo.count())
+    return rows
 
 
 @router.post("/providers/validate", response_model=ValidationOut)
@@ -198,6 +224,28 @@ def save_providers(updates: list[ProviderUpdate],
     unknown = [u.id for u in updates if u.id not in current]
     if unknown:
         raise HTTPException(status_code=422, detail=f"未知的配置行：{unknown}")
+
+    # 弱版本闸（见 `models.provider_slot_version`）：这一条是**整批覆盖**，
+    # 两个人各改一行先后保存时，后保存的会把前一个人改的那一行静默盖回旧值。
+    # 只在调用方带了令牌时才判——脚本与命令行不带＝行为不变（与资产页同一条边界），
+    # 冲突回 409 而不是覆盖，并把"哪一行变了"点名，不让人对着十行自己找。
+    stale = []
+    for item in updates:
+        seen = (item.seen_version or "").strip()
+        if not seen:
+            continue
+        now = provider_slot_version(current[item.id])
+        if seen != now:
+            row = current[item.id]
+            stale.append(f"{CAPABILITIES.get(row['capability'], row['capability'])}·"
+                         f"{BACKENDS.get(row['backend'], row['backend'])}")
+    if stale:
+        raise HTTPException(
+            status_code=409,
+            detail="这几行在你打开之后被别人改过：" + "、".join(stale)
+                   + "。这次整批没有保存，你填的内容还在界面上；"
+                   "先刷新把最新的读进来对一遍——确认要顶掉就再保存一次"
+                   "（刷新后再保存时令牌自然是新的）。")
 
     for item in updates:
         provider = item.provider.strip()

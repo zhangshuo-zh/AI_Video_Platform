@@ -178,8 +178,16 @@ export const api = {
   }).then(toJson),
   // 模型验证（P0）：四种出处（环境检查／模拟／真实调用／目标机）各记各的，
   // 谁也不能替谁升级。历史单独一张表，只追加不改。
-  providerValidations: (limit = 50) => fetch(
-    `/api/providers/validations?limit=${limit}`).then(toJson),
+  // 验证历史：一页 + 总量。`before_id` 拿上一页最后一条的 id 往前翻——
+  // 表只追加不改，所以"比某条更早"是稳定边界（用 offset 会因为新写入而错位）。
+  // 总量在响应头 `X-Total-Count` 里，调用方据此说"共 N 条"而不是拿"少于 limit"猜。
+  providerValidations: async (limit = 50, beforeId = null) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (beforeId) qs.set('before_id', String(beforeId));
+    const res = await fetch(`/api/providers/validations?${qs}`);
+    const items = await toJson(res);
+    return { items, total: Number(res.headers.get('X-Total-Count') || 0) };
+  },
   // 环境检查：不发网络、不加载权重，所以永远不能替代真实调用验证。
   validateProvider: (body) => fetch('/api/providers/validate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -195,6 +203,10 @@ export const api = {
   // 目录是"清单 × 登记"的联表，所以只有这一个读接口就够——前端不再自己拼第二套口径。
   models: () => fetch('/api/models').then(toJson),
   modelStats: () => fetch('/api/models/stats').then(toJson),
+  // 现查服务型引擎：`GET /api/models` 不出网（打开页面不该被一台卡住的服务拖住），
+  // 所以"这一档到底连不连得上"有一个显式入口。fresh=1 绕过 15 秒缓存。
+  probeModels: (fresh) => fetch(`/api/models/probe?fresh=${fresh ? 1 : 0}`,
+    { method: 'POST' }).then(toJson),
   createModel: (body) => fetch('/api/models', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -203,8 +215,9 @@ export const api = {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(toJson),
-  // 撤登记必须带 confirm：这一步只删登记行，权重文件与历史作业都不动
-  removeModel: (id) => fetch(`/api/models/${id}?confirm=${encodeURIComponent('撤登记')}`,
+  // 撤登记必须带 confirm=1：这一步只删登记行，权重文件与历史作业都不动。
+  // 别再往 URL 里塞中文口令——那个字面量会变成协议的一部分，改文案就改接口。
+  removeModel: (id) => fetch(`/api/models/${id}?confirm=1`,
     { method: 'DELETE' }).then(toJson),
   checkModel: (id) => fetch(`/api/models/${id}/check`, { method: 'POST' }).then(toJson),
   modelPolicies: () => fetch('/api/model-policies').then(toJson),
@@ -214,6 +227,27 @@ export const api = {
   }).then(toJson),
   // 场景候选：只读、登录即可。返回里带 auto_switch=false——备用轨不会自动顶上。
   resolveScene: (key) => fetch(`/api/model-policies/resolve/${encodeURIComponent(key)}`).then(toJson),
+
+  // 引擎实例（0040）：这一族管的是"这一档引擎在哪个端点"，不是"跑了什么模型"。
+  // 后端从 W-B 起就有这五个口子，但界面一直没接——于是 `engines.probe()` 只能对着
+  // "还没有登记启用中的引擎实例"这句提示干瞪眼，而人没有办法在界面里加一条端点。
+  engines: () => fetch('/api/engines').then(toJson),
+  createEngine: (body) => fetch('/api/engines', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  patchEngine: (id, body) => fetch(`/api/engines/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(toJson),
+  // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动
+  removeEngine: (id) => fetch(`/api/engines/${id}?confirm=1`,
+    { method: 'DELETE' }).then(toJson),
+  probeEngine: (id) => fetch(`/api/engines/${id}/probe`, { method: 'POST' }).then(toJson),
+  // 探测历史（0042）：只追加不改，最新在前。卡面只摆最近一条，这里是给它后面
+  // 那个「看历史」用的——「这台是不是三天两头掉线」得看几条才答得上来。
+  engineProbes: (id, limit = 20) =>
+    fetch(`/api/engines/${id}/probes?limit=${limit}`).then(toJson),
 
   // 智能体中心（0041）
   // 这一族的读接口分两档：配置／工具表要 system:config，运行与待审批按项目可见范围。

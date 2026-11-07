@@ -4,7 +4,7 @@ import {
   agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
-import { HEALTH, VAL_BADGE, alertLabel } from '../validation.js';
+import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../validation.js';
 import { REG_SOURCES, unitLabel } from '../enums.js';
 
 /**
@@ -29,10 +29,8 @@ const SUBS = ['模型仓库', '引擎管理', '调用策略', '运行监控'];
 // 健康与验证的中文译名一律来自 js/validation.js（唯一出口）。
 // 这一页以前自己写过一份 HEALTH，与生成中心那份并存——
 // 同一个 ok 在两屏上叫两个名字，就是外部评审点过的那类口径事故。
-const VAL_KIND_LABEL = {
-  env_check: '环境检查', mock: '模拟', real_call: '真实调用',
-  target_machine: '目标机基准', artifact_review: '产物验收',
-};
+// VAL_KIND_LABEL 也从 validation.js 来：权威译名在后端 `VALIDATION_KINDS`
+// 并随记录下发 `kind_label`，逐行渲染优先读那个字段，这份只兜"没有行"的场合。
 const VAL_STATE = {
   ok: ['green', '通过'], missing: ['red', '缺东西'], unknown: ['amber', '未检查'],
   unconfigured: ['gray', '未配置'], unregistered: ['red', '未登记'],
@@ -44,22 +42,66 @@ const norm = (s) => String(s || '').trim().toLowerCase();
 // 一次 render 把四份数据都缓存下来；mount 里的交互不重新发请求，
 // 免得点一下筛选就把整页的读请求打一遍
 let cache = { catalog: null, manifest: null, providers: null, policies: null,
-              stats: null, worker: null, validations: [] };
+              stats: null, worker: null, engines: null,
+              // 验证历史是{ items, total }：分页读，总量由响应头给。
+              validations: { items: [], total: 0 },
+              // 翻页状态：`before` 是下一页的游标（当前页最后一条的 id），
+              // 空表示"从头开始"。存在模块变量里，翻页不重画整页。
+              validationPage: { before: null, pages: 0 } };
+
+/**
+ * 四个子页各要哪些数据。
+ *
+ * 为什么按子页取而不是一次全取：切一次标签页就打七个接口，其中三个只有别的
+ * 子页会读（验证历史只给引擎页与监控页用、worker 状态只给监控页用）。
+ * 目录与清单是公共底座，两页都要——它们已经合并成一条接口 + 一次 stats。
+ *
+ * `providers` 四页都要：页头那颗「检查引擎连接」在任何子页都可用，
+ * 它要读十条能力轨的现状，缺了就只能弹出"没有可检查的对象"这种假话。
+ */
+const SUB_NEEDS = [
+  { providers: true },
+  { providers: true, validations: true, engines: true },
+  { providers: true, policies: true },
+  { providers: true, worker: true, validations: true },
+];
 
 function stateChip(state) {
   const [tone, label] = VAL_STATE[state] || ['gray', state || '未知'];
   return `<span class="chip ${tone}">${escapeHtml(label)}</span>`;
 }
 
+/**
+ * 健康徽章。「待现查」与「未检查」不是同一档，必须分开：
+ *
+ * `unknown` 是"平台检查不了，需要人确认"——那是结论；
+ * `probe_deferred` 是"平台会查，只是这条读路径不代你连网"——那是一句待办。
+ * 前者人去做别的判断，后者人只要点一下「探测」。两件事共用一个词，
+ * 结果就是"点了没反应"或"以为坏了"。
+ */
 function healthChip(health) {
+  if (health?.probe_deferred) {
+    return `<span class="chip amber" title="${escapeHtml(health?.detail || '')}">待现查</span>`;
+  }
   const [tone, label] = HEALTH[health?.state] || ['gray', '未知'];
   return `<span class="chip ${tone}" title="${escapeHtml(health?.detail || '')}">${label}</span>`;
 }
 
+/** 登记层的运行位置 → 清单层的轴。判据由后端下发（`manifest.axis`）。
+ *
+ * 这一段原来写死成 `backend === "remote" ? "local" : backend`，与后端
+ * `adapters.MANIFEST_AXIS` 是同一句话的第二份抄写——后端哪天多折一档，
+ * 界面会安静地按老口径算，症状是"清单里有、下拉里不显示"。
+ * 接口没给（老后端）就原样返回：宁可对不上，也不自己造一个折法。 */
+function manifestAxis(backend) {
+  return (cache.manifest && cache.manifest.axis || {})[backend] || backend;
+}
+
 function adapterOf(manifest, cap, backend, provider) {
   if (!manifest || !provider) return null;
+  const be = (manifest.axis || {})[backend] || backend;
   return (manifest.adapters || []).find((a) => a.capability === cap
-    && a.backend === backend
+    && a.backend === be
     && (norm(a.code) === norm(provider)
       || (a.aliases || []).some((x) => norm(x) === norm(provider))));
 }
@@ -75,11 +117,12 @@ const sameCode = (a, provider) => {
 
 /**
  * 清单里能对上「能力 × 运行位置」的 provider。
- * remote 折回 local 再比——和 routers/model_center.py 里那次 fold 同一个口径，
- * 两边不一致就会出现「接口认、界面不给选」或反之的档。
+ * remote 折回 local 再比——折回判据来自 `manifest.axis`（后端那一份），
+ * 这里不自己写 `=== "remote" ? ...`：两边各写一份就会出现
+ * 「接口认、界面不给选」或反之的档。
  */
 function manifestProviders(cap, backend) {
-  const be = backend === 'remote' ? 'local' : backend;
+  const be = manifestAxis(backend);
   return (cache.manifest?.adapters || [])
     .filter((a) => a.capability === cap && a.backend === be);
 }
@@ -185,27 +228,41 @@ function overviewCard(s) {
   const cap = s.registered_by_capability || {};
   const capText = Object.entries(cap)
     .map(([k, v]) => `${cache.catalog.capabilities[k] || k} ${v}`).join(' · ');
+  // caliber 缺了不许直接读：读 `s.caliber.x` 在降级兜底那一条路上会抛 TypeError，
+  // 而视图 render 抛错的结果是整页停在上一屏（人只看到"点了没反应"）。
+  // 这里退化成空串，让标题拦不到出处，也比白屏好。
+  const cal = s.caliber || {};
+  const degraded = s.degraded
+    ? `<p class="note" style="margin:8px 0 0"><span class="chip amber">口径不全</span>
+        <span class="hint">目录接口这次没读回来（${escapeHtml(String(s.degraded))}），
+        下面这几个数不是真的 0，是空位。切到别的页再回来会重试。</span></p>`
+    : '';
   return `
   <div class="card" style="margin-bottom:12px">
     <div class="mc-strip">
-      <span class="st" title="${escapeHtml(s.caliber.registered_total)}">已登记
-        <b>${s.registered_total}</b>
+      <span class="st" title="${escapeHtml(cal.registered_total || '')}">已登记
+        <b>${s.registered_total ?? 0}</b>
         <span class="hint">${escapeHtml(capText || '还没有登记')}</span></span>
-      <span class="st" title="${escapeHtml(s.caliber.available_total)}">可用
-        <b>${s.available_total}</b>
+      <span class="st" title="${escapeHtml(cal.available_total || '')}">可用
+        <b>${s.available_total ?? 0}</b>
         ${s.needs_attention
-          ? `<span class="chip amber">${s.needs_attention} 个要看一眼</span>`
-          : '<span class="chip green">都齐了</span>'}</span>
-      <span class="st" title="${escapeHtml(s.caliber.engine_total)}">引擎
-        <b>${s.engine_total}</b>
-        <span class="hint">${s.engine_params_known} 个参数已核验 ·
-          ${s.unintegrated_engines.length} 个未接入</span></span>
-      <span class="st" title="与生成中心同一个口径：${escapeHtml(s.caliber.queued)}">任务
-        <b>${s.running + s.queued}</b>
-        <span class="hint">跑 ${s.running} · 等 ${s.queued}</span></span>
+          ? `<span class="chip amber mc-attention" title="点这里只看这些行">${s.needs_attention} 个要看一眼</span>`
+          : (s.registered_total
+              ? '<span class="chip green">都齐了</span>'
+              /* 空机器的 needs_attention 恒为 0（登记−可用），绿色「都齐了」
+                 会把"什么都没配"念成"全部就绪"。0 登记时这不是结论，是起点。 */
+              : '<span class="chip amber" title="先在模型仓库登记一档，再谈可用">还没有登记</span>')}</span>
+      <span class="st" title="${escapeHtml(cal.engine_total || '')}">引擎
+        <b>${s.engine_total ?? 0}</b>
+        <span class="hint">${s.engine_params_known || 0} 个参数已核验 ·
+          ${(s.unintegrated_engines || []).length} 个未接入</span></span>
+      <span class="st" title="与生成中心同一个口径：${escapeHtml(cal.queued || '')}">任务
+        <b>${(s.running || 0) + (s.queued || 0)}</b>
+        <span class="hint">跑 ${s.running || 0} · 等 ${s.queued || 0}</span></span>
       <span class="st-caliber">可用＝已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收。
         引擎在线不代表模型可用，文件在也不代表依赖齐。</span>
     </div>
+    ${degraded}
   </div>`;
 }
 
@@ -237,10 +294,12 @@ function priceChips(prices) {
 }
 
 function statusChip(item, labels) {
-  const tone = { available: 'green', unverified: 'amber', not_registered: 'gray',
+  // 三个「缺东西」的档：灰＝本机没登记（点一下就解决）、红＝清单里没有（改代码）、
+  // 琥珀＝清单只有名字（等规格补齐）。颜色不同的理由见后端 STATUS_LABEL 上面那段注解。
+  const tone = { available: 'green', unverified: 'amber', manifest_only: 'gray',
                  unchecked: 'amber', disabled: 'gray', not_installed: 'gray',
                  dependency_missing: 'red', connection_failed: 'red',
-                 unregistered: 'red', unregistered_tier: 'amber' }[item.status] || 'gray';
+                 registration_only: 'red', name_only: 'amber' }[item.status] || 'gray';
   const label = labels[item.status] || item.status;
   return `<span class="chip ${tone}" title="${escapeHtml(item.status_detail || '')}">${escapeHtml(label)}</span>`;
 }
@@ -253,6 +312,10 @@ function statusChip(item, labels) {
  */
 function statusHealthChips(item) {
   const s = statusChip(item, cache.catalog.status_labels);
+  // 待现查的那一档，状态与健康说的是两件事（"未检查"＋"待现查"），
+  // 不能按文字撞车去重——按老规则它俩不撞车，会并排出现两个黄徽章，
+  // 看着像两条不同的毛病。这里只留状态那一枚，理由写在下面。
+  if (item.health?.probe_deferred) return s;
   const h = healthChip(item.health);
   const sLabel = (cache.catalog.status_labels[item.status] || item.status);
   const hLabel = (HEALTH[item.health?.state] || ['gray', '未知'])[1];
@@ -267,7 +330,8 @@ function pageRepo() {
     return `<tr class="repo-row" data-key="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}"
         data-cap="${escapeHtml(it.capability)}" data-source="${escapeHtml(it.source)}"
         data-name="${escapeHtml((name + ' ' + it.model_code + ' ' + it.provider).toLowerCase())}"
-        data-rid="${it.registration_id || ''}">
+        data-rid="${it.registration_id || ''}"
+        ${it.registered && it.status !== 'available' ? 'data-attention="1"' : ''}>
       <td><b>${escapeHtml(name)}</b>
         <div class="hint mono">${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}</div></td>
       <td>${escapeHtml(cache.catalog.capabilities[it.capability] || it.capability)}
@@ -319,8 +383,11 @@ function pageRepo() {
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note"><b>「未登记」那一档为什么也列出来</b>：清单里有、本机没登记，
-        说明规格核过但没人用它；只列已登记的话，"装了不等于配了"这件事就看不见。
+      <p class="note"><b>三种"缺东西"缺的不是同一侧，处置也相反</b>：
+        「本机未登记」＝清单里有、这台机器没登记（点一下「登记」就解决）；
+        「清单无此档」＝本机登记了、清单里没有这一档（点多少次都没用，要去 <code>adapters.py</code> 补规格或撤掉这条登记）；
+        「清单只有名字」＝清单只知道这一家的名字、没枚举模型档（等规格补齐，先手填模型标识）。
+        只列已登记的档，"装了不等于配了"就看不见；所以第二种照样列出来，但用红徽章跟第一种分开。
         登记不会去下载权重，也不会启动任何推理。</p>
       <p class="note"><b>「撤登记」不删模型文件</b>：它只删这一行登记。
         权重仍在盘上，历史作业与验证记录一律不动。</p>
@@ -347,7 +414,7 @@ function paramChips(model) {
 
 function paramsCell(adapter, model, provider) {
   if (!provider) return '<span class="hint">选 provider 后按清单显示</span>';
-  if (!adapter) return '<span class="hint">未登记这个 provider；参数不猜，运行方式也不猜</span>';
+  if (!adapter) return '<span class="hint">清单里没有这一家 provider；参数不猜，运行方式也不猜</span>';
   if (!adapter.params_known) {
     return '<span class="hint">参数未核验，平台不预填（接云端 adapter 时按官方 schema 补齐）</span>';
   }
@@ -366,7 +433,9 @@ function noteText(adapter, provider) {
 }
 
 function healthCell(health) {
-  const [tone, label] = HEALTH[health?.state] || ['gray', '未知'];
+  const [tone, label] = health?.probe_deferred
+    ? ['amber', '待现查']
+    : (HEALTH[health?.state] || ['gray', '未知']);
   const detail = health?.detail || '';
   return `<span class="chip ${tone}" title="${escapeHtml(detail)}">${label}</span>
           <span class="hint">${escapeHtml(detail)}</span>`;
@@ -511,7 +580,7 @@ function pageEngines() {
   const byCode = {};
   (manifest?.adapters || []).forEach((a) => { (byCode[a.code] ||= []).push(a); });
   const lastCheck = {};
-  (cache.validations || []).forEach((v) => {
+  (cache.validations?.items || []).forEach((v) => {
     const key = v.adapter_code || v.provider;
     if (key && !lastCheck[key]) lastCheck[key] = v.created_at;
   });
@@ -586,16 +655,246 @@ function pageEngines() {
       <p class="note" style="margin:0"><b>未接入那一排没有「测试连接」按钮</b>：
         平台里没有它们的适配器，点了也不会有真结果。接 ComfyUI 是独立工作包。</p>
     </div>
+  </div>
+
+  ${engineInstancesCard()}`;
+}
+
+/* ================= 工作区 1b · 引擎实例（0040） ================= */
+/**
+ * 这一张卡是"端点住在哪"的那一格。后端 W-B 就建好了表与五个接口，
+ * 但界面一直没接——于是 `engines.probe()` 的提示「在「引擎管理 · 引擎实例」里
+ * 加一条端点」指向一个不存在的界面，而人只能去改库。
+ *
+ * 三条与后端同一口径的边界，卡片里必须写出来：
+ *   * engine_code 必须在清单里（实例不能凭空发明 provider）；
+ *   * 健康是**现查**的，库里没有那一列，所以"停用的实例不探测"；
+ *   * 密钥只到"变量名 + 有没有值"，值永不显示。
+ */
+/**
+ * 「上次探测」那一行（0042）。
+ *
+ * 为什么卡面上要有它：`GET /api/engines` 的健康是**这一次**现查的，而
+ * 「上次是什么时候探的」是另一件事——engine 那一族以前不落任何痕，所以
+ * "这台上周还连不连得上"谁也答不上来。现在有了留痕，就得把最近的结论摆出来，
+ * 否则人还是会以为"我看到的这个绿色是刚才测的"。
+ *
+ * 三档写法，各有各的必要：
+ *   从没探过 → 明说"从没探测过"，不假装刚查过；
+ *   建实例时顺手探的 → 标明"建实例时"，别让人以为是自己点过；
+ *   人按过「探测」    → 给时间（相对时间，全站同一定义）与耗时。
+ */
+function probeHistoryLine(it) {
+  if (!it.last_probe_at) {
+    return '<div class="hint">还没有探测记录</div>';
+  }
+  const when = String(it.last_probe_at).slice(0, 16);
+  const rel = agoText(it.last_probe_age_seconds);
+  const via = it.last_probe_source === 'create' ? '建实例时顺手探的' : '手动探测';
+  const ms = it.last_probe_latency_ms != null ? ` · ${it.last_probe_latency_ms} ms` : '';
+  return `<div class="hint" title="${escapeHtml(it.last_probe_detail || '')}">
+    上次 ${escapeHtml(when)}${rel ? `（${escapeHtml(rel)}）` : ''}
+    · ${escapeHtml(via)}${escapeHtml(ms)}</div>`;
+}
+
+/**
+ * 一条实例的探测历史（0042）。
+ *
+ * 为什么用弹窗而不是卡面上多一行：卡面那一行只回答「上次什么时候探的」，
+ * 而「这台是不是三天两头掉线」要看几条才答得上来。20 条塞进表格一行会把
+ * 整张表撑成三层楼，所以另开一屏。
+ *
+ * 三条要知道的事都写在这一屏里：
+ *  1. 历史**只回答过去**——现在通不通仍看卡面上那枚现查的徽章；
+ *  2. `create` 那条是「建实例时顺手探的」，不是人点过；
+ *  3. 每行都给了耗时与距上一次的间隔，掉线有没有规律一眼看得出来。
+ */
+function openProbeHistory(data) {
+  const items = data.items || [];
+  const rows = items.map((it, i) => {
+    const next = items[i + 1];
+    // 与更早那条之间隔了多久：同一个端点连着探两次都说连不上，
+    // 和「隔了三天才探一次」，说的不是一回事。
+    const gap = next && it.age_seconds != null && next.age_seconds != null
+      ? fmtGap(it.age_seconds - next.age_seconds) : '';
+    return `<tr>
+      <td class="t-dim">${escapeHtml(String(it.created_at || '').slice(0, 16))}</td>
+      <td>${healthChip({ state: it.state, detail: it.detail })}</td>
+      <td class="hint">${it.source === 'create' ? '建实例时顺手探的' : '手动探测'}</td>
+      <td class="hint mono">${escapeHtml(it.engine_model || '—')}</td>
+      <td class="num t-dim">${it.latency_ms != null ? it.latency_ms + ' ms' : '—'}</td>
+      <td class="hint">${escapeHtml(gap || '')}</td>
+    </tr>`;
+  }).join('');
+  const body = items.length
+    ? `<div class="table-wrap"><table><thead><tr>
+        <th>什么时候</th><th>结果</th><th>怎么探的</th><th>引擎自述的模型</th>
+        <th class="num">耗时</th><th>距上一次</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+    : '<p class="hint">这条实例还没有探测记录。点「探测」会留下第一条。</p>';
+  const host = document.createElement('div');
+  host.className = 'modal';
+  host.innerHTML = `<div class="modal-box wide">
+      <div class="modal-head neutral">探测历史</div>
+      <div class="modal-body">${body}
+        <p class="note" style="margin:12px 0 0"><b>这一屏只讲过去。</b>
+          现在通不通，看引擎实例卡上那枚状态徽章——它是每次现查的，
+          和这里的任何一条都没关系。${escapeHtml((data && data.note) || '')}</p>
+      </div>
+      <div class="modal-actions"><button class="btn" data-close-probes>关闭</button></div>
+    </div>`;
+  document.body.appendChild(host);
+  const close = () => host.remove();
+  host.addEventListener('click', (e) => {
+    if (e.target === host || e.target.closest('[data-close-probes]')) close();
+  });
+  host.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+}
+
+/** 两条探测之间隔了多久。数字都是秒；负值（同一秒内）当 0。 */
+function fmtGap(seconds) {
+  const n = Math.max(0, Number(seconds) || 0);
+  if (n < 60) return `${n} 秒`;
+  if (n < 3600) return `${Math.floor(n / 60)} 分钟`;
+  if (n < 86400) return `${Math.floor(n / 3600)} 小时`;
+  return `${Math.floor(n / 86400)} 天`;
+}
+
+/** 引擎实例那一张卡（0040 端点表 ＋ 0042 探测留痕）。 */
+function engineInstancesCard() {
+  const inst = cache.engines
+    || { items: [], connection_types: ['local_http'], service_engines: [] };
+  const items = inst.items || [];
+  const service = inst.service_engines || [];
+
+  // 可选的引擎 code：清单里出现过的都算（后端 `_adapter_for` 只认清单），
+  // 但服务型排前面并标出来——只有它们会真发 HTTP 去问端点。
+  const seen = new Set();
+  const choices = [];
+  (cache.manifest?.adapters || []).forEach((a) => {
+    if (seen.has(a.code)) return;
+    seen.add(a.code);
+    choices.push({ code: a.code, label: a.label, served: service.includes(a.code) });
+  });
+  choices.sort((a, b) => (b.served - a.served) || a.code.localeCompare(b.code));
+  const codeOpts = choices.map((c) => `<option value="${escapeHtml(c.code)}">${
+    escapeHtml(c.label)}（${escapeHtml(c.code)}）${c.served ? '' : ' · 非服务型'}</option>`).join('');
+
+  const rows = items.map((it) => {
+    const engine = choices.find((c) => c.code === it.engine_code);
+    const name = it.display_name || it.engine_label || it.engine_code;
+    const secret = it.shared_secret_env
+      ? `<code>${escapeHtml(it.shared_secret_env)}</code>
+         ${it.secret_present ? '<span class="chip green">有值</span>'
+                            : '<span class="chip amber">变量没值</span>'}`
+      : '<span class="hint">—</span>';
+    return `<tr class="engine-inst" data-inst="${it.id}">
+      <td class="t-strong">${escapeHtml(name)}
+        <div class="hint mono">${escapeHtml(it.engine_code)}${
+          engine && !engine.served ? ' · 非服务型' : ''}</div></td>
+      <td><code>${escapeHtml(it.endpoint)}</code></td>
+      <td><span class="hint">${escapeHtml(it.connection_type)}</span> ${secret}</td>
+      <td>${it.enabled
+          ? (it.probe_unsupported
+              ? '<span class="chip amber">探测未实现</span>'
+              : healthChip({ state: it.health_state, detail: it.health_detail }))
+          : '<span class="chip gray">已停用</span>'}
+        ${it.engine_model ? `<div class="hint mono">${escapeHtml(it.engine_model)}</div>` : ''}
+        ${it.health_detail ? `<div class="hint">${escapeHtml(it.health_detail)}</div>` : ''}
+        ${probeHistoryLine(it)}</td>
+      <td class="t-dim">${escapeHtml(it.note || '')}</td>
+      <td class="c" style="white-space:nowrap">
+        <button class="btn xs" data-act-probe="${it.id}">探测</button>
+        <button class="btn xs" data-act-probes="${it.id}">看历史</button>
+        <button class="btn xs" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}">${
+          it.enabled ? '停用' : '启用'}</button>
+        <button class="btn xs danger" data-act-uninst="${it.id}">撤实例</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const empty = items.length ? '' : `<tr><td colspan="6"><span class="hint">
+    还没有启用中的引擎实例。Draw Things、Ollama 这类"跑成一台常驻服务"的引擎，
+    要先在这里写一条端点（例如 <code>http://127.0.0.1:7860</code>），
+    模型仓库那边才查得到它的健康状况。</span></td></tr>`;
+
+  return `
+  <div class="card">
+    <div class="card-head"><h2>引擎实例</h2>
+      <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
+        <th>状态</th><th>备注</th><th class="c">操作</th></tr></thead>
+      <tbody>${rows}${empty}
+        <tr class="mc-add-inst">
+          <td><select class="ctl sm" id="eng-code">${codeOpts || '<option value="">清单里还没有引擎</option>'}</select></td>
+          <td><input class="ctl sm mono" id="eng-endpoint" maxlength="200"
+                     placeholder="http://127.0.0.1:7860"></td>
+          <td><input class="ctl sm" id="eng-name" maxlength="80" placeholder="显示名（可空）">
+            <input class="ctl sm mono" id="eng-secret" maxlength="60" style="margin-top:4px"
+                   placeholder="密钥变量名（可空，值只从进程环境读）"></td>
+          <td colspan="2"><input class="ctl sm" id="eng-note" maxlength="300"
+                   placeholder="备注：这台是谁的、为什么换机（可空）"></td>
+          <td class="c"><button class="btn xs primary" id="eng-add">加实例</button></td>
+        </tr>
+      </tbody>
+    </table></div>
+    <div class="card-body" style="border-top:1px solid var(--line)">
+      <p class="note" style="margin:0"><b>端点改不了</b>：端点连同引擎 code 是这一行的键，
+        要换机器请新建一条再停旧的——否则历史作业的「当时打的是哪台」就说不清了。
+        「非服务型」那几档也能登记（给远程执行器留的位置），但现在没有探测分支，
+        加进来只会显示"不是本机服务型引擎，平台不猜它的状态"。</p>
+      <p class="note"><b>连接方式今天只有 local_http 一档能选</b>：迁移 0040 的 CHECK 还收
+        <code>grpc</code> 与 <code>cli</code>，但探测与执行都只写了 HTTP 那一条路。
+        把它们摆进下拉，等于给一个选进去看不到任何行为的选项——所以接口直接拒，
+        并明说"要先写探测与执行分支"。库里若有历史行用了别的值，这一屏照样列出来，
+        状态写成「探测未实现」，不拿一次 HTTP 的失败冒充它的结论。</p>
+    </div>
   </div>`;
 }
 
 /* ================= 工作区 2 · 调用策略 ================= */
+/**
+ * 场景那一格的徽章：**「配不出来」与「待配置」不是一件事**。
+ *
+ * 前者是清单里这一轴压根没有能产出那项能力的来源（例如 image 轴没有任何一档
+ * 登记过图片输入参数，而某个场景要「图生图」）——下一步是写适配器，点界面没用。
+ * 后者只是还没人登记、还没人点探测——下一步是去配。
+ * 两种都写成"待配置"，人就会对着一个永远点不亮的场景反复点（2026-11-07 审查里
+ * 4 个场景正是这样）。判据来自后端（`impossible_required`），界面不自己推。
+ */
+function policyStateChip(p) {
+  if (p.required_producible === false) {
+    const missing = (p.impossible_required || []).join('、');
+    return `<span class="chip red" title="这些必需能力在清单里没有任何来源：${
+      escapeHtml(missing)}；要让它有解得先写适配器，或者把这一项从「必需」降下来">
+      清单缺能力</span>`;
+  }
+  return p.enabled ? '<span class="chip green">已配置</span>'
+                   : '<span class="chip gray">待配置</span>';
+}
 function pagePolicies() {
   const items = cache.policies.items;
   const candidatesOf = (capability) => cache.catalog.items
     .filter((i) => i.capability === capability && i.registered)
     .map((i) => `<option value="${escapeHtml(i.provider)}|${escapeHtml(i.model_code)}">
         ${escapeHtml(i.display_name || i.model_label || i.model_code)}</option>`).join('');
+
+  /* 必需能力从只读 chip 放开成勾选：《使用说明书》§5.4 本来就教人
+     "把这一项从「必需」降下来"，服务端 save_policies 也一直在写 required_json——
+     规则齐了，入口没开，于是 character_variant（清单缺「参考图」来源）
+     只能挂一枚红 chip 让人反复配。勾选项来自后端算好的标签全集
+     （producible，与派生标签同源），界面不自己发明第四个标签名；
+     清单产不出的那一项仍然显示，但划灰并写明"清单里没有任何来源"。 */
+  const requiredPicker = (p) => (p.producible || []).map((tag) => {
+    const on = p.required.includes(tag);
+    const impossible = (p.impossible_required || []).includes(tag);
+    return `<label class="pf-check mc-req" title="${escapeHtml(
+      impossible ? '清单里没有任何一档能产出它；勾了也不会有候选' : '作为这一场景的必需能力')}">
+      <input type="checkbox" data-req="${escapeHtml(tag)}" ${on ? 'checked' : ''}>
+      <span ${impossible ? 'style="text-decoration:line-through;opacity:.55"' : ''}>${
+        escapeHtml(tag)}${impossible ? '（清单缺来源）' : ''}</span></label>`;
+  }).join('') || '<span class="hint">这一轴清单里还没有任何可声明的标签</span>';
 
   const rows = items.map((p) => {
     const cur = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
@@ -604,7 +903,8 @@ function pagePolicies() {
       <td><b>${escapeHtml(p.scene_label || p.scene_key)}</b>
         <div class="hint mono">${escapeHtml(p.scene_key)}</div></td>
       <td>${escapeHtml(p.capability_label)}</td>
-      <td><div class="param-chips">${p.required.map((r) => `<span class="chip plain">${escapeHtml(r)}</span>`).join('') || '<span class="hint">没写必需能力</span>'}</div></td>
+      <td><div class="param-chips" style="flex-direction:column;align-items:flex-start;max-width:220px">
+        ${requiredPicker(p)}</div></td>
       <td><select class="ctl sm" data-f="slot">
           <option value="">— 不指定 —</option>${candidatesOf(p.capability)}</select></td>
       <td><select class="ctl sm" data-f="pref">
@@ -615,9 +915,7 @@ function pagePolicies() {
           <option value="">— 无 —</option>${candidatesOf(p.capability)}</select></td>
       <td class="c"><input type="checkbox" data-f="cloud" ${p.cloud_confirm_required ? 'checked' : ''}></td>
       <td class="c"><input type="checkbox" data-f="on" ${p.enabled ? 'checked' : ''}></td>
-      <td>${p.enabled
-        ? '<span class="chip green">已配置</span>'
-        : '<span class="chip gray">待配置</span>'}
+      <td>${policyStateChip(p)}
         <div><button class="btn xs" data-resolve="${escapeHtml(p.scene_key)}">看候选</button></div></td>
     </tr>`;
   }).join('');
@@ -656,6 +954,31 @@ function pagePolicies() {
  * Job 才是执行事实的唯一出口（系统设计 §1 不变量 2），
  * 这里再攒一份就必然长出两套状态。
  */
+/** 验证历史一页多少条。与后端 `GET /api/providers/validations` 的默认一页对齐，
+ *  但**不要**把它当成"历史总数"：总量来自响应头 `X-Total-Count`。 */
+const HISTORY_PAGE = 50;
+
+/**
+ * 验证历史的翻页条。
+ *
+ * 为什么要它：接口从 0035 起就支持 `limit`，而仓储层把上限夹在 200——
+ * 于是"第 201 条之后读不到"这件事在界面上完全不可见，翻到底的人会以为
+ * 历史只有这么多条。这一版后端补了 `before_id` 与 `X-Total-Count`，
+ * 界面必须把两件事都说出来，否则补了接口也等于没补：
+ *   ① 一共多少条（来自响应头），② 还有没有更早的（有就给「更早」按钮）。
+ */
+function validationPager() {
+  const total = cache.validations?.total || 0;
+  const shown = (cache.validations?.items || []).length;
+  const page = cache.validationPage || { before: null, pages: 0 };
+  // "还有没有更早的"＝已经搬上来的条数还不到总数。不要用 `page.before` 判：
+  // 第一页的游标是空的，那样写会让"一共有 500 条、这一页 50 条"的时候不出现翻页按钮。
+  const older = shown > 0 && shown < total;
+  return `<span class="hint">共 ${total} 条 · 这一页 ${shown} 条`
+    + `${page.pages ? ` · 已翻 ${page.pages} 页` : ''}</span> `
+    + `${older ? '<button class="btn xs" id="mc-val-older">更早的</button>' : ''}`;
+}
+
 function pageMonitor() {
   const w = cache.worker || {};
   const q = w.queue || {};
@@ -762,11 +1085,12 @@ function pageMonitor() {
 
   <div class="card">
     <div class="card-head"><h2>最近验证留痕</h2>
-      <span class="sub">只追加不改；密钥值不进记录</span></div>
+      <span class="sub">只追加不改；密钥值不进记录</span>
+      <span class="right">${validationPager()}</span></div>
     <div class="table-wrap"><table>
       <thead><tr><th>出处</th><th>结果</th><th>槽位</th><th>作业</th><th>说明</th><th>时间</th></tr></thead>
-      <tbody>${(cache.validations || []).slice(0, 20).map((v) => `<tr>
-        <td><span class="chip plain">${escapeHtml(VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
+      <tbody id="mc-val-rows">${(cache.validations?.items || []).map((v) => `<tr>
+        <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
         <td>${stateChip(v.state)}</td>
         <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
         <td>${v.job_id ? '#' + v.job_id : '—'}</td>
@@ -774,6 +1098,11 @@ function pageMonitor() {
         <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
     </table></div>
+    <div class="card-body" style="border-top:1px solid var(--line)">
+      <p class="note" style="margin:0">这一页是**一页**：接口一次最多回 ${HISTORY_PAGE} 条，
+        翻旧账走「更早」那颗按钮——用上一页最后一条的 id 往前切，不跳号也不重复。
+        更早的记录不是被删了，只是没往这一屏搬。</p>
+    </div>
   </div>`;
 }
 
@@ -907,7 +1236,7 @@ export default {
         </div></div></section>`;
     }
 
-    const load = await loadAll();
+    const load = await loadAll(sub);
     if (load.error) {
       return `<section class="view on">
         <div class="page-head"><h1>模型中心</h1><p>${SUBS[sub]}</p></div>
@@ -955,6 +1284,10 @@ export default {
       const btn = root.querySelector('#mc-check-all');
       btn.disabled = true;
       const ok = await run('环境检查', async () => {
+        // 先请后端**现查**一次服务型引擎（fresh=1 绕过缓存）：打开页面时那一格是
+        // "待现查"，只有显式动作才去连网——这一颗按钮就是那个显式动作。
+        // 它只读、不建 Job、不改配置，结论随整张目录一起回来。
+        await api.probeModels(true);
         // 逐条走和列表页同一个接口：不发请求、不加载权重，只留痕
         for (const r of filled) {
           await api.validateProvider({ capability: r.capability, backend: r.backend,
@@ -981,25 +1314,82 @@ export default {
 };
 
 /* ================= 数据装载 ================= */
-async function loadAll() {
+async function loadAll(sub) {
   try {
-    const [catalog, manifest, providers, policies, stats, worker, validations] =
-      await Promise.all([api.models(), api.providerManifest(), api.providers(),
-                        api.modelPolicies(), api.modelStats(), api.workerStatus(),
-                        api.providerValidations(50)]);
-    cache = { catalog, manifest, providers, policies, stats, worker, validations };
+    // 顶部四数跟着 `GET /api/models` 一起回来（后端 `stats(rows)` 用的就是同一份 rows）。
+    // 所以这里不再单独要 `/api/models/stats`：那一次请求会把整张目录连同每一行的
+    // 引擎探测重算一遍，而算出来的数字必须与下面这张表逐行对得上。
+    // 老地址还在（命令行与验收脚本按它取数），只是这一页不走它了。
+    //
+    // 引擎实例只在「引擎管理」那一屏取：`GET /api/engines` 会**逐台真发 HTTP 探测**，
+    // 四个子页都取等于把没人看的那一屏也探一遍。切到别的屏时它是 null，
+    // 那一屏根本不读它。
+    // **按子页取**：四个子页各需要的东西不一样，一次全取等于每切一次标签页
+    // 都打七个接口（其中三个只有别的子页会读）。桌面端看不出来，本机接口
+    // 一慢就能感觉到"点一下标签要等一秒"。
+    //
+    // 公共底座（两个下拉的取值、状态译名、顶部四数）只有目录一条接口——
+    // 它已经带 stats，不再单独要 `/api/models/stats`（那一次会把整张目录重算一遍）。
+    //
+    // 目录**不出网**（后端 2026-11-07 起）：服务型引擎那一格在列表里是"待现查"，
+    // 要现查请按页头的「检查引擎连接」或那一行的「探测」。
+    const need = SUB_NEEDS[sub] || SUB_NEEDS[0];
+    const [catalog, manifest] = await Promise.all([api.models(), api.providerManifest()]);
+    const [providers, policies, worker, validations, engines] = await Promise.all([
+      need.providers ? api.providers() : null,
+      need.policies ? api.modelPolicies() : null,
+      need.worker ? api.workerStatus() : null,
+      need.validations ? api.providerValidations(50) : null,
+      need.engines ? api.engines() : null,
+    ]);
+    // 兼容两种响应：后端给了 stats 就用它；万一部署的是老版本（没有这个键），
+    // 再退回单独取一次——宁可多一次请求，也不能让顶部四数空着。
+    const stats = catalog.stats || await api.modelStats();
+    cache = { catalog, manifest,
+              providers: providers || cache.providers || [],
+              policies: policies || cache.policies || { items: [], preference_labels: {}, no_auto_fallback: true },
+              worker: worker || cache.worker || {},
+              // 验证历史是分页读的（一页 + 总量），缓存里存整个对象而不是数组：
+              // 只存数组会把总量丢掉，监控页就只能说"这里有 20 条"，说不出"共多少条"。
+              validations: validations || cache.validations || { items: [], total: 0 },
+              // 整页重载＝回到第一页。翻页是模块内状态，不该跟着刷新一起漂。
+              validationPage: validations ? { before: null, pages: 0 }
+                                           : cache.validationPage,
+              stats, engines };
     return { error: '' };
   } catch (err) {
     // 部分失败不整页挡死：登记读不到时至少还能看能力轨。真读不到才给空态。
+    //
+    // 但**降级必须说出来**：上一版在这里造了一份"全 0"的 stats 悄悄顶上，
+    // 顶部四数就变成"已登记 0 / 可用 0 / 引擎 0"，看着像一台干净机器，
+    // 而真相是目录接口挂了。现在两条都改：造出来的 stats 带上 caliber
+    // （overviewCard 要读它，缺了会抛 TypeError 把整页钉在上一屏），
+    // 并且打上 degraded 标记，由概览卡自己挂一条黄条。
     try {
       const [providers, manifest] = await Promise.all([api.providers(), api.providerManifest()]);
       cache.providers = providers; cache.manifest = manifest;
       cache.catalog = { items: [], capabilities: {}, status_labels: {},
                         unintegrated_engines: [] };
-      cache.stats = { registered_total: 0, available_total: 0, needs_attention: 0,
-                      engine_total: 0, engine_params_known: 0, unintegrated_engines: [],
-                      queued: 0, running: 0, registered_by_capability: {} };
+      // 这几个 0 是"空位"不是"事实"：口径那一句必须跟着数字一起给，
+      // 否则界面只能猜哪一格是降级值。形状与真响应一致（键一个不少），
+      // 少一个键就会把 "undefined" 印在顶上。
+      // 这几个 0 是"空位"不是"事实"：每格的口径那一句必须跟着数字一起给。
+      // 形状与真响应逐键一致——少一个键，概览卡就会把 undefined 加到数字上。
+      const caliber = {
+        registered_total: '目录接口没读回来，这个 0 不是"没有登记"',
+        available_total: '同上：这一格现在是空位，不是真的 0',
+        engine_total: '同上：引擎数来自目录，目录没回就是 0',
+      };
+      caliber.queued = '同上：队列数来自目录，目录没回就是 0';
+      cache.stats = {
+        registered_total: 0, available_total: 0, engine_total: 0,
+        engine_params_known: 0, unintegrated_engines: [],
+        needs_attention: 0, running: 0, registered_by_capability: {},
+        degraded: err.message || String(err), caliber,
+      };
+      cache.stats.queued = 0;
       cache.policies = { items: [], preference_labels: {}, no_auto_fallback: true };
+      cache.engines = null;
       return { error: '' };
     } catch (e2) {
       return { error: e2.message || err.message };
@@ -1015,6 +1405,10 @@ function findItem(key) {
 function mountRepo(root) {
   const rows = [...root.querySelectorAll('#repo-rows tr')];
   const count = root.querySelector('#repo-count');
+  /* 状态筛选是**临时视图**：概览那枚「N 个要看一眼」点进来时置位，
+     人再动搜索或换筛选就清掉——它不是长期挂着的第四个下拉，
+     挂上去就要回答"为什么刷新后还在"。 */
+  let statusFilter = '';
   const apply = () => {
     const q = (root.querySelector('#repo-search').value || '').trim().toLowerCase();
     const cap = root.querySelector('#repo-cap').value;
@@ -1022,7 +1416,8 @@ function mountRepo(root) {
     let n = 0;
     rows.forEach((tr) => {
       const ok = (!q || tr.dataset.name.includes(q))
-        && (!cap || tr.dataset.cap === cap) && (!src || tr.dataset.source === src);
+        && (!cap || tr.dataset.cap === cap) && (!src || tr.dataset.source === src)
+        && (!statusFilter || tr.dataset.attention === '1');
       tr.style.display = ok ? '' : 'none';
       if (ok) n += 1;
     });
@@ -1030,7 +1425,21 @@ function mountRepo(root) {
   };
   ['repo-search', 'repo-cap', 'repo-source'].forEach((id) => {
     root.querySelector('#' + id).addEventListener(
-      id === 'repo-search' ? 'input' : 'change', apply);
+      id === 'repo-search' ? 'input' : 'change', () => {
+        // 人一旦自己动筛选，概览点进来的那个临时视图就交还给搜索框。
+        statusFilter = '';
+        apply();
+      });
+  });
+  // 概览那枚「N 个要看一眼」：点进来直接把"没到可用"的行筛出来。
+  // needs_attention 的口径是「已登记但没到 available」，与 data-attention 同一把尺子。
+  root.querySelector('.mc-attention')?.addEventListener('click', () => {
+    statusFilter = 'attention';
+    root.querySelector('#repo-search').value = '';
+    root.querySelector('#repo-cap').value = '';
+    root.querySelector('#repo-source').value = '';
+    apply();
+    root.querySelector('#repo-rows')?.scrollIntoView({ block: 'nearest' });
   });
   apply();
 
@@ -1332,6 +1741,9 @@ function mountEngines(root) {
           enabled: saved.enabled, is_default: saved.is_default,
           key_env: saved.key_env_custom ?? saved.key_env ?? '',
           notes: saved.notes ?? '',
+          // 折叠行也要带令牌：这一行同样可能被别人改过，漏掉它就等于
+          // 只给"看得见的那三行"上闸，另外七行照样能被静默盖掉。
+          seen_version: saved.version || '',
         };
       }
       return {
@@ -1344,22 +1756,51 @@ function mountEngines(root) {
           ? detail.querySelector('[data-f="key_env"]').value
           : (saved.key_env_custom ?? saved.key_env ?? ''),
         notes: detail ? detail.querySelector('[data-n="notes"]').value : (saved.notes ?? ''),
+        // 弱版本闸：带回"我打开时看到的那一版"。服务端一比就知道有没有人插进来改过——
+        // 这一页是整批覆盖，没这道闸时后保存的人会把前一个人改的那一行静默盖回旧值。
+        seen_version: saved.version || '',
       };
     });
     saveBtn.disabled = true;
-    const ok = await run('保存', () => api.saveProviders(rows));
-    saveBtn.disabled = false;
-    if (ok) {
-      saveStateChip.hidden = false;
-      setTimeout(() => { saveStateChip.hidden = true; }, 2000);
-      try {
-        const fresh = await api.providers();
-        rowsCache = fresh;
-        cache.providers = fresh;
-        fresh.forEach(paintRow);
-        bindValidationActions(root);
-      } catch { /* 回读失败不影响保存本身 */ }
+    let ok = true;
+    try {
+      await api.saveProviders(rows);
+    } catch (err) {
+      ok = false;
+      if (err.status === 401) return;
+      // 409 ＝ 这十行里有人被改过（弱版本闸）。不能当成普通失败弹一句就完：
+      // 人手上还留着刚填的东西，得给一条出路。再点一次「保存」仍然会 409
+      // （令牌没变），所以唯一的出路是回读最新、丢失格之后重新对一遍。
+      if (err.status === 409) {
+        const yes = await confirmDanger({
+          title: '保存被挡下了',
+          body: err.message + '。这次整批没有写入。重新读一遍会把最新的读进来，'
+                + '你现在填的内容会丢——需要对着变化重新对一遍。',
+          okText: '重新读一遍',
+        });
+        if (yes) window.dispatchEvent(new CustomEvent('app:refresh'));
+        return;
+      }
+      // 走统一出口（`run` 只认抛出的错）：这一页原来不许直接 alert，
+      // 全站错误出口只有 util.js 那一处——守卫用例会红。
+      await run('保存', () => { throw err; });
+      return;
+    } finally {
+      saveBtn.disabled = false;
     }
+    if (!ok) return;      // 上面每一条失败分支都已经说过话，这里只负责成功那一路
+    saveStateChip.hidden = false;
+    setTimeout(() => { saveStateChip.hidden = true; }, 2000);
+    try {
+      // 回读一份最新：**新令牌必须跟着刷新**。不刷新的话，这一页从此带着一个
+      // 过期令牌，用户接着改第二次就必然撞 409——一次成功之后整页再也存不进去，
+      // 那比没有闸还糟。
+      const fresh = await api.providers();
+      rowsCache = fresh;
+      cache.providers = fresh;
+      fresh.forEach(paintRow);
+      bindValidationActions(root);
+    } catch { /* 回读失败不影响保存本身 */ }
   });
 
   function paintRow(r) {
@@ -1428,7 +1869,7 @@ function mountEngines(root) {
     syncPassedRow();
     root.querySelector('#val-list').innerHTML = '<p class="hint">正在读验证历史……</p>';
     try {
-      const all = await api.providerValidations(100);
+      const { items: all } = await api.providerValidations(100);
       root.querySelector('#val-list').innerHTML = valListHtml(all.filter((r) =>
         r.capability === slot.capability && r.backend === slot.backend
         && r.provider === slot.provider));
@@ -1467,7 +1908,7 @@ function mountEngines(root) {
       const fresh = await reloadRows();
       valSlot = fresh.find((r) => r.id === valSlot.id) || valSlot;
       root.querySelector('#val-summary').innerHTML = summaryHtml(valSlot.validation);
-      const all = await api.providerValidations(100);
+      const { items: all } = await api.providerValidations(100);
       root.querySelector('#val-list').innerHTML = valListHtml(all.filter((r) =>
         r.capability === valSlot.capability && r.backend === valSlot.backend
         && r.provider === valSlot.provider));
@@ -1507,6 +1948,97 @@ function mountEngines(root) {
   root.querySelector('#val-close').addEventListener('click', () => { valModal.hidden = true; });
   root.querySelector('#val-submit').addEventListener('click', submitValidation);
   root.querySelector('#val-kind').addEventListener('change', syncPassedRow);
+
+  mountEngineInstances(root);
+}
+
+/* ================= 工作区 1b 交互 · 引擎实例 ================= */
+/**
+ * 加、停启用、探测、撤实例。四个动作全部走 `app:refresh` 整页重绘，
+ * 不在这里手改 DOM：探测结果来自服务端现查，本地拼一个"就绪"就是在撒谎。
+ *
+ * 撤实例要二次确认（`confirmDanger`），而且确认文案必须说清它**不动什么**——
+ * 这一格最容易被理解成"把 Draw Things 删了"。
+ */
+function mountEngineInstances(root) {
+  const repaint = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  const addBtn = root.querySelector('#eng-add');
+  addBtn?.addEventListener('click', async () => {
+    const body = {
+      engine_code: root.querySelector('#eng-code').value,
+      endpoint: root.querySelector('#eng-endpoint').value.trim(),
+      display_name: root.querySelector('#eng-name').value.trim(),
+      shared_secret_env: root.querySelector('#eng-secret').value.trim(),
+      note: root.querySelector('#eng-note').value.trim(),
+    };
+    if (!body.engine_code) { alertNotify('先选一个引擎：清单里现在没有可选的一档。'); return; }
+    if (!body.endpoint) { alertNotify('端点不能空——这一行的全部意义就是「这一档引擎在哪个地址」。'); return; }
+    addBtn.disabled = true;
+    let out = null;
+    const ok = await run('加实例', async () => { out = await api.createEngine(body); });
+    addBtn.disabled = false;
+    if (!ok) return;
+    // 新建时顺手探过一次；连不上不回 4xx（登记一个"还没启动的服务"是合法动作），
+    // 那句 warning 必须让人看到，否则人以为加完就通了。
+    if (out && out.warning) alertNotify(out.warning);
+    repaint();
+  });
+
+  root.querySelectorAll('[data-act-probe]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      let out = null;
+      const ok = await run('探测', async () => { out = await api.probeEngine(btn.dataset.actProbe); });
+      btn.disabled = false;
+      if (!ok || !out) return;
+      alertNotify(out.state === 'ok'
+        ? `连上了：${out.model || '（服务没报模型名）'} @ ${out.endpoint}`
+        : `没连上：${out.detail}`);
+      repaint();
+    });
+  });
+
+  // 看历史：这一台最近几次探测。为什么不塞进卡面——20 条历史塞进一行会把
+  // 那张表撑成三层楼；而「这台是不是三天两头掉线」是要停下来看的判断，
+  // 顺手扫一眼能过的场合（上次什么时候探的、结果如何）卡面上那一行已经够了。
+  root.querySelectorAll('[data-act-probes]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      let data = null;
+      const ok = await run('读探测历史', async () => {
+        data = await api.engineProbes(btn.dataset.actProbes);
+      });
+      btn.disabled = false;
+      if (ok && data) openProbeHistory(data);
+    });
+  });
+
+  root.querySelectorAll('[data-act-toggle]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const on = btn.dataset.to === '1';
+      btn.disabled = true;
+      const ok = await run(on ? '启用' : '停用',
+        () => api.patchEngine(btn.dataset.actToggle, { enabled: on }));
+      btn.disabled = false;
+      if (ok) repaint();
+    });
+  });
+
+  root.querySelectorAll('[data-act-uninst]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.actUninst;
+      const yes = await confirmDanger({
+        title: '撤这一条实例登记',
+        body: '只删端点这一行：应用、权重与历史作业一律不动，旧作业仍按当时冻结的快照可查。'
+          + '要换机器就撤了再登记——端点改不了，它连同引擎 code 是这一行的键。',
+        okText: '撤实例',
+        danger: true,
+      });
+      if (!yes) return;
+      const ok = await run('撤实例', () => api.removeEngine(id));
+      if (ok) repaint();
+    });
+  });
 }
 
 /* ================= 工作区 2 交互 ================= */
@@ -1517,6 +2049,51 @@ function mountMonitor(root) {
   root.querySelector('#mc-worker-history')?.addEventListener('click', () => {
     showWorkerHistory = !showWorkerHistory;
     window.dispatchEvent(new CustomEvent('app:refresh'));
+  });
+
+  // 验证历史翻页：再取一页**追加**到后面，而不是重载整页。
+  // 重载整页会把上面 worker 表、告警、模型维度一起重画，而人想看的就是这一张表；
+  // 走 app:refresh 还会让刚展开的 worker 历史折回去（那是模块变量，会被覆盖）。
+  // 追加只动两张东西：表体（追加行）与翻页条（条数与"还有没有更早的"）。
+  root.querySelector('#mc-val-older')?.addEventListener('click', async (e) => {
+    const items = cache.validations?.items || [];
+    const last = items[items.length - 1];
+    if (!last) return;
+    const btn = e.target;
+    btn.disabled = true;
+    try {
+      const page = await api.providerValidations(HISTORY_PAGE, last.id);
+      const fresh = page.items.filter((v) => !items.some((old) => old.id === v.id));
+      cache.validations = {
+        // 按 id 去重后追加：翻页期间若有人刚写了一条新记录，游标法仍然不会
+        // 把重复行带进来；这里再兜一次底，保证表格里不会出现两行同一个 id。
+        items: items.concat(fresh),
+        total: page.total || cache.validations.total,
+      };
+      cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1 };
+
+      const tbody = root.querySelector('#mc-val-rows');
+      if (tbody) {
+        const empty = tbody.querySelector('td.hint')?.closest('tr');
+        if (empty) empty.remove();          // 第一页为空的占位行，来了数据就撤
+        tbody.insertAdjacentHTML('beforeend', fresh.map((v) => `<tr>
+          <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
+          <td>${stateChip(v.state)}</td>
+          <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
+          <td>${v.job_id ? '#' + v.job_id : '—'}</td>
+          <td class="t-desc">${escapeHtml(v.detail || '')}</td>
+          <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
+        </tr>`).join(''));
+        const pager = btn.closest('.right');
+        if (pager) pager.outerHTML = `<span class="right">${validationPager()}</span>`;
+      } else {
+        // 表不在了（人切了子页又切回来正好赶上响应）：退回整页重绘兜底
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+      }
+    } catch (err) {
+      btn.disabled = false;
+      alertNotify(`更早的验证记录读不到：${err.message}`);
+    }
   });
 }
 
@@ -1538,7 +2115,9 @@ function mountPolicies(root) {
       const fb = tr.querySelector('[data-f="fallback"]').value.split('|');
       return {
         scene_key: tr.dataset.key, scene_label: p.scene_label, capability: p.capability,
-        required: p.required,
+        // 必需能力读勾选框：那一格从只读 chip 放开成可编辑（§5.4 一直教人
+        // "从「必需」降下来"，服务端也早会写 required_json，缺的只是入口）。
+        required: [...tr.querySelectorAll('[data-req]:checked')].map((c) => c.dataset.req),
         slot_provider: slot[0] || '', slot_model: slot[1] || '',
         preference: tr.querySelector('[data-f="pref"]').value,
         fallback_provider: fb[0] || '', fallback_model: fb[1] || '',

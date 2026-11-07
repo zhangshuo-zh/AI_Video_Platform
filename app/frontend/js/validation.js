@@ -20,6 +20,16 @@ export const VAL_BADGE = {
   never: ['gray', '未验证'],
 };
 
+/** 验证出处的短名。**权威译名在后端 `VALIDATION_KINDS`**（models.py），
+ * 且随每条记录下发 `kind_label`——逐行渲染必须优先读那个字段。
+ * 这一份只给"没有行可读"的场合兜底（表头、按 kind 聚合的小结）。
+ * mock 在这里与后端同念「假适配器」：模型中心曾把同一档念成两个名字
+ * （这边「模拟」、那边「假适配器」），后端没有行的时候界面上也不许分叉。 */
+export const VAL_KIND_LABEL = {
+  env_check: '环境检查', mock: '假适配器', real_call: '真实调用',
+  target_machine: '目标机基准', artifact_review: '产物验收',
+};
+
 /**
  * 健康状态的中文译名，同样只留一份。
  *
@@ -34,7 +44,10 @@ export const HEALTH = {
   missing: ['red', '缺东西'],
   unknown: ['amber', '未检查'],
   unconfigured: ['gray', '未配置'],
-  unregistered: ['red', '未登记'],
+  // 「未登记」这个词原来是健康与模型状态共用的：健康说"清单没这个 provider"，
+  // 模型状态说"本机没登记这一档"——一个往回改配置、一个往前点登记，
+  // 同一个词指向相反的动作。健康这一档补上主语：缺的是清单里的这一家。
+  unregistered: ['red', '清单无此 provider'],
 };
 export const HEALTH_LABEL = Object.fromEntries(
   Object.entries(HEALTH).map(([k, [, label]]) => [k, label]));

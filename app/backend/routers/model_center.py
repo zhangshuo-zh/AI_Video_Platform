@@ -11,6 +11,7 @@
 "业务页面上的候选池"，不含密钥变量名、不含备注、不含本机路径之外的敏感信息。
 """
 import json
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -23,8 +24,9 @@ from models import (BACKENDS, CAPABILITIES, EngineInstanceIn,
                     EngineInstancePatch, ModelPolicyIn, ModelRegistrationIn,
                     ModelRegistrationPatch, POLICY_PREFERENCES, REG_SOURCES,
                     ValidationOut)
-from repositories.engine_instances import (CONNECTION_TYPES, EngineInstanceError,
-                                           engine_instances)
+from repositories.engine_instances import (CONNECTION_TYPES, SUPPORTED_CONNECTION_TYPES,
+                                           EngineInstanceError, engine_instances,
+                                           engine_probe_log)
 from repositories.model_center import RegistrationError, model_center
 
 router = APIRouter(prefix="/api", tags=["model-center"])
@@ -40,6 +42,21 @@ def _json_list(raw) -> list:
     except ValueError:
         return []
     return value if isinstance(value, list) else []
+
+
+# 破坏性接口的确认口令。原来是「confirm 必须等于中文字面量」——`撤登记`／`撤实例`
+# 各是一个魔法词，从 curl 手工调用要 UTF-8 转义（`confirm=%E6%92%A4%E7%99%BB%E8%AE%B0`），
+# 拼错一个字得到的是 422 而不是"你拼错了"这种信息；更糟的是它把界面文案变进了协议：
+# 哪天改一句提示语，接口的入参也跟着变。
+# 现在只认"人表达过一次确认"这件事本身：1／true／yes（大小写不敏感）。
+# 语义边界不变——**这一枪仍然不能裸调**，只是不再要求一个中文词。
+# 项目删除那条仍然是 `confirm=<项目名>`：那里比的是"你有没有打对名字"，
+# 是防手滑的另一种强度（见 routers/projects.py），不入这一套。
+_CONFIRM_WORDS = frozenset({"1", "true", "yes"})
+
+
+def _confirmed(raw: str) -> bool:
+    return (raw or "").strip().lower() in _CONFIRM_WORDS
 
 
 def _row_or_404(reg_id: int):
@@ -64,7 +81,13 @@ def list_models(_=Depends(require_permission("system:config"))) -> dict:
 
     清单里有但没登记的档也在结果里（status=not_registered）——
     少了这一段，"装了不等于配了"就看不见。
+
+    2026-11-07 改：`stats` 随这一次响应一起给，且**用的就是下面这同一份 rows**。
+    原来界面先 `GET /api/models` 再 `GET /api/models/stats`，两次都要整张目录
+    （每行还要探一次引擎），等于把同一件事做两遍；两处各算各的，口径也迟早会漂。
+    `GET /api/models/stats` 留着——命令行与浏览器验收脚本按老地址取数，不该断。
     """
+    rows = mc.catalog()
     return {"manifest_version": adapters.MANIFEST_VERSION,
             "status_labels": mc.STATUS_LABEL,
             "capabilities": CAPABILITIES, "backends": BACKENDS,
@@ -74,13 +97,53 @@ def list_models(_=Depends(require_permission("system:config"))) -> dict:
             # 标签还和后端不一样（"远程自建服务" vs "远程自建"）。
             "reg_sources": REG_SOURCES,
             "unintegrated_engines": mc.UNINTEGRATED_ENGINES,
-            "items": mc.catalog()}
+            "items": rows,
+            "stats": mc.stats(rows)}
 
 
 @router.get("/models/stats")
 def model_stats(_=Depends(require_permission("system:config"))) -> dict:
     """顶部四数。口径由后端一处给（caliber 字段），界面只念不算。"""
     return mc.stats()
+
+
+@router.post("/models/probe")
+def probe_models(fresh: int = 0,
+                 _=Depends(require_permission("system:config"))) -> dict:
+    """现查一次服务型引擎，再把**同一份**目录与四数一起回给界面。
+
+    为什么要有这一条：`GET /api/models` 从 2026-11-07 起**不出网**（详见
+    `mc.catalog()` 的注解）——打开一页不该被一台卡住的服务拖住。于是"这一档
+    到底连不连得上"必须有一个显式入口，这就是它：人点了「探测」或页面画完
+    之后自己补这一枪，两种都等得起。
+
+    `fresh=1`＝绕过 15 秒缓存（人明确要求现查）。页面画完自动补的那一枪用 0：
+    刚在别处探过就直接复用，不为一屏之内重复问同一台机器。
+
+    返回的是**整张目录**而不是几条健康：界面拿它整页重绘，字号、状态、顶部四数
+    因此与列表逐行对得上；只回健康的话前端还得自己把状态拼一遍，那就是第二套口径。
+    """
+    rows = [dict(r) for r in model_center.registrations()]
+    # 按引擎去重：同一个 engine_code 可能有两三行登记（同机同服务的不同档），
+    # 逐行探等于把同一个端点问三遍，而结论是同一台机器给的。
+    probed: dict[str, dict] = {}
+    for row in rows:
+        adapter = mc.find_adapter(row["capability"], row["backend"], row["provider"])
+        if adapter is None or adapter.code not in engines.SERVICE_ENGINES:
+            continue
+        if adapter.code in probed:
+            continue
+        status = engines.probe(adapter.code, fresh=bool(fresh))
+        probed[adapter.code] = {"state": status.state, "detail": status.detail,
+                                "endpoint": status.values.get("endpoint", ""),
+                                "engine_model": status.values.get("model", ""),
+                                "soft": status.soft}
+    # 缓存此刻已被上面这一轮填好，所以下面这次 catalog 里的探测全是缓存命中，
+    # 不会为同一台机器再发一遍请求。
+    items = mc.catalog(probe=True)
+    return {"items": items, "stats": mc.stats(items),
+            "probed": [{"engine_code": code, **value} for code, value in probed.items()],
+            "note": "只读：探测不建 Job、不写库、不改默认轨"}
 
 
 @router.post("/models", status_code=201)
@@ -101,7 +164,9 @@ def create_model(payload: ModelRegistrationIn,
 
     # remote 在清单里没有对应轴（清单按 local/cloud 登记），比的时候折回 local，
     # 这样"远程自建但用的是同一套 wan 参数"能认出来；认不出来就走下面的警告。
-    adapter = adapters.find(capability, "local" if backend == "remote" else backend, provider)
+    # 折回判据住在 `adapters.MANIFEST_AXIS`：写路径与 `mc.find_adapter()` 的读路径
+    # 必须同一个口径，否则人按界面登记一条 remote，列表里立刻说"清单未登记"。
+    adapter = mc.find_adapter(capability, backend, provider)
 
     try:
         row = model_center.create({
@@ -146,10 +211,10 @@ def remove_model(reg_id: int, confirm: str = "",
     提示语里必须把"文件还在盘上"说明白，否则下次找权重就找不着了。
     """
     row = _row_or_404(reg_id)
-    if confirm != "撤登记":
+    if not _confirmed(confirm):
         raise HTTPException(
             status_code=422,
-            detail="要撤登记请带 confirm=撤登记。这一步只删除这条登记："
+            detail="要撤登记请带 confirm=1（或 confirm=true／yes）。这一步只删除这条登记："
                    "权重文件仍在盘上，历史作业与验证记录一律不动。")
     model_center.delete(row["id"])
     return {"removed": row["id"],
@@ -179,13 +244,26 @@ def check_model(reg_id: int, user=Depends(require_permission("system:config"))):
 @router.get("/model-policies")
 def list_policies(_=Depends(require_permission("system:config"))) -> dict:
     items = []
+    # 每条能力轴上"清单有可能产出哪些标签"只算一次：它是清单的纯函数，
+    # 与这一页有几行、谁配了什么无关。放在循环里算就是九遍同样的遍历。
+    producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
     for row in model_center.policies():
         d = dict(row)
+        required = _json_list(d["required_json"])
+        # 「配不出来」与「还没配」必须在同一行里就能分开：前者要改 adapters.py，
+        # 后者只是去登记、去点探测。少了这两个字段，界面只能给一句"待配置"，
+        # 而其中有些场景是永远配不出来的（2026-11-07 审查里 4 个）。
+        impossible = [t for t in required if t not in producible[d["capability"]]]
         items.append({
             "scene_key": d["scene_key"], "scene_label": d["scene_label"],
             "capability": d["capability"],
             "capability_label": CAPABILITIES.get(d["capability"], d["capability"]),
-            "required": _json_list(d["required_json"]),
+            "required": required,
+            "impossible_required": impossible,
+            "required_producible": not impossible,
+            # 这一轴的标签全集：必需能力那一格的勾选项从这里出——
+            # 界面不自己发明第四份标签名单，与派生标签严格同源。
+            "producible": sorted(producible[d["capability"]]),
             "slot_provider": d["slot_provider"], "slot_model": d["slot_model"],
             "preference": d["preference"],
             "preference_label": POLICY_PREFERENCES.get(d["preference"], d["preference"]),
@@ -210,8 +288,20 @@ def save_policies(payload: list[ModelPolicyIn],
 
     校验一次说清所有问题，不修一条报一条：场景不认识、能力不认识、偏好不认识、
     建议轨不在清单、备用轨与建议轨同档、要启用却没选建议轨。
+
+    建议轨与备用轨都**连模型档一起核**：原来只核 provider 在不在清单里，
+    于是 `mflux/不存在的模型` 能存进去，等到提交作业时才在 `_resolve` 里
+    变成一句挡路原因——那时人已经不记得是自己在策略页填的。
+    备用轨原来是完全不核（只比它跟建议轨不相等），一个手滑的拼写会一直躺在库里。
+
+    必需能力**认标签全集**（`producible_tags`）：界面从只读 chip 放开成可编辑后
+    （《使用说明书》§5.4 本来就教人"把这一项从「必需」降下来"），手滑拼错或
+    造一个清单里根本没有的标签，会把这个场景推到"永远 0 候选"还不报错。
+    注意校验的是**可产出全集**而不是"当前已登记档的标签"——把必需项降下来
+    是允许的，但要求它至少在清单的能力轴上存在过。
     """
     known = {row["scene_key"] for row in model_center.policies()}
+    producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
     errors: list[str] = []
     for item in payload:
         if item.scene_key not in known:
@@ -219,14 +309,27 @@ def save_policies(payload: list[ModelPolicyIn],
                           "（场景名定死在 0035 的种子，界面不提供自由输入）")
         if item.capability not in CAPABILITIES:
             errors.append(f"{item.scene_key}：能力不认识")
+        unknown_tags = [t for t in item.required
+                        if t not in producible.get(item.capability, set())]
+        if unknown_tags:
+            errors.append(f"{item.scene_key}：必需能力 "
+                          + "、".join(unknown_tags)
+                          + f" 不在{CAPABILITIES.get(item.capability, item.capability)}"
+                            "这一轴的标签全集里（能选的与清单派生的同一份）")
         if item.preference not in POLICY_PREFERENCES:
             errors.append(f"{item.scene_key}：偏好只能是 本地／云端／远程自建／不限")
-        if item.slot_provider and not _in_manifest(item.capability, item.slot_provider):
-            errors.append(f"{item.scene_key}：建议轨「{item.slot_provider}」不在清单里，"
-                          "平台不会替它猜参数")
+        if item.slot_provider:
+            problem = _tier_problem(item.capability, item.slot_provider, item.slot_model)
+            if problem:
+                errors.append(f"{item.scene_key}：建议轨{problem}")
         if item.slot_provider and item.fallback_provider == item.slot_provider \
                 and item.fallback_model == item.slot_model:
             errors.append(f"{item.scene_key}：备用轨和建议轨是同一档，等于没有备用")
+        if item.fallback_provider:
+            problem = _tier_problem(item.capability, item.fallback_provider,
+                                    item.fallback_model)
+            if problem:
+                errors.append(f"{item.scene_key}：备用轨{problem}")
         if item.enabled and not item.slot_provider:
             errors.append(f"{item.scene_key}：要启用就得选一条建议轨，不能空着启用")
     if errors:
@@ -250,10 +353,28 @@ def resolve(scene_key: str, _=Depends(require_user)) -> dict:
     return out
 
 
-def _in_manifest(capability: str, provider: str) -> bool:
-    """建议轨必须能在清单里找到（local 或 cloud 任一轴）。"""
-    return any(adapters.find(capability, backend, provider) is not None
-               for backend in ("local", "cloud"))
+
+def _tier_problem(capability: str, provider: str, model_code: str) -> str:
+    """这一档能不能被写进策略。空串代表没问题，否则返回一句给人看的话。
+
+    三种毛病分开说，因为它们要改的地方不一样：
+      * provider 不在清单 —— 得先写适配器（规格住代码）；
+      * 清单只登记了名字、没有模型档 —— 这一档的参数谁都不许猜，存进策略等于
+        给一条永远解析不出参数的轨；
+      * 模型标识不是这一档清单里的 —— 手滑的拼写在这里就挡住，
+        不要等到提交作业时才说"候选为空"。
+    """
+    adapter = next((a for backend in ("local", "cloud")
+                    if (a := adapters.find(capability, backend, provider)) is not None), None)
+    if adapter is None:
+        return f"「{provider}」不在清单里，平台不会替它猜参数"
+    if not adapter.models:
+        return (f"「{provider}」在清单里只登记了名字、没有模型档："
+                "参数没核过，不能写进策略")
+    if model_code and not any(m.code == model_code for m in adapter.models):
+        known = "、".join(m.code for m in adapter.models)
+        return f"「{provider}／{model_code}」不在清单里（这一档有：{known}）"
+    return ""
 
 
 # ================= 引擎实例（W-B／CR-001） =================
@@ -265,11 +386,45 @@ def _in_manifest(capability: str, provider: str) -> bool:
 
 @router.get("/engines")
 def list_engines(_=Depends(require_permission("system:config"))) -> dict:
-    """引擎实例列表，带每台现在的真实状态（探测一次，不落库）。"""
+    """引擎实例列表，带每台现在的真实状态（探测一次，不落库）。
+
+    探测必须**带上这一行自己的端点**：`engines.probe(code)` 只认
+    `engine_instance.pick()` 选出来的那一台，于是十台实例会集体显示
+    第一台的体温——一台连不上就全体"连不上"，一台好好的就全体"就绪"。
+    这个坑在 W-B 的单实例时代看不出来，第二台一进来就变谎话。
+    """
     items = []
+    # 上次探测留痕一次读齐（0042）。逐行各查一次就是 N 趟回库，
+    # 与 `latest_matrix()` 同一个理由。**只读不写**：读路径不做副作用。
+    last_probe = engine_probe_log.latest_by_instance()
     for row in engine_instances.instances():
-        status = engines.probe(row["engine_code"])
         adapter = _adapter_for(row["engine_code"])
+        # 连接方式不是 HTTP 的那几行**不探测**：`engines.probe()` 只会按 HTTP 打端点，
+        # 打出来的结论不是这一行配的那个东西的结论。原来这里不判断，于是库里若有
+        # 一行 `grpc`，界面会拿一次 HTTP 的失败说"连不上"——那是在替一个没实现的东西
+        # 编结论。现在如实说"这一档连接方式还没有探测分支"。
+        if row["connection_type"] not in SUPPORTED_CONNECTION_TYPES:
+            items.append({
+                "id": row["id"], "engine_code": row["engine_code"],
+                "engine_label": adapter.label if adapter else "",
+                "display_name": row["display_name"],
+                "connection_type": row["connection_type"],
+                "endpoint": row["endpoint"],
+                "shared_secret_env": row["shared_secret_env"],
+                "secret_present": bool(adapters.key_present(row["shared_secret_env"])),
+                "enabled": bool(row["enabled"]), "note": row["note"],
+                "health_state": "unknown",
+                "health_detail": ("连接方式是「" + row["connection_type"]
+                                  + "」，这一档还没有探测分支：平台不拿一次 HTTP 的结论冒充它"),
+                "engine_model": "", "probe_unsupported": True,
+                **_last_probe_fields(last_probe.get(row["id"])),
+                "created_at": row["created_at"], "updated_at": row["updated_at"],
+            })
+            continue
+        # 超时用列表档（0.8 秒）而不是手动档（5 秒）：这一条是"打开页面"的路径，
+        # 一台半死的服务不该让整张表等 5 秒。要问到底请点那一行的「探测」。
+        status = engines.probe(row["engine_code"], row["endpoint"],
+                               timeout=engines.LIST_TIMEOUT_SECONDS)
         items.append({
             "id": row["id"], "engine_code": row["engine_code"],
             "engine_label": adapter.label if adapter else "",
@@ -284,9 +439,15 @@ def list_engines(_=Depends(require_permission("system:config"))) -> dict:
             "health_state": status.state if row["enabled"] else "unknown",
             "health_detail": status.detail if row["enabled"] else "已停用，未探测",
             "engine_model": status.values.get("model", "") if row["enabled"] else "",
+            **_last_probe_fields(last_probe.get(row["id"])),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         })
-    return {"items": items, "connection_types": list(CONNECTION_TYPES),
+    # 下发的是**能选的那一把**（SUPPORTED），不是 CHECK 认的全集：界面不该列出
+    # 一个选进来看不到任何行为的选项（CR-010）。CHECK 全集另给一个键，
+    # 让"库里有历史行用了别的值"这件事在界面上说得清。
+    return {"items": items,
+            "connection_types": list(SUPPORTED_CONNECTION_TYPES),
+            "declared_connection_types": list(CONNECTION_TYPES),
             "service_engines": sorted(engines.SERVICE_ENGINES)}
 
 
@@ -308,7 +469,7 @@ def create_engine(payload: EngineInstanceIn,
             "created_by": user["id"]})
     except EngineInstanceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"id": row["id"], "warning": _probe_warning(row)}
+    return {"id": row["id"], "warning": _probe_warning(row, user["id"])}
 
 
 @router.patch("/engines/{instance_id}")
@@ -331,33 +492,104 @@ def remove_engine(instance_id: int, confirm: str = "",
     row = engine_instances.instance(instance_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
-    if confirm != "撤实例":
+    if not _confirmed(confirm):
         raise HTTPException(
             status_code=422,
-            detail="要撤实例请带 confirm=撤实例。这一步只删除这条登记："
+            detail="要撤实例请带 confirm=1（或 confirm=true／yes）。这一步只删除这条登记："
                    "应用与它的模型都不受影响，历史作业仍按当时冻结的快照可查。")
     engine_instances.delete(row["id"])
     return {"removed": row["id"],
             "note": "只撤了端点登记；应用、权重与 job 历史一律没碰"}
 
 
-@router.post("/engines/{instance_id}/probe")
-def probe_engine(instance_id: int,
-                 _=Depends(require_permission("system:config"))) -> dict:
-    """手动探一次：只读一次服务自述，不建 Job、不写库。
+@router.get("/engines/{instance_id}/probes")
+def list_engine_probes(instance_id: int, limit: int = 20,
+                       _=Depends(require_permission("system:config"))) -> dict:
+    """这条实例的探测历史，最新在前。**只读，不触发探测**。
 
-    为什么这里不写 `env_check` 留痕：`model_validation`（0021）是按
-    (capability, backend, provider) 那一 Triple 索引的，实例不是那一形状，
-    把探测硬塞进去要么伪造槽位要么扩表——扩表是独立改动，不在 W-B。
-    这一条先把"能不能连、当前是哪档模型"如实回给人看。
+    有这一条的理由：卡面上那一行只说"最近一条"。要回答"这台是不是三天两头掉线"，
+    得看几条；而历史只追加不改，倒序按 id 天然成立（不需要 OFFSET，那张表的
+    时间列精度只到秒，同一秒里探两次按时间排会让顺序变成猜的）。
     """
     row = engine_instances.instance(instance_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
-    status = engines.probe(row["engine_code"], row["endpoint"])
+    items = [dict(r) for r in engine_probe_log.recent(instance_id, limit)]
+    return {"items": [{**item, "age_seconds": _age_seconds(item["created_at"])}
+                      for item in items],
+            "note": "只追加不改：这条历史只回答「什么时候探过、当时如何」，"
+                    "不参与任何判断——现在通不通仍由探测现查"}
+
+
+@router.post("/engines/{instance_id}/probe")
+def probe_engine(instance_id: int,
+                 user=Depends(require_permission("system:config"))) -> dict:
+    """手动探一次：只读一次服务自述，不建 Job。**留一条痕**（0042）。
+
+    2026-11-07 起留痕：原来这里明写不写库，理由是 `model_validation`（0021）
+    按 (capability, backend, provider) 索引、装不下实例这个形状——那条理由是对的，
+    结论（所以就不留了）不是。于是全平台没有地方能回答"这台 Draw Things
+    上周还连不连得上"。现在 `engine_probe_log`（0042）按 instance_id 记，形状对得上。
+
+    留痕**只在这里与建实例那一次**发生；`GET /api/engines` 是读路径，一次都不写
+    （它只读最近一条，用来把"上次什么时候探的"摆出来）。这条边界与
+    "读接口不出网"同源：读路径不做副作用。
+    """
+    row = engine_instances.instance(instance_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    # 人明确按了「探测」，所以 fresh=True 绕过 15 秒缓存、用满 5 秒超时问到底：
+    # "我刚把应用打开了，为什么还显示连不上"这类问题不该由缓存回答。
+    started = time.monotonic()
+    status = engines.probe(row["engine_code"], row["endpoint"], fresh=True)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    # 留痕失败不把一次成功的探测变成 500：人要的是"现在通不通"，那是已经
+    # 得到的结论；历史没记上是这一屏的次要信息。
+    engine_probe_log.record(row["id"], status, source="manual",
+                            latency_ms=latency_ms, created_by=user["id"],
+                            engine_code=row["engine_code"], endpoint=row["endpoint"])
     return {"id": row["id"], "state": status.state, "detail": status.detail,
             "model": status.values.get("model", ""),
+            "latency_ms": latency_ms,
             "endpoint": status.values.get("endpoint", row["endpoint"])}
+
+
+def _age_seconds(stamp: str) -> int | None:
+    """SQLite 里的 `datetime(\'now\',\'localtime\')` 与此刻差多少秒。
+
+    界面要的是"N 秒前"这个数，而现算它得知道库里的时间戳是本地时间还是 UTC。
+    判在这一侧只有一处，界面只管把数字交给 `agoText`——与 worker 心跳那一列
+    同一口径（那边也是服务端算 age）。解析不出来就回 None，界面会省略那一段，
+    不拿 0 冒充"刚刚"。
+    """
+    try:
+        from datetime import datetime
+
+        then = datetime.strptime(str(stamp), "%Y-%m-%d %H:%M:%S")
+        return max(0, int((datetime.now() - then).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_probe_fields(row) -> dict:
+    """列表里"上次探测是什么时候、结果如何"那几格。
+
+    没探过就回空串而不是"从未"这种假值：界面据空串决定要不要显示那一小块。
+    历史**永远不参与判断**——它只回答"上次探过没有、当时如何"，
+    "现在是好的吗"仍只由 `engines.probe()` 现查。
+    """
+    if row is None:
+        return {"last_probe_at": "", "last_probe_state": "",
+                "last_probe_detail": "", "last_probe_source": "",
+                "last_probe_latency_ms": None}
+    return {"last_probe_at": row["created_at"],
+            # 年龄由服务端按库里的时间算，不在界面里拿"现在减一个本地时间字符串"——
+            # 那个减法会踩时区与格式两个坑，而全站相对时间的定义只有 `agoText` 一处。
+            "last_probe_age_seconds": _age_seconds(row["created_at"]),
+            "last_probe_state": row["state"],
+            "last_probe_detail": row["detail"],
+            "last_probe_source": row["source"],
+            "last_probe_latency_ms": row["latency_ms"]}
 
 
 def _adapter_for(code: str):
@@ -370,13 +602,22 @@ def _adapter_for(code: str):
     return None
 
 
-def _probe_warning(row) -> str:
+def _probe_warning(row, user_id: int | None = None) -> str:
     """新建成功后顺手探一次，连不上就把原话带回界面——
+
     但不因此回 4xx：登记一个"还没启动的服务"是合法动作（人可能先建记录再开应用）。
+    2026-11-07 起这一枪也留痕（`source="create"`）：它是"这台机器在这个时刻
+    是什么状态"的第一个事实点，丢掉可惜，而且"建完就没再碰过"恰恰是最需要
+    看见的情况（那条痕会明说"从没手动探测过"）。
     """
     if not row["enabled"]:
         return ""
+    started = time.monotonic()
     status = engines.probe(row["engine_code"], row["endpoint"])
+    engine_probe_log.record(row["id"], status, source="create",
+                            latency_ms=int((time.monotonic() - started) * 1000),
+                            created_by=user_id,
+                            engine_code=row["engine_code"], endpoint=row["endpoint"])
     if status.state == "ok":
         return ""
     return f"实例留下了，但现在连不上：{status.detail}"

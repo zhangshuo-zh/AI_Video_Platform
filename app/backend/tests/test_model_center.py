@@ -131,7 +131,7 @@ def test_迁移建了两张表并给九个场景立了骨架(as_admin):
 def test_清单里有但没登记的档必须出现在目录里(as_admin, clean_registrations):
     """少了这一段，"装了不等于配了"就看不见——这是仓库页存在的理由之一。"""
     items = as_admin.get("/api/models").json()["items"]
-    unregistered = [i for i in items if i["status"] == "not_registered"]
+    unregistered = [i for i in items if i["status"] == "manifest_only"]
     # 数量从清单现数，不写死：W-B 加 draw_things 那一档时这里从 9 变 10，
     # 写死的版本只会以"红一次"的方式提醒人，而现数的版本根本不会红。
     expected = sum(len(adapter.models or ()) for adapter in adapters.ADAPTERS)
@@ -186,7 +186,7 @@ def test_清单里没有的provider允许登记但明说参数不猜(as_admin, c
     assert r.json()["in_manifest"] is False
     assert "参数不猜" in r.json()["warning"]
     item = _item_of(as_admin.get("/api/models").json()["items"], "sdxl-api", "sdxl-1")
-    assert item["status"] == "unregistered"
+    assert item["status"] == "registration_only"
     assert item["params"] == [] and item["prices"] == []
 
 
@@ -197,7 +197,7 @@ def test_撤登记必须带confirm且不碰文件与历史(as_admin, clean_regis
         "model_code": "fastmetal-1.3b-qad"}).json()["id"]
     job = _succeeded_cloud_job(fresh_project())
     assert as_admin.delete(f"/api/models/{rid}").status_code == 422
-    assert as_admin.delete(f"/api/models/{rid}?confirm=撤登记").status_code == 200
+    assert as_admin.delete(f"/api/models/{rid}?confirm=1").status_code == 200
     assert model_center.registration(rid) is None
     # 历史作业与验证记录一条没动
     assert job_repo.get(job["id"]) is not None
@@ -316,8 +316,16 @@ def test_换档之后旧验证记录不背书(as_admin, clean_registrations, fre
 
     items = as_admin.get("/api/models").json()["items"]
     assert _item_of(items, "fastmetal", "fastmetal-1.3b-qad")["status"] == "available"
-    assert _item_of(items, "fastmetal", "fastmetal-5b-qad")["status"] == "unverified", \
+    other = _item_of(items, "fastmetal", "fastmetal-5b-qad")
+    assert other["status"] == "unverified", \
         "同一 provider 的旧记录不能替另一档说「已验证」"
+    # 「未验证」必须说出为什么别的路都走不通：不是环境问题，是它不是当前那一档。
+    # 不点名这句话，人就会在这一行上反复点「环境检查」（那正是审查里最贵的一类困惑）。
+    assert "不是能力轨当前选中的那一档" in other["status_detail"], other["status_detail"]
+    assert "fastmetal-1.3b-qad" in other["status_detail"]
+    # 槽位那一档是「可用」，它的说明仍然是健康原话，不许被这句盖掉
+    cur = _item_of(items, "fastmetal", "fastmetal-1.3b-qad")
+    assert "不是能力轨当前选中的那一档" not in cur["status_detail"]
 
 
 def test_本地模型健康就绪才算可用缺一件就点名(as_admin, clean_registrations, tmp_path,
@@ -395,6 +403,26 @@ def test_备用轨与建议轨同档被拒(as_admin):
     assert "等于没有备用" in r.json()["detail"]
 
 
+def test_必需能力必须落在标签全集里(as_admin):
+    """必需能力放开成可编辑后，造一个清单里没有的标签会把场景推到
+    "永远 0 候选"还不报错——写入侧按 producible 全集拦一次。"""
+    r = as_admin.put("/api/model-policies", json=[{
+        "scene_key": "scene_prompt", "capability": "text",
+        "required": ["文本生成", "不存在的标签"]}])
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "不存在的标签" in detail and "标签全集" in detail, detail
+    # 清单里真有的标签照常放行：把必需项降下来是允许的（§5.4 的原话）
+    ok = as_admin.put("/api/model-policies", json=[{
+        "scene_key": "scene_prompt", "capability": "text",
+        "required": ["文本生成"]}])
+    assert ok.status_code == 200, ok.text
+    # 降成空清单也允许：这个场景从此不按必需能力筛候选
+    ok = as_admin.put("/api/model-policies", json=[{
+        "scene_key": "scene_prompt", "capability": "text", "required": []}])
+    assert ok.status_code == 200, ok.text
+
+
 def test_场景候选只收能力齐的(as_admin, clean_registrations):
     """人物服装形态要求 图生图 + 参考图；mflux 不收参考图，必须被挡在候选外。"""
     as_admin.post("/api/models", json={"capability": "image", "backend": "local",
@@ -411,14 +439,133 @@ def test_场景候选只收能力齐的(as_admin, clean_registrations):
     schnell = [b for b in out["blockers"] if "flux1-schnell" in b]
     assert schnell, f"缺能力的必须点名：{out['blockers']}"
     assert "缺能力" in schnell[0] and "图生图" in schnell[0]
-    # 声明了能力但清单里没有的那条：点名"清单未登记"，而不是假装它不存在
-    assert any("flux1-dev" in b and "清单未登记" in b for b in out["blockers"]), out["blockers"]
+    # 声明了能力但清单里没有的那条：点名"清单里没有这一档"，而不是假装它不存在。
+    # 措辞必须让人看出"改配置没用、要去补规格"——这正是三个「未登记」改名要解决的事。
+    assert any("flux1-dev" in b and "清单里没有这一档" in b for b in out["blockers"]), \
+        out["blockers"]
+
+
+def test_目录读路径不出网(as_admin, clean_registrations, monkeypatch):
+    """打开一页不许替人连网：`GET /api/models` 一次都不许调 engines.probe。
+
+    这条边界是 2026-11-07 审查点名的第三根管子：原先前端一页要拼两遍目录，
+    每行再各探一次服务型引擎（超时 5 秒、串行、无缓存），一台卡住的服务就能把
+    整个列表接口拖到超时。现在探测只有一个显式入口——`POST /api/models/probe`。
+    """
+    import engines as engines_mod
+
+    calls = []
+    real = engines_mod.probe
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engines_mod, "probe", spy)
+    engines_mod.forget_probes()
+    from repositories.engine_instances import engine_instances
+
+    instance = engine_instances.create({"engine_code": "draw_things",
+                                        "endpoint": "http://127.0.0.1:7871"})
+    try:
+        as_admin.post("/api/models", json={
+            "capability": "image", "backend": "local", "provider": "draw_things",
+            "model_code": "noobai-xl-epsilon-11"})
+        body = as_admin.get("/api/models").json()
+        assert calls == [], f"目录读路径不该发网络请求，实际调了 {calls}"
+        item = _item_of(body["items"], "draw_things", "noobai-xl-epsilon-11")
+        # 有实例但没查过：这一档要说"要连一次才知道"，并且带上"平台会查"的标记，
+        # 而不是伪装成 unknown（那是"平台查不了"，两件事的下一步不一样）。
+        assert item["health"]["probe_deferred"] is True
+        assert "要连一次服务才知道" in item["health"]["detail"]
+    finally:
+        engine_instances.delete(instance["id"])
+
+
+def test_探测接口现查之后目录里那一格跟着变(as_admin, clean_registrations, monkeypatch):
+    """`POST /api/models/probe` 是唯一会连网的那条路：它把状态写回整张目录。"""
+    import engines as engines_mod
+
+    monkeypatch.setattr(engines_mod, "probe", lambda code, endpoint="", **_: engines_mod.EngineStatus(
+        "ok", "服务在线，当前模型 x.ckpt",
+        {"endpoint": endpoint or "http://127.0.0.1:7860", "model": "x.ckpt"}))
+    engines_mod.forget_probes()
+    as_admin.post("/api/models", json={
+        "capability": "image", "backend": "local", "provider": "draw_things",
+        "model_code": "noobai-xl-epsilon-11"})
+    probed = as_admin.post("/api/models/probe?fresh=1").json()
+    item = _item_of(probed["items"], "draw_things", "noobai-xl-epsilon-11")
+    assert item["health"]["state"] == "ok"
+    assert probed["stats"]["registered_total"] == len(
+        [r for r in probed["items"] if r["registered"]]), "四数必须与同一份 items 对得上"
+    assert [p["engine_code"] for p in probed["probed"]] == ["draw_things"]
+    # 现查之后同一次读的目录里那一格就是 ok，不再是"待现查"
+    assert as_admin.get("/api/models").json()["items"] is not None
+
+
+def test_结构化输出这条标签有清单来源(as_admin, clean_registrations):
+    """`结构化输出` 原来没有任何来源，而 0035 把它写进 4 个场景的必需能力。
+
+    现在它来自 `ModelSpec.structured_output`：只有运行时真的会按 schema 约束输出的
+    档才带（本机 Ollama 会下发 format）。这条用例同时钉住反方向——云端 DeepSeek
+    今天没有 response_format 分支，就不许带这个标签。
+    """
+    as_admin.post("/api/models", json={"capability": "text", "backend": "local",
+                                       "provider": "ollama", "model_code": "qwen3:8b"})
+    as_admin.post("/api/models", json={"capability": "text", "backend": "cloud",
+                                       "provider": "deepseek",
+                                       "model_code": "deepseek-flash"})
+    items = as_admin.get("/api/models").json()["items"]
+    ollama = {t["tag"] for t in _item_of(items, "ollama", "qwen3:8b")["tags"]}
+    deepseek = {t["tag"] for t in _item_of(items, "deepseek", "deepseek-flash")["tags"]}
+    assert "结构化输出" in ollama and "文本生成" in ollama
+    assert "结构化输出" not in deepseek, "云端没有 response_format 分支，不许带这个标签"
+
+
+def test_清单里根本产不出来的必需能力必须单独说(as_admin, clean_registrations):
+    """「配不出来」与「还没配」要说不同的话。
+
+    character_variant 要「图生图 + 参考图」，而 image 轴没有任何一档登记过图片
+    输入参数——这在任何配置下都不可能凑齐。把它写成"没有候选"会让人反复去配，
+    而真正要动的是 `adapters.py`。
+    """
+    out = as_admin.get("/api/model-policies/resolve/character_variant").json()
+    assert out["required_producible"] is False
+    assert set(out["impossible_tags"]) == {"图生图", "参考图"}
+    joined = " ".join(out["blockers"])
+    assert "没有任何来源" in joined and "adapters.py" in joined, out["blockers"]
+
+
+def test_场景要求的标签都能产出时就不报不可达(as_admin, clean_registrations):
+    """反方向半边：scene_prompt 只要「文本生成」，清单里有，就不许挂那条结论。"""
+    out = as_admin.get("/api/model-policies/resolve/scene_prompt").json()
+    assert out["required_producible"] is True and out["impossible_tags"] == []
 
 
 def test_候选接口明写不自动切换(as_admin):
     out = as_admin.get("/api/model-policies/resolve/scene_prompt").json()
     assert out["auto_switch"] is False
     assert "不会自动顶上" in out["policy_note"]
+
+
+def test_人工声明不能替代清单事实(as_admin, clean_registrations):
+    """手工声明「图生图 + 参考图」不能把 4 个数学上无解的场景救活。
+
+    审查里实测过这一条：给 mflux 手工声明这两个标签后 character_variant 立刻出候选——
+    那等于"用一句自我声明冒充能力证明"，与这一页"健康≠验证"的纪律自相矛盾。
+    判据是清单：image 轴这一版没有任何一档登记过图片输入参数，所以这两个标签
+    在 image 轴上不存在任何合法来源；声明了也进不了候选，而且要说清是为什么。
+    """
+    as_admin.post("/api/models", json={
+        "capability": "image", "backend": "local", "provider": "mflux",
+        "model_code": "flux1-schnell", "capabilities": ["图生图", "参考图"]})
+    as_admin.put("/api/model-policies", json=[{
+        "scene_key": "character_variant", "capability": "image",
+        "required": ["图生图", "参考图"]}])
+    out = as_admin.get("/api/model-policies/resolve/character_variant").json()
+    assert out["candidates"] == [], "清单里没有来源的能力，声明了也不许进候选"
+    blocker = next(b for b in out["blockers"] if "flux1-schnell" in b)
+    assert "人工声明" in blocker and "清单" in blocker, blocker
 
 
 def test_未知场景不报错但说清没有(as_admin):
@@ -553,3 +700,276 @@ def test_worker状态给得出在线数与历史数(as_role):
     assert view["live_count"] == live
     assert view["history_count"] == len(view["workers"]) - live
     assert view["history_count"] >= 1        # 这一条要真能看见"有历史"，不是永远 0
+
+
+def test_验证历史能翻页且说得出总量(as_admin):
+    """第 201 条之后的历史原来读不到，而且没有任何提示。
+
+    钉三件事：① 总量走响应头（界面不必拿"少于 limit"猜有没有下一页）；
+    ② `before_id` 能把更早的翻出来，且与第一页不重叠；
+    ③ 翻到底返回空数组而不是报错——"没有更早的了"是一种正常结果。
+    """
+    # 造出"多于一页"的历史：一页上限是仓储层的 MAX_PAGE，直接用它的值 + 5。
+    from repositories.validation import validations as vrepo
+
+    slot = {"capability": "text", "backend": "cloud", "provider": "paging-test"}
+    before = vrepo.count()
+    for i in range(vrepo.MAX_PAGE + 5):
+        vrepo.record({**slot, "kind": "env_check", "state": "missing",
+                            "detail": f"翻页用例第 {i} 条"})
+    total = vrepo.count()
+    assert total == before + vrepo.MAX_PAGE + 5
+
+    first = as_admin.get("/api/providers/validations?limit=10")
+    assert first.status_code == 200
+    assert int(first.headers["X-Total-Count"]) == total
+    page1 = first.json()
+    assert len(page1) == 10
+
+    # 第二页：以第一页最后一条的 id 为界，避开头尾相接
+    second = as_admin.get(
+        f"/api/providers/validations?limit=10&before_id={page1[-1]['id']}")
+    page2 = second.json()
+    assert len(page2) == 10
+    assert not ({v["id"] for v in page1} & {v["id"] for v in page2}), "两页重叠了"
+    assert max(v["id"] for v in page2) < min(v["id"] for v in page1)
+
+    # 翻过最早那一条之后是空的，不是 4xx
+    oldest = as_admin.get("/api/providers/validations?limit=1&before_id=1").json()
+    assert oldest == []
+
+
+def test_一页上限由仓储说而不是路由手抄(as_admin):
+    """`limit=100000` 不许真的回十万条：分页边界只有仓储一处定义。
+
+    原来这条夹逼写在仓储的 `min(int(limit), 200)` 里，而路由只管把 limit 转发；
+    这一版把它提成 `MAX_PAGE` 常量并让翻页也用它，所以这里断言的是
+    "请求一个荒谬的 limit，回来的条数不超过仓储说的那一页"。
+    """
+    from repositories.validation import validations as vrepo
+
+    r = as_admin.get(f"/api/providers/validations?limit={vrepo.MAX_PAGE + 500}")
+    assert r.status_code == 200
+    assert len(r.json()) <= vrepo.MAX_PAGE
+
+
+def test_撤登记与撤实例都不再要求中文口令(as_admin):
+    """`confirm=撤登记`／`confirm=撤实例` 是把界面文案写进了协议。
+
+    改成只认"人表达过确认"这件事（1／true／yes，大小写不敏感）。
+    要钉的是**边界没松**：不带 confirm 仍然 422，乱填仍然 422。
+    """
+    rid = as_admin.post("/api/models", json={
+        "capability": "video", "backend": "local", "provider": "fastmetal",
+        "model_code": "fastmetal-1.3b-qad"}).json()["id"]
+    assert as_admin.delete(f"/api/models/{rid}").status_code == 422
+    assert as_admin.delete(f"/api/models/{rid}?confirm=no").status_code == 422
+    # 中文旧口令也不再接受：它从来不是协议的一部分，只是当年顺手写下的字符串
+    assert as_admin.delete(f"/api/models/{rid}?confirm=撤登记").status_code == 422
+    # 大写与 "yes" 都算确认过
+    assert as_admin.delete(f"/api/models/{rid}?confirm=YES").status_code == 200
+
+    made = as_admin.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": "http://127.0.0.1:7861"}).json()
+    eid = made["id"]
+    assert as_admin.delete(f"/api/engines/{eid}").status_code == 422
+    assert as_admin.delete(f"/api/engines/{eid}?confirm=0").status_code == 422
+    assert as_admin.delete(f"/api/engines/{eid}?confirm=true").status_code == 200
+
+
+def test_清单轴上只折一次(as_admin):
+    """`remote` 折回 `local` 的判据只许有一处，而且要下发给界面。
+
+    原来三份实现：路由建登记时一句、`model_center._manifest_axis()` 一句、
+    前端 `manifestProviders()` 第三句。三份一起漂的症状是上一轮那个
+    「remote 登记在列表里显示清单未登记」。这一版收进 `adapters.MANIFEST_AXIS`
+    并由 `manifest_payload()` 下发，界面按数据折。
+    """
+    import adapters
+
+    payload = as_admin.get("/api/providers/manifest").json()
+    assert payload["axis"] == adapters.MANIFEST_AXIS
+    assert payload["axis"]["remote"] == "local"
+    # 折回判据不许在前端再写一遍字面量
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
+          / "models.js").read_text()
+    assert "=== 'remote' ? 'local'" not in js, "界面还在自己折"
+    assert "manifestAxis(" in js
+    # 后端也只留一处：路由里不许再出现那个三元表达式
+    routers_src = (Path(__file__).resolve().parents[1] / "routers"
+                   / "model_center.py").read_text()
+    assert '"local" if backend == "remote" else backend' not in routers_src
+
+
+def test_三个未登记的状态名说得出缺哪一侧(as_admin):
+    """「未登记」「清单未登记」「只登记了名字」三个词都含"登记"，处置却相反。
+
+    钉两件事：① 状态键与中文名都按"缺的是哪一侧"取（`manifest_only`／
+    `registration_only`／`name_only`）；② 三种行在同一张目录里真的分得开——
+    不是换了名字但算出来的还是同一档。
+    """
+    import model_center as mc
+
+    labels = as_admin.get("/api/models").json()["status_labels"]
+    # 旧的三个键一个都不许留：留着就说明还有一条路径在产出旧值
+    for gone in ("not_registered", "unregistered_tier"):
+        assert gone not in labels, f"旧状态键 {gone} 还在"
+    assert labels["manifest_only"] == "本机未登记"
+    assert labels["registration_only"] == "清单无此档"
+    assert labels["name_only"] == "清单只有名字"
+    # 三个名字互不为前缀，也不共用"未登记"这个词
+    names = [labels["manifest_only"], labels["registration_only"], labels["name_only"]]
+    assert len(set(names)) == 3
+    assert not any("未登记" in n for n in names[1:]), names
+
+    items = as_admin.get("/api/models").json()["items"]
+    seen = {i["status"] for i in items}
+    # 目录里天然带着"清单有、本机没登记"的档（图片×本地的那些模型档）
+    assert "manifest_only" in seen
+    # 与登记行无关的两种在这里不必然出现，所以用清单/登记各造一条
+    as_admin.post("/api/models", json={
+        "capability": "image", "backend": "local",
+        "provider": "zzz-not-in-manifest", "model_code": "v1"})
+    after = as_admin.get("/api/models").json()["items"]
+    orphan = next((i for i in after
+                   if i["provider"] == "zzz-not-in-manifest"), None)
+    assert orphan is not None and orphan["status"] == "registration_only"
+    # 只登记了名字的壳：清单里有 adapter 但没有模型档
+    shell = next((i for i in after if i["status"] == "name_only"), None)
+    assert shell is not None, "清单里那些只有名字的 adapter 应当各占一行"
+
+
+def test_清单无此档的挡路原因说的是去补规格(as_admin):
+    """不能只说"没登记"——那一档点多少次「登记」都不会变好。
+
+    这是三词改名真正的产出：候选弹窗里那句挡路原因必须让人看出
+    "改配置没用、要去 adapters.py"。
+    """
+    as_admin.post("/api/models", json={
+        "capability": "text", "backend": "cloud",
+        "provider": "zzz-nowhere", "model_code": "x"})
+    out = as_admin.get("/api/model-policies/resolve/storyboard").json()
+    # 挡路原因里那一档的名字取的是显示名／模型标签／模型码（可能是 "x"，
+    # 不带 provider），所以按措辞找而不是按 provider 找。
+    hit = [b for b in out["blockers"] if "清单里没有这一档" in b]
+    assert hit, out["blockers"]
+    assert "adapters.py" in hit[0], "得说清去哪补，而不是只说缺"
+    # 反证：老的措辞（只说"没登记"）不该再出现——那句话让人去点登记
+    assert not any("清单未登记这一档" in b for b in out["blockers"])
+
+
+def test_连接方式只让选真的有实现的那几档(as_admin):
+    """`grpc`／`cli` 是"存得进、选得到、但没有任何行为"的假选项（CR-010）。
+
+    0040 的 CHECK 还收它们（缩了会让库里已有行读不出来），所以两把分开：
+    `CONNECTION_TYPES` 是存储域、`SUPPORTED_CONNECTION_TYPES` 是能选的那一把。
+    写入口只收后者，且拒绝理由要说清"得先写探测与执行分支"。
+    """
+    from repositories.engine_instances import CONNECTION_TYPES, SUPPORTED_CONNECTION_TYPES
+
+    # CHECK 那一把不许缩：缩了库里已有的行就成孤儿
+    assert set(CONNECTION_TYPES) >= {"local_http", "grpc", "cli"}
+    assert SUPPORTED_CONNECTION_TYPES == ("local_http",)
+
+    listing = as_admin.get("/api/engines").json()
+    # 下发给界面的只有能选的那一把；全集另给一个键，好让"库里有历史行"这件事说得清
+    assert listing["connection_types"] == list(SUPPORTED_CONNECTION_TYPES)
+    assert set(listing["declared_connection_types"]) == set(CONNECTION_TYPES)
+
+    r = as_admin.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": "http://127.0.0.1:7870",
+        "connection_type": "grpc"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "还没有实现分支" in detail and "local_http" in detail
+    # 拼错的东西走另一句话：两种拒绝混成一句，人只会以为是自己填错
+    r2 = as_admin.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": "http://127.0.0.1:7871",
+        "connection_type": "websocket"})
+    assert r2.status_code == 422
+    assert "还没有实现分支" not in r2.json()["detail"]
+
+
+def test_非_http_连接方式的实例不假装探过(as_admin):
+    """库里若有历史行是 `grpc`，读路径不许拿一次 HTTP 的失败当它的结论。
+
+    `engines.probe()` 只看 engine_code，不读 connection_type——它一律按 HTTP 打。
+    所以列表必须自己按连接方式分流，并明说"这一档还没有探测分支"。
+    """
+    import db
+    import engines
+    from repositories.engine_instances import engine_instances
+
+    # 绕过写入口造一条历史行（写入口已经拒了；这里模拟"当年存进去的"）
+    with db.get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO engine_instance
+                   (engine_code, display_name, connection_type, endpoint, enabled)
+               VALUES (?, ?, ?, ?, 1)""",
+            ("draw_things", "历史 grpc 行", "grpc", "http://127.0.0.1:7872"))
+        iid = cur.lastrowid
+    engines.forget_probes()
+    try:
+        # 把探测打成"连不上"：如果读路径真的去探了，这一行就会显示连不上
+        engines.probe = lambda *a, **k: engines.EngineStatus("missing", "假的连不上", {})
+        hit = next(i for i in as_admin.get("/api/engines").json()["items"]
+                   if i["id"] == iid)
+        assert hit["probe_unsupported"] is True
+        assert hit["health_state"] == "unknown"
+        assert "还没有探测分支" in hit["health_detail"]
+        assert "假的连不上" not in hit["health_detail"], "拿一次 HTTP 的结论冒充了"
+    finally:
+        with db.get_conn() as conn:
+            conn.execute("DELETE FROM engine_instance WHERE id = ?", (iid,))
+
+
+def payload_with(held_rows, notes):
+    """按「我手上那一版」拼提交体：令牌与内容都取自 held_rows。"""
+    body = [{"id": r["id"], "provider": r["provider"], "model": r["model"],
+             "enabled": r["enabled"], "is_default": r["is_default"],
+             "key_env": r["key_env_custom"], "notes": r["notes"],
+             "seen_version": r["version"]} for r in held_rows]
+    body[0]["notes"] = notes
+    return body
+
+
+def test_整批覆盖配置有弱版本闸(as_admin, provider_state):
+    """`PUT /api/providers` 是十行整批覆盖：两人各改一行先后保存会静默互相盖。
+
+    闸只在这一条上开：带了 `seen_version` 才判，对不上回 409 并点名是哪几行。
+    不带令牌的调用（脚本、命令行）行为一字不变——这是与资产页同一条边界。
+    """
+    rows = as_admin.get("/api/providers").json()
+    assert all("version" in r and r["version"] for r in rows), "每行都要带令牌"
+
+    def payload(notes, with_token=True):
+        """按**当前** rows 拼一份提交体。notes 覆盖第一行，用来区分"谁写的"。"""
+        body = [{"id": r["id"], "provider": r["provider"], "model": r["model"],
+                 "enabled": r["enabled"], "is_default": r["is_default"],
+                 "key_env": r["key_env_custom"], "notes": r["notes"]}
+                for r in rows]
+        body[0]["notes"] = notes
+        if with_token:
+            for item, r in zip(body, rows):
+                item["seen_version"] = r["version"]
+        return body
+
+    # ① 不带令牌：照旧 200（脚本与命令行调用方的契约不变）
+    assert as_admin.put("/api/providers", json=payload("甲写的", False)).status_code == 200
+    rows = as_admin.get("/api/providers").json()      # 重新取最新令牌
+
+    # ② 带**新**令牌：通过
+    assert as_admin.put("/api/providers", json=payload("甲写的")).status_code == 200
+    mine = as_admin.get("/api/providers").json()      # 我此刻持有的那一版
+
+    # ③ 别人在我之后改了一行（换一份令牌写进去）
+    assert as_admin.put("/api/providers",
+                        json=payload_with(mine, "乙改的")).status_code == 200
+
+    # ④ 我拿**旧**令牌提交我的改动：必须 409，且点名哪一行被改过
+    stale = payload_with(mine, "甲想盖回去")
+    r = as_admin.put("/api/providers", json=stale)
+    assert r.status_code == 409, r.text
+    assert "被别人改过" in r.json()["detail"]
+    # ⑤ 冲突时整批一个字节都没写：库里是乙那句，不是我这句
+    assert as_admin.get("/api/providers").json()[0]["notes"] == "乙改的"

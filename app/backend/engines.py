@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -50,6 +51,13 @@ _INFO_PATHS = {"draw_things": "/sdapi/v1/options", "ollama": "/api/tags"}
 
 _TIMEOUT_SECONDS = 5.0
 
+# 列表接口用的超时。为什么与手动探测分开：
+# 「打开一页」不该被一台卡住的服务拖住，而「点一下检查连接」是人明确要求
+# 把这一台问到底。0.8 秒够本机服务回一次自述（实测 /api/tags 与
+# /sdapi/v1/options 都在几十毫秒级），连不上时 TCP 立刻被拒更是零等待；
+# 真超过这个时间说明这台服务在半死状态，列表该如实说"回话太慢"而不是陪着等。
+LIST_TIMEOUT_SECONDS = 0.8
+
 
 @dataclass(frozen=True)
 class EngineStatus:
@@ -58,9 +66,22 @@ class EngineStatus:
     state: str            # ok / missing / unknown
     detail: str
     values: dict          # endpoint、model（当前选中的权重文件名，可能为空）
+    # 这一次是不是"用短超时探到的"。列表接口用短超时是为了不拖住页面，
+    # 但"太慢"不等于"这台服务坏了"——所以这种结论可以给人看，不该被当成
+    # 下次手动探测的缓存答案。默认 False＝权威结论。
+    soft: bool = False
 
     def as_health(self) -> dict:
         return {"state": self.state, "detail": self.detail}
+
+
+# 探测结果能留多久。一次页面装载会把同一个端点问上好几遍——模型仓库每建一行问一次、
+# 顶部四数又要重算一遍目录——它们问的是同一台机器同一个瞬间。
+# 15 秒是刻意的短：人刚把应用打开、回页面点一下刷新就该看见变化；
+# 而一屏之内的重复探测（几十毫秒里发生）全部落在同一个窗口里。
+# 手动「检查连接」与「环境检查」一律 fresh=True 绕过缓存，那是人明确要求的现查。
+PROBE_TTL_SECONDS = 15.0
+_PROBE_CACHE: dict[tuple[str, str], tuple[float, EngineStatus]] = {}
 
 
 def resolve_endpoint(engine_code: str) -> str:
@@ -91,7 +112,8 @@ def fetch_info(endpoint: str) -> dict:
     return _get_info_for(endpoint)
 
 
-def _get_info_for(endpoint: str, engine_hint: str = "") -> dict:
+def _get_info_for(endpoint: str, engine_hint: str = "",
+                  timeout: float | None = None) -> dict:
     if not endpoint:
         return {"error": "没有登记启用中的引擎实例"}
     # engine_hint 是给 probe() 用的：它已经知道自己在探哪一档引擎。
@@ -104,11 +126,12 @@ def _get_info_for(endpoint: str, engine_hint: str = "") -> dict:
     url = endpoint.rstrip("/") + path
     try:
         request = Request(url, method="GET")
-        with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+        with urlopen(request, timeout=timeout or _TIMEOUT_SECONDS) as response:
             raw = response.read()
     except (URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        return {"error": f"{url} 连不上：{reason}"}
+        timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+        return {"error": f"{url} 连不上：{reason}", "timed_out": timed_out}
     except HTTPError as exc:
         return {"error": f"{url} 返回 HTTP {exc.code}"}
     try:
@@ -120,8 +143,14 @@ def _get_info_for(endpoint: str, engine_hint: str = "") -> dict:
     return {"payload": payload}
 
 
-def probe(engine_code: str, endpoint: str = "") -> EngineStatus:
-    """这一档服务型引擎现在能不能连上、当前选的是哪个权重。"""
+def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,
+          timeout: float | None = None) -> EngineStatus:
+    """这一档服务型引擎现在能不能连上、当前选的是哪个权重。
+
+    `fresh=True` 表示"人明确要求现查"（手动检查连接、环境检查），绕过短期缓存。
+    默认走缓存：列表接口会对同一台机器连着问好几次，不缓存就是在同一屏里
+    把同一个 5 秒超时的请求发四遍，页面打开时间随引擎台数线性增长。
+    """
     if engine_code not in SERVICE_ENGINES:
         return EngineStatus("unknown", "这一档不是本机服务型引擎，平台不猜它的状态", {})
     address = endpoint or resolve_endpoint(engine_code)
@@ -134,12 +163,54 @@ def probe(engine_code: str, endpoint: str = "") -> EngineStatus:
                             "还没有登记启用中的引擎实例：在「引擎管理 · 引擎实例」里"
                             "加一条端点（例如 http://127.0.0.1:7860）后才会检查",
                             {})
+    key = (engine_code, address.rstrip("/"))
+    now = time.monotonic()
+    if not fresh:
+        hit = _PROBE_CACHE.get(key)
+        # 缓存的是**那一刻**的结论，所以命中也原样返回旧 detail：
+        # 界面看到的时间点与"刚刚真的打过一次"不同这件事，由 TTL 的短（15 秒）兜住，
+        # 而不是靠在这里改写文案——改写会让"最后检查时间"无处可对。
+        if hit is not None and now - hit[0] < PROBE_TTL_SECONDS:
+            return hit[1]
+    status = _probe_now(engine_code, address, timeout)
+    # 短超时探出来的结论不写进缓存：它是"这一屏等不起"的产物，不是"这台服务
+    # 现在怎么样"的结论。手动探测（fresh=True）与下一次列表都该重新问一遍。
+    if not status.soft:
+        _PROBE_CACHE[key] = (now, status)
+    return status
+
+
+def peek(engine_code: str, endpoint: str = "") -> tuple["EngineStatus", float] | None:
+    """读上次探测的结论（含年龄），**不发任何请求**。
+
+    为什么需要这一档：列表接口不出网（见 `probe()` 的注解），但"我三十秒前
+    刚点过探测"这件事不该被当成没查过——那一行显示"未检查"会让人以为白点了。
+    所以读路径改读这一份缓存，把年龄一起带出去（"12 秒前查的"），
+    过期了就如实说"要重查"，绝不拿旧结论冒充现在。
+    """
+    address = endpoint or resolve_endpoint(engine_code)
+    if not address:
+        return None
+    hit = _PROBE_CACHE.get((engine_code, address.rstrip("/")))
+    if hit is None:
+        return None
+    return hit[1], max(0.0, time.monotonic() - hit[0])
+
+
+def forget_probes() -> None:
+    """清空探测缓存。改配置、换端点、跑测试时用：那些时刻"旧结论"已经不作数。"""
+    _PROBE_CACHE.clear()
+
+
+def _probe_now(engine_code: str, address: str,
+               timeout: float | None = None) -> EngineStatus:
     base = {"endpoint": address}
-    info = _get_info_for(address, engine_code)
+    info = _get_info_for(address, engine_code, timeout)
     if info.get("error"):
         # 连不上是 missing（配了但服务不在），不是 unknown（还没配）——
         # 人要做的事不同：前者去把应用和 API Server 打开，后者是来登记一行。
-        return EngineStatus("missing", info["error"], base)
+        return EngineStatus("missing", info["error"], base,
+                            soft=bool(timeout and info.get("timed_out")))
     described = _describe(engine_code, info["payload"])
     values = {**base, "model": described["model"],
               "models": described["models"], "keys": len(info["payload"])}

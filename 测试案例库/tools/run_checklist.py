@@ -1536,7 +1536,7 @@ def _():
            201, "云端登记")
     eq(r.json()["item"]["source"], "cloud", "source 要跟着 backend 走")
     reg_id = r.json()["id"]
-    st(cli("admin").delete(f"/api/models/{reg_id}", params={"confirm": "撤登记"}), 200, "清掉")
+    st(cli("admin").delete(f"/api/models/{reg_id}", params={"confirm": "1"}), 200, "清掉")
 
 
 @case("MOD-03", "撤登记要确认词")
@@ -1549,7 +1549,7 @@ def _():
     r = cli("admin").delete(f"/api/models/{reg_id}", params={"confirm": "随便"})
     st(r, 422, "缺确认词")
     detail_has(r, "权重文件仍在盘上", "要说清只撤登记")
-    st(cli("admin").delete(f"/api/models/{reg_id}", params={"confirm": "撤登记"}),
+    st(cli("admin").delete(f"/api/models/{reg_id}", params={"confirm": "1"}),
        200, "带确认词")
     eq(db1("SELECT COUNT(*) AS n FROM model_registration WHERE id=?", (reg_id,))["n"], 0,
        "登记行应删除")

@@ -26,13 +26,45 @@ from urllib.parse import urlparse
 
 from db import get_conn
 
-# 连接方式有限枚举。加一档必须先有实现分支，不然界面会给出一个点了没反应的选项
-# （CR-010：界面不许显示没有真实后端行为的按钮）。
+# 连接方式。**这里有两把，别混用**（2026-11-07 第三批分开）：
+#
+#   CONNECTION_TYPES        ＝ 0040 的 CHECK 认哪些值。**存储域**，只能扩不能缩，
+#                              缩了会让库里已有的行读不出来。它回答"能存什么"。
+#   SUPPORTED_CONNECTION_TYPES ＝ 今天**真的有实现分支**的那几档。它回答"能选什么"。
+#
+# 为什么要分开：原来只有一把，于是 `grpc`／`cli` 是"存得进、界面上也选得到、但探测
+# 与执行都没有对应分支"的选项——`engines.probe()` 根本不看 connection_type，一律按
+# HTTP 打端点。选 grpc 的人会看到一个 http 探测的结论，那不是他配的东西的结论。
+# 这正是本文件开头那句 CR-010 要防的形状："界面不许给出一个点了没反应的选项"。
+#
+# 所以：接口只让选 SUPPORTED，拒绝时明说"这一档还没有实现分支，加它得先写探测与执行"，
+# 而不是把人挡在一句"只能是 local_http"上就完事。库里若有历史行是别的值，
+# 读路径照常列出来，但探测那一格会写"这一档连接方式还没有探测分支"，不假装探过。
 CONNECTION_TYPES = ("local_http", "grpc", "cli")
+SUPPORTED_CONNECTION_TYPES = ("local_http",)
 
 
 class EngineInstanceError(ValueError):
     """实例层的业务拒绝。路由层统一转 422，把原话给人看。"""
+
+
+def _check_connection_type(value: str) -> None:
+    """写入前的那道闸：只收**今天真有实现分支**的连接方式。
+
+    两种拒绝要分开说，因为人要做的事不同：
+      * 这个值根本不在 0040 的 CHECK 里 → 拼错了，或者想加一档新形态；
+      * 这个值 CHECK 收、但今天没有探测与执行分支 → 得先写代码，不是改配置。
+    第二种如果混进第一种那句话里，人只会以为是自己填错，反复试。
+    """
+    if value in SUPPORTED_CONNECTION_TYPES:
+        return
+    if value in CONNECTION_TYPES:
+        raise EngineInstanceError(
+            f"连接方式「{value}」还没有实现分支：0040 的 CHECK 收这个值，但探测与执行"
+            f"都只写了 HTTP 那一条路。今天能选的是 {'、'.join(SUPPORTED_CONNECTION_TYPES)}；"
+            "要加一档得先给 engines.py 写探测、给执行器写分支，不是在这里改个枚举")
+    raise EngineInstanceError(
+        f"连接方式只能是 {'、'.join(SUPPORTED_CONNECTION_TYPES)}，不是「{value}」")
 
 
 def validate_endpoint(raw: str) -> str:
@@ -99,9 +131,7 @@ class EngineInstanceRepository:
 
     def create(self, data: dict) -> sqlite3.Row:
         connection_type = (data.get("connection_type") or "local_http").strip()
-        if connection_type not in CONNECTION_TYPES:
-            raise EngineInstanceError(
-                f"连接方式只能是 {'、'.join(CONNECTION_TYPES)}，不是「{connection_type}」")
+        _check_connection_type(connection_type)
         endpoint = validate_endpoint(data.get("endpoint", ""))
         code = (data.get("engine_code") or "").strip()
         if not code:
@@ -143,9 +173,7 @@ class EngineInstanceRepository:
         fields: dict = {}
         if "connection_type" in patch:
             connection_type = (patch["connection_type"] or "").strip()
-            if connection_type not in CONNECTION_TYPES:
-                raise EngineInstanceError(
-                    f"连接方式只能是 {'、'.join(CONNECTION_TYPES)}")
+            _check_connection_type(connection_type)
             fields["connection_type"] = connection_type
         for key in ("display_name", "shared_secret_env", "note"):
             if key in patch:
@@ -177,3 +205,71 @@ class EngineInstanceRepository:
 
 
 engine_instances = EngineInstanceRepository()
+
+
+class EngineProbeLogRepository:
+    """探测留痕（0042）。只追加不改，随实例 CASCADE。
+
+    这一层只做两件事：写一条、读最近几条。**它不参与任何判断**——
+    "现在是好的吗"永远由 `engines.probe()` 现查，历史上探通过不代表现在通。
+    读它的人要看的是一句话："这台上周还连不连得上"。
+    """
+
+    def record(self, instance_id: int, status, *, source: str = "manual",
+               latency_ms: int | None = None, created_by: int | None = None,
+               engine_code: str = "", endpoint: str = "") -> None:
+        """记一次探测。`status` 是 `engines.EngineStatus`（或同形状的 dict）。
+
+        故意**不让这里抛**：留痕失败不该把一次成功的探测变成 500。
+        人按「探测」要的是"现在通不通"，那是已经得到的结论；
+        历史没记上是这一屏的次要信息，下次探测会补上。
+        （真正的写库错误会由 `get_conn()` 的事务本身暴露在日志里。）
+        """
+        # `EngineStatus` 是 frozen dataclass（没有 __getitem__），调用方也可能传 dict
+        # — 两种形状都收，但要用 hasattr 分派：写成 `getattr(...) or status["state"]`
+        # 会在 dataclass 上先取到真值、再对 getattr 为空的 detail 去取下标——
+        # 那不是等价回退，是 TypeError（第一版就这么写的，测试当场红）。
+        def field(name, default):
+            if hasattr(status, name):
+                return getattr(status, name)
+            return status.get(name, default)
+
+        state = field("state", "unknown")
+        detail = field("detail", "") or ""
+        values = field("values", {}) or {}
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO engine_probe_log
+                       (instance_id, engine_code, endpoint, state, engine_model,
+                        detail, latency_ms, source, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (instance_id, engine_code, endpoint, state,
+                 str(values.get("model") or ""), str(detail or "")[:2000],
+                 latency_ms, source, created_by))
+
+    def recent(self, instance_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        """这条实例最近 N 次探测，最新在前。"""
+        with get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM engine_probe_log WHERE instance_id = ?"
+                " ORDER BY id DESC LIMIT ?",
+                (instance_id, max(1, min(int(limit), 100)))).fetchall()
+
+    def latest_by_instance(self) -> dict[int, sqlite3.Row]:
+        """一次性取每条实例最近的那一条——列表页要的是"上次什么时候、结果如何"，
+
+        逐行各查一次就是 N 趟回库，与 `latest_matrix()` 同一个理由。"""
+        with get_conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM (
+                        SELECT l.*, ROW_NUMBER() OVER (
+                                 PARTITION BY l.instance_id ORDER BY l.id DESC) AS rn
+                          FROM engine_probe_log l WHERE l.instance_id IS NOT NULL
+                      ) WHERE rn = 1""").fetchall()
+        return {row["instance_id"]: row for row in rows}
+
+
+
+# 探测留痕是另一张表、另一族读法，所以给它自己的仓储对象——
+# 塞进 EngineInstanceRepository 会让配置与历史共用一条写路径。
+engine_probe_log = EngineProbeLogRepository()

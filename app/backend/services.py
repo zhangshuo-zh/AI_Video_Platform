@@ -1939,7 +1939,10 @@ def _service_engine_gate(capability: str, mode: str, provider: str, model: str) 
     # 只会得到假话或假阻断。分两个集合而不是加特判，理由写在 engines.py 那一段。
     if adapter is None or adapter.code not in engines.MODEL_GATED_ENGINES:
         return
-    status = engines.probe(adapter.code)
+    # 这道闸门要的是**这一刻**的答案：人可能刚在应用里换了模型，15 秒内的旧结论
+    # 会让这条作业带着"选中的是 A、引擎跑的是 B"进队列——那正是它存在的原因。
+    # 一次提交只问一次，5 秒上限在这里是等得起的（页面那条路有 0.8 秒的列表档）。
+    status = engines.probe(adapter.code, fresh=True)
     if status.state != "ok":
         raise JobInvalid(f"{adapter.label} 现在不能用：{status.detail}")
     registration = registration_repo.find_registration(capability, mode,

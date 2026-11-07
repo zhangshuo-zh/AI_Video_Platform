@@ -268,11 +268,14 @@ ROUTES = [
     # 轮不到"这条不存在"，所以期望仍是 403。
     ("GET", "/api/models", None, 403),
     ("GET", "/api/models/stats", None, 403),
+    # 现查那一条同样要 system:config：它会真的去连本机服务，
+    # 不是"打开页面顺带读一下"那种只读接口。
+    ("POST", "/api/models/probe", None, 403),
     ("POST", "/api/models",
      {"capability": "video", "backend": "local", "provider": "fastmetal",
       "model_code": "fastmetal-5b-qad"}, 403),
     ("PATCH", "/api/models/{m}", {"display_name": "越权改名"}, 403),
-    ("DELETE", "/api/models/{m}?confirm=撤登记", None, 403),
+    ("DELETE", "/api/models/{m}?confirm=1", None, 403),
     ("POST", "/api/models/{m}/check", None, 403),
     ("GET", "/api/model-policies", None, 403),
     ("PUT", "/api/model-policies",
@@ -285,8 +288,10 @@ ROUTES = [
     ("POST", "/api/engines",
      {"engine_code": "draw_things", "endpoint": "http://127.0.0.1:7860"}, 403),
     ("PATCH", "/api/engines/{m}", {"note": "越权改"}, 403),
-    ("DELETE", "/api/engines/{m}?confirm=撤实例", None, 403),
+    ("DELETE", "/api/engines/{m}?confirm=1", None, 403),
     ("POST", "/api/engines/{m}/probe", None, 403),
+    # 探测历史（0042）：只读，但仍要 system:config——detail 里有端点和内网地址。
+    ("GET", "/api/engines/{m}/probes", None, 403),
     # ---------- 智能体中心（0041） ----------
     # 三条配置面（概览／配置卡／工具表）都是"平台怎么装的"，沿用 system:config ⇒ 403。
     # 其余按业务点走：发起＝job:submit、暂停恢复取消＝job:cancel、

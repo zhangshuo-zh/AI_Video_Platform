@@ -278,7 +278,9 @@ DRAW_THINGS_PATH = "/sdapi/v1/txt2img"
 
 
 def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
-    status = engines.probe("draw_things")
+    # 起跑前现查一次（fresh）：worker 可能刚从队列里领到一条几分钟前排的活，
+    # 拿 15 秒缓存里的端点去发请求，会把"换了机器"这件事静默地漏过去。
+    status = engines.probe("draw_things", fresh=True)
     if status.state != "ok":
         # unknown（没登记实例）与 missing（登记了但连不上）都由 engines 分好档，
         # 这里只转述，不再各写一套"不可用"的措辞。
@@ -320,7 +322,8 @@ def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
 # 这一族的模型名是每次请求里带的，不存在"服务自己选着另一档"这件事。
 # 分族的那一行判断在 `engines.MODEL_GATED_ENGINES`，理由写在那里。
 def _ollama(job, params: dict, outputs: Path, model: str) -> RunSpec:
-    status = engines.probe("ollama")
+    # 同 _draw_things：起跑前现查，不吃列表那一层给页面用的短缓存。
+    status = engines.probe("ollama", fresh=True)
     if status.state != "ok":
         raise RunnerUnavailable(f"本机模型服务现在不能用：{status.detail}")
     endpoint = status.values.get("endpoint") or ""

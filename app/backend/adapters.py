@@ -95,6 +95,13 @@ class ModelSpec:
     params: tuple[Param, ...] = ()
     prices: tuple[Price, ...] = ()
     note: str = ""
+    # 这一档**确实**支持按 schema 出结构化结果（JSON schema / response_format）。
+    # 为什么要一个显式字段而不是按能力轴推：`structured output` 是运行时行为，
+    # 不是能力分类。今天只有本机 Ollama 那条腿有实证——`llm_http_run.py` 会把
+    # `format` 原样发下去，且实测 `think=false` 时 1.9 秒回合法 JSON；
+    # 云端 `cloud_run.py` 至今没有 response_format 分支，所以云端那几档一律不勾。
+    # 勾了就等于对提交路径承诺"这一档能出 JSON"，而那件事要在执行器里真的成立。
+    structured_output: bool = False
 
     def as_dict(self) -> dict:
         return {"code": self.code, "label": self.label,
@@ -105,6 +112,7 @@ class ModelSpec:
                 # "Wan2.2 I2V" 这个名字不足以说明 mflux 那一档也能收参考图——它不能。
                 # 资产中心的图像面板据此老实说"这一档不接收参考图，一致性靠提示词文字"。
                 "image_inputs": [p.name for p in self.params if p.type == "image"],
+                "structured_output": bool(self.structured_output),
                 "note": self.note}
 
 
@@ -348,6 +356,11 @@ _OLLAMA = Adapter(
                  "8.2B、Q4_K_M、上下文 40,960，capabilities=[completion, tools, thinking]。"
                  "换一档模型要在清单里另登记一行并重新实测，"
                  "不能拿这一行的参数表去跑没测过的档。",
+            # 结构化输出：`runners._ollama()` 真的会往请求里放 `format`（JSON schema），
+            # `llm_http_run.py` 再把 `format` 与强制的 `think=false` 一起发下去，
+            # 回执里记 `has_format`。2026-11-06 目标机实测：同样内容 think=false
+            # 时 1.9 秒回合法 JSON。平台里唯一有实证的"结构化输出"就是这一档。
+            structured_output=True,
             params=(
                 Param("max_tokens", "int", 2048, 1, 32768,
                       note="下发成 options.num_predict。上限按上下文 40,960 的"
@@ -712,12 +725,22 @@ def validate_mock_params(params) -> list[str]:
     return errors
 
 
-def health(row) -> dict:
+def health(row, *, probe_service: bool = True,
+           probe_timeout: float | None = None) -> dict:
     """实时健康：不加载权重、不发请求。
 
     四种状态分开，是因为人要做的事不同：
     unconfigured＝先选 provider；unregistered＝清单没这个 provider（不要硬填）；
     missing＝该配的东西没配；unknown＝平台检查不了，需要人去确认。
+
+    **唯一的例外是服务型引擎**（Draw Things／Ollama 这一类）：它们的真相在
+    "端点连不连得上"，只能发一次 HTTP 才答得出。那一次网络请求可以显式关掉
+    （`probe_service=False`），此时返回 `unknown` 并把"该怎么现查"写进 detail。
+    为什么要这个开关：列表接口（模型仓库、目录、场景候选）一次要拼几十行，
+    里面每一行都去连一次服务，等于"打开一页"变成"打开一页顺带扫一遍网"——
+    一台卡住的服务就能把整页拖到超时。读接口不出网，探测走显式入口
+    （`POST /api/models/probe`、`POST /api/engines/{id}/probe`、那一行的
+    「环境检查」），这条边界与 `runtime.py` 模块头那句"不发网络请求"是同一个道理。
     """
     provider = (row["provider"] or "").strip()
     capability = row["capability"]
@@ -756,12 +779,54 @@ def health(row) -> dict:
         # 端点连不连得上、引擎当前选的是哪一档权重。探测住在 engines.py 而不是
         # runtime.py——后者的模块头明写着"不发网络请求"，那条边界正是设置页
         # 敢随手调用它的前提，破了它"点开一页设置会不会联网"就变成要看代码才知道。
-        checked = engines.probe(adapter.code)
+        endpoint = engines.resolve_endpoint(adapter.code)
+        if not probe_service:
+            # 不代连，但也不装死：三条出路各说各的。
+            # ① 有 15 秒内的现查结论 → 用它，并把"多久前查的"一起带出去
+            #    （拿旧结论冒充现在才是最坏的那种诚实）；
+            # ② 没实例 → 明确说去哪儿加；
+            # ③ 有实例但没查过/查过期了 → 说清楚"要连一次才知道"，并指出入口。
+            # `probe_deferred` 是给调用方看的：平台**会**查，只是这条读路径不该
+            # 替人连一次网。它与真·unknown（平台自己也查不了）不是同一档。
+            cached = engines.peek(adapter.code, endpoint)
+            if cached is not None and cached[1] <= engines.PROBE_TTL_SECONDS:
+                status, age = cached
+                return {**base, "state": status.state,
+                        "detail": f"{status.detail}（{age:.0f} 秒前查的）",
+                        "engine_model": status.values.get("model") or "",
+                        "endpoint": status.values.get("endpoint") or endpoint,
+                        "probed_seconds_ago": round(age, 1)}
+            return {**base, "state": "unknown", "probe_deferred": True,
+                    "detail": ("还没登记启用中的引擎实例：在「引擎管理 · 引擎实例」里"
+                               "加一条端点后才会检查") if not endpoint else
+                              ("这一档要连一次服务才知道状态；打开页面不代你连——"
+                               "点页头的「检查引擎连接」或这一行的「探测」现查"),
+                    "engine_model": "", "endpoint": endpoint}
+        checked = engines.probe(adapter.code, timeout=probe_timeout)
         return {**base, "state": checked.state, "detail": checked.detail,
                 "engine_model": checked.values.get("model") or "",
                 "endpoint": checked.values.get("endpoint") or ""}
     checked = runtime.probe(adapter.code, model)
     return {**base, "state": checked.state, "detail": checked.detail}
+
+
+# 登记层的运行位置 → 清单层的轴。**这是折回判据的唯一一份。**
+#
+# 清单与 provider_config 的 CHECK 都只有 local／cloud 两轴（0003），而登记层
+# （0035）多了 `remote`——远程自建跑的是同一套参数、同一套运行方式，只是端点
+# 在别人的机器上，所以查清单要折回 local。
+#
+# 2026-11-07：这个折回原来有三份实现——`routers/model_center.py` 建登记时一份、
+# `model_center._manifest_axis()` 一份、前端 `models.js` 的 `manifestProviders()`
+# 第三份。三份都在回答同一个问题，改一处就漂一次（上一轮 remote 登记在列表里
+# 显示"清单未登记"，正是路由折了、读路径没折）。现在收在这里，
+# 并通过 `manifest_payload()["axis"]` 下发给界面——界面按数据折，不再抄判据。
+MANIFEST_AXIS: dict[str, str] = {"local": "local", "cloud": "cloud", "remote": "local"}
+
+
+def manifest_axis(backend: str) -> str:
+    """登记层取值折回清单轴。不认识的取值原样返回（交给调用方去拒）。"""
+    return MANIFEST_AXIS.get(backend, backend)
 
 
 # 选路策略的**唯一出处**。原来这四行写在 `manifest_payload()` 的函数体里，
@@ -777,8 +842,15 @@ POLICY = {
 
 
 def manifest_payload() -> dict:
-    """给界面和 W07 的唯一清单出口。"""
+    """给界面和 W07 的唯一清单出口。
+
+    `axis` 是登记层→清单层的折回表（见 `MANIFEST_AXIS`）。下发它是因为界面也要
+    回答同一个问题——「这条 remote 登记对应清单里哪一档」。原来是前端自己写
+    `backend === "remote" ? "local" : backend`，那是第二份判据：后端哪天多折一档
+    （比如把 `ssh` 也折过去），界面会安静地按老口径算，症状是"清单里有、下拉不显示"。
+    """
     return {
         "policy": POLICY,
+        "axis": MANIFEST_AXIS,
         "adapters": [a.as_dict() for a in ADAPTERS],
     }

@@ -76,33 +76,74 @@ class ValidationRepository:
                 out[kind] = row
         return out
 
-    def latest_matrix(self) -> dict[tuple[str, str, str], dict[str, sqlite3.Row]]:
-        """全库一条查询：每个「能力×后端×供应商」槽位的五档最新验证。
+    def latest_matrix(self, slots: set[tuple[str, str, str]] | None = None
+                      ) -> dict[tuple[str, str, str], dict[str, sqlite3.Row]]:
+        """每个「能力×后端×供应商」槽位的五档最新验证。
 
         为什么要有这一条：`summary_for` 每个槽位要读五档，槽位有十个就是五十趟
         回库——而「模型与密钥」这一页一次就把十个槽位全渲染出来（连 `badge` 都要
         再读一次同一批行）。窗口函数一次算完，槽位数不再乘进查询次数。
         键是 (capability, backend, provider)，值是 {kind: 那一档最新的那条}。
+
+        `slots` 是**定向查询**：给了就把 WHERE 收窄到这几个槽位，不给就全库算。
+        为什么需要它：不带过滤的版本要把**全部历史**先过一遍窗口函数再丢弃 99%，
+        而这张表只追加不改（表头的纪律一），跑一年之后"打开模型中心"每次都
+        要扫全表。模型中心的目录只关心"已登记的那些槽位"，把它们传进来就只算那几组；
+        设置页的十个槽位是固定的也能传。不给参数的调用（脚本、单点查）结果不变。
         """
+        sql = ("SELECT * FROM (SELECT v.*, ROW_NUMBER() OVER ("
+               " PARTITION BY v.capability, v.backend, v.provider, v.kind"
+               " ORDER BY v.id DESC) AS rn FROM model_validation v")
+        args: list = []
+        if slots:
+            # 逐槽位展开成 `(cap=? AND backend=? AND provider=?) OR ...`：
+            # SQLite 没有行值 IN，而槽位数最多几十个，拼出来的语句仍然很短。
+            # 空集合走上面那条全库分支——"一个槽位都没有"意味着调用方还没读登记，
+            # 那不是"查不到"，不该悄悄回空矩阵。
+            sql += " WHERE " + " OR ".join(
+                "(v.capability = ? AND v.backend = ? AND v.provider = ?)"
+                for _ in slots)
+            for cap, backend, provider in sorted(slots):
+                args.extend([cap, backend, provider])
+        sql += ") WHERE rn = 1"
         with get_conn() as conn:
-            rows = conn.execute(
-                """SELECT * FROM (
-                        SELECT v.*, ROW_NUMBER() OVER (
-                                 PARTITION BY v.capability, v.backend, v.provider, v.kind
-                                 ORDER BY v.id DESC) AS rn
-                          FROM model_validation v
-                      ) WHERE rn = 1""").fetchall()
+            rows = conn.execute(sql, tuple(args)).fetchall()
         out: dict[tuple[str, str, str], dict[str, sqlite3.Row]] = {}
         for row in rows:
             out.setdefault((row["capability"], row["backend"], row["provider"]), {})[
                 row["kind"]] = row
         return out
 
-    def list_recent(self, limit: int = 50) -> list[sqlite3.Row]:
+    # 一页最多回多少条。这不是"表里只有这么多"——它是**一次响应**的边界，
+    # 所以调用方必须能翻页（见 `before_id`），不能像原来那样「return 前 200 条」就算完了：
+    # 第 201 条之后的历史原来读不到，而"上周这台机器还连不连得上"恰恰要在历史里找。
+    MAX_PAGE = 200
+
+    def list_recent(self, limit: int = 50, before_id: int | None = None
+                    ) -> list[sqlite3.Row]:
+        """按 id 倒序一页。`before_id` 是上一页最后一条的 id（翻旧账用）。
+
+        用 id 而不是 offset 翻页：model_validation 只追加不改（表头那三条纪律的第一条），
+        所以"比某条更早"是个稳定边界；用 OFFSET 的话，翻页期间新写入一条就会让
+        第二页整体挪一格，读到重复或漏行——而这张表恰恰一直在追加。
+        """
+        limit = max(1, min(int(limit), self.MAX_PAGE))
+        sql = "SELECT * FROM model_validation"
+        args: list = []
+        if before_id is not None:
+            sql += " WHERE id < ?"
+            args.append(int(before_id))
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
         with get_conn() as conn:
-            return conn.execute(
-                "SELECT * FROM model_validation ORDER BY id DESC LIMIT ?",
-                (max(1, min(int(limit), 200)),)).fetchall()
+            return conn.execute(sql, tuple(args)).fetchall()
+
+    def count(self) -> int:
+        """历史总条数。给"一共多少条、这一页是第几页"用——
+        只回一页而不说总量，人分不清"到底看完了没有"。"""
+        with get_conn() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM model_validation")
+                       .fetchone()[0])
 
     def for_job(self, job_id: int) -> list[sqlite3.Row]:
         with get_conn() as conn:
