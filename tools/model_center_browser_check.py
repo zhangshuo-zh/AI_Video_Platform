@@ -545,13 +545,13 @@ def main():
         check("验证记录弹窗能打开", P.has(cdp, "#val-modal:not([hidden])"))
         P.click(cdp, "#val-close")
 
-        # 页头「检查引擎连接」的检查结果弹窗（2026-11-08）：按钮干完活，
-        # 结论散在 toast 和逐行徽章里，想一眼看全"哪几台通哪几台不通"得逐屏翻。
-        # 弹窗吃的是接口返回的 probed 数组——这份数据此前被前端扔掉没用。
+        # 页头「检查引擎连接」的检查结果弹窗（2026-11-08）。
+        # 按钮干完活，结论散在 toast 和逐行徽章里，想一眼看全"哪几台通、
+        # 哪几台不通"得逐屏翻。弹窗的数据是 `GET /api/engines`——库里每台
+        # 实例一行、逐台按自己的端点现查，不是按 engine_code 去重的 probed。
         P.eval_js(cdp, "document.getElementById('mc-check-all').click()")
-        # 按钮内部是一串请求（1 次探测 + 每轨 1 次 env_check），等它跑完开窗
-        # 探测用满 5 秒手动超时、两台串行，再加每轨一次 env_check：
-        # 服务没跑的机器上这一串要十几秒，等待必须给够，否则假失败。
+        # 按钮内部是一串请求（探测 + 取引擎列表 + 每轨一次 env_check），
+        # 列表档逐台 0.8 秒、加上每轨留痕，等待必须给够，否则假失败。
         for _ in range(25):
             time.sleep(1.0)
             if P.eval_js(cdp, "[...document.querySelectorAll('.modal')]"
@@ -560,24 +560,24 @@ def main():
         opened = P.eval_js(cdp, "[...document.querySelectorAll('.modal')]"
                                  ".some(m => m.textContent.includes('引擎连接检查'))")
         check("点「检查引擎连接」后弹出结果窗", bool(opened), str(opened))
-        # 库里 draw_things 与 ollama 都是登记过的服务型引擎：probed 按
-        # engine_code 去重后各占一行，弹窗里两台都必须出现
         txt = str(P.eval_js(cdp,
                     "(() => {const m=[...document.querySelectorAll('.modal')]"
                     ".find(x=>x.textContent.includes('引擎连接检查'));"
                     "return m?m.textContent.replace(/\\s+/g,' '):'';})()"))
-        check("结果窗把每台服务型引擎都列出来（draw_things 与 ollama）",
+        # 库副本里 draw_things 与 ollama 是两台启用中的服务型实例：
+        # 弹窗按实例逐台列，两台都必须出现（这是"引擎列表"的权威口径）。
+        check("结果窗按实例列出每台引擎（draw_things 与 ollama）",
               'ollama' in txt and 'draw_things' in txt,
-              f"窗内文本 {'含两台' if ('ollama' in txt and 'draw_things' in txt) else txt[:120]}")
+              f"窗内 {'含两台' if ('ollama' in txt and 'draw_things' in txt) else txt[:120]}")
         check("结果窗顶部给了一句汇总结论（不用自己数徽章）",
-              '台里通了' in txt or '全部连上了' in txt,
-              next((s for s in txt.split('  ') if '通了' in s), '')[:80])
-        check("结果窗写明「引擎在线 ≠ 模型可用」这层边界",
+              '本次现查' in txt and '通' in txt,
+              next((s for s in txt.split('  ') if '本次现查' in s), '')[:80])
+        check("结果窗写明「连上 ≠ 模型可用」这层边界",
               '不等于' in txt and '可用' in txt,
-              "引擎连通性只证明进程在线，可用还要过验证")
-        check("结果窗区分了「这次现查的」与「这次没连网的」两类",
-              ('这次没连网' in txt) or ('没有任何服务型引擎可探' in txt),
-              "云端/本地那一节有口径说明，或本轮无可探时给了诚实的空态")
+              "连通性只证明进程在线，可用还要过验证")
+        check("结果窗交代了超时档与历史在哪查",
+              '0.8' in txt and '探测' in txt,
+              "列表档超时说明 + 指向引擎管理的手动探测")
         P.eval_js(cdp, "(() => {const b=document.querySelector('[data-close-probe-res]');"
                        "if (b) b.click();})()")
         check("结果窗可关闭",
