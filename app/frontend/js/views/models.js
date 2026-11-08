@@ -25,7 +25,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import {
-  bindModalDismiss, bindSubChips, escapeHtml, run, subChipRow,
+  bindModalDismiss, bindSubChips, closeModal, escapeHtml, run, subChipRow,
 } from '../util.js';
 import { getSub, setSub } from '../navstate.js';
 import {
@@ -238,12 +238,14 @@ export default {
       if (ok) window.dispatchEvent(new CustomEvent('app:refresh'));
     });
 
+    // 关闭统一走 closeModal：它先播 150ms 退场再提交 hidden，
+    // 不然关闭是"啪"地消失、和打开那两层动画不对称。
     root.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => {
-      root.querySelector('#' + b.dataset.close).hidden = true;
+      closeModal(root.querySelector('#' + b.dataset.close));
     }));
     root.querySelectorAll('.modal').forEach((m) => {
-      m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; });
-      bindModalDismiss(m, () => { m.hidden = true; });
+      m.addEventListener('click', (e) => { if (e.target === m) closeModal(m); });
+      bindModalDismiss(m, () => closeModal(m));
     });
 
     const sub = getSub('models') ?? 0;

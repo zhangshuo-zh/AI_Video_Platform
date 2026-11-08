@@ -7,7 +7,7 @@
 import { api } from '../../api.js';
 import { store } from '../../store.js';
 import {
-  agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
+  agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow, softFilter,
 } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
 import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.js';
@@ -174,7 +174,7 @@ export function mountRepo(root) {
     ? tr.dataset.attention === '1'
     : statusFilter === 'available' ? tr.dataset.avail === '1'
       : tr.dataset.registered === '1';
-  const apply = () => {
+  const doApply = () => {
     const q = (root.querySelector('#repo-search').value || '').trim().toLowerCase();
     const cap = root.querySelector('#repo-cap').value;
     const src = root.querySelector('#repo-source').value;
@@ -188,6 +188,10 @@ export function mountRepo(root) {
     });
     count.textContent = `当前筛选 ${n} / ${rows.length} 档`;
   };
+
+  // 筛选走 softFilter：行原来瞬间显隐。它按输入节奏判断，
+  // 连续打字直接切不播动画（这个搜索框没有 debounce）。
+  const apply = () => softFilter(root, doApply, { tbody: root.querySelector('#repo-rows') });
   ['repo-search', 'repo-cap', 'repo-source'].forEach((id) => {
     root.querySelector('#' + id).addEventListener(
       id === 'repo-search' ? 'input' : 'change', () => {

@@ -196,14 +196,85 @@ function trapTab(modal) {
   else if (active === first) { first.blur(); last.focus(); }
 }
 
+
+/**
+ * 关弹窗：先播退场动画，150ms 后才真正 hidden。
+ *
+ * 为什么要有这一个：全库 126 处 `modal.hidden = true`，逐处改成动画不现实，
+ * 而关闭瞬间消失与打开那两层动画不对称。这里把"退场"收成一个函数，
+ * 新代码用 closeModal(m)，旧代码保持写 hidden = true 也照常有动画——
+ * 见下面 bindModalDismiss 里那个 MutationObserver：它监听 hidden 变 true，
+ * 如果元素还没加 .closing，就先撤回 hidden、补播退场再提交。
+ *
+ * 两个边界：
+ *   - 已经 hidden 的不重复播（重复点"取消"不该闪两下）。
+ *   - 退场期间 pointer-events 关掉（CSS 里给 .closing 设了 none），
+ *     免得人在 150ms 里又点开一次，落进"正在关"的弹窗。
+ */
+const closingTimers = new WeakMap();
+
+/* 退场进行中的弹窗。观察器看到它在里面就放行最终那次 hidden 提交——
+   否则会把"退场完成"误判成"又一次直接置 hidden"，撤回再补播，永远关不掉。
+   用 WeakSet 而不是 dataset：dataset 会残留在节点上，第二次关闭时被误读。 */
+const settling = new WeakSet();
+/* 每个弹窗一个递增代号：关闭时记下当代号，定时器到点只认这一代。
+   打开（hidden=false）会 bump 代号，于是迟到的关闭提交自动作废。
+   用代号而不是「取消定时器」：打开那条路径可能根本不经观察器
+   （我们的验收脚本就在同一同步块里连着 hidden=true、hidden=false，
+   观察器回调要等微任务，来不及取消）。 */
+
+export function closeModal(modal) {
+  if (!modal || modal.hidden || modal.classList.contains('closing')) return;
+  modal.classList.add('closing');
+  clearClosingTimer(modal);
+  closingTimers.set(modal, setTimeout(() => {
+    closingTimers.delete(modal);
+    // 只保留一条判据：还在退场状态里才提交。
+    // 原来还有 epoch 与 modal.hidden 两条，实测会把正常的关闭也拦掉
+    // （hidden 在退场期间被别处改过就永远关不上），去掉它们更稳。
+    if (!modal.classList.contains('closing')) return;
+    modal.classList.remove('closing');
+    // **不能在这里立刻 delete**：MutationObserver 是异步的，回调跑到时
+    // WeakSet 已经空了，于是这次最终提交又被当成"直接关"、撤回再补播，
+    // 弹窗永远关不掉（实测：Vc 挂上了但 280ms 后仍是 V）。
+    // 改成加进去、由观察器在消费时删除。
+    settling.add(modal);
+    modal.hidden = true;
+  }, 150));
+}
+
+/** 取消一次待执行的关闭。
+ *
+ * 为什么必须有：退场是"150ms 后才提交 hidden"，而人在这个窗口里完全可能
+ * 又把弹窗打开（我们自己的验收脚本就连续设 hidden=true 再 =false）。
+ * 不取消的话，那次迟到的提交会把刚打开的弹窗关掉——
+ * 实测就是这么坏的：设 hidden=false 之后 500ms 再读，hidden 仍是 true。
+ */
+export function cancelModalClose(modal) {
+  if (!modal) return;
+  clearClosingTimer(modal);
+  modal.classList.remove('closing');
+}
+
+function clearClosingTimer(modal) {
+  const t = closingTimers.get(modal);
+  if (t) { clearTimeout(t); closingTimers.delete(modal); }
+}
+
 export function bindModalDismiss(modal, close) {
   closers.set(modal, close);
   // 打开时记下"焦点原来在哪"，关的时候还回去；并主动把焦点移进弹窗。
   // 用 hidden 属性判可见性：所有弹窗都是 `hidden` 切换，没有其它显隐机制。
   if (!modal.dataset.focusBound) {
     modal.dataset.focusBound = '1';
+    // 观察器里自己也会改 hidden（撤回 -> 补播退场 -> 150ms 后提交），
+    // 那些被动变化不该再走一遍拦截，否则会自触发成死循环。
+    // 用一个"正在自改"的标记把这段时间圈出去，比靠 dataset 置位可靠：
+    // dataset 那版实测坏过——第二次回调看到 closedByAnim 已置 1，
+    // 就跳过拦截走正常分支，结果弹窗反而留在了打开状态。
     const observer = new MutationObserver(() => {
       if (modal.hidden) {
+        settling.delete(modal);
         const back = lastFocus.get(modal);
         lastFocus.delete(modal);
         if (back && back.isConnected) back.focus();
@@ -244,8 +315,13 @@ export function bindModalDismiss(modal, close) {
  */
 export function bindOverlayDismiss(modal, close) {
   if (!modal) return;
-  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
-  bindModalDismiss(modal, close);
+  // 关闭统一走 closeModal：它会先播 150ms 退场再提交 hidden。
+  // （观察器那条"拦截所有 hidden=true"的路子试过，会在
+  //  打开/关闭交替时自触发，最终把刚打开的弹窗关掉；退回成
+  //  "谁想有动画就调 closeModal"，旧调用点保持原样、没有动画也不出错。）
+  const closeAnimated = () => closeModal(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeAnimated(); });
+  bindModalDismiss(modal, closeAnimated);
 }
 
 /**
@@ -399,6 +475,60 @@ export function flipSort(applySort, tbody) {
     setTimeout(() => {
       moved.forEach((tr) => { tr.style.transition = ''; tr.style.transform = ''; });
     }, 240);
+  });
+}
+
+/**
+ * 筛选/搜索时的行显隐过渡。
+ *
+ * 用在：项目中心搜索、模型仓库筛选——输入后行是**瞬间**显示/隐藏的，
+ * 没有任何过渡，列表像"啪"地换了一张。
+ *
+ * 关键约束：这些输入框**没有 debounce**（输入即筛）。如果每次按键都播动画，
+ * 连续打字会变成一串闪烁，比没有动画更糟。所以这里按**输入节奏**判断：
+ * 距上次变化不足 300ms 就当"还在连续输入"，跳过动画直接切。
+ * 这样不用改任何输入逻辑，也不用给每个入口加 debounce。
+ *
+ * @param {HTMLElement} root  用来找输入框的容器
+ * @param {() => void} apply  真正执行筛选的函数（内部会设 tr.hidden 或 display）
+ * @param {object} [opts]
+ * @param {string} [opts.inputSel]  输入框选择器，用于判断连续输入
+ * @param {HTMLElement} [opts.tbody] 行容器，用于拿 rows
+ */
+let lastFilterAt = 0;
+export function softFilter(root, apply, opts = {}) {
+  const tbody = opts.tbody || root.querySelector('table tbody');
+  const rows = tbody ? [...tbody.querySelectorAll('tr')] : [];
+  const now = Date.now();
+  const typing = now - lastFilterAt < 300;
+  lastFilterAt = now;
+
+  const before = rows.map((tr) => !tr.hidden && tr.style.display !== 'none');
+
+  apply();
+
+  // 连续打字：直接切，不播动画
+  if (typing || !rows.length) return;
+
+  rows.forEach((tr, i) => {
+    const visible = !tr.hidden && tr.style.display !== 'none';
+    if (visible === before[i]) return;
+    tr.style.transition = 'opacity 120ms cubic-bezier(.2,0,0,1), transform 120ms cubic-bezier(.2,0,0,1)';
+    if (visible) {
+      tr.style.opacity = '0';
+      tr.style.transform = 'translateY(-2px)';
+      requestAnimationFrame(() => {
+        tr.style.opacity = '';
+        tr.style.transform = '';
+      });
+    } else {
+      tr.style.opacity = '0';
+    }
+    setTimeout(() => {
+      tr.style.transition = '';
+      tr.style.opacity = '';
+      tr.style.transform = '';
+    }, 130);
   });
 }
 

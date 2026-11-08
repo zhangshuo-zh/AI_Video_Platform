@@ -1,6 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, bindOverlayDismiss, confirmDanger, escapeHtml, formatMoney, run, flipSort } from '../util.js';
+import { bindModalDismiss, bindOverlayDismiss, confirmDanger, escapeHtml, formatMoney, run, flipSort,
+         softFilter } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -529,7 +530,8 @@ export default {
     };
     applySort();
 
-    const applyFilter = () => {
+
+    const doFilter = () => {
       const rows = allRows();
       const kw = (searchEl?.value || '').trim().toLowerCase();
       let shown = 0;
@@ -577,6 +579,11 @@ export default {
       focusAnchor(rows);
       renderBar();
     };
+
+    // 搜索/筛选用 softFilter 包一层：行原来瞬间显隐，列表像啪地换了一张。
+    // 它按输入节奏判断——连续打字（间隔 <300ms）直接切、不播动画，
+    // 免得每敲一个字都闪一下。
+    const applyFilter = () => softFilter(root, doFilter, { tbody });
 
     if (sortEl) {
       sortEl.value = sortMode;

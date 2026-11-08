@@ -1166,6 +1166,22 @@ td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);curs
   animation:fade-in .12s var(--ease);
 }
 .modal[hidden]{display:none}
+
+/* 弹窗的退场。
+   打开有 fade-in（遮罩）+ sheet-in（盒子）两层；关闭原来是把 hidden 置上、瞬间消失，
+   跟打开不对称。这里补一条 150ms 的退场：遮罩淡出、盒子同时下移 8px——
+   方向与入口相反，读起来是"收回去"而不是"又淡了一次"。
+
+   怎么触发：.modal 上挂 .closing 类，150ms 后才真正设 hidden。
+   这个类由 util.js 的 closeModal 加，不需要每个调用点各写一遍。 */
+@keyframes fade-out{from{opacity:1}to{opacity:0}}
+@keyframes sheet-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(8px)}}
+.modal.closing{animation:fade-out 150ms var(--ease) forwards;pointer-events:none}
+.modal.closing .modal-box{animation:sheet-out 150ms var(--ease) forwards}
+/* 退场期间盒子顶端那条"上电亮线"不该再跑一遍 */
+.modal.closing .modal-box::after{display:none}
+
+
 .modal-box{
   position:relative;width:452px;background:var(--sheet);border:1px solid var(--edge);border-radius:16px;
   overflow:hidden;box-shadow:var(--sh-pop);animation:sheet-in .18s var(--ease);

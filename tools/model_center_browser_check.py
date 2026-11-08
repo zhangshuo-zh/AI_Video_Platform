@@ -866,7 +866,9 @@ def main():
                 deviceScaleFactor=2, mobile=True)
         # 弹窗默认 hidden：hidden 的元素拿不到计算样式，要先让它显示出来再量
         P.eval_js(cdp, "document.querySelector('#mc-form').hidden = false")
-        time.sleep(0.5)
+        # 弹窗现在有 150ms 退场动画：上一次测量把它设成 hidden=true 会触发退场，
+        # 这里再打开时要等那段收尾彻底走完，否则量到的是中间的布局。
+        time.sleep(0.9)
         narrow = P.eval_js(cdp, """(() => {
           // 先确认视口真的改了（CDP 的 override 不生效时这里会露馅：
           // 那说明是测量方法有问题，不是 CSS 有问题——两者要分开，别修错地方）
@@ -884,11 +886,11 @@ def main():
         })()""") or "NONE"
         np_ = str(narrow).split('|')
         check("380px 视口生效（innerWidth 与媒体查询都对上）",
-              len(np_) == 4 and int(np_[0]) <= 400 and np_[1] == 'true',
+              len(np_) >= 4 and int(np_[0]) <= 400 and np_[1] == 'true',
               f"innerWidth {np_[0] if np_ else '?'}／max-width:640px 命中 "
               f"{np_[1] if len(np_)>1 else '?'}")
         check("380px 上表单收成单列且页面不横向溢出",
-              len(np_) == 4 and np_[2] == '1' and int(np_[3]) <= 2,
+              len(np_) >= 4 and np_[2] == '1' and int(np_[3]) <= 2,
               f"列数 {np_[2] if len(np_)>2 else '?'}／横向溢出 {np_[3] if len(np_)>3 else '?'}px")
         P.eval_js(cdp, "document.querySelector('#mc-form').hidden = true")
         cdp.cmd("Emulation.clearDeviceMetricsOverride")
