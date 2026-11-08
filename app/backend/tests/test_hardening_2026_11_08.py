@@ -958,3 +958,103 @@ def test_产线节点失败码在拆包后仍被扫全():
                     for f in sorted((root / "pipeline_pkg").glob("*.py")))
     codes = set(re.findall(r'_NodeFail\(\s*"([a-z_]+)"', src))
     assert len(codes) >= 5, f"只扫到 {len(codes)} 个节点失败码，扫描路径可能失效了"
+
+
+# ---------- 第八批：repositories/jobs.py 拆成 mixin（2026-11-08） ----------
+
+def test_jobs_仓储方法一个不少():
+    """`jobs` 单例的 API 必须完全不变——它是队列与状态机的核心，
+    35 个方法少一个就是运行时 AttributeError。"""
+    from repositories.jobs import jobs
+
+    expected = {
+        # crud
+        "create", "get", "get_many", "by_key", "list", "ids_for_project",
+        "status_of", "counts", "_scope",
+        # query
+        "_latest_by_shot", "latest_succeeded_videos_by_shot", "submission_counts",
+        "recent_result_paths", "latest_jobs_by_shot", "queue_by_resource",
+        # lease
+        "claim_next", "renew", "set_running", "recover_stale", "heartbeat",
+        "workers", "worker_state",
+        # state
+        "succeed", "fail", "cancelled", "needs_attention", "reconcile",
+        "request_cancel", "_resources",
+        # retry
+        "retry", "retry_chain", "retry_count",
+        # cost
+        "cost_summary", "stats_for_projects",
+        # health
+        "queue_health",
+    }
+    missing = sorted(n for n in expected if not hasattr(jobs, n))
+    assert not missing, f"jobs 单例缺方法：{missing}"
+    assert len(expected) == 35, f"这张清单应有 35 个方法，现在是 {len(expected)}"
+
+
+def test_jobs_仍是单例且类型正确():
+    """`from repositories.jobs import jobs` 必须拿到**同一个**实例。"""
+    import repositories.jobs as m1
+    import repositories.jobs_parts as m2
+
+    assert m1.jobs is not None
+    assert type(m1.jobs) is m2.JobRepository
+    # 两次 import 拿到同一个对象
+    import importlib
+    again = importlib.reload(m1)
+    assert again.jobs is not None
+
+
+def test_jobs_mixin_组合顺序保证_cost_能找到_scope():
+    """`cost` 的唯一跨 mixin 依赖是 `self._scope()`（在 `crud` 里）。
+
+    mixin 组合顺序错了（比如把 Cost 排在 Crud 前面），`_scope` 仍然能通过
+    MRO 找到——但如果哪天有人把 `_scope` 挪到别的 mixin、或漏掉 Crud，
+    这里就会红。这条守的是"这条路还在"。
+    """
+    from repositories.jobs import jobs
+
+    assert hasattr(jobs, "_scope"), "cost 依赖 _scope，它必须存在"
+    # _scope 是 staticmethod：通过实例与通过类拿到的是同一个函数
+    assert jobs._scope is type(jobs)._scope
+
+
+def test_jobs_的_staticmethod_没有在搬迁中退化():
+    """`_resources` / `_scope` 原本是 `@staticmethod`。
+
+    搬进 mixin 时如果丢了装饰器，它们会变成实例方法——调用处
+    `self._resources(...)` 仍然能跑（多传了个 self 给 resources 参数），
+    但 `_resources(resources)` 这类直接调用会错，而且**测试大多发现不了**。
+    所以单独守一条。
+    """
+    import inspect
+
+    from repositories.jobs_parts.crud import JobsCrudMixin
+    from repositories.jobs_parts.state import JobsStateMixin
+
+    for owner, name in ((JobsStateMixin, "_resources"), (JobsCrudMixin, "_scope")):
+        raw = inspect.getattr_static(owner, name)
+        assert isinstance(raw, staticmethod), f"{owner.__name__}.{name} 不是 staticmethod 了"
+
+
+def test_jobs_parts_每个模块能单独导入():
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    names = sorted(p.stem for p in (root / "repositories" / "jobs_parts").glob("*.py")
+                   if p.name != "__init__.py")
+    assert names, "jobs_parts 是空的？"
+    for name in names:
+        importlib.import_module(f"repositories.jobs_parts.{name}")
+
+
+def test_jobs_门面没有丢模块级常量():
+    """`retry_reason`/`clamp_limit`/`BILLABLE_WHERE` 这些原来住在 jobs.py 顶层，
+    外部（`routers/jobs.py`、`services`、`pipeline`）直接 import 它们。"""
+    import repositories.jobs as m
+
+    for name in ("retry_reason", "resource_class", "clamp_limit", "JobOwnershipLost",
+                 "RESOURCE_CLASS_SQL", "COPY_FIELDS", "BILLABLE_WHERE",
+                 "JOB_ACTIVE_STATUSES", "RETRYABLE_JOB_STATUSES"):
+        assert hasattr(m, name), f"jobs 门面缺 {name}（外部有 import）"
