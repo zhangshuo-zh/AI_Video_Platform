@@ -245,8 +245,14 @@ export function pageEngines() {
       <span class="sub">默认轨走打勾那条；云端视频只能逐镜头另选</span>
       <span class="right">
         <span class="chip plain" id="save-state" hidden>已保存</span>
-        <button class="btn xs" id="slots-expand">${slotOpen.size ? '全部收起' : '展开全部细节'}</button>
-        <button class="btn primary" id="save-providers">保存能力轨</button>
+        <!-- 与右边那颗 primary 同档（sm）：两者并排在 card-head 里，
+             用 xs 会矮 10px、字号小一档，看着像"主按钮旁边挂了个表格内小按钮"。
+             全站 card-head .right 里的按钮都走 sm，这里没有理由是例外。 -->
+        <button class="btn sm" id="slots-expand">${slotOpen.size ? '全部收起' : '展开全部细节'}</button>
+        <!-- 主按钮也走 sm：全站 card-head .right 里都是 btn sm primary
+             （agents／composition／pipeline／review 一致），只有这里用了默认档,
+             于是和旁边那颗 28px 的次级按钮并排时高出 5px。 -->
+        <button class="btn sm primary" id="save-providers">保存能力轨</button>
       </span>
     </div>
     <div class="table-wrap">
