@@ -16,6 +16,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 
 import adapters
+import cloud_probe
 import engines
 import model_center as mc
 import validations
@@ -132,6 +133,11 @@ def probe_models(fresh: int = 0,
 
     返回的是**整张目录**而不是几条健康：界面拿它整页重绘，字号、状态、顶部四数
     因此与列表逐行对得上；只回健康的话前端还得自己把状态拼一遍，那就是第二套口径。
+
+    `cloud` 段是 2026-11-08 补的：按钮原来只现查本机服务型引擎，云端轨"查的是
+    密钥变量在不在"，点一下按钮云端一格不动，用起来怪。现在云端也真去供应商
+    网关问一次——但**结论口径不变**：探的是"路通不通、钥匙对不对"，永远不等于
+    "那一档模型可用"。实现与纪律见 `cloud_probe.py` 模块头。
     """
     rows = [dict(r) for r in model_center.registrations()]
     # 按引擎去重：同一个 engine_code 可能有两三行登记（同机同服务的不同档），
@@ -151,8 +157,12 @@ def probe_models(fresh: int = 0,
     # 缓存此刻已被上面这一轮填好，所以下面这次 catalog 里的探测全是缓存命中，
     # 不会为同一台机器再发一遍请求。
     items = mc.catalog(probe=True)
+    # 云端轨：登记过的供应商逐家去供应商网关问一次（与本机那一路去重逻辑一致，
+    # 同一家不同能力轨只问一次；未核验的如实回"没有可探的端点"，不发请求）。
+    cloud = cloud_probe.probe_registered(rows, fresh=bool(fresh))
     return {"items": items, "stats": mc.stats(items),
             "probed": [{"engine_code": code, **value} for code, value in probed.items()],
+            "cloud": cloud,
             "note": "只读：探测不建 Job、不写库、不改默认轨"}
 
 

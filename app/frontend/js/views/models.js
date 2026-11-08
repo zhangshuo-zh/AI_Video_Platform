@@ -224,15 +224,20 @@ export default {
       const btn = root.querySelector('#mc-check-all');
       btn.disabled = true;
       let engineList = null;
+      let cloudRows = [];
       const ok = await run('环境检查', async () => {
         // 先请后端**现查**一次服务型引擎（fresh=1 绕过缓存）：打开页面时那一格是
         // "待现查"，只有显式动作才去连网——这一颗按钮就是那个显式动作。
         // 它只读、不建 Job、不改配置，结论随整张目录一起回来。
-        await api.probeModels(true);
+        // 现在它还替云端轨各去供应商网关问一次（`cloud` 段，见 cloud_probe.py）：
+        // 按钮原来只现查本机，点一下云端一格不动，用起来怪。
+        const probeRes = await api.probeModels(true);
+        cloudRows = probeRes?.cloud || [];
         // 再取一遍引擎实例列表：`GET /api/engines` 逐台按**它自己的端点**
         // 现查一次（列表档 0.8 秒），这才是"引擎列表通不通"的权威口径。
         // 不用 probeModels 的 probed：那个数组按 engine_code 去重，
         // 同一家登记了两台机器时只看得到第一台，另一台的死活它不知道。
+        // （云端段不受这条影响：云端引擎不是实例表里的行，只有这一路有结论。）
         engineList = await api.engines();
         // 逐条走和列表页同一个接口：不发请求、不加载权重，只留痕
         for (const r of filled) {
@@ -245,7 +250,7 @@ export default {
         window.dispatchEvent(new CustomEvent('app:refresh'));
         // 弹窗放在重绘**之后**：整页重绘会重建 DOM，先弹窗会被下一次装载
         // 的骨架闪一下；重绘完再 append 到 body 的弹窗不受影响。
-        openProbeResults(engineList);
+        openProbeResults(engineList, cloudRows);
       }
     });
 

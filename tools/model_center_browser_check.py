@@ -72,9 +72,53 @@ def mint_admin_session() -> str:
     return token
 
 
+def start_mock_gateway():
+    """本地假网关：替云端探测当一次"供应商"，CI 全程不碰真网络。
+
+    照真实鉴权行为写（2026-11-08 实测）：钥匙不对先回 401（应答体里带打码
+    尾巴），钥匙对了才给内容。deepseek 指到这里，wan 的 base 环境变量**不配**
+    ——这样弹窗里同时有"路通钥匙对"和"无可探端点"两种诚实的云端结论。
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            return
+
+        def do_GET(self):
+            auth = self.headers.get("Authorization") or ""
+            body = json.dumps({"data": [{"id": "deepseek-flash"}]}).encode()
+            status = 200 if auth == f"Bearer {MOCK_SECRET}" else 401
+            if status == 401:
+                body = json.dumps({"error": {
+                    "message": f"Authentication Fails, Your api key: ****{MOCK_SECRET[-4:]} invalid",
+                    "code": "invalid_api_key"}}).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+MOCK_SECRET = "sk-mockgateway-0000"
+
+
 def main():
     prepare_env()
     token = mint_admin_session()
+
+    gateway = start_mock_gateway()
+    # 云端探测的 base 与密钥走环境变量（与执行链同一出处）：deepseek 指到假网关，
+    # wan 故意不配 ALIYUN_WAN_BASE_URL——"无可探端点"那一档也要在界面上过一遍。
+    os.environ["DEEPSEEK_BASE_URL"] = f"http://127.0.0.1:{gateway.server_address[1]}"
+    os.environ["DEEPSEEK_API_KEY"] = MOCK_SECRET
+    os.environ.pop("ALIYUN_WAN_BASE_URL", None)
 
     proc = subprocess.Popen(
         [str(BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
@@ -545,6 +589,25 @@ def main():
         check("验证记录弹窗能打开", P.has(cdp, "#val-modal:not([hidden])"))
         P.click(cdp, "#val-close")
 
+        # 云端一段（2026-11-08 补）：先保证云端登记行在库里有（CI 干净库从
+        # 迁移起步，没有 live 库那两行），再点按钮。422 说明已存在、201 说明
+        # 刚补上——两种都算数，这里要的是"弹窗里有对象可查"。
+        ensured = cdp.eval("""(async () => {
+          const out = [];
+          for (const b of [{capability:'text', backend:'cloud', provider:'deepseek',
+                            model_code:'deepseek-flash'},
+                           {capability:'video', backend:'cloud', provider:'wan',
+                            model_code:'wan2.7-t2v'}]) {
+            const r = await fetch('/api/models', {method: 'POST',
+              headers: {'content-type': 'application/json'}, body: JSON.stringify(b)});
+            out.push(r.status);
+          }
+          return out.join(',');
+        })()""")
+        check("云端登记行就位（deepseek/wan，供结果窗现查）",
+              str(ensured).replace('201', '').replace('422', '').strip(',') == '',
+              f"POST 回执 {ensured}")
+
         # 页头「检查引擎连接」的检查结果弹窗（2026-11-08）。
         # 按钮干完活，结论散在 toast 和逐行徽章里，想一眼看全"哪几台通、
         # 哪几台不通"得逐屏翻。弹窗的数据是 `GET /api/engines`——库里每台
@@ -578,6 +641,24 @@ def main():
         check("结果窗交代了超时档与历史在哪查",
               '0.8' in txt and '探测' in txt,
               "列表档超时说明 + 指向引擎管理的手动探测")
+        # 假网关指在 DEEPSEEK_BASE_URL 上（deepseek 钥匙对 → 路通档），wan 故意
+        # 没配 base → 无可探端点档。两档同时出现才说明各档结论各说各话。
+        check("结果窗有云端一段，登记过的供应商逐家列行",
+              '云端' in txt and 'deepseek' in txt and 'wan' in txt,
+              f"窗内 {'齐' if ('deepseek' in txt and 'wan' in txt) else txt[:120]}")
+        check("云端结论分档：钥匙被接受与无可探端点各说各的",
+              '路通、钥匙被接受' in txt and '无可探端点' in txt,
+              "deepseek 走假网关回 200，wan 没配 base 如实报没得探")
+        check("旧口径「云端只查密钥变量在不在」的说明已改掉",
+              '密钥变量在不在' not in txt,
+              "现在写明云端真发了 GET")
+        # 出网的是后端，不是浏览器：页面资源日志里不许出现假网关端口的直连。
+        gw_port = str(gateway.server_address[1])
+        page_hits = [u for u in P.eval_js(cdp, "performance.getEntriesByType('resource')"
+                                             ".map(e => e.name)") or []
+                     if f":{gw_port}" in u]
+        check("云端探测由后端发出，浏览器没有直连供应商网关",
+              not page_hits, f"页面直连网关 {len(page_hits)} 次")
         P.eval_js(cdp, "(() => {const b=document.querySelector('[data-close-probe-res]');"
                        "if (b) b.click();})()")
         check("结果窗可关闭",

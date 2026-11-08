@@ -400,11 +400,18 @@ export function openProbeHistory(data) {
  *
  * 「引擎在线」与「模型可用」是两件事：这一屏只讲前者。后者要过验证那几关，
  * 后端 `_status_of` 里任何一档都不许往上跳，这里也不许替它跳。
+ *
+ * 第二段是**云端**（2026-11-08 补）。云端引擎不在实例表里，权威口径是
+ * `POST /api/models/probe` 返回的 `cloud` 数组（后端 `cloud_probe.py`）：
+ * 逐家去供应商网关问一次"路通不通、钥匙对不对"。它和第一段问的不是同一个
+ * 问题，所以各说各话、不合并成一句总数——把"云端 2 家"混进"现查 N 台"里
+ * 会让人以为本机有台机器没连上。
  */
-export function openProbeResults(payload) {
+export function openProbeResults(payload, cloudRows) {
   const inst = payload || {};
   const items = inst.items || [];
   const service = new Set(inst.service_engines || []);
+  const cloud = Array.isArray(cloudRows) ? cloudRows : [];
 
   const rowsNow = items.map((it) => {
     const name = it.display_name || it.engine_label || it.engine_code;
@@ -464,6 +471,40 @@ export function openProbeResults(payload) {
       </tr></thead><tbody>${rowsNow}</tbody></table></div>`
     : '';
 
+  // 云端一段：逐家供应商一行，结论来自 cloud_probe（去供应商网关问一次）。
+  // 五档各说各的，chip 用的就是"要不要动、动什么"的词，不互相冒充。
+  const CLOUD_CHIP = {
+    ok: ['green', '路通、钥匙被接受'],
+    auth_rejected: ['red', '路通、钥匙被拒'],
+    unreachable: ['red', '连不上'],
+    no_key: ['amber', '没配密钥'],
+    no_endpoint: ['amber', '无可探端点'],
+  };
+  const cloudRowsNow = cloud.map((c) => {
+    const [tone, word] = CLOUD_CHIP[c.state] || ['amber', c.state || '未知'];
+    const where = c.url ? `<code>${escapeHtml(c.url)}</code>`
+                        : `<span class="hint">${escapeHtml(c.key_env || '')}</span>`;
+    return `<tr>
+      <td class="t-strong">${escapeHtml(c.label || c.provider)}
+        <div class="hint mono">${escapeHtml(c.provider)} · ${escapeHtml(c.capability || '')}</div></td>
+      <td>${where}</td>
+      <td><span class="chip ${tone}" title="${escapeHtml(c.detail || '')}">${escapeHtml(word)}</span>
+        <div class="hint">${escapeHtml(c.detail || '')}</div></td>
+    </tr>`;
+  }).join('');
+
+  const cloudVerdict = cloud.length
+    ? `<p class="note" style="margin:14px 0 10px">
+        <b>云端 ${cloud.length} 家：现查过供应商网关。</b>
+        这里只回答"路通不通、钥匙被不被接受"，<b>不等于那一档模型能用</b>；
+        「没配密钥」「无可探端点」两档没发出请求，是配置层面的事实，不是网络故障。</p>`
+    : '';
+  const cloudBody = cloud.length
+    ? `<div class="table-wrap"><table><thead><tr>
+        <th>云端引擎</th><th>探测目标</th><th>状态</th>
+      </tr></thead><tbody>${cloudRowsNow}</tbody></table></div>`
+    : '';
+
   const host = document.createElement('div');
   host.className = 'modal';
   host.innerHTML = `<div class="modal-box wide">
@@ -471,12 +512,16 @@ export function openProbeResults(payload) {
       <div class="modal-body">
         ${verdict}
         ${body}
+        ${cloud.length ? '<div class="modal-head neutral" style="margin-top:16px">云端引擎 · 现查</div>' : ''}
+        ${cloudVerdict}
+        ${cloudBody}
         <p class="note" style="margin:12px 0 0">
-          这一屏是<b>刚刚这一轮</b>的现查结论，用的是每台实例自己的端点；
+          这一屏是<b>刚刚这一轮</b>的现查结论。本机实例用的是每台实例自己的端点，
           列表档超时 0.8 秒，服务半死时可能被判成不通，要问到底请到
           「引擎管理」点那一行的<b>探测</b>（5 秒档），那边还留着历史。
-          云端引擎查的是密钥变量在不在，本地引擎查的是运行时文件——
-          这两类都不发 HTTP，结论以「引擎管理」里那一张卡为准。</p>
+          云端引擎这一轮<b>真去供应商网关发了一次 GET</b>（5 秒档）：探的是
+          "路通不通、钥匙对不对"，没配密钥或没登记端点的不会发出请求。
+          两类都不等于那一档模型可用——可用要过验证那几关。</p>
       </div>
       <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>
     </div>`;

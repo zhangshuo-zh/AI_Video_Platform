@@ -517,6 +517,15 @@ def test_目录读路径不出网(as_admin, clean_registrations, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(engines_mod, "probe", spy)
+    import cloud_probe
+
+    cloud_calls = []
+
+    def cloud_spy(*args, **kwargs):
+        cloud_calls.append(args)
+        return []
+
+    monkeypatch.setattr(cloud_probe, "probe_registered", cloud_spy)
     engines_mod.forget_probes()
     from repositories.engine_instances import engine_instances
 
@@ -528,6 +537,7 @@ def test_目录读路径不出网(as_admin, clean_registrations, monkeypatch):
             "model_code": "noobai-xl-epsilon-11"})
         body = as_admin.get("/api/models").json()
         assert calls == [], f"目录读路径不该发网络请求，实际调了 {calls}"
+        assert cloud_calls == [], f"目录读路径也不该碰云端探测，实际调了 {cloud_calls}"
         item = _item_of(body["items"], "draw_things", "noobai-xl-epsilon-11")
         # 有实例但没查过：这一档要说"要连一次才知道"，并且带上"平台会查"的标记，
         # 而不是伪装成 unknown（那是"平台查不了"，两件事的下一步不一样）。
@@ -556,6 +566,36 @@ def test_探测接口现查之后目录里那一格跟着变(as_admin, clean_reg
     assert [p["engine_code"] for p in probed["probed"]] == ["draw_things"]
     # 现查之后同一次读的目录里那一格就是 ok，不再是"待现查"
     assert as_admin.get("/api/models").json()["items"] is not None
+
+
+def test_探测接口把云端段一起带回(as_admin, clean_registrations, monkeypatch):
+    """`cloud` 段是 2026-11-08 补的口径：按钮点了，云端也得有动静。
+
+    这里不打真供应商：`probe_registered` 换成假造——测的是**接线**（路由把
+    登记行交给云端探测、结果原样进响应），真探测的五档在 test_cloud_probe.py。
+    """
+    import cloud_probe
+
+    seen = {}
+
+    def fake_registered(rows, *, fresh=False):
+        seen["rows"] = rows
+        seen["fresh"] = fresh
+        return [{"provider": "deepseek", "label": "DeepSeek（官方 API）",
+                 "capability": "text", "key_env": "DEEPSEEK_API_KEY",
+                 "url": "https://api.deepseek.com/models", "has_key": True,
+                 "state": "ok", "cached": False,
+                 "detail": "端点应答、密钥被接受（HTTP 200）"}]
+
+    monkeypatch.setattr(cloud_probe, "probe_registered", fake_registered)
+    as_admin.post("/api/models", json={
+        "capability": "text", "backend": "cloud", "provider": "deepseek",
+        "model_code": "deepseek-flash"})
+    probed = as_admin.post("/api/models/probe?fresh=1").json()
+    assert seen["fresh"] is True, "按钮那一枪是现查，云端也得绕过缓存"
+    assert [r["backend"] for r in seen["rows"] if r["backend"] == "cloud"] == ["cloud"]
+    assert [c["provider"] for c in probed["cloud"]] == ["deepseek"]
+    assert probed["cloud"][0]["state"] == "ok"
 
 
 def test_结构化输出这条标签有清单来源(as_admin, clean_registrations):
