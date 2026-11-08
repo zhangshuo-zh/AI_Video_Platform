@@ -8,7 +8,8 @@
  */
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney }
+import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney,
+         animateRows }
   from '../util.js';
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
@@ -484,7 +485,10 @@ export default {
         empty.innerHTML = emptyHtml();
       } else {
         empty.innerHTML = '';
-        rows.innerHTML = state.jobs.map(rowHtml).join('');
+        // 走 animateRows：轮询每 3 秒重画一次，新作业进来、跑完的换状态时，
+        // 新行会淡入一次（2px 位移）。没有这层的话整块重绘看着像"屏幕闪了一下
+        // 但说不出哪变了"。整批同时播，不逐条错峰。
+        animateRows(rows, () => { rows.innerHTML = state.jobs.map(rowHtml).join(''); }, 'data-job');
       }
       cost.innerHTML = costHtml();
     }

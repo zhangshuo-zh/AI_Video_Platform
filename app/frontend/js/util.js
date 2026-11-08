@@ -276,3 +276,129 @@ export function agoText(seconds) {
   if (n < 86400) return `${Math.floor(n / 3600)} 小时前`;
   return `${Math.floor(n / 86400)} 天前`;
 }
+
+/**
+ * 列表行的进入／离开过渡。
+ *
+ * 用在哪：一屏列表被整块重绘（生成中心刷作业、审核队列增减、运行监控翻页），
+ * 新行直接出现、旧行直接消失，人眼很难察觉"刚才什么变了"。
+ *
+ * 做法：重绘前后各记一次"有哪些行"（用 data 键），重绘后给新增的行挂
+ * `.row-enter`、给消失的行先留一个占位再挂 `.row-leave`。**整批同时播**，
+ * 不做逐条错峰——CSS 那边写了理由：错峰在慢机器上像多米诺。
+ *
+ * 两个刻意的边界：
+ *   - 只认**同一个容器内**的变化。换页、换项目时整张表都算"新"的，
+ *     那属于整页过渡，不该在这里逐行播。
+ *   - 离开的行只停留一个动画时长就移除。留久了下一次 diff 会把它们
+ *     当成"还在"，过渡就对不上了。
+ *
+ * @param {Element} tbody   表格体
+ * @param {() => void} redraw  执行重绘（内部会改写 tbody 的 innerHTML）
+ * @param {string} keyAttr  用来认行的 data 属性名，默认 data-key
+ */
+export function animateRows(tbody, redraw, keyAttr = 'data-key') {
+  if (!tbody) { redraw(); return; }
+  const keyOf = (tr) => tr.getAttribute(keyAttr) || tr.getAttribute('data-job')
+    || tr.getAttribute('data-id') || tr.textContent.slice(0, 40);
+  const before = new Map([...tbody.querySelectorAll('tr')].map((tr) => [keyOf(tr), tr]));
+
+  redraw();
+
+  const after = [...tbody.querySelectorAll('tr')];
+  const afterKeys = new Set(after.map(keyOf));
+  after.forEach((tr) => {
+    if (!before.has(keyOf(tr))) tr.classList.add('row-enter');
+  });
+
+  // 消失的行：插回原位置播一次淡出。找不到原位置就跳过——
+  // 宁可没有动画，也不要把行插错地方。
+  const gone = [...before.entries()].filter(([k]) => !afterKeys.has(k));
+  gone.forEach(([k, tr]) => {
+    const clone = tr.cloneNode(true);
+    clone.classList.add('row-leave');
+    clone.removeAttribute('id');
+    const nextIdx = [...before.keys()].indexOf(k);
+    const anchorKey = [...before.keys()].slice(nextIdx + 1).find((x) => afterKeys.has(x));
+    const anchor = anchorKey
+      ? after.find((t) => keyOf(t) === anchorKey) : null;
+    tbody.insertBefore(clone, anchor || null);
+    setTimeout(() => clone.remove(), 200);
+  });
+
+  // 动画类只活一轮：不清掉的话下一次重绘会把它当成"本来就有"
+  setTimeout(() => {
+    tbody.querySelectorAll('.row-enter').forEach((tr) => tr.classList.remove('row-enter'));
+  }, 200);
+}
+
+/**
+ * 保存成功的回执脉冲：给按钮播一次光晕，200ms 后自动摘类。
+ *
+ * 为什么不用 toast：这一屏的保存是高频动作，每次都弹一条浮层会烦。
+ * 按钮自己亮一下、说的正是"这次点它成了"。
+ */
+export function pulseSaved(btn) {
+  if (!btn) return;
+  btn.classList.remove('save-ok');
+  // 强制一次样式计算，否则连续两次保存时动画不会重播
+  void btn.offsetWidth;
+  btn.classList.add('save-ok');
+  setTimeout(() => btn.classList.remove('save-ok'), 260);
+}
+
+/**
+ * 排序位移：让"行换位置"这件事看得见。
+ *
+ * 背景：模型仓库、项目中心都能换排序。点「最近打开 → 项目名称」时，
+ * 行会瞬间跳到新位置，人只知道"变了"，说不出"哪几行去哪了"。
+ *
+ * 用 FLIP 的简化版：排序前后各量一次每一行的 top，重排后对**位置变了**的行
+ * 先反向位移回去、再在下一帧归位，200ms 内插值完成。没变的行一个都不动——
+ * 只动该动的，是这类过渡最省也最准的做法。
+ *
+ * 没用 View Transitions API：它要求每个 <tr> 有唯一的 view-transition-name，
+ * 一张几十行的表就是几十个命名快照，切换时反而更慢；而且行内还有 :hover
+ * 与选中态，快照会把这些状态也拍进去。FLIP 只动 transform，代价可控。
+ *
+ * @param {(rows: HTMLElement[]) => void} applySort  真正执行排序的函数
+ * @param {HTMLElement} tbody  行所在的表格体
+ */
+export function flipSort(applySort, tbody) {
+  if (!tbody) { applySort(); return; }
+  const rows = [...tbody.querySelectorAll('tr')];
+  // 排序前的位置：只对有 data 键的行记录（表里可能有分组行、空态行）
+  const before = new Map();
+  rows.forEach((tr) => {
+    const k = tr.getAttribute('data-key') || tr.getAttribute('data-id') || tr.getAttribute('data-job');
+    if (k) before.set(k, tr.getBoundingClientRect().top);
+  });
+  if (!before.size) { applySort(); return; }
+
+  applySort();
+
+  const moved = [];
+  [...tbody.querySelectorAll('tr')].forEach((tr) => {
+    const k = tr.getAttribute('data-key') || tr.getAttribute('data-id') || tr.getAttribute('data-job');
+    if (!k || !before.has(k)) return;
+    const delta = before.get(k) - tr.getBoundingClientRect().top;
+    if (!delta) return;                       // 没挪动就别动它
+    tr.style.transition = 'none';
+    tr.style.transform = 'translateY(' + delta + 'px)';
+    moved.push(tr);
+  });
+  if (!moved.length) return;
+
+  // 下一帧再归位，浏览器才会把"反向位移"当成起始态做插值
+  requestAnimationFrame(() => {
+    moved.forEach((tr) => {
+      tr.style.transition = 'transform 200ms cubic-bezier(.2,0,0,1)';
+      tr.style.transform = '';
+    });
+    // 动画结束后把内联样式摘干净，别留着影响 :hover 之类的换状态
+    setTimeout(() => {
+      moved.forEach((tr) => { tr.style.transition = ''; tr.style.transform = ''; });
+    }, 240);
+  });
+}
+

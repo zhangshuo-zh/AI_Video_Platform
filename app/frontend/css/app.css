@@ -1517,6 +1517,62 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 }
 
 /* 系统设置里偏好"减少动态效果"的人不少，这条得听 */
+
+/* ==========================================================================
+   动效（2026-11-08 补）
+
+   这一套的语言是**设备感**，不是"柔顺感"：指示灯硬闪、按下 1px 下沉、
+   切页用 clip-path 擦除而不是上浮。所以新加的四条也守同一条：
+   短（120–200ms）、位移小（≤8px）、只做一件事，绝不逐条错峰。
+
+   为什么不做逐行错峰入场：文件里早就写过理由——错峰在慢机器上像多米诺，
+   而且截图会拍到半透明的中间态。这条继续有效，新动效一律整批同时播。
+   ========================================================================== */
+
+/* ① 列表行的进入／离开。
+   用于"任务跑完多了一行、审核队列少了一行"这类变化：原来整块重绘，
+   新行直接出现、旧行直接消失，人眼很难察觉刚才什么变了。
+   位移只给 2px——它是提示"这里变了"，不是表演。 */
+@keyframes row-in{
+  from{opacity:0;transform:translateY(-2px)}
+  to{opacity:1;transform:none}
+}
+@keyframes row-out{
+  from{opacity:1}
+  to{opacity:0;transform:translateY(2px)}
+}
+tr.row-enter{animation:row-in var(--fast) var(--ease)}
+tr.row-leave{animation:row-out var(--fast) var(--ease) forwards}
+
+/* ② 保存成功的回执脉冲：只播一次，不常驻、不循环。
+   原来保存成功只在后台刷一下，人说不出"到底成没成"。 */
+@keyframes save-pulse{
+  0%{box-shadow:0 0 0 0 var(--accent-glow)}
+  60%{box-shadow:0 0 0 6px transparent}
+  100%{box-shadow:0 0 0 0 transparent}
+}
+.btn.save-ok{animation:save-pulse var(--mid) var(--ease)}
+
+/* ④ 进度条上的流动高光：宽条才有，细条上跑光只会显得脏。
+   用已有的 --scan 令牌，不自造一套色。 */
+@keyframes bar-flow{
+  from{transform:translateX(-100%)}
+  to{transform:translateX(100%)}
+}
+.pl-bar i{position:relative;overflow:hidden}
+.pl-bar i::after{
+  content:"";position:absolute;inset:0;background:var(--scan);
+  animation:bar-flow 1.4s linear infinite;
+}
+/* 跑完的进度条不再流光——那会让人以为还在动 */
+.pl-bar.done i::after{display:none}
+
+/* ③ 排序位移：由 view-transition 接管，不需要自定义 keyframes。
+   这里只把"行"标成可参与过渡的元素，时长与曲线跟全站一致。 */
+::view-transition-old(root),
+::view-transition-new(root){animation-duration:0s}
+tr{view-transition-name:none}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0 !important;
     transition-duration:.001ms !important;scroll-behavior:auto !important}

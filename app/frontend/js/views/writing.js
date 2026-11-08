@@ -1,6 +1,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow } from '../util.js';
+import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow,
+         pulseSaved } from '../util.js';
 import { JOB_TERMINAL, jobLabel, jobTone, publicStatus } from '../validation.js';
 import { unitLabel } from '../enums.js';
 import { getParam, getSub, setJobPrefill, setParam, setSub } from '../navstate.js';
@@ -563,6 +564,9 @@ function mountDocs(root, tab) {
         ? `已保存并提交（${(out.git_commit || '').slice(0, 8)}）`
         : '内容和上一版一样，没有产生新提交';
       lockWarn = '';
+      // 按钮自己亮一下：这一屏的保存是高频动作，每次弹 toast 会烦；
+      // 而只靠「未保存」chip 从琥珀变绿，人未必往那儿看。
+      pulseSaved(saveBtn);
       await store.load();
     } catch (err) {
       if (err.status === 409) {

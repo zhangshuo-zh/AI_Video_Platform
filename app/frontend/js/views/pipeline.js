@@ -113,7 +113,9 @@ function eventText(ev) {
 
 function progressBar(p) {
   const pct = Math.max(0, Math.min(100, Number(p?.percent) || 0));
-  return `<div class="pl-bar" role="img" aria-label="完成 ${pct}%">
+  // 跑完的条不再流光：一直动会让人以为还在跑（CSS 里 .done 摘掉那层高光）
+  const done = pct >= 100 || (p?.total != null && (p?.done ?? 0) >= p.total);
+  return `<div class="pl-bar${done ? ' done' : ''}" role="img" aria-label="完成 ${pct}%">
       <i style="width:${pct}%"></i></div>
     <div class="t-desc">${p?.done ?? 0} / ${p?.total ?? 0} 完成${p?.failed ? ` · ${p.failed} 失败` : ''}${p?.waiting_review ? ` · ${p.waiting_review} 待审` : ''}${p?.attention ? ` · ${p.attention} 待核对` : ''}</div>`;
 }

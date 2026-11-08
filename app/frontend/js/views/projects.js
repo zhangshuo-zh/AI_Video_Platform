@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, bindOverlayDismiss, confirmDanger, escapeHtml, formatMoney, run } from '../util.js';
+import { bindModalDismiss, bindOverlayDismiss, confirmDanger, escapeHtml, formatMoney, run, flipSort } from '../util.js';
 
 /**
  * 项目中心只管 Project 这一层：一个页面同时承担检索与增删改。
@@ -500,7 +500,7 @@ export default {
       const i = lastOrder.indexOf(Number(tr.dataset.id));
       return i < 0 ? Number.MAX_SAFE_INTEGER : i;
     };
-    const applySort = () => {
+    const doSort = () => {
       if (!tbody) return;
       const rows = allRows();
       const cmp = CMP[sortMode] || cmpOpened;
@@ -511,6 +511,9 @@ export default {
       lastOrder = rows.map((tr) => Number(tr.dataset.id));
       focusAnchor(rows);
     };
+    // 包一层 flipSort：换排序时行会瞬间跳到新位置，人只知道"变了"、
+    // 说不出"哪几行去哪了"。只对**真挪了位置**的行补 200ms 位移插值。
+    const applySort = () => flipSort(doSort, tbody);
     /** roving tabindex：整张表只留一个 Tab 停靠点，行间靠 ↑↓ 走。
         锚点是当前项目那一行；它不在可见行里（例如被筛掉了）就用第一条可见行。 */
     const focusAnchor = (rows) => {
