@@ -32,7 +32,7 @@ import {
   SUBS, SUB_NEEDS, cache, MODALS, overviewCard, setPendingFilter, viewFilter, alertNotify,
 } from './models/shared.js';
 import { pageRepo, mountRepo, openForm } from './models/repo.js';
-import { pageEngines, mountEngines, mountEngineInstances } from './models/engines.js';
+import { pageEngines, mountEngines, mountEngineInstances, openProbeResults } from './models/engines.js';
 import { pagePolicies, mountPolicies } from './models/policies.js';
 import { pageMonitor, mountMonitor } from './models/monitor.js';
 
@@ -223,11 +223,18 @@ export default {
       if (!filled.length) { alertNotify('十条能力轨都还没填 provider，没有可检查的对象。'); return; }
       const btn = root.querySelector('#mc-check-all');
       btn.disabled = true;
+      let probedOut = null;
+      let itemsOut = null;
       const ok = await run('环境检查', async () => {
         // 先请后端**现查**一次服务型引擎（fresh=1 绕过缓存）：打开页面时那一格是
         // "待现查"，只有显式动作才去连网——这一颗按钮就是那个显式动作。
         // 它只读、不建 Job、不改配置，结论随整张目录一起回来。
-        await api.probeModels(true);
+        // 返回值里的 probed 按 engine_code 去重——一台机器一行，这是"这次
+        // 真的连过网"的清单；检查完用它开结果弹窗（此前这份数据被扔掉，
+        // 结论散在 toast 和逐行徽章里，想一眼看全得逐屏翻）。
+        const out = await api.probeModels(true);
+        probedOut = out && out.probed;
+        itemsOut = (out && out.items) || null;
         // 逐条走和列表页同一个接口：不发请求、不加载权重，只留痕
         for (const r of filled) {
           await api.validateProvider({ capability: r.capability, backend: r.backend,
@@ -235,7 +242,13 @@ export default {
         }
       });
       btn.disabled = false;
-      if (ok) window.dispatchEvent(new CustomEvent('app:refresh'));
+      if (ok) {
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+        // 弹窗放在重绘**之后**：整页重绘会重建 DOM，先弹窗会被下一次装载
+        // 的骨架闪一下；重绘完再 append 到 body 的弹窗不受影响。
+        // 目录用重绘后的缓存——其余引擎那一节读的是它的 health。
+        openProbeResults(probedOut, itemsOut || (cache.catalog && cache.catalog.items) || []);
+      }
     });
 
     // 关闭统一走 closeModal：它先播 150ms 退场再提交 hidden，

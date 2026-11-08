@@ -545,6 +545,45 @@ def main():
         check("验证记录弹窗能打开", P.has(cdp, "#val-modal:not([hidden])"))
         P.click(cdp, "#val-close")
 
+        # 页头「检查引擎连接」的检查结果弹窗（2026-11-08）：按钮干完活，
+        # 结论散在 toast 和逐行徽章里，想一眼看全"哪几台通哪几台不通"得逐屏翻。
+        # 弹窗吃的是接口返回的 probed 数组——这份数据此前被前端扔掉没用。
+        P.eval_js(cdp, "document.getElementById('mc-check-all').click()")
+        # 按钮内部是一串请求（1 次探测 + 每轨 1 次 env_check），等它跑完开窗
+        # 探测用满 5 秒手动超时、两台串行，再加每轨一次 env_check：
+        # 服务没跑的机器上这一串要十几秒，等待必须给够，否则假失败。
+        for _ in range(25):
+            time.sleep(1.0)
+            if P.eval_js(cdp, "[...document.querySelectorAll('.modal')]"
+                               ".some(m => m.textContent.includes('引擎连接检查'))"):
+                break
+        opened = P.eval_js(cdp, "[...document.querySelectorAll('.modal')]"
+                                 ".some(m => m.textContent.includes('引擎连接检查'))")
+        check("点「检查引擎连接」后弹出结果窗", bool(opened), str(opened))
+        # 库里 draw_things 与 ollama 都是登记过的服务型引擎：probed 按
+        # engine_code 去重后各占一行，弹窗里两台都必须出现
+        txt = str(P.eval_js(cdp,
+                    "(() => {const m=[...document.querySelectorAll('.modal')]"
+                    ".find(x=>x.textContent.includes('引擎连接检查'));"
+                    "return m?m.textContent.replace(/\\s+/g,' '):'';})()"))
+        check("结果窗把每台服务型引擎都列出来（draw_things 与 ollama）",
+              'ollama' in txt and 'draw_things' in txt,
+              f"窗内文本 {'含两台' if ('ollama' in txt and 'draw_things' in txt) else txt[:120]}")
+        check("结果窗顶部给了一句汇总结论（不用自己数徽章）",
+              '台里通了' in txt or '全部连上了' in txt,
+              next((s for s in txt.split('  ') if '通了' in s), '')[:80])
+        check("结果窗写明「引擎在线 ≠ 模型可用」这层边界",
+              '不等于' in txt and '可用' in txt,
+              "引擎连通性只证明进程在线，可用还要过验证")
+        check("结果窗区分了「这次现查的」与「这次没连网的」两类",
+              ('这次没连网' in txt) or ('没有任何服务型引擎可探' in txt),
+              "云端/本地那一节有口径说明，或本轮无可探时给了诚实的空态")
+        P.eval_js(cdp, "(() => {const b=document.querySelector('[data-close-probe-res]');"
+                       "if (b) b.click();})()")
+        check("结果窗可关闭",
+              not P.eval_js(cdp, "[...document.querySelectorAll('.modal')]"
+                                  ".some(m => m.textContent.includes('引擎连接检查'))"))
+
         # 验证历史能翻页（2026-11-07 第二批）：接口原来只有 limit 且被夹在 200，
         # "第 201 条之后读不到"在界面上完全不可见。现在响应头给总量、
         # `before_id` 往前翻，界面必须把两件事都念出来。

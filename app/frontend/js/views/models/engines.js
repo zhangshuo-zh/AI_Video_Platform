@@ -380,6 +380,124 @@ export function openProbeHistory(data) {
   host.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 }
 
+/**
+ * 引擎连接检查结果（页头「检查引擎连接」按完弹出的那张表）。
+ *
+ * 存在的理由：这颗按钮干完活后，结论散在三个地方——一次 toast、
+ * 清单每行的徽章、引擎实例卡——想一眼看全"哪几台通、哪几台不通、
+ * 为什么不通"就得逐屏翻。这一屏把它们收拢：**这次真的连过的每台一行**，
+ * 每行带结论、端点、引擎自述的当前档。
+ *
+ * 两个口径分开写，各归各的诚实：
+ *   · 「这次现查的」＝ probed 数组（服务型引擎，POST /api/models/probe 按
+ *     engine_code 去重，一台机器一行）——刚连过网，结论是新的。
+ *   · 「这次没连网的」＝ 清单其余引擎的 health：云端查密钥变量在不在、
+ *     本地查运行四件套、remote 平台查不了——这些不经过 HTTP 探测，
+ *     按钮也不会去连它们，摆出来是为了回答"为什么表里只有两行"，
+ *     拿页面装载时的旧结论冒充"刚查过"才是撒谎。
+ */
+export function openProbeResults(probed, catalogItems) {
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const checked = probed || [];
+  // probed 里没有 capability（后端按 engine_code 去重，一个引擎可能跨两档
+  // 能力轴，例如 volc 在 text 和 tts 各一条）——从目录反查该引擎的登记行。
+  const capOf = {};
+  for (const it of (catalogItems || [])) {
+    if (it.engine_code && !capOf[it.engine_code]) capOf[it.engine_code] = it.capability;
+  }
+  const rowsNow = checked.map((pr) => {
+    const tone = pr.state === 'ok' ? 'green' : pr.state === 'missing' ? 'red' : 'amber';
+    const label = pr.state === 'ok' ? '连上了' : pr.state === 'missing' ? '连不上' : '查不了';
+    // soft＝短超时裁决的：网络慢一点的机器会被判成"连不上"，
+    // 后端因此不给它进缓存（下次还得现查）。这一档必须自己说出来，
+    // 否则人会把一次超时当成"这台机器真的坏了"去修。
+    const how = pr.soft ? '现查（短超时，仅供参考）' : '现查 HTTP';
+    return `<tr>
+      <td><b>${escapeHtml(pr.engine_code)}</b>
+        <span class="hint"> · ${escapeHtml(capOf[pr.engine_code] || '')}</span></td>
+      <td><span class="chip ${tone}">${label}</span></td>
+      <td class="hint mono">${escapeHtml(pr.endpoint || '—')}</td>
+      <td class="hint mono">${escapeHtml(pr.engine_model || '—')}</td>
+      <td class="hint">${escapeHtml(pr.detail || '')}</td>
+      <td class="hint">${escapeHtml(how)}</td>
+    </tr>`;
+  }).join('');
+  const table = checked.length ? `<div class="table-wrap"><table><thead><tr>
+      <th>引擎</th><th>结果</th><th>端点</th><th>引擎当前的档</th><th>结论</th><th>怎么查的</th>
+    </tr></thead><tbody>${rowsNow}</tbody></table></div>`
+    : '<p class="hint">这次没有任何服务型引擎可探——登记行里没有 draw_things／ollama 这一类，或它们还没有启用中的实例。</p>';
+
+  // 其余引擎按 engine_code 归并（同引擎多档模型只占一行），状态取 health。
+  const svc = new Set(checked.map((pr) => norm(pr.engine_code)));
+  const seen = new Set();
+  const others = [];
+  for (const it of (catalogItems || [])) {
+    const code = it.engine_code;
+    if (!code || svc.has(norm(code)) || seen.has(norm(code))) continue;
+    seen.add(norm(code));
+    others.push(it);
+  }
+  // 「清单里只登记了名字」这一类一行一句说明就够，十个引擎十条同样的话
+  // 会把上面那张表挤掉——它们的共同点是"平台连名字都查过了，别的没查"。
+  const detailRows = others.filter((it) => it.status !== 'name_only');
+  const nameOnly = others.filter((it) => it.status === 'name_only');
+  const rowsOther = detailRows.map((it) => {
+    const h = it.health || {};
+    return `<tr>
+      <td><b>${escapeHtml(it.engine_code)}</b>
+        <span class="hint"> · ${escapeHtml(it.capability || '')}</span></td>
+      <td>${healthChip(h)}</td>
+      <td class="hint">${escapeHtml(it.source === 'cloud' ? '云端（密钥变量检查）'
+        : it.source === 'remote' ? '远程（本机不查）' : '本地（文件四件套）')}</td>
+      <td class="hint" colspan="2">${escapeHtml(h.detail || '')}</td>
+    </tr>`;
+  }).join('');
+  const rowsNameOnly = nameOnly.length ? `<tr>
+      <td class="hint">${nameOnly.map((it) => escapeHtml(it.engine_code)).join('、')}</td>
+      <td><span class="chip gray">只有名字</span></td>
+      <td class="hint">—</td>
+      <td class="hint" colspan="3">清单里登记了名字、没有模型档，也没有可以探的端点；
+        要用它们得先在「引擎管理」里登记一档</td>
+    </tr>` : '';
+  const otherTable = others.length ? `<div class="table-wrap" style="margin-top:10px"><table><thead><tr>
+      <th>引擎</th><th>状态</th><th>检查方式</th><th colspan="3">说明</th>
+    </tr></thead><tbody>${rowsOther}${rowsNameOnly}</tbody></table></div>` : '';
+
+  // 一句结论：多少人想知道的其实只是"通了没有"，不该让他们去数徽章。
+  const okN = checked.filter((pr) => pr.state === 'ok').length;
+  const softN = checked.filter((pr) => pr.soft).length;
+  const verdict = !checked.length ? ''
+    : okN === checked.length
+      ? `<p class="note" style="margin:0 0 10px"><b>${okN} 台全部连上了。</b>
+        这证明引擎进程在线、端点答话——<b>不等于</b>登记的那一档模型能跑出结果，
+        「可用」还要过验证那几关。</p>`
+      : `<p class="note" style="margin:0 0 10px"><b>${checked.length} 台里通了 ${okN} 台${okN === 0 ? '（一台都没通）' : ''}。</b>
+        没通的多半是那一侧的进程没起——看下面每行的结论那句。${softN ? `其中 ${softN} 台是短超时判的，仅供参考。` : ''}
+        <b>引擎在线也不等于模型可用</b>，后者还要过验证那几关。</p>`;
+
+  const host = document.createElement('div');
+  host.className = 'modal';
+  host.innerHTML = `<div class="modal-box wide">
+      <div class="modal-head neutral">引擎连接检查 · 结果</div>
+      <div class="modal-body">
+        ${verdict}
+        ${table}
+        ${others.length ? `<p class="note" style="margin:12px 0 0"><b>下面这些这次没连网。</b>
+          它们不走 HTTP 探测：云端看密钥变量、本地看运行时文件、远程平台不查——
+          状态是页面装载时算好的，这颗按钮不会改变它们。</p>${otherTable}` : ''}
+        <p class="note" style="margin:12px 0 0">逐台的完整历史在「引擎管理 · 引擎实例」里按行点「看历史」；
+          这里只摆<b>刚刚这一轮</b>的结论。</p>
+      </div>
+      <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>
+    </div>`;
+  document.body.appendChild(host);
+  const close = () => host.remove();
+  host.addEventListener('click', (e) => {
+    if (e.target === host || e.target.closest('[data-close-probe-res]')) close();
+  });
+  host.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+}
+
 /** 两条探测之间隔了多久。数字都是秒；负值（同一秒内）当 0。 */
 export function fmtGap(seconds) {
   const n = Math.max(0, Number(seconds) || 0);
