@@ -77,7 +77,7 @@ function timeText(value) {
 }
 
 function statusChip(status, label, fine = false) {
-  /* §12.3：列表这一层只给对外五档（待处理／进行中／需要处理／已完成／失败），
+  /* §12.3：列表这一层只给对外五档（待处理／进行中／需要处理／完成／失败），
      细粒度原词留在 title 与抽屉详情里。后端状态语义一个字都没合并，
      只是不再让制作人员在六七个同义词之间自己找规律。
      `fine=true` 是详情那一处（抽屉头部与副标题），那里要的就是原词。 */
@@ -143,7 +143,10 @@ function rowHtml(job) {
 
 function jobCostCell(job) {
   if (job.execution_mode === 'local') {
-    return '<span class="t-dim">¥0 · 本地</span>';
+    // 与云端那一支同样的两行结构：<b>金额</b> + <span class="t-desc">地点</span>。
+    // 原来这里是「¥0 · 本地」一行带分隔点，云端是「¥0.04」+「待核对」两行——
+    // 同一列两种排版，扫下来像两套东西。现在两边都是「金额在上、说明在下」。
+    return '<b>¥0</b><span class="t-desc">本地</span>';
   }
   if (job.cost_micros == null && job.actual_cost_micros == null) {
     return '<span class="chip amber">待补价</span>';

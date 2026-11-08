@@ -25,7 +25,7 @@ import { DECISION_LABEL, DECISION_TONE } from '../validation.js';
  */
 
 const TONE = {
-  已完成: 'green', 进行中: 'blue', 需要处理: 'amber', 失败: 'red', 待处理: 'gray',
+  完成: 'green', 进行中: 'blue', 需要处理: 'amber', 失败: 'red', 待处理: 'gray',
 };
 
 function stageChip(status) {

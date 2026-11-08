@@ -63,7 +63,9 @@ export const PUBLIC_STATUS = {
   待处理: ['queued'],
   进行中: ['starting', 'running', 'cancel_requested'],
   需要处理: ['needs_attention'],
-  已完成: ['succeeded'],
+  // 「完成」而不是「已完成」：同列的「失败」是两个字，三个字的 chip 会比它宽
+  // 一档，扫一列时参差不齐。五档里另外四个都是 2–4 字，这一档取最短的准确说法。
+  完成: ['succeeded'],
   失败: ['failed', 'cancelled'],
 };
 

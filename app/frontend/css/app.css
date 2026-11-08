@@ -1365,6 +1365,12 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .gen-table tr[data-job]{cursor:pointer}
 .job-id{font-variant-numeric:tabular-nums;margin-right:6px}
 .job-actions .btn+.btn{margin-left:4px}
+/* 操作列里的按钮是 inline-block，默认按**基线**对齐——同一格里只放一颗时看不出来，
+   但旁边几列是「金额在上、说明在下」的两行结构，行高被撑高之后，
+   这颗按钮就明显偏上。显式给 middle，让它在一格里垂直居中。 */
+.job-actions .btn{vertical-align:middle}
+/* 只放一颗按钮时也吃同样的行高，不让这一格比别的格矮 */
+.job-actions{line-height:1}
 .gen-inline-err{
   display:flex;align-items:center;gap:10px;padding:10px 16px;
   font-size:12px;color:var(--bad);background:var(--bad-soft);
