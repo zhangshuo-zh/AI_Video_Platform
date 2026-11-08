@@ -125,10 +125,13 @@ def test_产线节点的每个失败码都在目录里():
     那是诚实的，但对第二次遇到同一件事的人没有用。
     """
     import re
-    src = pathlib.Path(__file__).resolve().parents[1].joinpath("pipeline.py").read_text()
+    # 2026-11-08 `pipeline.py` 拆成 `pipeline_pkg/` 包后，扫单个文件会扫空。
+    # 这里扫整个包——以后再挪位置，这条测试不该跟着改。
+    root = pathlib.Path(__file__).resolve().parents[1] / "pipeline_pkg"
+    src = "\n".join(f.read_text(encoding="utf-8") for f in sorted(root.glob("*.py")))
     codes = set(re.findall(r'_NodeFail\(\s*"([a-z_]+)"', src))
     codes |= set(re.findall(r'finish_node\([^"]*NODE_FAILED,\s*error_code="([a-z_]+)"', src))
-    assert codes, "扫不到任何节点失败码，说明这条用例的写法已随 pipeline.py 失效"
+    assert codes, "扫不到任何节点失败码，说明这条用例的写法已随 pipeline 拆包失效"
     missing = sorted(c for c in codes if c not in catalog.CATALOG)
     assert not missing, f"这些产线节点码没进目录：{missing}"
 

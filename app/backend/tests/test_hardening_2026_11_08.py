@@ -870,3 +870,91 @@ def test_errors_层不许依赖同包其他模块():
     relative = [n.module for n in ast.walk(tree)
                 if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(".")]
     assert not relative, f"errors 不该依赖包内其他模块（会成环），现在依赖了 {relative}"
+
+
+# ---------- 第七批：pipeline.py 拆成 pipeline_pkg/ 包（2026-11-08） ----------
+
+def test_pipeline_只是门面不再膨胀():
+    """`pipeline.py` 原来 1860 行、71 个定义，现在只做 re-export。"""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "pipeline.py").read_text(encoding="utf-8")
+    body = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    assert len(body) < 40, \
+        f"pipeline.py 又长起来了（{len(body)} 行非注释）——新函数请加到 pipeline_pkg/<域>.py"
+
+
+def test_拆分没有丢任何一个_pipeline_公开名字():
+    """`worker.py`/`seasons.py`/`agent_tools.py` 以**属性方式**调 30+ 个，
+    测试还直调 `_submit_job_node` 这类内部函数——门面必须全覆盖。"""
+    import ast
+    import pathlib
+
+    import pipeline
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pkg = root / "pipeline_pkg"
+    defined = set()
+    for f in pkg.glob("*.py"):
+        if f.name == "__init__.py":
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.add(node.name)          # 含下划线私有：外部真的会直调
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                t = node.targets[0] if isinstance(node, ast.Assign) else node.target
+                if isinstance(t, ast.Name):
+                    defined.add(t.id)
+
+    missing = sorted(n for n in defined if not hasattr(pipeline, n))
+    assert not missing, f"这些定义在 pipeline_pkg/ 里但门面没导出：{missing}"
+
+
+def test_pipeline_各模块能单独导入且无环():
+    """拆包时真踩到环：`run_create` → `dispatch` → `execute` → `run_create`。
+    解法是把 `advance_run` 的调用改成函数内延迟导入（不是允许环）。"""
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    names = sorted(p.stem for p in (root / "pipeline_pkg").glob("*.py") if p.name != "__init__.py")
+    assert names, "pipeline_pkg 是空的？"
+    for name in names:
+        importlib.import_module(f"pipeline_pkg.{name}")
+
+
+def test_调度入口仍然只有一个():
+    """`advance_run` 是唯一调度入口（文件头那条不变量）。
+
+    拆包后有一种很坏的可能：把 `advance_run` 复制成两份、各自推进。
+    确认 `advance_run` 在包里只有一处定义。
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    hits = []
+    for f in (root / "pipeline_pkg").glob("*.py"):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "advance_run":
+                hits.append(f.name)
+    assert len(hits) == 1, f"advance_run 只能有一处定义，实际在 {hits}"
+
+
+def test_产线节点失败码在拆包后仍被扫全():
+    """`test_error_catalog.py` 里那条按源码扫失败码的用例，拆包后要扫整个包。
+
+    这条是**元测试**：确认扫描目标存在且真的能扫到码——否则那条守卫会静默失效
+    （扫描路径不存在时 `Path.read_text()` 会抛，但改成 glob 后可能扫空而不报错）。
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    src = "\n".join(f.read_text(encoding="utf-8")
+                    for f in sorted((root / "pipeline_pkg").glob("*.py")))
+    codes = set(re.findall(r'_NodeFail\(\s*"([a-z_]+)"', src))
+    assert len(codes) >= 5, f"只扫到 {len(codes)} 个节点失败码，扫描路径可能失效了"

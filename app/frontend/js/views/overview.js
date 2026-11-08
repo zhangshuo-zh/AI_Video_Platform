@@ -134,7 +134,7 @@ export default {
 
       ${dashCard(dash, dashErr)}
 
-      <div class="grid g-2 mt-card" >
+      <div class="grid g-2" style="margin-top:14px">
         <div class="card">
           <div class="card-head"><h2>九实体怎么连</h2><span class="sub">主干管属于谁，支线管挂在哪</span></div>
           <div class="card-body">
@@ -208,13 +208,13 @@ export default {
 
 function dashCard(d, err) {
   if (!store.current) {
-    return `<div class="card mt-card" ><div class="empty">
+    return `<div class="card" style="margin-top:14px"><div class="empty">
       <div class="empty-t">还没有当前项目</div>
       <p>去项目中心选一个项目，这里会显示集、镜、作业、成本、审核与音频的实时汇总。</p>
     </div></div>`;
   }
   if (err) {
-    return `<div class="card mt-card" ><div class="bar bad">
+    return `<div class="card" style="margin-top:14px"><div class="bar bad">
       读不到项目看板：${escapeHtml(err.message || String(err))}</div></div>`;
   }
   if (!d) return '';
@@ -224,7 +224,7 @@ function dashCard(d, err) {
   const costs = d.costs.length
     ? d.costs.map((c) => `<span class="chip green">${formatMoney(c.micros, c.currency)} · ${c.jobs} 条</span>`).join(' ')
     : '<span class="t-dim">还没有计入成本的作业</span>';
-  return `<div class="card mt-card" >
+  return `<div class="card" style="margin-top:14px">
     <div class="card-head"><h2>项目看板</h2>
       <span class="sub">${escapeHtml(store.current.name)} · 全部数字从权威表只读聚合</span>
       <div class="right">
