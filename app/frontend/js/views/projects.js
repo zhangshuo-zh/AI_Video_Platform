@@ -507,14 +507,31 @@ export default {
       const cmp = CMP[sortMode] || cmpOpened;
       // 刚选中一行时沿用上一次那份行序：它不该在眼前跳到列表第一行，
       // 鼠标底下换了内容最容易误点到下一行。其余情况按当前排序正常排
-      rows.sort(keepOrder && lastOrder.length ? (a, b) => pinnedRank(a) - pinnedRank(b) || cmp(a, b) : cmp);
+      const pin = keepOrder && lastOrder.length;
+      rows.sort(pin ? (a, b) => pinnedRank(a) - pinnedRank(b) || cmp(a, b) : cmp);
       rows.forEach((tr) => tbody.appendChild(tr));
       lastOrder = rows.map((tr) => Number(tr.dataset.id));
       focusAnchor(rows);
+      // keepOrder 是**一次性意图**（"这次别让行跳走"），用掉就清。
+      // 不清的话它从点过项目那一刻起一直是 true：之后人主动换排序、
+      // 或数据变动导致重排，都不会再有位移动画，等于把那条动效废掉了。
+      if (pin) keepOrder = false;
     };
-    // 包一层 flipSort：换排序时行会瞬间跳到新位置，人只知道"变了"、
-    // 说不出"哪几行去哪了"。只对**真挪了位置**的行补 200ms 位移插值。
-    const applySort = () => flipSort(doSort, tbody);
+    // 包一层 flipSort：换排序时行会瞬间跳到新位置，人只知道「变了」、
+    // 说不出「哪几行去哪了」。只对**真挪了位置**的行补 200ms 位移插值。
+    //
+    // **keepOrder 生效时不做 FLIP**：那个状态下 doSort 本来就要把行序压回原样，
+    // 而此刻数据的真实排序已经变了（点开一个项目会更新 last_opened_at，
+    // store.select 还会因此再重绘一次）。两边一起动就是「先换位、再换回来」——
+    // 人看到的是一次莫名抖动，最终结果其实是对的。
+    //
+    // 这个豁免只作用于**紧接着的那一次**排序：keepOrder 是"打开某一行之后，
+    // 下一次重绘沿用旧行序"的一次性意图，用完就该失效。不消费它的话，
+    // 点过任意一个项目之后，所有后续排序都不再有位移动画了。
+    const applySort = () => {
+      if (keepOrder) { doSort(); return; }
+      flipSort(doSort, tbody);
+    };
     /** roving tabindex：整张表只留一个 Tab 停靠点，行间靠 ↑↓ 走。
         锚点是当前项目那一行；它不在可见行里（例如被筛掉了）就用第一条可见行。 */
     const focusAnchor = (rows) => {

@@ -510,25 +510,19 @@ export function softFilter(root, apply, opts = {}) {
   // 连续打字：直接切，不播动画
   if (typing || !rows.length) return;
 
+  // **只用 opacity，不碰 transform**：flipSort 也在用 transform 做位移插值，
+  // 两边都写同一个内联属性会互相覆盖——实测切换排序时 flipSort 刚设上的
+  // 反向位移会被这里的收尾一次性清掉，排序动画看起来完全没有。
+  // 分工：softFilter 管"显隐"（opacity），flipSort 管"位移"（transform）。
   rows.forEach((tr, i) => {
     const visible = !tr.hidden && tr.style.display !== 'none';
     if (visible === before[i]) return;
-    tr.style.transition = 'opacity 120ms cubic-bezier(.2,0,0,1), transform 120ms cubic-bezier(.2,0,0,1)';
+    tr.style.transition = 'opacity 120ms cubic-bezier(.2,0,0,1)';
+    tr.style.opacity = visible ? '0' : '0';
     if (visible) {
-      tr.style.opacity = '0';
-      tr.style.transform = 'translateY(-2px)';
-      requestAnimationFrame(() => {
-        tr.style.opacity = '';
-        tr.style.transform = '';
-      });
-    } else {
-      tr.style.opacity = '0';
+      requestAnimationFrame(() => { tr.style.opacity = ''; });
     }
-    setTimeout(() => {
-      tr.style.transition = '';
-      tr.style.opacity = '';
-      tr.style.transform = '';
-    }, 130);
+    setTimeout(() => { tr.style.transition = ''; tr.style.opacity = ''; }, 130);
   });
 }
 
