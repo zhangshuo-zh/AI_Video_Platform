@@ -790,3 +790,83 @@ def test_schemas_的模块划分是有序的():
     relative = [n.module for n in ast.walk(tree)
                 if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(".") ]
     assert not relative, f"enums 不该依赖包内其他模块（会形成环），现在依赖了 {relative}"
+
+
+# ---------- 第六批：services.py 拆成 services/ 包（2026-11-08） ----------
+
+def test_services_只是门面不再膨胀():
+    """`services.py` 现在只做 re-export（原来 2392 行、93 个定义）。"""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "services.py").read_text(encoding="utf-8")
+    body = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    assert len(body) < 40, \
+        f"services.py 又长起来了（{len(body)} 行非注释）——新函数请加到 services/<域>.py"
+
+
+def test_拆分没有丢任何一个_services_公开名字():
+    """拆分是**纯搬迁**：`services.xxx()` 与 `from services import X` 都必须照旧。
+
+    把 `services/` 里定义的公开名字与门面导出的做集合比对——
+    将来往某个域加了函数却忘了 re-export，这里会红。
+    """
+    import ast
+    import pathlib
+
+    import services
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pkg = root / "services"
+    defined = set()
+    for f in pkg.glob("*.py"):
+        if f.name == "__init__.py":
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not node.name.startswith("_"):
+                    defined.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                t = node.targets[0] if isinstance(node, ast.Assign) else node.target
+                if isinstance(t, ast.Name) and not t.id.startswith("_"):
+                    defined.add(t.id)
+
+    missing = sorted(n for n in defined if not hasattr(services, n))
+    assert not missing, f"这些定义在 services/ 里但门面没导出：{missing}"
+    # `hasattr` 查不出"`__all__` 里漏了"——`from .jobs import (submit_job)` 已经
+    # 把属性绑上去了，删 `__all__` 里那条它仍然在。而 `from services import *`
+    # 只认 `__all__`，所以必须单独守一遍。
+    absent_from_all = sorted(n for n in defined if n not in services.__all__)
+    assert not absent_from_all, (
+        f"这些名字定义在 services/ 里但没进 __all__（`from services import *` 会漏掉）："
+        f"{absent_from_all}")
+
+
+def test_services_各模块能单独导入且无环():
+    """每一层单独 import 都要成功——失败就是循环依赖的前兆。
+
+    拆包时真踩到过：`artifact_review` 与 `review` 互相引用
+    （前者用 `review._review_signature_view`、后者用前者的 `WHOLE_DOC_ANCHOR`）。
+    解法是把两个 anchor 常量下沉到 `errors`，而不是允许环存在。
+    """
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    names = sorted(p.stem for p in (root / "services").glob("*.py") if p.name != "__init__.py")
+    assert names, "services 包是空的？"
+    for name in names:
+        importlib.import_module(f"services.{name}")    # 失败会直接抛
+
+
+def test_errors_层不许依赖同包其他模块():
+    """`errors` 是分层的地基（异常 + 共享常量），它反过来依赖别人就塌了。"""
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "services" / "errors.py").read_text(encoding="utf-8"))
+    relative = [n.module for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(".")]
+    assert not relative, f"errors 不该依赖包内其他模块（会成环），现在依赖了 {relative}"

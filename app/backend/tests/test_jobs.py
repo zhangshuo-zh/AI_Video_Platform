@@ -332,7 +332,11 @@ def test_mock的媒体类型不在枚举里就挡在提交时(as_role, clean_que
 
 def test_假适配器只在允许时可用(as_role, clean_queue, seeded, monkeypatch):
     c = as_role("editor")
-    monkeypatch.setattr("services.ALLOW_MOCK", False)
+    # 2026-11-08 `services.py` 拆包后 `ALLOW_MOCK` 的直接读者在
+    # `services/jobs.py`（它按 `config.ALLOW_MOCK` 模块属性读）。
+    # 打在这个真读者上，比打在门面 `services.ALLOW_MOCK` 上准确——
+    # 后者只是个 re-export，改了不影响任何判断。
+    monkeypatch.setattr("config.ALLOW_MOCK", False)
     r = _submit(c, seeded["project_id"])
     assert r.status_code == 422
     assert "ALLOW_MOCK" in r.json()["detail"]

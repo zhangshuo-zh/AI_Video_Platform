@@ -640,10 +640,18 @@ def test_建单路径只有这一份清单():
                     n += 1
         if n:
             hits[str(f.relative_to(BACKEND))] = n
-    # services.py 三处：submit_job（唯一入口）／文档 AI／抽取；
+    # 2026-11-08 `services.py` 拆成 `services/` 包后，这三处落在各自模块里：
+    #   services/jobs.py            submit_job（唯一入口）
+    #   services/doc_ai.py          文档 AI
+    #   services/extract_candidates.py  抽取
     # composition 一处：合成建单，它带自己的幂等键与事务。
-    assert hits == {"services.py": 3, "composition/service.py": 1}, (
-        f"建单点与本表不符，新增旁路前先想清楚它过不过三条闸门：{hits}")
+    # **这张表的意义不变**：旁路不许再长；要新增一条，就得同时说清它的闸门。
+    assert hits == {
+        "services/jobs.py": 1,
+        "services/doc_ai.py": 1,
+        "services/extract_candidates.py": 1,
+        "composition/service.py": 1,
+    }, (f"建单点与本表不符，新增旁路前先想清楚它过不过三条闸门：{hits}")
 
 
 def test_告警标签和后端告警码对齐():
@@ -657,9 +665,14 @@ def test_告警标签和后端告警码对齐():
 
     js = (FRONTEND / "js" / "validation.js").read_text()
     table = _js_object_literal(js, "ALERT_LABEL =")
-    # 后端唯一出处：services.queue_health() 里 alerts.append({"code": ...}) 那几行
-    services_src = (BACKEND / "services.py").read_text()
-    backend = set(_re.findall(r'\{"level": "(?:bad|warn)", "code": "([a-z_]+)"', services_src))
+    # 后端唯一出处：`queue_health()` 里 `alerts.append({"code": ...})` 那几行。
+    # 2026-11-08 `services.py` 拆成 `services/` 包后它们在 `services/jobs.py`；
+    # 这里**扫整个包**而不是点某个文件——以后再挪位置，这条测试不该跟着改。
+    backend = set()
+    for src_file in sorted((BACKEND / "services").glob("*.py")):
+        backend |= set(_re.findall(
+            r'\{"level": "(?:bad|warn)", "code": "([a-z_]+)"',
+            src_file.read_text(encoding="utf-8")))
     assert backend, "没在后端找到告警码，说明这条测试的取样方式过期了"
     assert set(table) == backend, f"前端 {sorted(table)} ≠ 后端 {sorted(backend)}"
     # 三个视图都不许再自带一份（2026-11-08 拆分后模型中心那份在 models/monitor.js）

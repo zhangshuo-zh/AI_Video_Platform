@@ -207,7 +207,11 @@ def test_默认轨那条路也过闸门(monkeypatch, as_role, seeded, provider_s
         seen.append(args)
         return real(*args)
 
-    monkeypatch.setattr(services, "_service_engine_gate", spy)
+    # 2026-11-08 `services.py` 拆包后 `_service_engine_gate` 住在 `services/jobs.py`，
+    # 而 `submit_job()` 与它是**同一个模块内的直接调用**（不走门面属性）。
+    # 所以必须打在真模块上——打在 `services` 门面上不会影响任何调用。
+    import services.jobs as services_jobs
+    monkeypatch.setattr(services_jobs, "_service_engine_gate", spy)
     _gate_inputs(monkeypatch, "different.ckpt", "wanted.ckpt")
     from repositories.providers import providers
     row = providers.slot("image", "local")
