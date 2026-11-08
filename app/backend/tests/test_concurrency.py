@@ -116,7 +116,11 @@ def test_两个worker同时领只有一条拿到(queue):
         rows = list(pool.map(grab, ["e1-race-1", "e1-race-2"]))
     got = [r["id"] for r in rows if r is not None]
     assert got == [job["id"]]
-    _finish(job["id"], "e1-race-1")
+    # 收尾要用**真的赢了那一把的 wid**：`pool.map` 保序，rows[0] 对应
+    # e1-race-1——写死 "e1-race-1" 是把竞态赌成固定结果，谁先抢到随调度，
+    # 约四成由 race-2 赢，终态归属守卫（正确地）拒掉假赢家。
+    winner = "e1-race-1" if rows[0] is not None else "e1-race-2"
+    _finish(job["id"], winner)
 
 
 def test_心跳带资源占用():

@@ -116,6 +116,93 @@ def main():
         check("概览第一个数与服务端一致（不是写死的）", str(stats) == str(shown),
               f"接口 {stats} / 界面 {shown}")
 
+        # 顶部数字点得下去（2026-11-07 方案1）：「已登记 N」点一下，清单里
+        # 可见行数必须**等于** N——数字与行同源（stats 吃的就是这批行），
+        # 点出来对不上就是联动的尺子漂了。
+        P.eval_js(cdp, "document.querySelector('[data-stlink=registered]').click()")
+        time.sleep(0.3)
+        vis = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                             ".filter(t => t.style.display !== 'none').length")
+        check("点「已登记 N」筛出的行数正好等于 N", str(vis) == str(stats),
+              f"可见 {vis} 行 / 接口 {stats}")
+        # 筛出来的每一行都真的登记过（data-registered），没登记的不该混进来
+        leak = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                              ".filter(t => t.style.display !== 'none'"
+                              " && t.dataset.registered !== '1').length")
+        check("筛出的行全是登记行（未登记的不混进来）", leak == 0, f"混入 {leak} 行")
+        # 交还规则：人一动搜索框，临时视图就该让位（不能默默一直筛着）
+        P.eval_js(cdp, "(() => { const i = document.querySelector('#repo-search');"
+                       "i.value='x'; i.dispatchEvent(new Event('input',{bubbles:true}));"
+                       "i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); })()")
+        total = P.eval_js(cdp, "document.querySelectorAll('#repo-rows tr').length")
+        after = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                               ".filter(t => t.style.display !== 'none').length")
+        check("动过搜索框后临时筛选让位（回到全表）", str(after) == str(total),
+              f"回到 {after} / 全表 {total} 行")
+
+        # 「可用」格与它里面那枚「N 个要看一眼」嵌在一起（两层都 data-stlink）：
+        # 点徽章必须是 attention（没到可用的那批），点数字必须是 available。
+        # 这个检查抓的就是"事件冒泡把外层覆掉、徽章等于白做"这类事故。
+        P.eval_js(cdp, "document.querySelector('[data-stlink=available]').click()")
+        time.sleep(0.2)
+        vis = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                             ".filter(t => t.style.display !== 'none').length")
+        avail = cdp.eval("fetch('/api/models/stats').then(r=>r.json()).then(j=>j.available_total)")
+        check("点「可用」格筛出的行数等于 available_total",
+              str(vis) == str(avail), f"可见 {vis} / 接口 {avail}")
+
+        # 两层嵌套：徽章的 attention 必须赢过外层的 available，不能被覆掉
+        P.eval_js(cdp, "document.querySelector('[data-stlink=available]').click()")
+        time.sleep(0.2)
+        P.eval_js(cdp, "document.querySelector('[data-stlink=attention]').click()")
+        time.sleep(0.2)
+        vis = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                             ".filter(t => t.style.display !== 'none').length")
+        attn = cdp.eval("fetch('/api/models/stats').then(r=>r.json()).then(j=>j.needs_attention)")
+        check("点徽章筛 attention，外层 available 不抢跑（嵌两层也要各管各的）",
+              str(vis) == str(attn), f"可见 {vis} / 接口 needs_attention={attn}")
+
+        # 「引擎」「任务」两格本表没有对应的行（adapter 轴与队列），
+        # 点它们必须**跳子页**而不是筛——硬筛一张空表比不点更坏。
+        P.eval_js(cdp, "document.querySelector('[data-stlink=engines]').click()")
+        time.sleep(0.5)
+        check("点「引擎」跳到引擎管理而不是筛出空表",
+              (P.eval_js(cdp, "location.hash") or "").startswith("#models/1"),
+              str(P.eval_js(cdp, "location.hash")))
+
+        # 跨子页带筛数意图：此刻人已经在「引擎管理」，点「已登记 7」
+        # 必须切回模型仓库**并且真的筛出 7 行**——只切页不带筛选，
+        # 等于点了一下没反应。
+        P.eval_js(cdp, "document.querySelector('[data-stlink=registered]').click()")
+        time.sleep(0.7)
+        jumped = (P.eval_js(cdp, "location.hash") or "").startswith("#models/0")
+        vis = P.eval_js(cdp, "[...document.querySelectorAll('#repo-rows tr')]"
+                             ".filter(t => t.style.display !== 'none').length")
+        check("在别的子页点「已登记 N」会切回仓库并带上筛选",
+              jumped and str(vis) == str(stats),
+              f"hash={P.eval_js(cdp, 'location.hash')} 可见 {vis} / 接口 {stats}")
+
+        # 「任务」格跳运行监控；格子里那颗按钮（兼差原页头入口）同去向
+        P.eval_js(cdp, "document.querySelector('[data-stlink=tasks]').click()")
+        time.sleep(0.5)
+        check("点「任务」跳到运行监控",
+              (P.eval_js(cdp, "location.hash") or "").startswith("#models/3"),
+              str(P.eval_js(cdp, "location.hash")))
+        # 先回仓库那一屏再点按钮：人在 sub3 时点"跳 sub3"看不出它有没有坏
+        P.eval_js(cdp, "document.querySelector('[data-stlink=registered]').click()")
+        time.sleep(0.6)
+        P.eval_js(cdp, "document.getElementById('mc-goto-monitor')?.click()")
+        time.sleep(0.5)
+        check("格子里那颗按钮仍可点、同去向",
+              (P.eval_js(cdp, "location.hash") or "").startswith("#models/3"),
+              str(P.eval_js(cdp, "location.hash")))
+
+        # 这一整块把页面在四个子页之间跳了个遍，后面的检查（搜索／来源筛选）
+        # 都假定人在「模型仓库」那一屏。用 go() 整页重载回来：
+        # 应用没有 hashchange 监听，只改 location.hash 不会换视图（见 go 的注释），
+        # 硬跳回去会留下一屏"看着对、读的是别的子页"的假状态。
+        go(cdp, f"{BASE}/#models/0")
+
         # 搜索筛选
         P.eval_js(cdp, "(() => { const i = document.querySelector('#repo-search');"
                        "i.value='不存在的模型名xyz'; i.dispatchEvent(new Event('input',{bubbles:true})); })()")

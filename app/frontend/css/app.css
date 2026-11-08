@@ -28,8 +28,13 @@
 
   /* 浮层按"离内容多远"分档：卡片只透不糊（背后是固定的极光底，不是滚动内容，
      挂磨砂纯属白付 GPU）；侧栏/顶栏/弹层压在滚动内容上，才需要 blur。 */
-  --panel:rgba(255,255,255,.66);
-  --panel-2:rgba(255,255,255,.5);
+  /* 卡片透明度 .66→.52：那三层极光是这一套主题的名字（"极光玻璃"），
+     但 .66 的白盖上去之后，内容区实际渲染接近纯白/浅灰，极光只在页面最底部
+     露一点边——设计意图被自己盖掉了。降到 .52 让它真的透出来。
+     对比度实测（极光最亮处 #dfe7ff 之上）：正文 16.04、三级文字 5.22，
+     都远在 AA 4.5 之上，不是拿可读性换通透。 */
+  --panel:rgba(255,255,255,.52);
+  --panel-2:rgba(255,255,255,.4);
   --field:#fff;                       /* 输入框与次级按钮的底 */
   --field-hi:#f3f5fa;                 /* 上者悬停 */
   --frost:rgba(250,250,252,.72);      /* 侧栏与顶栏 */
@@ -264,20 +269,26 @@ body{
 /* 项目切换器已挪到顶栏面包屑（见下方 .proj-pick / .proj-menu），
    侧栏这里原来那套常驻 select 的样式整块删掉。 */
 
-.nav{padding:12px 10px;flex:1;overflow:auto}
+.nav{padding:8px 10px 12px;flex:1;overflow:auto;
+  /* 滚动条画细一点，别在窄侧栏里再吃掉 10px 横向宽度 */
+  scrollbar-width:thin;scrollbar-color:var(--scroll) transparent}
 .nav-group{margin-bottom:4px}
 /* 没有二级项的模块不带 .nav-group 外壳（buildNav 直接返回裸项），
    补一条同样的组间距，否则它和下一组会贴得比别处近 */
 .nav > .nav-item{margin-bottom:4px}
 /* 0037 分组导航：一行小标题 + 它下面的模块。标题不可点，所以刻意不做成
    .nav-item 的样子（不描边、不上底、字号更小），否则会被误读成一个页面入口。 */
-.nav-section{margin:0 0 10px}
-.nav-section + .nav-section{margin-top:2px}
-.nav-section-t{padding:8px 10px 4px;font-size:10.5px;font-weight:650;letter-spacing:.06em;
+/* 侧栏在 857px 高的笔记本上原本溢出 90–224px，最后两项（智能体中心／
+   系统设置）得滚动才够得着。这里只压**留白**，不动字号与行高，
+   省出约 90px：section 间距 10→6、标题上下 padding 8/4→4/2、
+   单项 padding 8→6。14 项 ×4px + 5 标题 ×6px + 5 间距 ×4px = 106px。 */
+.nav-section{margin:0 0 6px}
+.nav-section + .nav-section{margin-top:0}
+.nav-section-t{padding:4px 10px 2px;font-size:10.5px;font-weight:650;letter-spacing:.06em;
   color:var(--ink-3);text-transform:none;user-select:none;
 }
 .nav-item{
-  display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:9px;
+  display:flex;align-items:center;gap:12px;padding:6px 10px;border-radius:9px;
   color:var(--ink-2);cursor:pointer;user-select:none;font-size:14px;letter-spacing:-.005em;
   transition:background var(--fast) var(--ease),color var(--fast),transform var(--fast);
 }
@@ -374,8 +385,32 @@ body{
    cursor 只给这一枚——.chip 管状态不带交互（见标签分工那条注），可点性要显式声明。 */
 .mc-attention{cursor:pointer}
 .mc-attention:hover{filter:brightness(.96)}
-.mc-strip .st-caliber{flex:1 1 100%;font-size:11px;color:var(--ink-3);
-  border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+/* 顶部四个数全部点得下去（2026-11-07）：判据是 data-stlink 属性而不是类名——
+   「点得出东西」这件事由 JS 在渲染时决定（0 登记的「已登记」不给属性），
+   CSS 只负责"带这个属性的就长个可点的样子"。悬停给下划线不变色：
+   它是 .st 的一部分而不是徽章，变色会和状态徽章抢注意力。 */
+.mc-strip [data-stlink]{cursor:pointer}
+.mc-strip [data-stlink]:hover b{text-decoration:underline}
+/* 四数之间用竖线分开：原来只靠 24px gap，"引擎 15" 与 "任务 0" 容易连读成一串。
+   分界线用伪元素，不额外加 DOM。第一格不加。 */
+.mc-strip .st + .st{position:relative;padding-left:24px}
+.mc-strip .st + .st::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:1px;height:22px;background:var(--line)}
+/* 概览格里那枚行内链接（原来的页头按钮）：贴着数字读，不抢一级位置 */
+.mc-inline-link{appearance:none;border:0;background:none;font:inherit;font-size:11px;
+  color:var(--accent);cursor:pointer;padding:0;margin-left:2px;border-bottom:1px solid transparent}
+.mc-inline-link:hover{border-bottom-color:var(--accent-line)}
+/* 口径说明收进 <details>：默认只占一个词的宽度，点开才读。
+   原来它是横贯整卡的一行 71 字小字，和四个大数抢注意力。 */
+.mc-caliber{flex:0 0 auto;margin-left:auto;font-size:11px;color:var(--ink-3)}
+.mc-caliber>summary{cursor:pointer;list-style:none;padding:2px 8px;border-radius:999px;
+  border:1px solid var(--line);user-select:none;white-space:nowrap}
+.mc-caliber>summary::-webkit-details-marker{display:none}
+.mc-caliber>summary:hover{border-color:var(--line-hover);color:var(--ink-2)}
+.mc-caliber[open]{flex:1 1 100%;margin-left:0;margin-top:8px;padding-top:8px;
+  border-top:1px solid var(--line)}
+.mc-caliber p{margin:6px 0 0;line-height:1.7;max-width:78ch}
+@media (max-width:860px){.mc-caliber{margin-left:0}}
 
 /* 能力轨：默认一槽一行，细节点开才看。
    上一版每槽固定两行，备注带里又塞了清单、参数、备注、密钥四层——
@@ -421,7 +456,21 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
 }
 
 /* 空状态：靠排版撑，不塞插画 */
-.empty{padding:56px 24px;text-align:center}
+/* 空状态加一枚极淡的品牌水印。空状态是"第一次进这个页面"最常看到的画面，
+   纯文字太素；但插图不能抢文字，所以压到 5.5% 透明度、放在文字之后。
+   用 ::after + 绝对定位而不是插 <img>：一个视图代码都不动，
+   而且水印不该被读屏念出来（装饰性图片写成 CSS 背景最省事）。 */
+.empty{position:relative;padding:56px 24px;text-align:center;isolation:isolate}
+.empty::after{content:"";position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);width:184px;height:184px;z-index:-1;
+  /* 用 brand-user-alpha（抠过透明的那张），不用 brand-mascot：
+     后者是不透明底图，压到 5% 仍能看出一块方形底色，夜间主题尤其明显。 */
+  background:url("/img/brand-user-alpha.png") center / contain no-repeat;
+  opacity:.07;pointer-events:none}
+/* 夜间主题水印要更淡：炭黑底上白描边的图会显脏 */
+[data-theme=night] .empty::after{opacity:.035}
+/* 空状态在卡片里时（多数场合）上下留白可以小一点，别把卡片撑得太高 */
+.card .empty{padding:44px 24px}
 .empty-t{font-size:14px;font-weight:600;letter-spacing:-.01em;margin-bottom:6px}
 .empty p{font-size:12.5px;color:var(--ink-3);line-height:1.75;max-width:420px;margin:0 auto 16px}
 .empty-form{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:4px}
@@ -457,7 +506,12 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
    不然 12.5px 的灰字压在 11.5px 的提示上面，一行里两种字号 */
 .role-pick .t-dim{font-size:11.5px;color:var(--ink-3)}
 .empty .hint{font-size:11.5px;color:var(--ink-3);margin-top:12px;margin-bottom:0}
-.side-foot{border-top:1px solid var(--line);padding:16px 16px;font-size:11.5px;color:var(--ink-2);display:grid;gap:8px;flex:none}
+/* 侧栏底部状态区。上沿那道线原本是硬边框，导航内容被裁在这里时看着像
+   "页面就到这儿了"。现在换成一层向上的渐隐：既把导航与状态分开，
+   又暗示"上面还能滚"，最后几个模块不会被误认为不存在。 */
+.side-foot{position:relative;padding:12px 16px 10px;font-size:11.5px;color:var(--ink-2);display:grid;gap:6px;flex:none}
+.side-foot::before{content:"";position:absolute;left:0;right:0;top:-14px;height:14px;
+  pointer-events:none;background:linear-gradient(to top,var(--frost),transparent)}
 .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .dot.idle{background:var(--dot-idle)}
 /* 指示灯用硬闪，不用呼吸：呼吸是生物感，闪是设备感 */
@@ -597,7 +651,10 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{
   text-align:left;font-weight:600;color:var(--ink-3);font-size:11.5px;letter-spacing:.03em;padding:10px 16px;border-bottom:1px solid var(--line);background:transparent;white-space:nowrap;
 }
-td{padding:10px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+/* 行内距 10→7：模型仓库与生成中心都是一屏扫十几行的表，10px 上下内距
+   在 61px 行高里占掉三分之一。7px 仍留得出呼吸，但一屏多出两行。
+   这是**全局表格**内距，改之前量过两个主表（仓库 61→55、作业 67→61）。 */
+td{padding:7px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr:last-child td{border-bottom:0}
 tbody tr{transition:background var(--fast)}
 tbody tr:hover{background:var(--row-hover)}
@@ -1224,6 +1281,27 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .modal-box.wide .modal-actions{flex:none}
 .gen-form{max-width:none}
 .gen-cost{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
+/* 场景候选那一块横跨两列：它长在 form-grid 里（label／控件两列），
+   占单列会被压成一条 80px 宽的窄条。 */
+.gen-scene-panel{grid-column:1/-1;border:1px solid var(--line);border-radius:12px;
+  background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
+.gen-scene-panel[hidden]{display:none}
+/* 预填留痕那一行：紧贴在「槽位」下拉之后（被改动的两个控件旁边），
+   同样横跨两列；左边一道细竖线把它与表单本身分开——它是"刚才发生了什么"，
+   不是表单字段。 */
+.gen-scene-prefill{grid-column:1/-1;border-left:2px solid var(--accent);
+  padding:2px 0 2px 10px;display:grid;gap:4px}
+.gen-scene-prefill[hidden]{display:none}
+.gen-scene-prefill .btn.sm{margin-left:6px}
+.gen-scene-lede{margin:0;line-height:1.7}
+.gen-scene-warn{margin:0;font-size:11.5px;line-height:1.7;color:var(--bad)}
+.gen-scene-table td{white-space:nowrap}
+.gen-scene-table .hint{margin-top:2px}
+/* 「为什么别的不行」折起来：这一段是排查用的长文本，
+   九个场景里常见的四五条挡路原因会把弹窗撑到看不见提交按钮。 */
+.gen-scene-more>summary{cursor:pointer;font-size:11.5px;color:var(--ink-3)}
+.gen-scene-more>ul.hint{margin:6px 0 0;padding-left:16px;line-height:1.7}
+.gen-scene-more>ul.hint li+li{margin-top:4px}
 .cost-inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
 .cost-inputs label{display:grid;gap:4px;font-size:11px;color:var(--ink-3)}
 .cost-inputs label.wide{grid-column:1/-1}

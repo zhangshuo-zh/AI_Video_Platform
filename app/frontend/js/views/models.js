@@ -39,6 +39,17 @@ const VAL_STATE = {
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
+/** 顶部四数的可点声明：只在**真点得出东西**时挂 data-stlink。
+ *  0 登记还让「已登记 0」可点，筛出来一张空表——那不是联动，是恶作剧。 */
+const stLink = (kind, enabled) => (enabled ? ` data-stlink="${kind}"` : '');
+const stTip = (enabled) => (enabled ? ' · 点这里只看这些行' : '');
+
+/** 「在别的子页点了筛数」时先把意图存一下，切回模型仓库那一屏由 mountRepo 消费一次。
+ *  不做跨页传递的话，从引擎管理点「已登记 7」只会跳回第一屏、什么都没筛。 */
+let pendingFilter = '';
+// mountRepo 把自己的"就地筛"实现挂到这里，给概览带（在视图层，跨子页存在）调用。
+let viewFilter = null;;
+
 // 一次 render 把四份数据都缓存下来；mount 里的交互不重新发请求，
 // 免得点一下筛选就把整页的读请求打一遍
 let cache = { catalog: null, manifest: null, providers: null, policies: null,
@@ -237,30 +248,49 @@ function overviewCard(s) {
         <span class="hint">目录接口这次没读回来（${escapeHtml(String(s.degraded))}），
         下面这几个数不是真的 0，是空位。切到别的页再回来会重试。</span></p>`
     : '';
+  const queued = (s.running || 0) + (s.queued || 0);
   return `
-  <div class="card" style="margin-bottom:12px">
+  <div class="card mc-overview" style="margin-bottom:12px">
     <div class="mc-strip">
-      <span class="st" title="${escapeHtml(cal.registered_total || '')}">已登记
+      <!-- 四个数全部点得下去，但**分成两类动作**，因为它们回答的不是同一件事：
+          已登记／可用／要看一眼的"行"就在这张表里 → 就地筛，筛出的行数等于那个数；
+          引擎是 adapter 轴、任务是队列，本表没有对应的行，硬筛会筛出一张空表骗人
+          → 跳到真能看见它们的那个子页。承诺"点得下去"，不承诺"一定是筛"。 -->
+      <span class="st"${stLink('registered', (s.registered_total ?? 0) > 0)}
+        title="${escapeHtml(cal.registered_total || '')}${stTip((s.registered_total ?? 0) > 0)}">已登记
         <b>${s.registered_total ?? 0}</b>
         <span class="hint">${escapeHtml(capText || '还没有登记')}</span></span>
-      <span class="st" title="${escapeHtml(cal.available_total || '')}">可用
+      <span class="st"${stLink('available', (s.available_total ?? 0) > 0)}
+        title="${escapeHtml(cal.available_total || '')}${stTip((s.available_total ?? 0) > 0)}">可用
         <b>${s.available_total ?? 0}</b>
         ${s.needs_attention
-          ? `<span class="chip amber mc-attention" title="点这里只看这些行">${s.needs_attention} 个要看一眼</span>`
+          ? `<span class="chip amber mc-attention" data-stlink="attention" title="点这里只看这些行">${s.needs_attention} 个要看一眼</span>`
           : (s.registered_total
               ? '<span class="chip green">都齐了</span>'
               /* 空机器的 needs_attention 恒为 0（登记−可用），绿色「都齐了」
                  会把"什么都没配"念成"全部就绪"。0 登记时这不是结论，是起点。 */
               : '<span class="chip amber" title="先在模型仓库登记一档，再谈可用">还没有登记</span>')}</span>
-      <span class="st" title="${escapeHtml(cal.engine_total || '')}">引擎
+      <span class="st" data-stlink="engines"
+        title="${escapeHtml(cal.engine_total || '')} · 点这里去引擎管理">引擎
         <b>${s.engine_total ?? 0}</b>
         <span class="hint">${s.engine_params_known || 0} 个参数已核验 ·
           ${(s.unintegrated_engines || []).length} 个未接入</span></span>
-      <span class="st" title="与生成中心同一个口径：${escapeHtml(cal.queued || '')}">任务
-        <b>${(s.running || 0) + (s.queued || 0)}</b>
-        <span class="hint">跑 ${s.running || 0} · 等 ${s.queued || 0}</span></span>
-      <span class="st-caliber">可用＝已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收。
-        引擎在线不代表模型可用，文件在也不代表依赖齐。</span>
+      <!-- 「任务」这一格兼差原来的页头按钮「查看运行异常」：那颗按钮做的事
+           其实就是 setSub(3)，等于一个跳转链接。跳转不该占页头一等位置，
+           挂在这枚可点数字上，语义反而更紧（看到"跑 N"想追就点它）。 -->
+      <span class="st" data-stlink="tasks" title="与生成中心同一个口径：${escapeHtml(cal.queued || '')} · 点这里去运行监控">任务
+        <b>${queued}</b>
+        <span class="hint">跑 ${s.running || 0} · 等 ${s.queued || 0}</span>
+        ${queued ? '<button type="button" class="mc-inline-link" id="mc-goto-monitor">看异常 →</button>'
+                  : '<button type="button" class="mc-inline-link" id="mc-goto-monitor">运行监控 →</button>'}</span>
+      <!-- 口径说明原来是一整行 71 字的小字，横贯整张卡，和上面四个数抢注意力。
+           收进一枚 ⓘ：默认不占版面，hover / 点开才读。内容一字未删。 -->
+      <details class="mc-caliber">
+        <summary title="这一行四个数各自怎么算">口径</summary>
+        <p>可用＝已登记 ∧ 已启用 ∧ 健康就绪 ∧ 这一档自己有过真实调用或产物验收。
+          引擎在线不代表模型可用，文件在也不代表依赖齐。</p>
+        <p class="hint">每个数还有自己的口径：鼠标停在那一格上就能看到。</p>
+      </details>
     </div>
     ${degraded}
   </div>`;
@@ -331,7 +361,9 @@ function pageRepo() {
         data-cap="${escapeHtml(it.capability)}" data-source="${escapeHtml(it.source)}"
         data-name="${escapeHtml((name + ' ' + it.model_code + ' ' + it.provider).toLowerCase())}"
         data-rid="${it.registration_id || ''}"
-        ${it.registered && it.status !== 'available' ? 'data-attention="1"' : ''}>
+        ${it.registered && it.status !== 'available' ? 'data-attention="1"' : ''}
+        ${it.registered ? 'data-registered="1"' : ''}
+        ${it.registered && it.status === 'available' ? 'data-avail="1"' : ''}>
       <td><b>${escapeHtml(name)}</b>
         <div class="hint mono">${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}</div></td>
       <td>${escapeHtml(cache.catalog.capabilities[it.capability] || it.capability)}
@@ -1264,8 +1296,9 @@ export default {
         <p>模型登记、引擎真相、调用策略与运行概览；选路与排队仍归生成中心</p>
         <div class="right">
           ${subChipRow(SUBS, sub)}
-          <button class="btn" id="mc-check-all">检查引擎连接</button>
-          <button class="btn" id="mc-goto-monitor">查看运行异常</button>
+          <!-- 「查看运行异常」原来在这儿，做的事只是 setSub(3)，等于一颗跳转链接。
+               跳转不该占页头一等位置，已挂到概览卡「任务」那格的可点数字上。 -->
+          <button class="btn" id="mc-check-all" title="现查一次服务型引擎，再逐条跑环境检查">检查引擎连接</button>
           <button class="btn primary" id="mc-add">登记模型</button>
         </div>
       </div>
@@ -1279,6 +1312,39 @@ export default {
     bindSubChips(root, (i) => {
       setSub('models', i);
       window.dispatchEvent(new CustomEvent('app:refresh'));
+    });
+
+    /* ---------- 概览带：四个数点得下去（一处派发，四个子页都在顶部） ----------
+       registered／available／attention 的行在模型仓库那张表里：当前就在
+       那一屏就就地筛；在别的子页点的就先存意图再切回 sub 0 消费。
+       engines／tasks 本表没有对应的行（adapter 轴与队列），跳真能看见
+       它们的子页——硬筛一张空表比不筛更坏。 */
+    root.querySelectorAll('[data-stlink]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        // 「N 个要看一眼」嵌在「可用」格里，两层都带 data-stlink：
+        // 不挡冒泡的话，点徽章会连点整格——attention 筛完又立刻被
+        // available 覆掉，徽章等于白做。只有**最深的那一层**响应。
+        if (e.target.closest('[data-stlink]') !== el) return;
+        // 「任务」格里那颗「运行监控 →」按钮自己已经绑了同一条跳转：
+        // 它冒泡上来会再派发一次 app:refresh，白跑一趟装载。让按钮自己走。
+        if (e.target.closest('#mc-goto-monitor')) return;
+        const kind = el.dataset.stlink;
+        if (kind === 'engines') {
+          setSub('models', 1);
+          window.dispatchEvent(new CustomEvent('app:refresh'));
+          return;
+        }
+        if (kind === 'tasks') {
+          setSub('models', 3);
+          window.dispatchEvent(new CustomEvent('app:refresh'));
+          return;
+        }
+        if ((getSub('models') ?? 0) === 0 && viewFilter) { viewFilter(kind)(); return; }
+        // 不在模型仓库那一屏：mountRepo 还没跑，把意图交给下一次装载
+        pendingFilter = kind;
+        setSub('models', 0);
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+      });
     });
 
     /* ---------- 页头三个入口 ---------- */
@@ -1416,7 +1482,16 @@ function mountRepo(root) {
   /* 状态筛选是**临时视图**：概览那枚「N 个要看一眼」点进来时置位，
      人再动搜索或换筛选就清掉——它不是长期挂着的第四个下拉，
      挂上去就要回答"为什么刷新后还在"。 */
-  let statusFilter = '';
+  // 切回这一屏时若有待筛意图（在别的子页点的数），消费一次就清掉——
+  // 它是一次性的"跳转带过去的筛选"，不该在刷新后还阴魂不散地筛着。
+  let statusFilter = pendingFilter;
+  pendingFilter = '';
+  // 三种临时视图，各自判据与后端 stats() 的取法逐字对应：
+  //   registered＝已登记全部　available＝已登记∧可用　attention＝已登记∧没到可用
+  const matchFilter = (tr) => statusFilter === 'attention'
+    ? tr.dataset.attention === '1'
+    : statusFilter === 'available' ? tr.dataset.avail === '1'
+      : tr.dataset.registered === '1';
   const apply = () => {
     const q = (root.querySelector('#repo-search').value || '').trim().toLowerCase();
     const cap = root.querySelector('#repo-cap').value;
@@ -1425,7 +1500,7 @@ function mountRepo(root) {
     rows.forEach((tr) => {
       const ok = (!q || tr.dataset.name.includes(q))
         && (!cap || tr.dataset.cap === cap) && (!src || tr.dataset.source === src)
-        && (!statusFilter || tr.dataset.attention === '1');
+        && (!statusFilter || matchFilter(tr));
       tr.style.display = ok ? '' : 'none';
       if (ok) n += 1;
     });
@@ -1439,16 +1514,18 @@ function mountRepo(root) {
         apply();
       });
   });
-  // 概览那枚「N 个要看一眼」：点进来直接把"没到可用"的行筛出来。
-  // needs_attention 的口径是「已登记但没到 available」，与 data-attention 同一把尺子。
-  root.querySelector('.mc-attention')?.addEventListener('click', () => {
-    statusFilter = 'attention';
+  // 「已登记／可用／要看一眼」：点下去就地筛，筛出的行数等于那个数
+  // （stats 吃的就是这批行，两处同一把尺子）。
+  const jumpFilter = (kind) => () => {
+    statusFilter = kind;
     root.querySelector('#repo-search').value = '';
     root.querySelector('#repo-cap').value = '';
     root.querySelector('#repo-source').value = '';
     apply();
     root.querySelector('#repo-rows')?.scrollIntoView({ block: 'nearest' });
-  });
+  };
+  // 本屏的三个直接在原地接（kind 在下方视图统一派发，见 mountStrip）
+  viewFilter = jumpFilter;
   apply();
 
   root.querySelectorAll('[data-detail]').forEach((b) => b.addEventListener('click', () => {
