@@ -22,160 +22,116 @@ async function toJson(res) {
   return text ? JSON.parse(text) : null;
 }
 
+/* ---------------------------------------------------------------- 请求收敛
+ *
+ * 这个文件里原来有 67 处逐字重复的
+ *     method: 'POST', headers: { 'Content-Type': 'application/json' },
+ *     body: JSON.stringify({...}),
+ * 以及 187 处 .then(toJson)。重复的代价不是「看着啰嗦」，而是**横切改动要改 67 遍**：
+ * 加一个请求头、加超时、加 trace id、改重试策略，每一处都得记得。
+ *
+ * 收成 send／get 两个内部函数：
+ *   - 有 body 才加 Content-Type 与 JSON.stringify（DELETE 带不带 body 都支持）；
+ *   - 传 undefined 表示「这次没有 body」，传 {} 才是「发一个空对象」——
+ *     原来有 3 处 body 是字符串 '{}'（语义就是空对象），统一成 {}；
+ *   - toJson 仍是唯一出口，401 闸门、detail 提取、204 空响应那一套一行没动。
+ *
+ * **对外签名一个字都没变**：api.xxx(...) 的调用方（十几个视图）不用改。
+ */
+const send = (method, url, body) => {
+  const init = { method };
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify(body);
+  }
+  return fetch(url, init).then(toJson);
+};
+const get = (url) => fetch(url).then(toJson);
+
 export const api = {
-  me: () => fetch('/api/auth/me').then(toJson),
-  login: (username, password) => fetch('/api/auth/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  }).then(toJson),
-  logout: () => fetch('/api/auth/logout', { method: 'POST' }).then(toJson),
-  changePassword: (oldPassword, newPassword) => fetch('/api/auth/password', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
-  }).then(toJson),
+  me: () => get('/api/auth/me'),
+  login: (username, password) => send('POST', '/api/auth/login', { username, password }),
+  logout: () => send('POST', '/api/auth/logout'),
+  changePassword: (oldPassword, newPassword) => send('POST', '/api/auth/password', { old_password: oldPassword, new_password: newPassword }),
   // status：'active' 在产 / 'archived' 已归档 / 'all' 全部（默认）。
   // 项目中心要在那三者之间切，所以一次捞全再由页面筛；顶栏下拉只认在产。
-  projects: (status = 'all') => fetch(`/api/projects?status=${encodeURIComponent(status)}`).then(toJson),
-  openProject: (id) => fetch(`/api/projects/${id}/open`, { method: 'POST' }).then(toJson),
-  setProjectStatus: (id, status) => fetch(`/api/projects/${id}/status`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  }).then(toJson),
+  projects: (status = 'all') => get(`/api/projects?status=${encodeURIComponent(status)}`),
+  openProject: (id) => send('POST', `/api/projects/${id}/open`),
+  setProjectStatus: (id, status) => send('PATCH', `/api/projects/${id}/status`, { status }),
   // 批量：归档 archive / 恢复 restore / 加标签 tag
-  batchProjects: (body) => fetch('/api/projects/batch', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  batchDeleteProjects: (ids, confirm) => fetch('/api/projects/batch-delete', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids, confirm }),
-  }).then(toJson),
+  batchProjects: (body) => send('POST', '/api/projects/batch', body),
+  batchDeleteProjects: (ids, confirm) => send('POST', '/api/projects/batch-delete', { ids, confirm }),
 
   // 用户与角色（系统设置 · 用户与角色页）
-  users: () => fetch('/api/users').then(toJson),
-  roles: () => fetch('/api/roles').then(toJson),
-  permissions: () => fetch('/api/permissions').then(toJson),
-  createUser: (body) => fetch('/api/users', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  updateUser: (id, body) => fetch(`/api/users/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  setUserRoles: (id, roles) => fetch(`/api/users/${id}/roles`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ roles }),
-  }).then(toJson),
-  resetUserPassword: (id, newPassword) => fetch(`/api/users/${id}/password`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ new_password: newPassword }),
-  }).then(toJson),
-  setRolePermissions: (id, permissions) => fetch(`/api/roles/${id}/permissions`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ permissions }),
-  }).then(toJson),
-  deleteUser: (id, body) => fetch(`/api/users/${id}`, {
-    method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  users: () => get('/api/users'),
+  roles: () => get('/api/roles'),
+  permissions: () => get('/api/permissions'),
+  createUser: (body) => send('POST', '/api/users', body),
+  updateUser: (id, body) => send('PATCH', `/api/users/${id}`, body),
+  setUserRoles: (id, roles) => send('PUT', `/api/users/${id}/roles`, { roles }),
+  resetUserPassword: (id, newPassword) => send('POST', `/api/users/${id}/password`, { new_password: newPassword }),
+  setRolePermissions: (id, permissions) => send('PUT', `/api/roles/${id}/permissions`, { permissions }),
+  deleteUser: (id, body) => send('DELETE', `/api/users/${id}`, body),
 
   // 项目协作人（只有所有人与管理员能读写这张名单）
-  memberCandidates: () => fetch('/api/member-candidates').then(toJson),
-  projectMembers: (id) => fetch(`/api/projects/${id}/members`).then(toJson),
-  addProjectMember: (id, userId) => fetch(`/api/projects/${id}/members`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId }),
-  }).then(toJson),
-  removeProjectMember: (id, userId) => fetch(`/api/projects/${id}/members/${userId}`, {
-    method: 'DELETE',
-  }).then(toJson),
+  memberCandidates: () => get('/api/member-candidates'),
+  projectMembers: (id) => get(`/api/projects/${id}/members`),
+  addProjectMember: (id, userId) => send('POST', `/api/projects/${id}/members`, { user_id: userId }),
+  removeProjectMember: (id, userId) => send('DELETE', `/api/projects/${id}/members/${userId}`),
   // 转移所有权。规则在后端：接手人要启用且层级不高于发起人（v0.81 起不必先是协作人），交完自己降为协作人
-  transferProject: (id, userId) => fetch(`/api/projects/${id}/transfer`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId }),
-  }).then(toJson),
-  health: () => fetch('/api/health').then(toJson),
-  updateProject: (id, body) => fetch(`/api/projects/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  projectSummary: (id) => fetch(`/api/projects/${id}/summary`).then(toJson),
+  transferProject: (id, userId) => send('POST', `/api/projects/${id}/transfer`, { user_id: userId }),
+  health: () => get('/api/health'),
+  updateProject: (id, body) => send('PUT', `/api/projects/${id}`, body),
+  projectSummary: (id) => get(`/api/projects/${id}/summary`),
   // 原来这里自己写了一段 `if (!res.ok) throw new Error(status + ' ' + statusText)`，
   // 把后端那句给人看的 detail 换成了 "409 Conflict"——同一个页面里其他 40 个函数
   // 都走 toJson，只有它不听话。改回 toJson：错误照样抛，但说的是人话。
-  deleteProject: (id, confirmName) => fetch(
-    `/api/projects/${id}?confirm=${encodeURIComponent(confirmName)}`,
-    { method: 'DELETE' }).then(toJson),
-  createProject: (body) => fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  deleteProject: (id, confirmName) => send('DELETE', `/api/projects/${id}?confirm=${encodeURIComponent(confirmName)}`),
+  createProject: (body) => send('POST', '/api/projects', body),
 
   // worker 在线状态与队列长度（顶栏/侧栏/首页共用）
-  workerStatus: () => fetch('/api/worker/status').then(toJson),
+  workerStatus: () => get('/api/worker/status'),
 
   // 生成中心：队列、成本账、参数模板。
   // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
-  jobs: (params = {}) => fetch('/api/jobs?' + new URLSearchParams(
+  jobs: (params = {}) => get('/api/jobs?' + new URLSearchParams(
     Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)),
-  )).then(toJson),
-  job: (id) => fetch(`/api/jobs/${id}`).then(toJson),
-  submitJob: (body) => fetch('/api/jobs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  cancelJob: (id) => fetch(`/api/jobs/${id}/cancel`, { method: 'POST' }).then(toJson),
-  retryJob: (id) => fetch(`/api/jobs/${id}/retry`, { method: 'POST' }).then(toJson),
+  )),
+  job: (id) => get(`/api/jobs/${id}`),
+  submitJob: (body) => send('POST', '/api/jobs', body),
+  cancelJob: (id) => send('POST', `/api/jobs/${id}/cancel`),
+  retryJob: (id) => send('POST', `/api/jobs/${id}/retry`),
   // 重试前那一屏：只读，不创建任何东西。云端重试会多一笔预计计费，
   // 所以界面先拿这份预览弹确认，人看清"会继承什么、可能再花多少"再点。
-  retryPreview: (id) => fetch(`/api/jobs/${id}/retry-preview`).then(toJson),
+  retryPreview: (id) => get(`/api/jobs/${id}/retry-preview`),
   // 人工核对一条待核对的云端作业。decision：succeeded／failed 必须带实际金额，
   // pending 只留备注。不重新提交、不改提示词与参数快照。
-  reconcileJob: (id, body) => fetch(`/api/jobs/${id}/reconcile`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  reconcileJob: (id, body) => send('POST', `/api/jobs/${id}/reconcile`, body),
   // 把一条云端作业显式送进"待核对"。供应商说成功、产物却打不开时用——
   // 那笔钱可能已经花了，先挂起来核对，比让系统替人决定重试更安全。
-  markAttention: (id, reason) => fetch(`/api/jobs/${id}/attention`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  }).then(toJson),
-  jobLogs: (id) => fetch(`/api/jobs/${id}/logs`).then(toJson),
-  jobArtifacts: (id) => fetch(`/api/jobs/${id}/artifacts`).then(toJson),
+  markAttention: (id, reason) => send('POST', `/api/jobs/${id}/attention`, { reason }),
+  jobLogs: (id) => get(`/api/jobs/${id}/logs`),
+  jobArtifacts: (id) => get(`/api/jobs/${id}/artifacts`),
   // §14 异常目录在这一条作业上的诊断。单独一个请求而不是塞进详情：
   // 队列页每次刷几十行，七项解释只在点开这一条时要用。
-  jobDiagnosis: (id) => fetch(`/api/jobs/${id}/diagnosis`).then(toJson),
+  jobDiagnosis: (id) => get(`/api/jobs/${id}/diagnosis`),
   // 产物走浏览器直连（图片/视频能直接预览）；它不是 JSON，不能过 toJson
   jobArtifactUrl: (id, index) => `/api/jobs/${id}/artifacts/${index}`,
-  jobCosts: (projectId) => fetch('/api/jobs/costs'
-    + (projectId ? `?project_id=${projectId}` : '')).then(toJson),
-  providerOptions: () => fetch('/api/providers/available').then(toJson),
-  generationProfiles: (projectId, capability) => fetch('/api/generation-profiles?'
+  jobCosts: (projectId) => get('/api/jobs/costs'
+    + (projectId ? `?project_id=${projectId}` : '')),
+  providerOptions: () => get('/api/providers/available'),
+  generationProfiles: (projectId, capability) => get('/api/generation-profiles?'
     + new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}),
-      ...(capability ? { capability } : {}) })).then(toJson),
-  createGenerationProfile: (body) => fetch('/api/generation-profiles', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  updateGenerationProfile: (id, body) => fetch(`/api/generation-profiles/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  deleteGenerationProfile: (id) => fetch(`/api/generation-profiles/${id}`,
-    { method: 'DELETE' }).then(toJson),
+      ...(capability ? { capability } : {}) })),
+  createGenerationProfile: (body) => send('POST', '/api/generation-profiles', body),
+  updateGenerationProfile: (id, body) => send('PUT', `/api/generation-profiles/${id}`, body),
+  deleteGenerationProfile: (id) => send('DELETE', `/api/generation-profiles/${id}`),
 
   // 模型双轨配置：读全部、整批写回
-  providers: () => fetch('/api/providers').then(toJson),
-  providerManifest: () => fetch('/api/providers/manifest').then(toJson),
-  currentProviders: () => fetch('/api/providers/current').then(toJson),
-  saveProviders: (rows) => fetch('/api/providers', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rows),
-  }).then(toJson),
+  providers: () => get('/api/providers'),
+  providerManifest: () => get('/api/providers/manifest'),
+  currentProviders: () => get('/api/providers/current'),
+  saveProviders: (rows) => send('PUT', '/api/providers', rows),
   // 模型验证（P0）：四种出处（环境检查／模拟／真实调用／目标机）各记各的，
   // 谁也不能替谁升级。历史单独一张表，只追加不改。
   // 验证历史：一页 + 总量。`before_id` 拿上一页最后一条的 id 往前翻——
@@ -184,423 +140,256 @@ export const api = {
   providerValidations: async (limit = 50, beforeId = null) => {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (beforeId) qs.set('before_id', String(beforeId));
+    // 这一条**不能走 get()**：它要读完响应头再走 toJson，
+    // 而 get() 已经把 body 解析成对象返回了（headers 拿不到）。
     const res = await fetch(`/api/providers/validations?${qs}`);
     const items = await toJson(res);
     return { items, total: Number(res.headers.get('X-Total-Count') || 0) };
   },
   // 环境检查：不发网络、不加载权重，所以永远不能替代真实调用验证。
-  validateProvider: (body) => fetch('/api/providers/validate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  validateProvider: (body) => send('POST', '/api/providers/validate', body),
   // 从一条已成功的作业登记真实调用凭据。只有管理员能点——这一格升级是有后果的判断。
-  validateJob: (jobId, body) => fetch(`/api/providers/validate-job/${jobId}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  validateJob: (jobId, body) => send('POST', `/api/providers/validate-job/${jobId}`, body),
 
   // 模型中心（0035）：登记层与策略层。
   // 目录是"清单 × 登记"的联表，所以只有这一个读接口就够——前端不再自己拼第二套口径。
-  models: () => fetch('/api/models').then(toJson),
-  modelStats: () => fetch('/api/models/stats').then(toJson),
+  models: () => get('/api/models'),
+  modelStats: () => get('/api/models/stats'),
   // 现查服务型引擎：`GET /api/models` 不出网（打开页面不该被一台卡住的服务拖住），
   // 所以"这一档到底连不连得上"有一个显式入口。fresh=1 绕过 15 秒缓存。
-  probeModels: (fresh) => fetch(`/api/models/probe?fresh=${fresh ? 1 : 0}`,
-    { method: 'POST' }).then(toJson),
-  createModel: (body) => fetch('/api/models', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  patchModel: (id, body) => fetch(`/api/models/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  probeModels: (fresh) => send('POST', `/api/models/probe?fresh=${fresh ? 1 : 0}`),
+  createModel: (body) => send('POST', '/api/models', body),
+  patchModel: (id, body) => send('PATCH', `/api/models/${id}`, body),
   // 撤登记必须带 confirm=1：这一步只删登记行，权重文件与历史作业都不动。
   // 别再往 URL 里塞中文口令——那个字面量会变成协议的一部分，改文案就改接口。
-  removeModel: (id) => fetch(`/api/models/${id}?confirm=1`,
-    { method: 'DELETE' }).then(toJson),
-  checkModel: (id) => fetch(`/api/models/${id}/check`, { method: 'POST' }).then(toJson),
-  modelPolicies: () => fetch('/api/model-policies').then(toJson),
-  saveModelPolicies: (rows) => fetch('/api/model-policies', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rows),
-  }).then(toJson),
+  removeModel: (id) => send('DELETE', `/api/models/${id}?confirm=1`),
+  checkModel: (id) => send('POST', `/api/models/${id}/check`),
+  modelPolicies: () => get('/api/model-policies'),
+  saveModelPolicies: (rows) => send('PUT', '/api/model-policies', rows),
   // 场景候选：只读、登录即可。返回里带 auto_switch=false——备用轨不会自动顶上。
-  resolveScene: (key) => fetch(`/api/model-policies/resolve/${encodeURIComponent(key)}`).then(toJson),
+  resolveScene: (key) => get(`/api/model-policies/resolve/${encodeURIComponent(key)}`),
 
   // 引擎实例（0040）：这一族管的是"这一档引擎在哪个端点"，不是"跑了什么模型"。
   // 后端从 W-B 起就有这五个口子，但界面一直没接——于是 `engines.probe()` 只能对着
   // "还没有登记启用中的引擎实例"这句提示干瞪眼，而人没有办法在界面里加一条端点。
-  engines: () => fetch('/api/engines').then(toJson),
-  createEngine: (body) => fetch('/api/engines', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  patchEngine: (id, body) => fetch(`/api/engines/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  engines: () => get('/api/engines'),
+  createEngine: (body) => send('POST', '/api/engines', body),
+  patchEngine: (id, body) => send('PATCH', `/api/engines/${id}`, body),
   // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动
-  removeEngine: (id) => fetch(`/api/engines/${id}?confirm=1`,
-    { method: 'DELETE' }).then(toJson),
-  probeEngine: (id) => fetch(`/api/engines/${id}/probe`, { method: 'POST' }).then(toJson),
+  removeEngine: (id) => send('DELETE', `/api/engines/${id}?confirm=1`),
+  probeEngine: (id) => send('POST', `/api/engines/${id}/probe`),
   // 探测历史（0042）：只追加不改，最新在前。卡面只摆最近一条，这里是给它后面
   // 那个「看历史」用的——「这台是不是三天两头掉线」得看几条才答得上来。
   engineProbes: (id, limit = 20) =>
-    fetch(`/api/engines/${id}/probes?limit=${limit}`).then(toJson),
+    get(`/api/engines/${id}/probes?limit=${limit}`),
 
   // 智能体中心（0041）
   // 这一族的读接口分两档：配置／工具表要 system:config，运行与待审批按项目可见范围。
   // 签字**不在这里**——批准与驳回走 `signAgentStep`，它落在审核中心（不变量 3）。
-  agentOverview: () => fetch('/api/agent/overview').then(toJson),
-  agentConfigs: () => fetch('/api/agent/configs').then(toJson),
-  agentTools: () => fetch('/api/agent/tools').then(toJson),
-  agentPlanOptions: (qs) => fetch(`/api/agent/plan-options?${qs}`).then(toJson),
-  agentRuns: (pid) => fetch(`/api/agent/runs?project_id=${pid}`).then(toJson),
-  agentRun: (id) => fetch(`/api/agent/runs/${id}`).then(toJson),
-  createAgentRun: (body) => fetch('/api/agent/runs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  agentOverview: () => get('/api/agent/overview'),
+  agentConfigs: () => get('/api/agent/configs'),
+  agentTools: () => get('/api/agent/tools'),
+  agentPlanOptions: (qs) => get(`/api/agent/plan-options?${qs}`),
+  agentRuns: (pid) => get(`/api/agent/runs?project_id=${pid}`),
+  agentRun: (id) => get(`/api/agent/runs/${id}`),
+  createAgentRun: (body) => send('POST', '/api/agent/runs', body),
   // 暂停／恢复用 POST＋空 body：它们改的是"外生意愿"那两位，不是内容，
   // 用 PATCH 反而会让读代码的人以为还有别的字段可改
-  pauseAgentRun: (id) => fetch(`/api/agent/runs/${id}/pause`, { method: 'POST' }).then(toJson),
-  resumeAgentRun: (id) => fetch(`/api/agent/runs/${id}/resume`, { method: 'POST' }).then(toJson),
-  cancelAgentRun: (id, reason) => fetch(
-    `/api/agent/runs/${id}/cancel?reason=${encodeURIComponent(reason || '')}`,
-    { method: 'POST' }).then(toJson),
-  agentPending: () => fetch('/api/agent/pending').then(toJson),
-  agentStepReview: (id) => fetch(`/api/agent-steps/${id}/review`).then(toJson),
+  pauseAgentRun: (id) => send('POST', `/api/agent/runs/${id}/pause`),
+  resumeAgentRun: (id) => send('POST', `/api/agent/runs/${id}/resume`),
+  cancelAgentRun: (id, reason) => send('POST', `/api/agent/runs/${id}/cancel?reason=${encodeURIComponent(reason || '')}`),
+  agentPending: () => get('/api/agent/pending'),
+  agentStepReview: (id) => get(`/api/agent-steps/${id}/review`),
   // 审核中心那一栏（动作审批）读它：签字写口在审核中心，智能体中心只显示状态
   agentActionReviews: (pid) =>
-    fetch(`/api/projects/${pid}/agent-action-reviews`).then(toJson),
-  signAgentStep: (id, body) => fetch(`/api/agent-steps/${id}/review-sign`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+    get(`/api/projects/${pid}/agent-action-reviews`),
+  signAgentStep: (id, body) => send('POST', `/api/agent-steps/${id}/review-sign`, body),
 
   // 创作单元 / 分镜 / 资产
-  episodes: (pid) => fetch(`/api/projects/${pid}/episodes`).then(toJson),
-  createEpisode: (pid, title) => fetch(`/api/projects/${pid}/episodes`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
-  }).then(toJson),
+  episodes: (pid) => get(`/api/projects/${pid}/episodes`),
+  createEpisode: (pid, title) => send('POST', `/api/projects/${pid}/episodes`, { title }),
   // 这三个 DELETE 原来漏了 .then(toJson)，返回的是原始 Response：
   // 后端 403/409/500 也照样"成功"，页面刷新一下就像真删掉了。
   // 204 没响应体，toJson 会回 null，调用方本来也不看返回值。
-  deleteEpisode: (id) => fetch(`/api/episodes/${id}`, { method: 'DELETE' }).then(toJson),
-  setEpisodeStatus: (id, status) => fetch(`/api/episodes/${id}/status`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  }).then(toJson),
+  deleteEpisode: (id) => send('DELETE', `/api/episodes/${id}`),
+  setEpisodeStatus: (id, status) => send('PATCH', `/api/episodes/${id}/status`, { status }),
 
-  shots: (eid) => fetch(`/api/episodes/${eid}/shots`).then(toJson),
-  createShot: (eid, body) => fetch(`/api/episodes/${eid}/shots`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  shots: (eid) => get(`/api/episodes/${eid}/shots`),
+  createShot: (eid, body) => send('POST', `/api/episodes/${eid}/shots`, body),
   // 整体改一镜：内容／提示词／时长／引用资产；镜号与所属集不在可改范围
-  updateShot: (id, body) => fetch(`/api/shots/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  deleteShot: (id) => fetch(`/api/shots/${id}`, { method: 'DELETE' }).then(toJson),
+  updateShot: (id, body) => send('PUT', `/api/shots/${id}`, body),
+  deleteShot: (id) => send('DELETE', `/api/shots/${id}`),
 
   // 文档（W05）：元数据在库里、正文在工作区里、版本在 Git 里。
   // 前端只传文档 id，一个接口都不接受路径 —— 路径由服务端生成并钉在库里，
   // "非法路径不可读写"这件事才有落脚的地方。
-  documents: (pid, kind) => fetch(
-    `/api/projects/${pid}/documents${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`).then(toJson),
-  createDocument: (pid, body) => fetch(`/api/projects/${pid}/documents`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  document: (id) => fetch(`/api/documents/${id}`).then(toJson),
+  documents: (pid, kind) => get(`/api/projects/${pid}/documents${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+  createDocument: (pid, body) => send('POST', `/api/projects/${pid}/documents`, body),
+  document: (id) => get(`/api/documents/${id}`),
   // 改标题与挂靠的分集。**不含路径**：改名不挪文件，历史是按路径记的
-  updateDocument: (id, body) => fetch(`/api/documents/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  setDocumentStatus: (id, status) => fetch(`/api/documents/${id}/status`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  }).then(toJson),
-  deleteDocument: (id) => fetch(`/api/documents/${id}`, { method: 'DELETE' }).then(toJson),
-  docContent: (id) => fetch(`/api/documents/${id}/content`).then(toJson),
+  updateDocument: (id, body) => send('PUT', `/api/documents/${id}`, body),
+  setDocumentStatus: (id, status) => send('PATCH', `/api/documents/${id}/status`, { status }),
+  deleteDocument: (id) => send('DELETE', `/api/documents/${id}`),
+  docContent: (id) => get(`/api/documents/${id}/content`),
   // expected_version 必填：不带版本后端直接 422，前端也不给"最后一次保存覆盖前一次"的便道
-  saveDocContent: (id, content, expectedVersion) => fetch(`/api/documents/${id}/content`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, expected_version: expectedVersion }),
-  }).then(toJson),
+  saveDocContent: (id, content, expectedVersion) => send('PUT', `/api/documents/${id}/content`, { content, expected_version: expectedVersion }),
   // 拿锁不报错也拿不到就是 held：那是界面要显示的状态，不是要弹的失败
-  lockDocument: (id) => fetch(`/api/documents/${id}/lock`, { method: 'POST' }).then(toJson),
-  unlockDocument: (id) => fetch(`/api/documents/${id}/lock`, { method: 'DELETE' }).then(toJson),
-  docVersions: (id) => fetch(`/api/documents/${id}/versions`).then(toJson),
-  docDiff: (id, commit) => fetch(`/api/documents/${id}/versions/${encodeURIComponent(commit)}/diff`).then(toJson),
+  lockDocument: (id) => send('POST', `/api/documents/${id}/lock`),
+  unlockDocument: (id) => send('DELETE', `/api/documents/${id}/lock`),
+  docVersions: (id) => get(`/api/documents/${id}/versions`),
+  docDiff: (id, commit) => get(`/api/documents/${id}/versions/${encodeURIComponent(commit)}/diff`),
   // 文档 AI（W11）：计价 → 提交 Job → 轮询预览 → 应用。
   // 选择文字一起带上，服务端拿它做偏移的第二重校验（emoji 会让码点与 UTF-16 差一截）。
-  docAiOptions: (id, body) => fetch(
-    `/api/documents/${id}/ai-options?` + new URLSearchParams({
+  docAiOptions: (id, body) => get(`/api/documents/${id}/ai-options?` + new URLSearchParams({
       operation: body.operation, scope: body.scope,
       start: String(body.start ?? 0), end: String(body.end ?? 0),
       selection_text: body.selection_text || '',
-    })).then(toJson),
-  docAiSubmit: (id, body) => fetch(`/api/documents/${id}/ai-jobs`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  docAiJob: (id, jobId) => fetch(`/api/documents/${id}/ai-jobs/${jobId}`).then(toJson),
-  docAiApply: (id, jobId) => fetch(
-    `/api/documents/${id}/ai-jobs/${jobId}/apply`, { method: 'POST' }).then(toJson),
+    })),
+  docAiSubmit: (id, body) => send('POST', `/api/documents/${id}/ai-jobs`, body),
+  docAiJob: (id, jobId) => get(`/api/documents/${id}/ai-jobs/${jobId}`),
+  docAiApply: (id, jobId) => send('POST', `/api/documents/${id}/ai-jobs/${jobId}/apply`),
 
   // 文本抽取（W13）：计价是同一条文本默认轨；候选要人确认才入资产。
-  extractOptions: (pid, docId) => fetch(
-    `/api/projects/${pid}/extract/options?doc_id=${docId}`).then(toJson),
-  extractRuns: (pid) => fetch(`/api/projects/${pid}/extract/runs`).then(toJson),
-  extractSubmit: (pid, body) => fetch(`/api/projects/${pid}/extract/runs`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  extractRun: (runId) => fetch(`/api/extract/runs/${runId}`).then(toJson),
-  extractItems: (runId, params = {}) => fetch(
-    `/api/extract/runs/${runId}/items?` + new URLSearchParams(
-      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
-  extractAccept: (itemId, body = {}) => fetch(`/api/extract/items/${itemId}/accept`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  extractMerge: (itemId, assetId) => fetch(`/api/extract/items/${itemId}/merge`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ asset_id: assetId }),
-  }).then(toJson),
-  extractReject: (itemId, reason = '') => fetch(`/api/extract/items/${itemId}/reject`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  }).then(toJson),
+  extractOptions: (pid, docId) => get(`/api/projects/${pid}/extract/options?doc_id=${docId}`),
+  extractRuns: (pid) => get(`/api/projects/${pid}/extract/runs`),
+  extractSubmit: (pid, body) => send('POST', `/api/projects/${pid}/extract/runs`, body),
+  extractRun: (runId) => get(`/api/extract/runs/${runId}`),
+  extractItems: (runId, params = {}) => get(`/api/extract/runs/${runId}/items?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))),
+  extractAccept: (itemId, body = {}) => send('POST', `/api/extract/items/${itemId}/accept`, body),
+  extractMerge: (itemId, assetId) => send('POST', `/api/extract/items/${itemId}/merge`, { asset_id: assetId }),
+  extractReject: (itemId, reason = '') => send('POST', `/api/extract/items/${itemId}/reject`, { reason }),
 
   // 审核中心（W14）：校验报告按正文版本冻结，签字按锚点落
-  reviewQueue: (pid) => fetch(`/api/projects/${pid}/reviews`).then(toJson),
-  reviewGate: (docId) => fetch(`/api/documents/${docId}/review-gate`).then(toJson),
-  runReviewGate: (docId) => fetch(`/api/documents/${docId}/review-gate`, {
-    method: 'POST' }).then(toJson),
-  reviewSign: (docId, body) => fetch(`/api/documents/${docId}/review-sign`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  reviewQueue: (pid) => get(`/api/projects/${pid}/reviews`),
+  reviewGate: (docId) => get(`/api/documents/${docId}/review-gate`),
+  runReviewGate: (docId) => send('POST', `/api/documents/${docId}/review-gate`),
+  reviewSign: (docId, body) => send('POST', `/api/documents/${docId}/review-sign`, body),
   // 产物审核（0025／D1）：审的是一条已成功作业的产物，签字仍只在审核中心落
-  jobReviews: (pid) => fetch(`/api/projects/${pid}/job-reviews`).then(toJson),
-  jobReview: (jobId) => fetch(`/api/jobs/${jobId}/review`).then(toJson),
-  jobReviewSign: (jobId, body) => fetch(`/api/jobs/${jobId}/review-sign`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  jobReviews: (pid) => get(`/api/projects/${pid}/job-reviews`),
+  jobReview: (jobId) => get(`/api/jobs/${jobId}/review`),
+  jobReviewSign: (jobId, body) => send('POST', `/api/jobs/${jobId}/review-sign`, body),
   // §8.2 审核质量清单：自动项每次现算（含 ffprobe），所以只在点开某一条时读
-  jobChecklist: (jobId) => fetch(`/api/jobs/${jobId}/review-checklist`).then(toJson),
+  jobChecklist: (jobId) => get(`/api/jobs/${jobId}/review-checklist`),
   // 音频四类能力的真实状态（能不能提交、缺哪一件）：页面上的按钮按它来画，不按写死的文案
-  audioCapabilities: () => fetch('/api/audio/capabilities').then(toJson),
-  saveJobChecklist: (jobId, body) => fetch(`/api/jobs/${jobId}/review-checklist`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  audioCapabilities: () => get('/api/audio/capabilities'),
+  saveJobChecklist: (jobId, body) => send('POST', `/api/jobs/${jobId}/review-checklist`, body),
   // 批量签字：整批同一个结论，服务端逐条落地、逐条报原因
-  jobReviewBatch: (body) => fetch('/api/jobs/review-batch', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  jobReviewBatch: (body) => send('POST', '/api/jobs/review-batch', body),
   /** 批量重投：把这一集卡在失败／已取消的镜头一次重投（服务端逐条判，界面不自己筛）。*/
-  jobRetryBatch: (episodeId, capability = 'video') => fetch('/api/jobs/retry-batch', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ episode_id: Number(episodeId), capability }),
-  }).then(toJson),
+  jobRetryBatch: (episodeId, capability = 'video') => send('POST', '/api/jobs/retry-batch', { episode_id: Number(episodeId), capability }),
 
   // 产线中心（0026／阶段 C）：只做编排。不建第二条队列、不记第二本账——
   // 这里拿到的 job_id／review_id 都是引用，成本与产物仍去生成中心读。
   // 发起运行之前的生产前检查：只读，blocking／warnings／info 三档
-  preflight: (pid, episodeId, templateId) => fetch(
-    `/api/projects/${pid}/preflight?` + new URLSearchParams({
+  preflight: (pid, episodeId, templateId) => get(`/api/projects/${pid}/preflight?` + new URLSearchParams({
       episode_id: episodeId, ...(templateId ? { template_id: templateId } : {}),
-    })).then(toJson),
-  pipelineTemplates: () => fetch('/api/pipeline/templates').then(toJson),
-  pipelineTemplate: (id) => fetch(`/api/pipeline/templates/${id}`).then(toJson),
-  pipelineRuns: (pid) => fetch(`/api/projects/${pid}/pipeline/runs`).then(toJson),
-  pipelineRun: (id) => fetch(`/api/pipeline/runs/${id}`).then(toJson),
-  createPipelineRun: (pid, body) => fetch(`/api/projects/${pid}/pipeline/runs`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  advancePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/advance`,
-    { method: 'POST' }).then(toJson),
-  pausePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/pause`,
-    { method: 'POST' }).then(toJson),
-  resumePipelineRun: (id) => fetch(`/api/pipeline/runs/${id}/resume`,
-    { method: 'POST' }).then(toJson),
-  cancelPipelineRun: (id, reason = '') => fetch(`/api/pipeline/runs/${id}/cancel`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  }).then(toJson),
-  retryPipelineNode: (id) => fetch(`/api/pipeline/nodes/${id}/retry`,
-    { method: 'POST' }).then(toJson),
+    })),
+  pipelineTemplates: () => get('/api/pipeline/templates'),
+  pipelineTemplate: (id) => get(`/api/pipeline/templates/${id}`),
+  pipelineRuns: (pid) => get(`/api/projects/${pid}/pipeline/runs`),
+  pipelineRun: (id) => get(`/api/pipeline/runs/${id}`),
+  createPipelineRun: (pid, body) => send('POST', `/api/projects/${pid}/pipeline/runs`, body),
+  advancePipelineRun: (id) => send('POST', `/api/pipeline/runs/${id}/advance`),
+  pausePipelineRun: (id) => send('POST', `/api/pipeline/runs/${id}/pause`),
+  resumePipelineRun: (id) => send('POST', `/api/pipeline/runs/${id}/resume`),
+  cancelPipelineRun: (id, reason = '') => send('POST', `/api/pipeline/runs/${id}/cancel`, { reason }),
+  retryPipelineNode: (id) => send('POST', `/api/pipeline/nodes/${id}/retry`),
 
   // 成片中心（阶段 D）：每次合成是一条普通 Job，版本只增不改
-  compositions: (pid, params = {}) => fetch(
-    `/api/projects/${pid}/compositions?` + new URLSearchParams(
-      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
-  createComposition: (pid, body) => fetch(`/api/projects/${pid}/compositions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  composition: (id) => fetch(`/api/compositions/${id}`).then(toJson),
+  compositions: (pid, params = {}) => get(`/api/projects/${pid}/compositions?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))),
+  createComposition: (pid, body) => send('POST', `/api/projects/${pid}/compositions`, body),
+  composition: (id) => get(`/api/compositions/${id}`),
   // 字幕是"喂给一次合成的输入文件"，不进库、不进 Git 工作区；
   // 列表同时带回这台机器的 FFmpeg 能不能烧字幕，界面据此决定控件是可选还是禁用
-  compositionSubtitles: (pid) => fetch(
-    `/api/projects/${pid}/composition-subtitles`).then(toJson),
+  compositionSubtitles: (pid) => get(`/api/projects/${pid}/composition-subtitles`),
   uploadCompositionSubtitle: (pid, file) => {
     const form = new FormData();
     form.append('file', file);
-    return fetch(`/api/projects/${pid}/composition-subtitles`, {
-      method: 'POST', body: form,
-    }).then(toJson);
+    // 走裸 fetch：FormData 不能被 JSON.stringify（send 是 JSON 那条路的）。
+    return fetch(`/api/projects/${pid}/composition-subtitles`, { method: 'POST', body: form })
+      .then(toJson);
   },
-  deleteCompositionSubtitle: (pid, path) => fetch(
-    `/api/projects/${pid}/composition-subtitles?path=${encodeURIComponent(path)}`,
-    { method: 'DELETE' }).then(toJson),
+  deleteCompositionSubtitle: (pid, path) => send('DELETE', `/api/projects/${pid}/composition-subtitles?path=${encodeURIComponent(path)}`),
 
   // 整季生产（阶段 E）：一季只是若干条单集运行的排产记录
-  seasons: (pid) => fetch(`/api/projects/${pid}/seasons`).then(toJson),
-  season: (id) => fetch(`/api/seasons/${id}`).then(toJson),
-  createSeason: (pid, body) => fetch(`/api/projects/${pid}/seasons`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  pauseSeason: (id) => fetch(`/api/seasons/${id}/pause`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  }).then(toJson),
-  resumeSeason: (id) => fetch(`/api/seasons/${id}/resume`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  }).then(toJson),
-  cancelSeason: (id, reason = '') => fetch(`/api/seasons/${id}/cancel`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  }).then(toJson),
-  retrySeasonFailed: (id) => fetch(`/api/seasons/${id}/retry-failed`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  }).then(toJson),
+  seasons: (pid) => get(`/api/projects/${pid}/seasons`),
+  season: (id) => get(`/api/seasons/${id}`),
+  createSeason: (pid, body) => send('POST', `/api/projects/${pid}/seasons`, body),
+  pauseSeason: (id) => send('POST', `/api/seasons/${id}/pause`, {}),
+  resumeSeason: (id) => send('POST', `/api/seasons/${id}/resume`, {}),
+  cancelSeason: (id, reason = '') => send('POST', `/api/seasons/${id}/cancel`, { reason }),
+  retrySeasonFailed: (id) => send('POST', `/api/seasons/${id}/retry-failed`, {}),
 
   // 音频中心（W15）：素材仍送生成中心的同一条队列
-  audioClips: (pid, params = {}) => fetch(
-    `/api/projects/${pid}/audio-clips?` + new URLSearchParams(
-      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))).then(toJson),
-  createAudioClip: (pid, body) => fetch(`/api/projects/${pid}/audio-clips`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  updateAudioClip: (id, body) => fetch(`/api/audio-clips/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  submitAudioClip: (id) => fetch(`/api/audio-clips/${id}/submit`,
-    { method: 'POST' }).then(toJson),
-  deleteAudioClip: (id) => fetch(`/api/audio-clips/${id}`,
-    { method: 'DELETE' }).then(toJson),
+  audioClips: (pid, params = {}) => get(`/api/projects/${pid}/audio-clips?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)))),
+  createAudioClip: (pid, body) => send('POST', `/api/projects/${pid}/audio-clips`, body),
+  updateAudioClip: (id, body) => send('PATCH', `/api/audio-clips/${id}`, body),
+  submitAudioClip: (id) => send('POST', `/api/audio-clips/${id}/submit`),
+  deleteAudioClip: (id) => send('DELETE', `/api/audio-clips/${id}`),
 
   // 项目看板（W16）：只读聚合；导出是纯下载，不写状态
-  dashboard: (pid) => fetch(`/api/projects/${pid}/dashboard`).then(toJson),
+  dashboard: (pid) => get(`/api/projects/${pid}/dashboard`),
 
   // 首页工作台：跨模块待办聚合（审核待签、失败、待核对、进行中的运行）。
   // 只读；服务端按"我看得见的在产项目"先筛过，前端不再自己过滤一遍。
-  workbench: () => fetch('/api/workbench').then(toJson),
+  workbench: () => get('/api/workbench'),
 
   // 资产：scope 决定看自有／全局池／两者都要。默认 all——镜头要引用全局资产时
   // 得先搜得到它，否则"跨项目复用"这句话在界面上无处可点
-  assets: (pid, kind, scope) => fetch(
-    `/api/projects/${pid}/assets?` + new URLSearchParams(
-      { ...(kind ? { kind } : {}), ...(scope && scope !== 'all' ? { scope } : {}) })).then(toJson),
-  createAsset: (pid, body) => fetch(`/api/projects/${pid}/assets`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  asset: (id) => fetch(`/api/assets/${id}`).then(toJson),
+  assets: (pid, kind, scope) => get(`/api/projects/${pid}/assets?` + new URLSearchParams(
+      { ...(kind ? { kind } : {}), ...(scope && scope !== 'all' ? { scope } : {}) })),
+  createAsset: (pid, body) => send('POST', `/api/projects/${pid}/assets`, body),
+  asset: (id) => get(`/api/assets/${id}`),
   // 整体提交：名称／类型／简介／提示词／别名／标签／范围一次改完。
   // 同一个字段不留第二个编辑入口，所以没有"只改标签"这种半截接口
-  updateAsset: (id, body) => fetch(`/api/assets/${id}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  setAssetCover: (id, path) => fetch(`/api/assets/${id}/cover`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  }).then(toJson),
-  assetShots: (id) => fetch(`/api/assets/${id}/shots`).then(toJson),
-  deleteAsset: (id) => fetch(`/api/assets/${id}`, { method: 'DELETE' }).then(toJson),
+  updateAsset: (id, body) => send('PUT', `/api/assets/${id}`, body),
+  setAssetCover: (id, path) => send('PUT', `/api/assets/${id}/cover`, { path }),
+  assetShots: (id) => get(`/api/assets/${id}/shots`),
+  deleteAsset: (id) => send('DELETE', `/api/assets/${id}`),
   uploadAssetImage: (id, file) => {
     const form = new FormData();
     form.append('file', file);
+    // 同上：multipart 不走 send。
     return fetch(`/api/assets/${id}/images`, { method: 'POST', body: form }).then(toJson);
   },
-  deleteAssetImage: (id, path) => fetch(
-    `/api/assets/${id}/images?path=${encodeURIComponent(path)}`, { method: 'DELETE' }).then(toJson),
+  deleteAssetImage: (id, path) => send('DELETE', `/api/assets/${id}/images?path=${encodeURIComponent(path)}`),
 
   // 资产增强（0033）：人物档案、命名形态、生成与产物导入。
   // 视图里不散落裸 fetch——同一个接口的错误处理要只有一份。
-  assetProfile: (id) => fetch(`/api/assets/${id}/character-profile`).then(toJson),
-  saveAssetProfile: (id, body) => fetch(`/api/assets/${id}/character-profile`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  assetVariants: (id) => fetch(`/api/assets/${id}/variants`).then(toJson),
-  createAssetVariant: (id, body) => fetch(`/api/assets/${id}/variants`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  updateAssetVariant: (vid, body) => fetch(`/api/asset-variants/${vid}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  assetProfile: (id) => get(`/api/assets/${id}/character-profile`),
+  saveAssetProfile: (id, body) => send('PUT', `/api/assets/${id}/character-profile`, body),
+  assetVariants: (id) => get(`/api/assets/${id}/variants`),
+  createAssetVariant: (id, body) => send('POST', `/api/assets/${id}/variants`, body),
+  updateAssetVariant: (vid, body) => send('PUT', `/api/asset-variants/${vid}`, body),
   // 204 没有响应体，toJson 已经认这个情况（回 null）
-  deleteAssetVariant: (vid) => fetch(`/api/asset-variants/${vid}`, { method: 'DELETE' }).then(toJson),
+  deleteAssetVariant: (vid) => send('DELETE', `/api/asset-variants/${vid}`),
   // 摘掉形态名下的**一张**图（v0.99）。以前只有"删整个形态"这一个出口，
   // 导错一张就得把其余的图一起扔了——基础参考图有这条删除路，形态也必须要有。
-  deleteAssetVariantImage: (vid, path) => fetch(
-    `/api/asset-variants/${vid}/images?path=${encodeURIComponent(path)}`,
-    { method: 'DELETE' }).then(toJson),
-  assetGenerationSubmit: (pid, body) => fetch(`/api/projects/${pid}/asset-generations`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
-  assetGeneration: (pid, jobId) => fetch(
-    `/api/projects/${pid}/asset-generations/${jobId}`).then(toJson),
+  deleteAssetVariantImage: (vid, path) => send('DELETE', `/api/asset-variants/${vid}/images?path=${encodeURIComponent(path)}`),
+  assetGenerationSubmit: (pid, body) => send('POST', `/api/projects/${pid}/asset-generations`, body),
+  assetGeneration: (pid, jobId) => get(`/api/projects/${pid}/asset-generations/${jobId}`),
   // 刷新后把"我刚生成的那批"读回来：状态在 job 表里，不在浏览器里攒副本
-  assetGenerations: (pid, assetId) => fetch(`/api/projects/${pid}/asset-generations?`
+  assetGenerations: (pid, assetId) => get(`/api/projects/${pid}/asset-generations?`
     + new URLSearchParams({ ...(assetId ? { target_asset_id: assetId } : {}), limit: 12 }))
     .then(toJson),
-  assetImportImage: (id, body) => fetch(`/api/assets/${id}/generated-images`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(toJson),
+  assetImportImage: (id, body) => send('POST', `/api/assets/${id}/generated-images`, body),
 
   /* ---------- 项目生产工作台（0037） ---------- */
   // 上下文在服务端，不在 localStorage：顶栏、工作台、预检、成片四入口必须认同一个集
-  context: () => fetch('/api/context').then(toJson),
-  setContext: (projectId, episodeId) => fetch('/api/context', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: projectId ?? null, episode_id: episodeId ?? null }),
-  }).then(toJson),
-  production: (pid, episodeId) => fetch(
-    `/api/projects/${pid}/production?`
-    + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}) })).then(toJson),
-  shotWorkbench: (sid) => fetch(`/api/shots/${sid}/workbench`).then(toJson),
-  assetImpact: (id) => fetch(`/api/assets/${id}/impact`).then(toJson),
-  precheckShot: (sid, params = {}) => fetch(
-    `/api/precheck/shot/${sid}?` + new URLSearchParams(params)).then(toJson),
-  precheckEpisode: (pid, episodeId, templateId) => fetch(
-    `/api/projects/${pid}/precheck?` + new URLSearchParams({
+  context: () => get('/api/context'),
+  setContext: (projectId, episodeId) => send('PUT', '/api/context', { project_id: projectId ?? null, episode_id: episodeId ?? null }),
+  production: (pid, episodeId) => get(`/api/projects/${pid}/production?`
+    + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}) })),
+  shotWorkbench: (sid) => get(`/api/shots/${sid}/workbench`),
+  assetImpact: (id) => get(`/api/assets/${id}/impact`),
+  precheckShot: (sid, params = {}) => get(`/api/precheck/shot/${sid}?` + new URLSearchParams(params)),
+  precheckEpisode: (pid, episodeId, templateId) => get(`/api/projects/${pid}/precheck?` + new URLSearchParams({
       episode_id: episodeId, ...(templateId ? { template_id: templateId } : {}),
-    })).then(toJson),
-  compositionPrecheck: (pid, episodeId, subtitlePath) => fetch(
-    `/api/projects/${pid}/composition-precheck?` + new URLSearchParams({
+    })),
+  compositionPrecheck: (pid, episodeId, subtitlePath) => get(`/api/projects/${pid}/composition-precheck?` + new URLSearchParams({
       episode_id: episodeId, ...(subtitlePath ? { subtitle_path: subtitlePath } : {}),
-    })).then(toJson),
+    })),
 };

@@ -240,11 +240,37 @@ def test_删除图片不能越出上传目录(as_role, seeded, fresh_project):
 
 # ---------------------------------------------------------------- 前端出口
 def test_三个删除接口不再假成功():
-    """W00 抓到的真 bug：这三个 DELETE 漏了 toJson，后端拒绝也照样刷新成"已删除"。"""
+    """W00 抓到的真 bug：这三个 DELETE 漏了 toJson，后端拒绝也照样刷新成「已删除」。
+
+    2026-11-08 起 api.js 的请求收成 get/send 两个出口，两个出口内部都调 toJson，
+    所以「这一行有没有 fetch + toJson」不再是有效判据——改成钉真正的不变式：
+    这三个方法必须走统一出口（get/send），**不许裸 fetch**。裸 fetch 正是当年
+    那个 bug 的来源（漏写 .then(toJson)，403 也当成功）。
+    """
     src = (FRONTEND / "js" / "api.js").read_text()
     for fn in ("deleteEpisode", "deleteShot", "deleteAsset"):
-        line = next((l for l in src.split("\n") if fn in l and "fetch" in l), "")
-        assert "toJson" in line, f"{fn} 仍缺 .then(toJson)：{line.strip()}"
+        line = next((l for l in src.split("\n") if fn in l), "")
+        assert line.strip(), f"{fn} 不见了"
+        assert "send(" in line or "get(" in line, (
+            f"{fn} 没有走统一出口（get/send）：{line.strip()}")
+        assert "fetch(" not in line, (
+            f"{fn} 用了裸 fetch——当年就是这个写法漏了 toJson：{line.strip()}")
+
+
+def test_统一出口之外不许直接调_toJson():
+    """反过来钉一次：get/send 之外再出现 toJson，等于绕开统一出口。
+
+    绕开的后果与当年那个 bug 同源：拿到原始 Response 却不解析，
+    或者解析了却拿不到 headers，两种都是「看起来对、错误被咽掉」。
+    例外只有 providerValidations——它要读 X-Total-Count，必须持有 Response。
+    """
+    src = (FRONTEND / "js" / "api.js").read_text()
+    body = [l for l in src.split("\n")
+            if "toJson" in l and not l.strip().startswith(("//", "*"))]
+    allowed = ("async function toJson", "const send =", "return fetch(",
+               ".then(toJson)", "const items = await toJson(res)")
+    bad = [l.strip() for l in body if not any(a in l for a in allowed)]
+    assert not bad, f"这些地方绕过统一出口直接调 toJson：{bad}"
 
 
 def test_业务视图不直接拼_url():
