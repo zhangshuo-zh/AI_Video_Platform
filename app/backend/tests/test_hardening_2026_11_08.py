@@ -490,3 +490,105 @@ def test_测试里不再引用未定义的变量名():
     if proc.returncode not in (0, 1):
         pytest.skip(f"ruff 跑不起来：{proc.stderr[:200]}")
     assert "F821" not in proc.stdout, f"测试里有未定义的名字：{proc.stdout[:500]}"
+
+
+# ---------- 第三批：统一错误出口（2026-11-08） ----------
+
+def test_校验错误的_detail_必须是字符串而不是数组(as_role, fresh_project):
+    """前端 `new Error(detail)` 遇到数组会显示成 `[object Object]`。
+
+    实况：`api.js` 写的是 `new Error(JSON.parse(text).detail ?? text)`，
+    而 FastAPI 默认校验错误给的是 `[{"type":...,"loc":...}]`。数组进 Error
+    之后按 `Array.prototype.toString()` 走，用户看到的就是那五个字——
+    缺一个必填项时弹窗里没有一句可用信息。所以 handler 必须把它压成一句话。
+    """
+    c = as_role("editor")
+    r = c.post("/api/projects", json={})              # 缺 name 等必填
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert isinstance(body["detail"], str), \
+        f"detail 必须是字符串（前端直接 new Error(detail)），实际是 {type(body['detail'])}"
+    assert "[object Object]" not in body["detail"]
+    assert body["detail"].strip(), "detail 不能是空字符串"
+    assert body.get("code") == "invalid_payload"
+
+
+def test_业务拒绝的_detail_仍是原来那句话(as_role):
+    """**只加字段、不改内容**：说明书与浏览器验收引用过这些句子。"""
+    r = as_role("editor").get("/api/jobs/999999")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["detail"] == "作业不存在", f"文案被改了：{body['detail']}"
+    assert body["code"] == "not_found"
+
+
+def test_每个错误响应都带_code(app, client):
+    """`code` 是稳定的机器可读标识；`detail` 是可以改文案的。"""
+    cases = [
+        ("get", "/api/jobs/999999", None),                 # 未登录时先撞 401
+        ("post", "/api/projects", {}),
+    ]
+    for method, url, payload in cases:
+        r = getattr(client, method)(url, json=payload) if payload is not None \
+            else getattr(client, method)(url)
+        assert r.status_code >= 400
+        body = r.json()
+        assert "detail" in body and isinstance(body["detail"], str)
+        assert body.get("code"), f"{url} 的错误响应没有 code：{body}"
+
+
+def test_错误码表与状态码一致():
+    """`errors.code_for_status()` 是 code 的唯一出处，别在别处再写一份。"""
+    import errors
+
+    assert errors.code_for_status(401) == "unauthenticated"
+    assert errors.code_for_status(403) == "forbidden"
+    assert errors.code_for_status(404) == "not_found"
+    assert errors.code_for_status(429) == "rate_limited"
+    # 表里没有的状态码要有可读兜底，不能 KeyError
+    assert errors.code_for_status(418) == "http_418"
+
+
+def test_校验细节能压成一句人话():
+    """`loc` 开头的 body/query/path 对人是噪音，要剥掉。"""
+    import errors
+
+    one = [{"type": "missing", "loc": ["body", "name"], "msg": "Field required"}]
+    assert errors.detail_text(one) == "name：缺少必填项"
+
+    two = [{"type": "missing", "loc": ["body", "payload", "title"], "msg": "Field required"},
+           {"type": "int_type", "loc": ["body", "episode_id"], "msg": "Input should be int"}]
+    text = errors.detail_text(two)
+    assert "payload.title" in text and "episode_id" in text, text
+    assert "；" in text, "多条要分隔开，不能粘成一坨"
+
+    # 不认识的 type 退回 msg，至少不是 [object Object]
+    odd = [{"type": "something_new", "loc": ["body", "x"], "msg": "weird"}]
+    assert "weird" in errors.detail_text(odd)
+
+
+def test_诊断接口的七字段一个都不能少(as_role, seeded):
+    """加 `response_model` 会**静默剔除**未声明的字段。
+
+    所以给聚合类端点加模型前必须先确认形状真的固定——
+    诊断这个能加，是因为 `CATALOG` 55 条 + `UNKNOWN_TEMPLATE` 的键完全一致。
+    这条测试守住"以后往目录里加条目时别偷偷改形状"。
+    """
+    r = as_role("editor").get(f"/api/jobs/{seeded['job_id']}/diagnosis")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in ("job_id", "status", "error_code", "diagnosis", "cloud", "uncertain"):
+        assert key in body, f"顶层缺 {key}"
+    for key in ("label", "explain", "technical", "impact", "action",
+                "retryable", "may_cost", "needs_human", "code", "known"):
+        assert key in body["diagnosis"], f"diagnosis 缺 {key}——被 response_model 剔掉了？"
+
+
+def test_错误目录的条目键必须统一():
+    """`JobDiagnosisBody` 的字段来自这张表：条目键一旦分叉，`response_model`
+    就会静默丢掉多出来的那个键。"""
+    import error_catalog
+
+    shapes = {tuple(sorted(k for k in e)) for e in error_catalog.CATALOG.values()}
+    shapes.add(tuple(sorted(k for k in error_catalog.UNKNOWN_TEMPLATE)))
+    assert len(shapes) == 1, f"条目键有 {len(shapes)} 种组合，response_model 会丢字段：{shapes}"

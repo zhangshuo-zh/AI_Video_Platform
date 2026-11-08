@@ -5,10 +5,13 @@
 - 前端是纯静态文件（../frontend），由同一个进程兜底托管，
   以后要换 nginx 直接指过去即可，后端不用动。
 """
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import errors
 import pipeline
 from bootstrap import ensure_admin
 from config import (CORS_ORIGINS, DOCS_ENABLED, FILES_DIR, FRONTEND_DIR,
@@ -45,6 +48,36 @@ def create_app() -> FastAPI:
                   docs_url="/api/docs" if DOCS_ENABLED else None,
                   redoc_url="/api/redoc" if DOCS_ENABLED else None,
                   openapi_url="/api/openapi.json" if DOCS_ENABLED else None)
+    # ---------- 统一错误出口（2026-11-08） ----------
+    #
+    # 两套错误形状并存是这一版之前的实况：
+    #   业务拒绝  {"detail": "作业不存在"}                    ← detail 是字符串
+    #   校验拒绝  {"detail": [{"type":..., "loc":...}]}       ← detail 是数组
+    # 前端 `api.js` 的写法是 `new Error(JSON.parse(text).detail)`，数组进去之后
+    # 会被 JS 当成 Array.toString()，用户看到的是 **`[object Object]`** ——
+    # 缺一个必填项时弹窗里就是这五个字。这不是理论问题，是实际发生的。
+    #
+    # 所以这里把出口收成一条：detail 恒为**一句人话**，另给稳定的 `code`。
+    # 三条纪律写在 `errors.py` 的头注释里，核心是"只加字段、不改既有内容"——
+    # 浏览器验收与说明书引用过那些句子，换掉就是另一轮返工。
+    @app.exception_handler(RequestValidationError)
+    async def _on_validation_error(request: Request, exc: RequestValidationError):
+        return JSONResponse(status_code=422,
+                            content=errors.payload(422, exc.errors()))
+
+    @app.exception_handler(HTTPException)
+    async def _on_http_error(request: Request, exc: HTTPException):
+        # `exc.detail` 可能是字符串（绝大多数）、dict（少数自己拼结构化信息的），
+        # 统一压成字符串；业务侧如果自己要给 code，可以放在 dict 的 `code` 里。
+        code = None
+        if isinstance(exc.detail, dict):
+            code = exc.detail.get("code")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=errors.payload(exc.status_code, exc.detail, code),
+            headers=getattr(exc, "headers", None) or None,
+        )
+
     # 同源部署（本进程托管静态文件）时不需要 CORS；前端搬去 nginx 再开
     if CORS_ORIGINS:
         # `*` 与"按 cookie 认证"不能共存：一旦将来有人加 allow_credentials=True，

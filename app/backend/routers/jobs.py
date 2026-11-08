@@ -17,6 +17,7 @@ import services
 from db import get_conn
 from deps import require_permission, require_user
 from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
+                    JobDiagnosisOut,
                    JobRetryBatchIn,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
@@ -204,7 +205,7 @@ def job_detail(job_id: int, user=Depends(require_permission("job:read"))) -> Job
     return JobDetailOut(**services.job_detail_view(_load(job_id, user)))
 
 
-@router.get("/jobs/{job_id}/diagnosis")
+@router.get("/jobs/{job_id}/diagnosis", response_model=JobDiagnosisOut)
 def job_diagnosis(job_id: int, user=Depends(require_permission("job:read"))) -> dict:
     """任务书 §14 的异常恢复目录落在这一条作业上：一份形状固定的诊断。
 
