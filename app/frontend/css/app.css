@@ -690,7 +690,10 @@ tbody tr:hover{background:var(--row-hover)}
    项目名那格加一条短竖线，读起来像"这条挂在空处"。
    只改视觉，不改可点性——详情、重试、核对都还照常能点。 */
 tbody tr[data-orphan] > td{opacity:.62}
-tbody tr[data-orphan] > td:nth-child(2){box-shadow:inset 2px 0 0 var(--line-strong)}
+/* 这里原来还有一条 inset 2px 0 的竖线挂在项目名那格上，2026-11-08 撤掉：
+   其一，那格已经写着「已删除项目」，竖线不增加任何信息；
+   其二，全站 inset 2px 0 的竖线是**选中态**的记号（见下面 tr.sel），
+   同一位置出现两种含义的同一图形，人会以为是选中了。 */
 tbody tr[data-orphan]:hover > td{opacity:.85}
 tbody tr.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
 #proj-rows tr{cursor:pointer}
