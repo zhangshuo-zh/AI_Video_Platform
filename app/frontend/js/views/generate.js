@@ -107,8 +107,16 @@ function rowHtml(job) {
   // 待核对的云端作业先核对再谈重试：那笔钱可能已经花了，默认重试是最坏的建议
   const actionReconcile = job.status === 'needs_attention' && canAct
     ? `<button class="btn xs" data-reconcile="${job.id}">核对</button>` : '';
+  // 所属项目已被删除的作业：这类行只增不减，一屏能排七八条一模一样的。
+  // 打一个标记交给 CSS 做视觉降级——不是藏起来（它们是孤儿数据，
+  // 人正要看"哪些作业没了归属"），而是让它退到背景，别和正常作业抢注意力。
+  //
+  // 判据直接用 projectName() 的结论，不另外比 store.projects：
+  // 界面上写「已删除项目」的那句话和这里的标记必须同源，否则会出现
+  // "写着已删除项目、却没被弱化"或反过来。
+  const orphan = projectName(job.project_id) === '已删除项目';
   return `
-    <tr data-job="${job.id}">
+    <tr data-job="${job.id}"${orphan ? ' data-orphan="1"' : ''}>
       <td>
         <b class="job-id">#${job.id}</b>
         <span class="t-desc" title="${escapeHtml(job.prompt_preview || '')}">${escapeHtml(job.prompt_preview || '（无提示词）')}</span>
