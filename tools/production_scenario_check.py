@@ -54,6 +54,8 @@ started_at = time.strftime("%Y-%m-%d %H:%M:%S")
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(BACKEND))
 
+import _harness as H       # noqa: E402  解释器回退（.venv 不在时用当前 python）
+
 results: list[tuple[str, bool, str]] = []
 SERVER = None
 WORKER = None
@@ -921,7 +923,7 @@ def start_server():
     global SERVER
     log = open(TMP / "server.log", "ab")
     SERVER = subprocess.Popen(
-        [str(BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+        [str(H.backend_python()), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
         cwd=str(BACKEND), stdout=log, stderr=subprocess.STDOUT)
     for _ in range(80):
@@ -941,7 +943,7 @@ def start_worker(max_runtime=None, extra_env=None):
     if extra_env:
         env.update(extra_env)
     WORKER = subprocess.Popen(
-        [str(BACKEND / ".venv/bin/python"), "worker.py", "--poll", "0.2"],
+        [str(H.backend_python()), "worker.py", "--poll", "0.2"],
         cwd=str(BACKEND), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     time.sleep(1.5)
 

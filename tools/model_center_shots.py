@@ -69,7 +69,7 @@ def main() -> int:
     mc.prepare_env()
     token = mc.mint_admin_session()
     proc = subprocess.Popen(
-        [str(mc.BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+        [str(mc.H.backend_python(mc.BACKEND)), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(mc.PORT), "--log-level", "warning"],
         cwd=str(mc.BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     chrome = None

@@ -121,7 +121,7 @@ def main():
     os.environ.pop("ALIYUN_WAN_BASE_URL", None)
 
     proc = subprocess.Popen(
-        [str(BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+        [str(H.backend_python()), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
         cwd=str(BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     results: list[tuple[str, bool, str]] = []
@@ -1018,14 +1018,16 @@ def main():
 
         errors = P.eval_js(cdp, "window.__errs || []") or []
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
-        bad = [r for r in results if not r[1]]
-        print(f"\n{len(results) - len(bad)}/{len(results)} 通过")
     finally:
         proc.terminate()
         try:
             chrome.terminate()
         except NameError:
             pass
+
+    bad = [r for r in results if not r[1]]
+    print(f"\n{len(results) - len(bad)}/{len(results)} 通过")
+    return 1 if bad else 0
 
 
 COLLECT_ERRORS = """
@@ -1061,4 +1063,4 @@ def go(cdp, url):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

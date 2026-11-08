@@ -144,7 +144,7 @@ def main():
     point_engine_at_fake(fake_url)
     token = mint_admin_session()
     proc = subprocess.Popen(
-        [str(BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+        [str(H.backend_python()), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
         cwd=str(BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     results = []

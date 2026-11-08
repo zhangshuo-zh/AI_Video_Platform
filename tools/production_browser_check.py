@@ -138,14 +138,14 @@ def main():
     import subprocess
 
     proc = subprocess.Popen(
-        [str(mc.BACKEND / ".venv/bin/python"), "-m", "uvicorn", "main:app",
+        [str(mc.H.backend_python(mc.BACKEND)), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(mc.PORT), "--log-level", "warning"],
         cwd=str(mc.BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     data = None
     try:
         mc.wait_server()
         worker = subprocess.Popen(
-            [str(mc.BACKEND / ".venv/bin/python"), "worker.py", "--poll", "0.2"],
+            [str(mc.H.backend_python(mc.BACKEND)), "worker.py", "--poll", "0.2"],
             cwd=str(mc.BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         time.sleep(1.2)
         # 建数据必须在服务起来之后：走的是真接口，不是直插 sqlite——

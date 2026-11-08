@@ -226,6 +226,19 @@ def wait_cdp(debug_port: int, timeout: float = 30.0) -> str:
     raise SystemExit(f"Chrome 调试端口 {debug_port} 没有可用页面")
 
 
+def backend_python(backend: Path = BACKEND) -> Path:
+    """后端该用哪个解释器：有 venv 用 venv，CI 的干净 runner 退回当前解释器。
+
+    2026-11-09 体检：`start_service()` 里这段回退当初就是为了"写死 .venv/bin/python
+    的脚本在 CI 里 FileNotFoundError"加的，但另有六个脚本（model_center_browser_check、
+    production_browser_check、generate_scene_check、model_center_shots、
+    production_scenario_check、production_shots）各自拼字符串起 uvicorn/worker，
+    回退漏了它们。凡是要起后端进程的，都从这里取解释器，不要再拼 `.venv`。
+    """
+    venv = backend / ".venv" / "bin" / "python"
+    return venv if venv.exists() else Path(sys.executable)
+
+
 def start_service(port: int, python: Path | None = None,
                   backend: Path = BACKEND) -> subprocess.Popen:
     """用后端自己的 venv 起 uvicorn；没有 venv（CI 的干净 runner）就退回当前解释器。
@@ -234,8 +247,7 @@ def start_service(port: int, python: Path | None = None,
     系统解释器，于是三套浏览器验收永远进不了流水线。
     """
     if python is None:
-        venv = backend / ".venv" / "bin" / "python"
-        python = venv if venv.exists() else Path(sys.executable)
+        python = backend_python(backend)
     return subprocess.Popen(
         [str(python), "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
          "--port", str(port), "--log-level", "warning"],
