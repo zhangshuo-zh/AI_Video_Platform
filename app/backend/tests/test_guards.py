@@ -281,6 +281,9 @@ ROUTES = [
     ("PUT", "/api/model-policies",
      [{"scene_key": "character_bio", "capability": "text"}], 403),
     ("GET", "/api/model-policies/resolve/{sk}", None, 200),
+    # 场景骨架与 resolve 同一档：普通编辑者要能在提交框里列出场景。
+    # 这一条下发的是"有哪些场景、各要什么能力"，不含建议轨／备用轨——那些仍要 system:config。
+    ("GET", "/api/model-policies/scenes", None, 200),
     ("GET", "/api/config-changes", None, 403),
     # ---------- 引擎实例（0040／W-B；同样全部 system:config） ----------
     # 这五条是"这一档引擎在哪个端点"的管理面。探测与撤除都不动应用与历史作业，

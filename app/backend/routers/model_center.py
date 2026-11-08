@@ -405,6 +405,46 @@ def list_config_changes(limit: int = 50,
     return {"items": rows}
 
 
+@router.get("/model-policies/scenes")
+def list_scenes(_=Depends(require_user)) -> dict:
+    """九个任务场景的**只读骨架**：键、界面名、能力、必需能力与"配不配得出"。
+
+    为什么要有这一条（2026-11-07）：生成中心的发起弹窗要让人按场景选模型
+    ——那是 `resolve` 接口早就回答得了的事，但**场景键本身**原来只有
+    `GET /api/model-policies` 有，而那条是 `system:config`。于是普通编辑者
+    站在提交框前面根本列不出场景，只能由管理员口头告诉他填哪个键。
+    这一条把"有哪几个场景"降到和 `resolve` 同一档（登录即可），
+    与 `/providers/available` 同一口径：只回候选与判据，**不含**建议轨、
+    备用轨、偏好、备注——那些是配置，改了要生效得走 system:config。
+
+    不含 slot_provider／fallback_provider 是刻意的：那两个字段一旦下发，
+    界面就很容易顺手把它们画成"已选中"，而裁定 MC1 是**只提示不自动切**。
+    这一页只回答"有哪些场景、各自要什么能力、这一轴产不产得出来"。
+    """
+    # 每条能力轴上"清单有可能产出哪些标签"只算一次：它是清单的纯函数，
+    # 与这一页有几行、谁配了什么无关。放在循环里算就是九遍同样的遍历。
+    producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
+    items = []
+    for row in model_center.policies():
+        required = _json_list(row["required_json"])
+        impossible = [t for t in required if t not in producible.get(row["capability"], set())]
+        items.append({
+            "scene_key": row["scene_key"],
+            "scene_label": row["scene_label"],
+            "capability": row["capability"],
+            "capability_label": CAPABILITIES.get(row["capability"], row["capability"]),
+            "required": required,
+            # 「配不出来」与「还没配」分开说：前者要改 adapters.py，点界面没用。
+            # 判据来自清单（producible_tags），界面不自己推。
+            "impossible_required": impossible,
+            "required_producible": not impossible,
+        })
+    return {"items": items,
+            "manifest_version": adapters.MANIFEST_VERSION,
+            "note": "只回场景骨架与'这一轴产不产得出必需能力'；"
+                    "候选与挡路原因走 /model-policies/resolve/{scene_key}。"}
+
+
 @router.get("/model-policies/resolve/{scene_key}")
 def resolve(scene_key: str, _=Depends(require_user)) -> dict:
     """场景 → 候选与挡路原因。只读，登录即可（与 /providers/available 同一档）。"""
