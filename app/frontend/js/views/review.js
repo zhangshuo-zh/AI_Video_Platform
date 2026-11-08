@@ -98,7 +98,7 @@ export default {
         </table></div>` : emptyBox('还没有可审的文档',
           '<p>小说／剧本建好并写出正文后，就会出现在这里。</p>')}
       </div>
-      ${openDocId ? '<div id="review-detail" class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读报告…</p></div></div>' : ''}
+      ${openDocId ? '<div id="review-detail" class="card mt-card" ><div class="card-body"><p class="hint">正在读报告…</p></div></div>' : ''}
       ${canSign ? '' : '<p class="hint">你只有查看权限；签字需要 review:sign。</p>'}
     </section>`;
   },
@@ -167,7 +167,7 @@ export default {
           `<p>关键帧或镜头视频跑成功之后会出现在这里。本机没有图像运行时时，
             这一栏会一直是空的——那是环境没配，不是页面坏了。</p>`)}
       </div>
-      ${openJobId ? '<div id="job-review-detail" class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读产物…</p></div></div>' : ''}
+      ${openJobId ? '<div id="job-review-detail" class="card mt-card" ><div class="card-body"><p class="hint">正在读产物…</p></div></div>' : ''}
       ${canSign ? '' : '<p class="hint">你只有查看权限；签字需要 review:sign。</p>'}
     `;
   },

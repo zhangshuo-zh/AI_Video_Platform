@@ -78,11 +78,11 @@ function stageTable(board) {
 function taskList(board) {
   const tasks = board.next_tasks || [];
   if (!tasks.length) {
-    return `<div class="card-body"><p class="note" style="margin:0">
+    return `<div class="card-body"><p class="note flush" >
       <b>这一集现在没有待办</b>：九阶段里没有阻塞、失败或未处理的数量。
       要往下做就直接点上面任一阶段。</p></div>`;
   }
-  return `<div class="card-body"><ul class="hint" style="margin:0">
+  return `<div class="card-body"><ul class="hint flush" >
     ${tasks.map((t) => `<li>
       <span class="chip ${TONE[t.status] || 'gray'}">${escapeHtml(t.status)}</span>
       <b>${escapeHtml(t.label)}</b>：${escapeHtml(t.note || '')}
@@ -101,7 +101,7 @@ function episodeTable(ov) {
       <td>${e.delivered ? '<span class="chip green">已交付</span>' : '<span class="chip gray">在产</span>'}</td>
       <td><button class="btn xs" data-ep="${e.episode_id}">设为当前集</button></td>
     </tr>`).join('');
-  if (!rows) return '<div class="card-body"><p class="hint" style="margin:0">这个项目还没有集。</p></div>';
+  if (!rows) return '<div class="card-body"><p class="hint flush" >这个项目还没有集。</p></div>';
   return `<div class="table-wrap"><table>
     <thead><tr><th>集</th><th>状态</th><th class="c">镜头</th><th class="c">有片</th>
       <th class="c">成片版本</th><th>交付</th><th>操作</th></tr></thead>
@@ -129,10 +129,10 @@ function peakGb(stats, cap) {
 
 function statsCard(stats) {
   if (!stats || !stats.jobs_total) {
-    return `<div class="card" style="margin-bottom:14px">
+    return `<div class="card mb-card" >
       <div class="card-head"><h2>生产统计</h2>
         <span class="sub">作业、成本、签字与原因分布都来自服务端，界面不另算一本账</span></div>
-      <div class="card-body"><p class="hint" style="margin:0">这个项目还没有作业记录。</p></div>
+      <div class="card-body"><p class="hint flush" >这个项目还没有作业记录。</p></div>
     </div>`;
   }
   const capRows = Object.entries(stats.by_capability || {}).map(([cap, c]) => `
@@ -161,7 +161,7 @@ function statsCard(stats) {
     ? `；若每条提示词都是新的，约 ${est.minutes_if_all_new_prompts} 分钟`
       + `（每条新提示词多花 ${Math.round((est.cold_extra_ms || 0) / 1000)}s 跑文本编码）` : '';
   const retries = stats.retries || {};
-  return `<div class="card" style="margin-bottom:14px">
+  return `<div class="card mb-card" >
     <div class="card-head"><h2>生产统计</h2>
       <span class="sub">口径与成本账、异常目录同一处</span></div>
     <div class="table-wrap"><table>
@@ -181,7 +181,7 @@ function statsCard(stats) {
       ${teamTable(stats)}
       <p class="note" style="margin:0 0 8px"><b>签字分布。</b>${signs || '<span class="t-dim">还没有签字记录</span>'}
         <span class="t-dim">｜没签的那部分由上面「还差几镜」回答，这里不合成一个通过率</span></p>
-      <p class="note" style="margin:0"><b>卡住的原因排行。</b>
+      <p class="note flush" ><b>卡住的原因排行。</b>
         ${errs ? `<ul class="hint" style="margin:4px 0 0">${errs}</ul>` : '<span class="t-dim">没有失败或需人工处理的作业</span>'}
         <span class="t-dim">｜重投 ${retries.resubmitted || 0} 条、被顶掉 ${retries.superseded || 0} 条</span></p>
       ${(stats.not_computed || []).length
@@ -316,17 +316,17 @@ export default {
         </div>
       </div>
       ${headCard(ov, board)}
-      <div class="card" style="margin-bottom:14px">
+      <div class="card mb-card" >
         <div class="card-head"><h2>这一集的生产阶段</h2>
           <span class="sub">顺序是推荐，不是锁——资产可以和剧本并行推进</span></div>
         ${stageTable(board)}
         <div class="card-body" style="border-top:1px solid var(--line)">
-          <p class="note" style="margin:0"><b>阶段之间不互相锁定。</b>
+          <p class="note flush" ><b>阶段之间不互相锁定。</b>
             人物资产可以在写剧本时就先建好；分镜也可以先搭骨架再回补资产。
             真正会拦人的只有两处：提交生成前的预检，和发起成片合成前的检查。</p>
         </div>
       </div>
-      <div class="card" style="margin-bottom:14px">
+      <div class="card mb-card" >
         <div class="card-head"><h2>下一步</h2>
           <span class="sub">按真实缺口排：阻塞 → 失败 → 待处理</span>
           ${retryBtn(board, stats)}</div>

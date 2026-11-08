@@ -278,7 +278,7 @@ export default {
           ${canSubmit ? '<div class="empty-form"><button class="btn primary" data-new-comp>新建成片</button></div>' : ''}
         </div>`}
       </div>
-      ${openId ? '<div id="cp-detail-host"><div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读成片…</p></div></div></div>' : ''}
+      ${openId ? '<div id="cp-detail-host"><div class="card mt-card" ><div class="card-body"><p class="hint">正在读成片…</p></div></div></div>' : ''}
       ${createModal(episodes)}
     </section>`;
   },

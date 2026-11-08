@@ -98,7 +98,7 @@ export default {
       </div>
 
       ${canWrite ? `
-      <div class="card" style="margin-top:14px">
+      <div class="card mt-card" >
         <div class="card-head"><h2>新建用户</h2>
           <span class="sub">初始口令由你定，对方第一次登录必须改</span></div>
         <div class="card-body">

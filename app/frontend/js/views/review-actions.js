@@ -59,7 +59,7 @@ export async function renderActions(project) {
       <td><span class="chip ${s.backend === 'cloud' ? 'amber' : 'gray'}">
         ${escapeHtml(s.backend === 'cloud' ? '云端' : (s.backend === 'local' ? '本地' : '未定'))}</span>
         <span class="t-desc">${escapeHtml([s.provider, s.model].filter(Boolean).join(' / ') || '—')}</span></td>
-      <td class="num t-desc">${escapeHtml(s.approval_expires_at || '—')}</td>
+      <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
       <td class="r"><button class="btn sm ${s.id === openStepId ? '' : 'primary'}"
         data-open-action="${s.id}">${s.id === openStepId ? '收起' : '查看并签'}</button></td>
     </tr>`).join('');
@@ -86,7 +86,7 @@ export async function renderActions(project) {
           <p>智能体只读的步骤会当场做完；要花钱或改正式业务事实的，才会停在这一栏等你。</p>
           <p class="hint">批完不会立刻执行——worker 的下一拍才会真的动。</p></div>`}
     </div>
-    ${openStepId ? '<div id="action-detail" class="card" style="margin-top:14px">'
+    ${openStepId ? '<div id="action-detail" class="card mt-card" >'
       + '<div class="card-body"><p class="hint">正在读这一步的参数…</p></div></div>' : ''}`;
 }
 
@@ -116,7 +116,7 @@ function detailHtml(d) {
           background:var(--warn-soft);padding:8px 12px;border-radius:10px">
         <b>这一步会花钱。</b>${escapeHtml(d.cloud_confirm_note || '')}</p>` : ''}
       <p class="hint">已签记录：${signed}</p>
-      <label class="modal-label" for="action-note" style="margin-top:14px">批注（可选，会跟着签字落库）</label>
+      <label class="modal-label mt-card" for="action-note" >批注（可选，会跟着签字落库）</label>
       <textarea class="ctl" id="action-note" rows="2"
         placeholder="为什么批／为什么驳，写在这里。复审的人看的是这一句。">${escapeHtml(note)}</textarea>
       <div class="modal-actions">
@@ -144,7 +144,7 @@ export async function bindActions(root, refresh) {
   const box = root.querySelector('#action-detail');
   if (!box || !openStepId) return;
   const detail = await api.agentStepReview(openStepId);
-  box.outerHTML = `<div class="card" id="action-detail" style="margin-top:14px">${detailHtml(detail)}</div>`;
+  box.outerHTML = `<div class="card mt-card" id="action-detail" >${detailHtml(detail)}</div>`;
   const holder = document.getElementById('action-detail');
   const noteEl = holder.querySelector('#action-note');
   noteEl.addEventListener('input', () => { note = noteEl.value; });

@@ -836,23 +836,79 @@ def test_下拉浮层宽度跟着按钮与最长选项定():
     assert "measureText" in code, "没按选项文字量宽度"
     assert "list.style.minWidth" in code
 
-def test_t_desc_不许直接用在单元格上():
-    """`.t-desc` 是给单元格**里面**那段次要文字用的，不能套在 `<td>` 上。
+def test_带布局属性的排版类不许直接用在单元格上():
+    """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
 
-    病根：`.t-desc{display:block;max-width:320px;text-overflow:ellipsis}`。
-    套在 `<td>` 上会让那一格丢掉 `table-cell` 布局、再被 320px 限宽——
-    浏览器重新分配列宽，于是同一张表里有的列被撑得很宽、有的被挤窄，
-    竖线也对不齐（智能体中心「九个任务场景」那一张就是这么坏的，实测第 4／6
-    列的 display 是 block 而其余是 table-cell）。
+    病根（2026-11-07 实测）：.t-desc{display:block;max-width:320px} 本来是给
+    单元格**里面**那段次要文字用的，却被直接套在 <td> 上。那一格于是丢掉
+    table-cell 布局（实测 display=block）、再被 320px 限宽，浏览器只好重新
+    分配整张表的列宽——「必需标签」撑到 277px 空白、「建议轨」挤成 110px。
+    当时全库 16 处，靠一条只认识 .t-desc 的守卫抓了 6 处漏网的。
 
-    正确写法：`<td><span class="t-desc">…</span></td>`。
+    现在从 CSS 推导：凡是自带 display / max-width / min-width / width /
+    position / overflow 的类，都不许出现在 <td class=…> 上——它们会改掉
+    单元格的布局角色。纯字色、字族、对齐（.hint／.num／.r／.mono）不受限。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "frontend"
+    css = (root / "css" / "app.css").read_text(encoding="utf-8")
+    views = root / "js" / "views"
+
+    # 有布局副作用的类（从 CSS 读出来，不手抄一份）
+    risky = []
+    for m in re.finditer(r"^\.([a-z][\w-]*)\{([^}]*)\}", css, re.M):
+        name, body = m.group(1), m.group(2)
+        if re.search(r"\b(display|max-width|position|overflow)\s*:", body):
+            risky.append(name)
+    assert "t-desc" in risky, "取样失败：.t-desc 应当被判为带布局属性"
+
+    allowed = {"r", "num", "mono", "hint"}
+    banned = [c for c in risky if c not in allowed]
+
+    offenders = []
+    for f in list(views.glob("*.js")) + list(views.rglob("models/*.js")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            m = re.search(r'<td[^>]*class="([^"]*)"', line)
+            if not m:
+                continue
+            hit = [c for c in m.group(1).split() if c in banned]
+            if hit:
+                offenders.append(f"{f.name}:{n} 把 {hit} 挂在 <td> 上")
+    assert not offenders, ("这些单元格挂了会改布局角色的类（应在格内包一层 span）："
+                          + "；".join(offenders))
+
+def test_视图里的_window_监听必须成对解绑():
+    """视图里挂在 window／document 上的监听，必须由自己解绑。
+
+    为什么单列一条：视图的 mount 每次渲染都跑一遍，而 #view-root 的 innerHTML
+    会被整块换掉——挂在**节点**上的监听随节点回收，挂在 **window** 上的不会。
+    每渲染一次加一个、切走不解，人点几下就会有一串重复回调（旧闭包还拿着
+    已经不在文档里的节点，写进去没有效果，但每次事件都白跑一遍）。
+
+    2026-11-08 实测：全库 addEventListener 379 处，其中真正挂在 window／document
+    上的只有 17 处；视图里只有 projects.js 的行菜单那两处，而且 arm/disarm 成对。
+    所以这条守卫是**清单式**的：允许的写法写死，新加一处就得先回答它何时解绑。
     """
     from pathlib import Path
 
     views = Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
-    bad = []
-    for p in sorted(views.glob('*.js')):
-        text = p.read_text(encoding='utf-8')
-        if '<td class="t-desc">' in text:
-            bad.append(p.name)
-    assert not bad, f"这些视图把 .t-desc 套在 <td> 上了：{bad}（应改成 <td><span class=\"t-desc\">）"
+    allowed = {
+        "projects.js": "行菜单的 scroll/resize 由 armRowMenu 挂、disarmRowMenu 解",
+    }
+
+    offenders = []
+    files = list(views.glob("*.js")) + list(views.rglob("models/*.js"))
+    for f in files:
+        if f.name in allowed:
+            continue
+        text = f.read_text(encoding="utf-8")
+        # 去掉注释行再找，避免注释里提到 window.addEventListener 被误判
+        code = "\n".join(l for l in text.splitlines()
+                         if not l.strip().startswith(("//", "*", "/*")))
+        if "window.addEventListener" in code or "document.addEventListener" in code:
+            offenders.append(f.name)
+    assert not offenders, (
+        "这些视图往 window/document 上挂了监听但不在允许清单里："
+        + "、".join(offenders)
+        + "。要么改成挂节点、要么成对解绑、要么把理由写进 allowed 表")

@@ -146,6 +146,38 @@ export function enhanceSelect(sel) {
   sel.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActive(); });
 
   // options 重建、值被程序化改写、禁用/隐藏切换都要让按钮跟上。
+  //
+  // **光靠 MutationObserver 不够**（2026-11-07 修）：`sel.value = x` 改的是
+  // **属性（property）**，不是 HTML 特性（attribute），MutationObserver 一条
+  // 都不报。于是所有"程序化设值"的下拉按钮都停在旧文字上——生成中心的
+  // `refreshModeSelect()`／`refreshTemplateSelect()`／`applyProfile()`、
+  // 模型中心的筛选与编辑态预填，全是这个写法。夜间主题下表现为
+  // "控件里写着 A、程序却按 B 在跑"，比显示错了更糟：人会以为自己没选中。
+  //
+  // 所以再补两条：
+  //   ① 劫持这个 select 实例的 `value`／`selectedIndex` 访问器，写进去就叫一声 sync；
+  //   ② 视图那一侧仍可 dispatchEvent('change') 通知业务逻辑，两件事互不替代
+  //      （change 是"值变了请处理"，这里是"按钮的字要重画"）。
+  // 劫持在实例上而不是 `HTMLSelectElement.prototype`：后者会动到全站每一个
+  // select，包括没被增强过的，收益是零、风险是全站。
+  const syncAccessor = (prop) => {
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, prop);
+    if (!desc || !desc.set) return;
+    Object.defineProperty(sel, prop, {
+      configurable: true,
+      enumerable: true,
+      get() { return desc.get.call(this); },
+      set(v) {
+        desc.set.call(this, v);
+        // 原生 setter 对**不合法的值**是"忽略"（不是抛错、也不是清零）：
+        // 那样按钮该显示的是当前真实那一项，sync() 读 selectedIndex 正好对上。
+        sync();
+      },
+    });
+  };
+  syncAccessor('value');
+  syncAccessor('selectedIndex');
+
   new MutationObserver(sync).observe(sel, {
     childList: true, subtree: true, attributes: true,
     attributeFilter: ['selected', 'disabled', 'hidden', 'label'],
@@ -166,6 +198,11 @@ export function restorePicks(root = document) {
         wrap.parentNode.insertBefore(sel, wrap);
         wrap.remove();
       }
+      // 切回白天主题时这个 select 要变回"没有额外行为的原生控件"。
+      // 上面那两条实例级访问器必须撤掉：留着它等于把"每次设值都重画一个
+      // 已经被删掉的按钮"带进下一个主题，白跑一遍 sync()。
+      delete sel.value;
+      delete sel.selectedIndex;
       delete sel.dataset[MARK];
     });
 }

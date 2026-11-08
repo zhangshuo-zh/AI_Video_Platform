@@ -93,13 +93,13 @@ export default {
           </table>
         </div>
         <div class="card-body" style="border-top:1px solid var(--line)">
-          <p class="note" style="margin:0"><b>内置 admin 那一列是灰的。</b>
+          <p class="note flush" ><b>内置 admin 那一列是灰的。</b>
             它不是"还没配好"，是服务端规则：admin 的权限点由代码固定，
             改它等于给自己造一个锁死门的角色。</p>
         </div>
       </div>
 
-      <div class="card" style="margin-top:14px" id="perm-matrix-card">
+      <div class="card mt-card"  id="perm-matrix-card">
         <div class="card-head"><h2>角色权限矩阵</h2>
           <span class="sub">一列一个角色，勾完点那一列顶部或底部的保存 ·
             ${perms.length} 个权限点</span></div>
@@ -117,13 +117,13 @@ export default {
           </table>
         </div>
         <div class="card-body" style="border-top:1px solid var(--line)">
-          <p class="note" style="margin:0">勾上不等于生效，<b>按那一列的「保存」才写库</b>；
+          <p class="note flush" >勾上不等于生效，<b>按那一列的「保存」才写库</b>；
             保存后那列按钮会先变「已保存」再刷新一次。真正的拦截在服务端，
             这一页只是让你看清"这个岗位到底给了哪些权限点"。</p>
         </div>
       </div>
 
-      <div class="card" style="margin-top:14px">
+      <div class="card mt-card" >
         <div class="card-head"><h2>最近登录</h2>
           <span class="sub">角色改完想看谁受影响，回「用户管理」那一页对最后登录</span></div>
         <div class="table-wrap">

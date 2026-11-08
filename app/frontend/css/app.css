@@ -98,6 +98,11 @@
   --scroll-hi:rgba(30,40,90,.28);
   --avatar-fg:#fff;
   --avatar-grad:linear-gradient(180deg,#93a6bd,#5b6f86);
+  /* 媒体底：视频与图片预览的衬底。它不是主题色，是想让画面自己发亮——
+     深色衬底能压住视频里溢出的亮边，浅色衬底反而显脏。所以两套主题都取近黑，
+     但**必须走令牌**：写死 #000 就等于在「除变量外没有裸颜色」这条规则上留例外，
+     下一处想抄的人就找不到入口。 */
+  --media-bg:#000;
 
   /* 阴影：白边靠 inset 一圈极淡的深色收口，外面才是投影 */
   --sh-1:inset 0 0 0 1px rgba(30,40,90,.035), 0 1px 2px rgba(30,40,90,.05), 0 6px 18px rgba(30,40,90,.055);
@@ -200,6 +205,7 @@
   /* 和 --accent-grad 同一档亮度：头像里是用户名首字，深字压得住；
      原来那枚渐变末端 #8a6516 太暗，深字压上去只有 1.9 */
   --avatar-grad:linear-gradient(180deg,#f0be63,#c98a25);
+  --media-bg:#000;
 
   --sh-1:inset 0 1px 0 rgba(255,255,255,.04), 0 2px 10px rgba(0,0,0,.42);
   --sh-2:inset 0 1px 0 rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.5);
@@ -621,6 +627,22 @@ main{min-width:0;display:flex;flex-direction:column}
    380px 下不换行就会把整页撑出横向滚动条（实测溢出 46px）。
    窄屏那一段本来就把 .right 收成整行宽，这里只补"里面可以再折一行"。 */
 .page-head .right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+
+/* ---------- 间距语义类 ----------
+ * 2026-11-08：把散落在 JS 模板里的 style="margin-top:14px" 这类收回来。
+ * 内联间距的问题不是啰嗦——它绕过了「间距只有一个出处」这条原则：
+ * CSS 里有 --sp 刻度（4/8/12/16/24/36）和 .stack/.row 容器，JS 里却另写一套数字，
+ * 改版式时要 grep 十几个文件。名字按**用途**起，不按数值：
+ *   .mt-card    卡片与上一块之间（原来散着 14px/12px 两种）
+ *   .mb-card    卡片与下一块之间
+ *   .flush      段落/列表自身不带边距（原来写作 style="margin:0"）
+ *   .tight      相邻控件之间的紧凑排布（gap:6px）
+ * 数值只有一处定义，将来调版式改这里。 */
+.mt-card{margin-top:14px}
+.mb-card{margin-bottom:14px}
+.flush{margin:0}
+.tight{gap:6px}
 
 .card{
   background:var(--panel);border:1px solid var(--edge);border-radius:var(--r-card);
@@ -1186,8 +1208,8 @@ p.modal-meta{margin:16px 0 0;font-size:11.5px;line-height:1.7;
     linear-gradient(to right,var(--grid-line) 1px,transparent 1px),
     linear-gradient(to bottom,var(--grid-line) 1px,transparent 1px);
   background-size:46px 46px;
-  -webkit-mask-image:radial-gradient(circle at 50% 42%,#000 0%,transparent 70%);
-  mask-image:radial-gradient(circle at 50% 42%,#000 0%,transparent 70%);
+  -webkit-mask-image:radial-gradient(circle at 50% 42%,var(--media-bg) 0%,transparent 70%);
+  mask-image:radial-gradient(circle at 50% 42%,var(--media-bg) 0%,transparent 70%);
 }
 
 .gate-card{
@@ -1356,7 +1378,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .artifact:hover{border-color:var(--accent-line);background:var(--accent-soft)}
 .artifact i{font-style:normal;font-size:11px;color:var(--ink-3);flex:none}
 .artifact-item{display:grid;gap:8px}
-.artifact-video{width:100%;max-height:420px;border-radius:12px;background:#000;
+.artifact-video{width:100%;max-height:420px;border-radius:12px;background:var(--media-bg);
   border:1px solid var(--line)}
 .artifact-image{width:100%;max-height:420px;object-fit:contain;border-radius:12px;
   background:var(--field);border:1px solid var(--line)}
@@ -1693,7 +1715,7 @@ td.shot-jobs .t-desc{max-width:180px}
  * 状态色继续沿用全局 chip 语义，不另开色板。 */
 .cp-detail .card-body{padding-top:12px}
 .cp-video{display:block;width:100%;max-width:min(100%,760px);margin:0 auto;
-  max-height:min(62vh,560px);background:#000;
+  max-height:min(62vh,560px);background:var(--media-bg);
   border-radius:12px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:contain}
 .cp-meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin-top:10px;font-size:11.5px;color:var(--ink-3)}
 .cp-meta .mono{font-size:11px;overflow-wrap:anywhere;min-width:0}

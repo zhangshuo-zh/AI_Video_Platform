@@ -27,6 +27,9 @@ const state = {
   projectId: '', status: '', capability: '', mode: '', q: '',
   jobs: [], costs: null, worker: null, error: null,
   options: [], current: [], profiles: [],
+  // 九个任务场景的只读骨架（`/model-policies/scenes`，登录即可）。
+  // 读不到时留空数组——提交框照旧可用，只是少一格"按场景看候选"。
+  scenes: [],
   optionsError: '',
 };
 let pollTimer = null;
@@ -288,7 +291,7 @@ export default {
         <div id="gen-empty"></div>
       </div>
 
-      <div class="card" style="margin-top:14px">
+      <div class="card mt-card" >
         <div class="card-head"><h2>成本账</h2>
           <span class="sub">由 Job 汇总，不可手改</span></div>
         <div id="gen-cost"><div class="empty"><p class="hint">正在读成本账……</p></div></div>
@@ -311,12 +314,19 @@ export default {
             <div class="form-grid gen-form">
               <label for="jm-project">项目</label>
               <select id="jm-project" class="ctl"></select>
+              <label for="jm-scene">任务场景</label>
+              <select id="jm-scene" class="ctl"></select>
+              <div class="gen-scene-panel" id="jm-scene-panel" hidden></div>
               <label for="jm-capability">能力</label>
               <select id="jm-capability" class="ctl"></select>
               <label for="jm-mode">执行路线</label>
               <select id="jm-mode" class="ctl"></select>
               <label for="jm-route">槽位</label>
               <select id="jm-route" class="ctl"></select>
+              <!-- 预填留痕：路线与槽位刚被"按场景预填"改过时，这一行横跨两列
+                   说清是谁改的、从哪条改成哪条、怎么撤销。没有这一行，
+                   预填就是"控件自己动了"，人只会以为下拉坏了。 -->
+              <div class="gen-scene-prefill" id="jm-scene-prefill" hidden></div>
               <label for="jm-template">参数模板</label>
               <select id="jm-template" class="ctl"><option value="">不使用模板</option></select>
               <span class="pf-label top">参数</span>
@@ -1115,14 +1125,208 @@ export default {
       root.querySelector('#jm-prompt').value = '';
       root.querySelector('#jm-hint').textContent = '';
       refreshModeSelect();
+      // 顺序有讲究：先让调用方的模板落进两个下拉，再挂场景面板。
+      // 场景预填与模板预填撞车时**模板赢**（调用方给得更具体），
+      // 所以带模板时直接关掉自动预填；不带模板时 allowAuto 生效，
+      // 撤销的 before 也会落在模板之后的那一格上。
       if (prefill?.template) applyProfile(prefill.template);
       if (prefill?.prompt) root.querySelector('#jm-prompt').value = prefill.prompt;
+      // 场景由调用方带过来（分镜点「生成」＝分镜生成），没有就停在"不按场景"。
+      refreshSceneSelect(prefill?.sceneKey || '', !prefill?.template);
       try {
         state.profiles = await api.generationProfiles(projectSel.value || undefined);
         refreshTemplateSelect();
       } catch { /* 模板读不到不影响提交 */ }
       root.querySelector('#jm-project').focus();
     }
+
+    /* ---------- 任务场景：候选、挡路原因，以及"按场景预填" ---------- */
+    /**
+     * 为什么要有这一块：`/model-policies/resolve` 早就回答得了"这个场景谁可能行、
+     * 别的为什么不行"，但它只长在模型中心·调用策略那一页。于是人在提交框前面
+     * 根本不知道自己要的那一档在不在候选里——只能凭记忆翻另一页，
+     * 或者提交之后吃一句"连接失败"再回头查。
+     *
+     * 第二步（2026-11-07）加了**预填**：选场景后把第一档候选摆进「执行路线／槽位」。
+     * 但它与裁定 MC1 的关系必须说准——MC1 禁的是**平台自己换路**
+     * （`resolve_provider()` 不看 `model_policy`、备用轨不自动顶上），
+     * 不是禁"人点了一下、界面把人选的东西填好"。这里的预填全部发生在
+     * **人显式选了场景**（或从分镜／镜头工作台带着场景进来）之后：
+     *   ① 填的是**界面上的两个下拉**，不是 `provider_config` 的默认轨——
+     *      关掉弹窗、换个人提交，走的路一点没变；
+     *   ② 每一次预填都**留痕**（谁改的、从哪条改成哪条）并给一键撤销；
+     *   ③ **绝不勾「确认按供应商计费」**：云端候选可以预填路线，
+     *      但计费确认仍必须人自己勾（`user_confirmed_cloud` 那道闸门原样不动）；
+     *   ④ 服务端 `resolve_provider()` 一个字节没改。
+     * 所以准确说法是：**人点的场景，平台替人把格子填好，并且把"我填过"写在脸上。**
+     */
+    let sceneSeq = 0;
+    /** 最近一次预填的撤销信息；人手动改过任一相关下拉就作废（他接管了）。 */
+    let scenePrefill = null;
+    /** 当前面板上这批候选（「用它」按钮按行号回查它）。 */
+    let sceneCandidates = [];
+
+    /** 场景下拉按当前能力过滤：场景有能力的归属，选错能力再选场景只会得到 0 候选。 */
+    function refreshSceneSelect(keepKey, allowAuto = true) {
+      const cap = root.querySelector('#jm-capability').value;
+      const sel = root.querySelector('#jm-scene');
+      if (!sel) return;
+      const pool = state.scenes.filter((s) => s.capability === cap);
+      const keep = keepKey !== undefined ? keepKey : sel.value;
+      // "不按场景"永远是第一项：不用场景的人不该被逼着选一个。
+      sel.innerHTML = '<option value="">（不按场景）</option>' + pool.map((s) =>
+        `<option value="${escapeHtml(s.scene_key)}">${escapeHtml(s.scene_label)}`
+        + `${s.required_producible ? '' : '（清单缺能力）'}</option>`).join('');
+      sel.value = pool.some((s) => s.scene_key === keep) ? keep : '';
+      renderScenePanel(allowAuto);
+    }
+
+    /** 撤销/接管时收起预填留痕那一行。 */
+    function clearScenePrefillTrace() {
+      scenePrefill = null;
+      const el = root.querySelector('#jm-scene-prefill');
+      if (el) { el.hidden = true; el.innerHTML = ''; }
+    }
+
+    /**
+     * 把一条候选摆进「执行路线／槽位」两个下拉，并留撤销信息。
+     * 只动界面上的两个下拉——`provider_config` 的默认轨、服务端
+     * `resolve_provider()` 都不经过这里。云端候选**不碰计费勾选**：
+     * `#jm-confirm` 保持人自己勾，提交路径上 `user_confirmed_cloud`
+     * 那道闸门原样不动。
+     * 返回 false＝这一档在提交槽位池里找不到（未启用或没填 provider），
+     * 调用方要把话说清而不是假装成功。
+     */
+    function scenePrefillTo(cand, sceneLabel) {
+      const cap = root.querySelector('#jm-capability').value;
+      const modeSel = root.querySelector('#jm-mode');
+      const routeSel = root.querySelector('#jm-route');
+      // 已有留痕时保留**最初**的 before：连续换场景预填两次，撤销要回到
+      // 人打开弹窗时的那一格，而不是上一次的预填结果。
+      const before = scenePrefill ? scenePrefill.before
+        : { mode: modeSel.value, route: routeSel.value };
+      if (!modeChoices(cap).some((c) => c.value === cand.backend)) return false;
+      modeSel.value = cand.backend;
+      refreshRouteSelect();
+      const opts = optionsFor(cap, cand.backend);
+      const idx = opts.findIndex((o) => o.provider === cand.provider
+        && o.model === cand.model_code);
+      if (idx < 0) {
+        modeSel.value = before.mode;
+        refreshRouteSelect();
+        return false;
+      }
+      routeSel.value = String(idx);
+      renderParams();
+      renderCostSection();
+      scenePrefill = {
+        before, cap, sceneLabel, cloud: cand.backend === 'cloud',
+        candLabel: `${cand.provider} / ${cand.model_code}`,
+      };
+      renderScenePrefillTrace();
+      return true;
+    }
+
+    function renderScenePrefillTrace() {
+      const el = root.querySelector('#jm-scene-prefill');
+      if (!el || !scenePrefill) return;
+      const modeLabel = (root.querySelector('#jm-mode').selectedOptions[0] || {}).textContent || '';
+      const routeLabel = (root.querySelector('#jm-route').selectedOptions[0] || {}).textContent || '';
+      el.hidden = false;
+      el.innerHTML = `
+        <p class="hint">已按场景「${escapeHtml(scenePrefill.sceneLabel)}」预填：
+          <b>${escapeHtml(modeLabel.trim())}</b> ·
+          <b class="mono">${escapeHtml(routeLabel.trim())}</b>。
+          <button type="button" class="btn ghost sm" id="jm-scene-undo">撤销预填</button></p>
+        <p class="hint">这只改了这个弹窗里的两个下拉——能力轨的默认配置一个字没动，
+          关掉弹窗或换人提交都不受影响。${scenePrefill.cloud
+            ? '<b class="t-bad">这一档是云端：预填不会替你勾「确认按供应商计费」，提交前仍要你自己勾。</b>'
+            : ''}</p>`;
+    }
+
+    function undoScenePrefill() {
+      if (!scenePrefill) return;
+      const modeSel = root.querySelector('#jm-mode');
+      const routeSel = root.querySelector('#jm-route');
+      modeSel.value = scenePrefill.before.mode;
+      // 这一句不能省：撤销把路线改回上一档时，槽位里的**选项**也得跟着重挂，
+      // 否则 mode 回到默认轨、route 还停在预填那一档（断言由
+      // `tools/generate_scene_check.py` 的"一键撤销"那条钉住，
+      // 去掉这一句它当场红）。
+      refreshRouteSelect();
+      if ([...routeSel.options].some((o) => o.value === scenePrefill.before.route)) {
+        routeSel.value = scenePrefill.before.route;
+        renderParams();
+        renderCostSection();
+      }
+      clearScenePrefillTrace();
+    }
+
+    /** 读一次这个场景的候选，画出来。`allowAuto`＝允许单候选自动预填。 */
+    async function renderScenePanel(allowAuto = true) {
+      const panel = root.querySelector('#jm-scene-panel');
+      if (!panel) return;
+      const key = root.querySelector('#jm-scene')?.value || '';
+      if (!key) { panel.hidden = true; panel.innerHTML = ''; sceneCandidates = []; clearScenePrefillTrace(); return; }
+      const scene = state.scenes.find((s) => s.scene_key === key);
+      panel.hidden = false;
+      // 请求序号：连着换几个场景时，后到的那条未必是后点的。
+      const wanted = ++sceneSeq;
+      panel.innerHTML = '<p class="hint">正在按能力匹配……</p>';
+      let out;
+      try {
+        out = await api.resolveScene(key);
+      } catch (err) {
+        if (wanted !== sceneSeq) return;
+        // 读不到不拦人：这一段只是提示，提交路径上还有同一套服务端判据兜底。
+        panel.innerHTML = `<p class="hint">候选读不到（${escapeHtml(err.message || '未知错误')}）；
+          仍可直接在下两格显式选执行路线与槽位。</p>`;
+        return;
+      }
+      if (wanted !== sceneSeq) return;
+      sceneCandidates = out.candidates || [];
+      const cand = sceneCandidates.map((c, i) => `<tr>
+        <td><b>${escapeHtml(c.label)}</b>
+          <div class="hint mono">${escapeHtml(c.provider)}/${escapeHtml(c.model_code)}</div></td>
+        <td><span class="chip ${c.status === 'available' ? 'green' : 'amber'}">${
+          escapeHtml(c.status_label || c.status)}</span></td>
+        <td>${c.needs_cloud_confirm
+          ? '<span class="chip amber">要逐次确认计费</span>'
+          : '<span class="hint">本地</span>'}</td>
+        <td><button type="button" class="btn ghost sm" data-scene-use="${i}">用它</button></td>
+      </tr>`).join('');
+      const blockers = (out.blockers || [])
+        .map((b) => `<li>${escapeHtml(b)}</li>`).join('');
+      const impossible = (out.impossible_tags || []);
+      panel.innerHTML = `
+        <p class="hint gen-scene-lede">
+          场景「${escapeHtml(scene?.scene_label || key)}」要的能力：
+          ${(out.required || []).map(escapeHtml).join('、') || '（没写）'}。
+          只有一档候选时会自动预填到「执行路线／槽位」并留痕可撤销；
+          好几档时点那一行的「用它」——平台不替你挑。
+        </p>
+        ${impossible.length
+          ? `<p class="t-bad gen-scene-warn">这几项必需能力在清单里没有任何来源：
+             ${impossible.map(escapeHtml).join('、')}。要让它有解得先在 <code>adapters.py</code>
+             补这一档规格，或者在「调用策略」里把这一项从「必需」降下来——点这里没用。</p>`
+          : ''}
+        <h3 class="drawer-h">满足必需能力的候选（${sceneCandidates.length}）</h3>
+        ${sceneCandidates.length
+          ? `<div class="table-wrap"><table class="gen-scene-table">
+               <thead><tr><th>模型</th><th>状态</th><th>计费</th><th></th></tr></thead>
+               <tbody>${cand}</tbody></table></div>`
+          : '<p class="hint">一条都没有。</p>'}
+        ${blockers
+          ? `<details class="gen-scene-more"><summary>为什么别的不行（${
+              (out.blockers || []).length}）</summary><ul class="hint">${blockers}</ul></details>`
+          : ''}`;
+      // 自动预填只在"恰好一档"时发生：好几档时替你挑第一档就是平台在选路，
+      // 那不是预填，是越权。template 预填优先（调用方给得更具体）。
+      if (allowAuto && sceneCandidates.length === 1) {
+        scenePrefillTo(sceneCandidates[0], scene?.scene_label || key);
+      }
+    }
+
 
     function closeJobModal() {
       jobModal.hidden = true;
@@ -1477,9 +1681,41 @@ export default {
     root.querySelector('#gen-new')?.addEventListener('click', () => openJobModal());
     root.querySelector('#jm-cancel').addEventListener('click', closeJobModal);
     root.querySelector('#jm-submit').addEventListener('click', submitJob);
-    root.querySelector('#jm-capability').addEventListener('change', refreshModeSelect);
-    root.querySelector('#jm-mode').addEventListener('change', refreshRouteSelect);
+    root.querySelector('#jm-capability').addEventListener('change', () => {
+      refreshModeSelect();
+      // 能力一换，场景池跟着换：场景有能力的归属，留着上一个能力的场景
+      // 只会得到 0 候选，人还以为是模型没配好。
+      // 能力换格＝人接管了路线，上一笔预填留痕作废。
+      clearScenePrefillTrace();
+      refreshSceneSelect('');
+    });
+    // 注意别把 change 事件本身传进去——renderScenePanel 的头一个参数
+    // 是 allowAuto（布尔），事件对象是 truthy 会把"允许自动"变成巧合成立。
+    root.querySelector('#jm-scene').addEventListener('change', () => renderScenePanel(true));
+    // 「用它」与「撤销预填」都是动态渲染出来的，走委托。
+    root.addEventListener('click', (e) => {
+      const use = e.target.closest('[data-scene-use]');
+      if (use) {
+        const c = sceneCandidates[Number(use.dataset.sceneUse)];
+        if (!c) return;
+        const key = root.querySelector('#jm-scene').value;
+        const label = (state.scenes.find((s) => s.scene_key === key) || {}).scene_label || key;
+        if (!scenePrefillTo(c, label)) {
+          root.querySelector('#jm-hint').textContent =
+            `这一档（${c.provider}/${c.model_code}）不在提交槽位池里——`
+            + '它可能没启用或没填 provider，请到模型仓库看这一行。';
+        }
+        return;
+      }
+      if (e.target.closest('#jm-scene-undo')) undoScenePrefill();
+    });
+    root.querySelector('#jm-mode').addEventListener('change', () => {
+      // 人自己动了这两个下拉＝他接管了，撤销信息作废（下一笔预填重新记 before）。
+      clearScenePrefillTrace();
+      refreshRouteSelect();
+    });
     root.querySelector('#jm-route').addEventListener('change', () => {
+      clearScenePrefillTrace();
       renderParams();
       renderCostSection();
     });
@@ -1544,11 +1780,14 @@ export default {
     /* ---------- 首次加载与轮询 ---------- */
     (async () => {
       try {
-        const [options, current] = await Promise.all([
+        const [options, current, scenes] = await Promise.all([
           api.providerOptions(), api.currentProviders(),
+          // 场景骨架读不到不该让整页读失败：它只是提交框里多一格提示。
+          api.modelScenes().catch(() => ({ items: [] })),
         ]);
         state.options = options;
         state.current = current;
+        state.scenes = scenes.items || [];
       } catch (err) {
         state.optionsError = err.message;
       }

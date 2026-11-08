@@ -255,7 +255,7 @@ function detailHtml(detail) {
   const events = detail.events.slice().reverse().map((ev) => `<li>
       <time>${escapeHtml(ev.created_at)}</time>
       <span>${escapeHtml(eventText(ev))}</span></li>`).join('');
-  return `<div class="card" id="pl-detail" style="margin-top:14px">
+  return `<div class="card mt-card" id="pl-detail" >
     <div class="card-head">
       <h2>${escapeHtml(detail.episode_title || `集 #${detail.episode_id}`)} · 运行 #${detail.id}</h2>
       <span class="sub">${escapeHtml(detail.template_name)} v${detail.template_version}
@@ -612,7 +612,7 @@ export default {
         ${notice ? `<div class="bar ok"><p>${escapeHtml(notice)}</p></div>` : ''}
         ${err ? errorBox('整季生产', err) : ''}
         ${workerPanel()}
-        <div class="card" style="margin-top:14px">
+        <div class="card mt-card" >
           <div class="card-head"><h2>整季批次</h2>
             <span class="sub">每集仍是一条单集运行；这一层只决定何时起下一集与失败怎么恢复</span>
             <div class="right">
@@ -629,7 +629,7 @@ export default {
             ${canSubmit ? '<div class="empty-form"><button class="btn primary" data-new-season>发起整季</button></div>' : ''}
           </div>`}
         </div>
-        ${detail ? seasonDetailHtml(detail, canSubmit) : (openSeasonId ? '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读整季…</p></div></div>' : '')}
+        ${detail ? seasonDetailHtml(detail, canSubmit) : (openSeasonId ? '<div class="card mt-card" ><div class="card-body"><p class="hint">正在读整季…</p></div></div>' : '')}
         ${seasonModal(templates.filter((t) => t.enabled !== false), episodes)}
       </section>`;
     }
@@ -724,7 +724,7 @@ export default {
           ${canSubmit ? '<div class="empty-form"><button class="btn primary" data-new-run>发起运行</button></div>' : ''}
         </div>`}
       </div>
-      ${openRunId ? '<div id="pl-detail-host"><div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">正在读运行…</p></div></div></div>' : ''}
+      ${openRunId ? '<div id="pl-detail-host"><div class="card mt-card" ><div class="card-body"><p class="hint">正在读运行…</p></div></div></div>' : ''}
       ${createModal(episodes, templates.filter((t) => t.enabled !== false), busy)}
     </section>`;
   },

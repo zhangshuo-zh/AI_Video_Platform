@@ -104,7 +104,7 @@ export function pageMonitor() {
       ${escapeHtml(a.text)}</li>`).join('');
 
   return `
-  <div class="card" style="margin-bottom:14px">
+  <div class="card mb-card" >
     <div class="card-head"><h2>队列与 worker</h2>
       <span class="sub">现读 <code>/api/worker/status</code>，与生成中心同一个口径；这一页不开第二条队列</span>
       <span class="right">
@@ -129,16 +129,16 @@ export function pageMonitor() {
     ${historyLine}
   </div>
 
-  <div class="card" style="margin-bottom:14px">
+  <div class="card mb-card" >
     <div class="card-head"><h2>告警</h2>
       <span class="sub">判定与处置分开：这里只说哪里不对，取消与重试仍回生成中心做</span></div>
     <div class="card-body">
-      ${alerts ? `<ul class="hint" style="margin:0">${alerts}</ul>`
-              : '<p class="note" style="margin:0">现在没有告警。</p>'}
+      ${alerts ? `<ul class="hint flush" >${alerts}</ul>`
+              : '<p class="note flush" >现在没有告警。</p>'}
     </div>
   </div>
 
-  <div class="card" style="margin-bottom:14px">
+  <div class="card mb-card" >
     <div class="card-head"><h2>模型维度</h2>
       <span class="sub">登记 ${s.registered_total} · 可用 ${s.available_total} · 需要看一眼 ${s.needs_attention}</span></div>
     <div class="card-body">
@@ -170,7 +170,7 @@ export function pageMonitor() {
       </tr>`).join('') || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" style="margin:0">这一页是**一页**：接口一次最多回 ${HISTORY_PAGE} 条，
+      <p class="note flush" >这一页是**一页**：接口一次最多回 ${HISTORY_PAGE} 条，
         翻旧账走「更早」那颗按钮——用上一页最后一条的 id 往前切，不跳号也不重复。
         更早的记录不是被删了，只是没往这一屏搬。</p>
     </div>

@@ -259,7 +259,7 @@ export function pageEngines() {
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" style="margin:0"><b>点「能力」那一格展开细节</b>：清单出处、允许参数、
+      <p class="note flush" ><b>点「能力」那一格展开细节</b>：清单出处、允许参数、
         密钥变量名、环境检查与验证记录、备注都在展开里。
         这一张表是默认轨的唯一来源——调用策略的建议轨与备用轨只是提示，本地失败不会自动转云端。
         健康与验证也不是一回事：健康只说环境齐不齐，验证说凭什么认为真能产出。</p>
@@ -275,7 +275,7 @@ export function pageEngines() {
       <tbody>${engineRows}${unintegrated}</tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" style="margin:0"><b>未接入那一排没有「测试连接」按钮</b>：
+      <p class="note flush" ><b>未接入那一排没有「测试连接」按钮</b>：
         平台里没有它们的适配器，点了也不会有真结果。接 ComfyUI 是独立工作包。</p>
     </div>
   </div>
@@ -463,7 +463,7 @@ export function engineInstancesCard() {
       </tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" style="margin:0"><b>端点改不了</b>：端点连同引擎 code 是这一行的键，
+      <p class="note flush" ><b>端点改不了</b>：端点连同引擎 code 是这一行的键，
         要换机器请新建一条再停旧的——否则历史作业的「当时打的是哪台」就说不清了。
         「非服务型」那几档也能登记（给远程执行器留的位置），但现在没有探测分支，
         加进来只会显示"不是本机服务型引擎，平台不猜它的状态"。</p>

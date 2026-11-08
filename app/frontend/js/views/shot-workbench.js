@@ -166,7 +166,7 @@ function readyBlock(d) {
       ? `<button class="btn xs" data-goto="${escapeHtml(JSON.stringify(b.locate))}">去处理</button>`
       : ''}</li>`).join('');
   return `
-  <ul class="hint" style="margin:0">
+  <ul class="hint flush" >
     ${line(r.video_ok, '有一条签过通过的正式视频')}
     ${line(r.source_ok, '源版本与最新分镜一致', r.source_ok ? '' : '产物是按旧版分镜生的，建议重新生成')}
     ${line(r.audio_ok, '音频素材没有欠账', r.audio_note)}

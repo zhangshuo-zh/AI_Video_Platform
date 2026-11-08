@@ -28,9 +28,28 @@ let pickedDocId = null;
 // 会把数据塞进 dataset；每次 render 整体覆盖，不跨项目残留。
 let shotCache = { episodeId: null, shots: [], assets: [], jobs: [] };
 
-// 编辑器状态。放在模块级而不是每次 render 重取：人正在写的东西不能被一次刷新抹掉。
-// draftFor 记着这份草稿属于哪一份文档——换文档（含换项目、深链跳走再回来）必须重取，
-// 否则会出现"打开的是新文档、编辑器里是旧文档那段话"，看着像数据串了。
+/* 编辑器状态。放在模块级而不是每次 render 重取：人正在写的东西不能被一次刷新抹掉。
+ *
+ * 2026-11-08 补一张**状态清单**（只写说明，变量不动）。这一屏有 9 个模块级变量，
+ * 分散在 30 多行代码里读写；出问题时要翻半天才知道"这个值是谁设的、什么时候该清"。
+ * 清单钉住三件事：谁写、什么时候有效、什么时候必须清。
+ *
+ *   draft        正文文本        输入事件写         同一篇文档内有效   切文档/换项目时重取
+ *   draftFor     这份草稿属于谁  render 时设       ——                换文档必须重取（见下）
+ *   draftVersion 版本令牌        打开与保存后更新   下一次保存前有效   409 时保留、用来对照
+ *   serverCopy   409 拉下来的盘上那份  409 分支写  只在对照面板用     保存成功后清空
+ *   notice       上次保存结果一句话    保存回执写  只活到下次操作      下次保存前覆盖
+ *   lockWarn     别人持锁的提示        423 分支写  ——                解锁或换文档时清
+ *   dirty        有未保存改动          输入置 true  与 draft 同寿命   保存成功置 false
+ *   locking      抢锁只发一次          首次输入置   ——                保存/换文档后复位
+ *
+ * draftFor 记着这份草稿属于哪一份文档——换文档（含换项目、深链跳走再回来）必须重取，
+ * 否则会出现"打开的是新文档、编辑器里是旧文档那段话"，看着像数据串了。
+ *
+ * 为什么没把它们并成一个 state 对象：这 9 个在文件里 30 多处读写，
+ * 机械改成 editor.draft 只是换个前缀，没有减少理解成本，却制造一次大 diff
+ * （这类纯改名的 diff 最容易在冲突里丢改动）。真正缺的是"谁写/何时清"的说明，
+ * 上面这张表补的就是那个。 */
 let draft = null;
 let draftFor = null;
 let draftVersion = null;      // 打开/上次保存时拿到的版本令牌
@@ -1826,6 +1845,9 @@ function mountShots(root) {
           episodeId: pickedEpisodeId,
           shotId: Number(btn.dataset.genShot),
           capability: 'video',
+          // 镜头视频就是 `shot_video` 这个场景（键定死在 0035 的种子里）。
+          // 带上它，提交框才会把"这个场景谁可能行、别的为什么不行"摆出来。
+          sceneKey: 'shot_video',
           prompt: shot ? ((shot.prompt || '').trim() || shot.summary) : '',
         });
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'generate' }));

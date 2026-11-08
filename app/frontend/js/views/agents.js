@@ -116,8 +116,8 @@ function runsTable(runs) {
         <td class="num">${r.steps.length ? `${done}/${r.steps.length}` : '—'}</td>
         <td><span class="t-desc">${escapeHtml([snap.backend, snap.provider, snap.model]
           .filter(Boolean).join(' / ') || '—')}</span></td>
-        <td class="num t-desc">${stamp ? escapeHtml(agoText(Math.round(
-          Date.now() / 1000 - new Date(stamp).getTime() / 1000))) : '—'}</td>
+        <td class="num"><span class="t-desc">${stamp ? escapeHtml(agoText(Math.round(
+          Date.now() / 1000 - new Date(stamp).getTime() / 1000))) : '—'}</span></td>
         <td class="r"><button class="btn sm ${r.id === openRunId ? '' : 'primary'}"
           data-open-run="${r.id}">${r.id === openRunId ? '收起' : '详情'}</button></td>
       </tr>`;
@@ -129,7 +129,7 @@ function eventRows(events) {
   return `<div class="table-wrap"><table>
     <thead><tr><th class="num">时间</th><th>事件</th><th>说明</th></tr></thead>
     <tbody>${events.slice(0, 20).map((e) => `<tr>
-      <td class="num t-desc">${escapeHtml((e.created_at || '').slice(5, 16))}</td>
+      <td class="num"><span class="t-desc">${escapeHtml((e.created_at || '').slice(5, 16))}</span></td>
       <td>${chip('gray', eventLabel(e.event_type))}</td>
       <td><span class="t-desc">${escapeHtml(eventText(e))}</span></td></tr>`).join('')}</tbody>
     </table></div>`;
@@ -318,7 +318,7 @@ export default {
     return `<section class="view on">
       ${head('谁替人做决定、决定到哪一步了')}
       ${err ? `<div class="card">${errorBox('读概览', err)}</div>` : ''}
-      ${counts.runs !== undefined ? `<div class="card" style="margin-bottom:14px">
+      ${counts.runs !== undefined ? `<div class="card mb-card" >
         <div class="card-head"><h2>四个数</h2>
           <span class="sub">${escapeHtml((overview && overview.caliber) || '')}</span></div>
         <div class="proj-stats">
@@ -328,7 +328,7 @@ export default {
             !!counts.awaiting_approval)}
           ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用配置')}
         </div></div>` : ''}
-      ${cache.configs ? `<div class="card" style="margin-bottom:14px">
+      ${cache.configs ? `<div class="card mb-card" >
         <div class="card-head"><h2>两条腿</h2>
           <span class="sub">配置·健康·驻留·运行是四件事，分开显示</span></div>
         ${legsHtml(cache.configs)}</div>` : ''}
@@ -351,7 +351,7 @@ export default {
     const cards = (cache.configs && cache.configs.cards) || [];
     const tools = Object.entries((cache.tools && cache.tools.items) || {});
     return `
-      <div class="card" style="margin-bottom:14px">
+      <div class="card mb-card" >
         <div class="card-head"><h2>本地与云端两条腿</h2>
           <span class="sub">要改的是模型中心那三张表；这一页只读，每次进来现查一次健康</span></div>
         ${legsHtml(cache.configs)}
@@ -438,14 +438,14 @@ export default {
     } catch (e) { err = e; }
     if (openRunId && !runs.some((r) => r.id === openRunId)) openRunId = getParam('agents') ? openRunId : null;
     return `
-      ${err ? `<div class="card" style="margin-bottom:14px">${errorBox('读运行列表', err)}</div>` : ''}
-      <div class="card" style="margin-bottom:14px">
+      ${err ? `<div class="card mb-card" >${errorBox('读运行列表', err)}</div>` : ''}
+      <div class="card mb-card" >
         <div class="card-head"><h2>这个项目的运行</h2>
           <span class="sub">计划、步骤、事件都在这；签字在审核中心</span>
           <div class="right"><button class="btn primary sm" data-ag-new>发起一次运行</button></div></div>
         ${runsTable(runs)}
       </div>
-      ${waiting.length ? `<div class="card" style="margin-bottom:14px">
+      ${waiting.length ? `<div class="card mb-card" >
         <div class="card-head"><h2>等你批 ${waiting.length} 步</h2>
           <span class="sub">只显示状态——签字那一步在审核中心</span></div>
         <div class="table-wrap"><table>
@@ -455,7 +455,7 @@ export default {
             <td class="num">${s.seq}</td><td>${escapeHtml(s.tool_label)}</td>
             <td><span class="t-desc">${escapeHtml(s.goal)}</span></td>
             <td>${chip('gray', s.risk_label)}</td>
-            <td class="num t-desc">${escapeHtml(s.approval_expires_at || '—')}</td>
+            <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
             <td class="r"><button class="btn sm primary" data-goto-review="2">去审核中心</button></td>
           </tr>`).join('')}</tbody></table></div></div>` : ''}
       ${openRunId ? '<div id="ag-run-detail" class="card"><div class="card-body">'
