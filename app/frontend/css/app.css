@@ -455,20 +455,15 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
   border-radius:5px;padding:1px 4px;color:var(--ink-2);background:var(--field);
 }
 
-/* 空状态：靠排版撑，不塞插画 */
-/* 空状态加一枚极淡的品牌水印。空状态是"第一次进这个页面"最常看到的画面，
-   纯文字太素；但插图不能抢文字，所以压到 5.5% 透明度、放在文字之后。
-   用 ::after + 绝对定位而不是插 <img>：一个视图代码都不动，
-   而且水印不该被读屏念出来（装饰性图片写成 CSS 背景最省事）。 */
-.empty{position:relative;padding:56px 24px;text-align:center;isolation:isolate}
-.empty::after{content:"";position:absolute;left:50%;top:50%;
-  transform:translate(-50%,-50%);width:184px;height:184px;z-index:-1;
-  /* 用 brand-user-alpha（抠过透明的那张），不用 brand-mascot：
-     后者是不透明底图，压到 5% 仍能看出一块方形底色，夜间主题尤其明显。 */
-  background:url("/img/brand-user-alpha.png") center / contain no-repeat;
-  opacity:.07;pointer-events:none}
-/* 夜间主题水印要更淡：炭黑底上白描边的图会显脏 */
-[data-theme=night] .empty::after{opacity:.035}
+/* 空状态：靠排版撑，不塞插画。
+   2026-11-08 撤掉了上一轮加的品牌水印（`.empty::after` 放一张 184px 的品牌图、
+   压在文字之后）。当时想的是"空状态太素，给点品牌感"，实际上：
+   ① 那张图是**人物立绘**，缩到 184px 只剩一团形状，认不出是谁；
+   ② 它和上方标题、下方说明叠在一起，读起来像背景脏了一块而不是水印；
+   ③ 它出现在所有空状态里（资产中心、审核队列、各种"还没有…"），
+      同一团灰影反复出现，反而成了噪音。
+   结论：空状态靠排版与文案撑就够了，不要再加装饰图。 */
+.empty{padding:56px 24px;text-align:center}
 /* 空状态在卡片里时（多数场合）上下留白可以小一点，别把卡片撑得太高 */
 .card .empty{padding:44px 24px}
 .empty-t{font-size:14px;font-weight:600;letter-spacing:-.01em;margin-bottom:6px}
