@@ -10,21 +10,24 @@
 任何拿到仓库的人都能登进"没改默认口令"的部署。规格 01-7.2-7
 「口令不得写入提交」直接违反，W00 盘点把它列成冲突 C7。
 随机生成同样能让人第一次登进去，而且没有"忘了改就永久敞开"这条路径。
+
+三个变量统一从 `config` 取（2026-11-08）：原来是 `os.environ.get(...)` 裸读，
+拿不到 `_env` 的空白回退与统一口径。
 """
-import os
 import secrets
 import sys
 
+import config
 from repositories.users import users as user_repo
 from security import hash_password
-
-DEFAULT_USERNAME = os.environ.get("FASTVIDEO_ADMIN_USER", "superadmin")
-DEFAULT_DISPLAY = os.environ.get("FASTVIDEO_ADMIN_DISPLAY", "超级管理员")
 
 
 def _initial_password() -> tuple[str, bool]:
     """返回（口令，是不是环境变量给的）。随机串避开易混字符，够长即可——它只活一次登录。"""
-    given = os.environ.get("FASTVIDEO_ADMIN_PASSWORD", "").strip()
+    # 取值走 `config.admin_password()`（解析规则收在 config），但**在调用时取**：
+    # `ensure_admin()` 是"库为空时跑一次"的引导动作，而部署方式允许
+    # `FASTVIDEO_ADMIN_PASSWORD=xxx python main.py`——先设变量再拉起进程。
+    given = config.admin_password()
     if given:
         return given, True
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
@@ -38,8 +41,8 @@ def ensure_admin(*, verbose: bool = True) -> bool:
 
     password, from_env = _initial_password()
     admin = user_repo.create(
-        username=DEFAULT_USERNAME,
-        display_name=DEFAULT_DISPLAY,
+        username=config.admin_username(),
+        display_name=config.admin_display(),
         password_hash=hash_password(password),
         is_superuser=True,
         must_change_password=True,

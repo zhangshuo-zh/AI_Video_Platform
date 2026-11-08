@@ -865,7 +865,11 @@ def asset_version(row) -> str:
     这不是乐观锁的完整实现（没有冲突后自动合并），它只保证一件事：
     **不会在人不知情的情况下把他的编辑盖掉**。
     """
-    keys = row.keys() if hasattr(row, "keys") else row.keys()
+    # 与上面 `provider_slot_version` 同一条口径：`sqlite3.Row` 有 `keys()`，
+    # 普通 dict 没有——退到 dict 本身（`k in dict` 同样是成员判断）。
+    # 原来这里两个分支写的是同一个表达式（`… else row.keys()`），
+    # 退到 dict 时会因为没有 `keys()` 直接 AttributeError。
+    keys = row.keys() if hasattr(row, "keys") else row
     def get(k):
         return (row[k] if k in keys else "") or ""
     return _digest(str(get("updated_at")), str(get("kind")), str(get("name")),

@@ -33,6 +33,9 @@ from models import CAPABILITIES, JOB_STATUSES, JobEstimateIn
 from paths import describe as describe_path
 from paths import listdir_empty, resolve_within
 from repositories.audio import clips
+# `job_checklist()` 里有个局部变量也叫 `clips`（装这一镜的音频片段，
+# 与仓储同名不同物）；那里用这个别名读**仓储**，避免遮蔽后再回函数内部重复 import。
+from repositories.audio import clips as audio_clips
 from repositories.content import assets, episodes as episode_repo, profiles, shots, variants
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
@@ -1168,15 +1171,18 @@ def job_checklist(job) -> dict:
     媒体读探测复用 `composition.validators.inspect`。
     """
     import reviewkit
-    from repositories.audio import clips as clip_repo
-    from repositories.content import shots as shot_repo
     from repositories.review_checks import review_checks
 
-    shot = shot_repo.get(int(job["shot_id"])) if job["shot_id"] else None
+    # `clips` / `shots` 是模块级已经导进来的（见文件头 `from repositories.audio
+    # import clips`），这里不再重复 import。原来这两行用了 `as clip_repo` /
+    # `as shot_repo` 的别名，理由是这个函数里有个局部变量叫 `clips`
+    # （下面装的是"这一镜的音频片段"，与仓储同名不同物）——所以这里显式用
+    # `audio_clips` 这个名字，既不遮蔽局部变量、也不再从别的层重复导入。
+    shot = shots.get(int(job["shot_id"])) if job["shot_id"] else None
     clips: list[dict] = []
     if job["project_id"] and job["episode_id"] and job["shot_id"]:
-        clips = [c for c in clip_repo.list(int(job["project_id"]),
-                                           episode_id=int(job["episode_id"]))
+        clips = [c for c in audio_clips.list(int(job["project_id"]),
+                                             episode_id=int(job["episode_id"]))
                  if int(c["shot_id"] or 0) == int(job["shot_id"])]
     stale = bool(shot is not None and job_source_stale(job, shot=shot))
     stored = review_checks.get(review_checks.TARGET_KIND, int(job["id"]))

@@ -303,3 +303,83 @@ def test_静默秒数看日志文件而不是_updated_at(app, seeded, tmp_path):
     with get_conn() as conn:
         conn.execute("UPDATE job SET status='succeeded', worker_id=NULL WHERE id=?",
                      (seeded["job_id"],))
+
+
+# ---------- 第一批收尾杂项（2026-11-08 第二批改动） ----------
+
+def test_资产版本令牌能接受普通_dict():
+    """`asset_version` 原来两条分支写的是同一个表达式（`… else row.keys()`），
+    退到 dict 时会 AttributeError。dict 没有 `keys` 方法这个概念要说准：
+    dict **有** `keys()`，所以这里用 `Mapping` 之外的普通 dict 验——
+    真正会走到 else 的是"没有 keys 方法的行对象"，用一个只支持 `[k]` 与 `in` 的
+    最小替身来代表它。"""
+    from models import asset_version
+
+    class _RowLike:
+        """没有 keys()，但支持下标与 in —— 即 `sqlite3.Row` 之外的行表示。"""
+        def __init__(self, data):
+            self._d = data
+        def __getitem__(self, k):
+            return self._d[k]
+        def __contains__(self, k):
+            return k in self._d
+
+    data = {"updated_at": "2026-11-08 10:00:00", "kind": "character",
+            "name": "角色甲", "summary": "", "consistency_prompt": "",
+            "aliases": "[]", "ref_images": "[]"}
+    token = asset_version(_RowLike(data))
+    assert isinstance(token, str) and token, "没有 keys() 的行对象也要算得出令牌"
+    # 同一份数据、换一个 dict 形态，结果应当一致（同一口径）
+    assert asset_version(dict(data)) == token
+
+
+def test_超管引导的变量走config解析(monkeypatch):
+    """`FASTVIDEO_ADMIN_USER` 给空白时不能建出一个用户名叫空白的账号。"""
+    import config
+
+    monkeypatch.setenv("FASTVIDEO_ADMIN_USER", "   ")
+    assert config.admin_username() == "superadmin", "空白要回退默认值"
+    monkeypatch.setenv("FASTVIDEO_ADMIN_USER", "  boss  ")
+    assert config.admin_username() == "boss", "两端空白要去掉"
+
+
+def test_引导口令仍在调用时读环境变量(monkeypatch):
+    """部署允许 `FASTVIDEO_ADMIN_PASSWORD=xxx python main.py`：
+    变量是先在进程里设好再拉起的，所以必须**调用时**读，不能在 import 期定死。"""
+    from bootstrap import _initial_password
+    monkeypatch.setenv("FASTVIDEO_ADMIN_PASSWORD", "  运行期设的  ")
+    pw, from_env = _initial_password()
+    assert (pw, from_env) == ("运行期设的", True)
+
+
+def test_git错误回给前端的文案不含部署机绝对路径(as_role, fresh_project):
+    """git 的 stderr 会带仓库绝对路径（实测锁冲突那条），5xx 出门前要脱敏。
+
+    **这条必须验到「调用点真的用了脱敏」**，不能只验 `_git_detail` 自己——
+    只测辅助函数的话，把路由里那句改回 `detail=f"...{err}"` 测试照样绿
+    （本轮初版就是这么写的，实测抓不到回归）。所以这里走真实 HTTP：
+    让建文档时的 git 提交失败，看回给客户端的 `detail`。
+    """
+    import config
+    import gitrepo
+
+    ws = str(config.WORKSPACE_DIR)
+    pid = fresh_project("editor")
+    c = as_role("editor")
+
+    def _boom(*_a, **_k):
+        raise gitrepo.GitError(
+            f"fatal: Unable to create '{ws}/.git/index.lock': File exists.")
+
+    original = gitrepo.commit_file
+    gitrepo.commit_file = _boom
+    try:
+        r = c.post(f"/api/projects/{pid}/documents",
+                   json={"title": "脱敏验证稿", "kind": "novel", "content": "正文"})
+    finally:
+        gitrepo.commit_file = original
+
+    assert r.status_code == 500, r.text
+    detail = str(r.json().get("detail", ""))
+    assert ws not in detail, f"部署机路径不该跟着错误出门：{detail}"
+    assert "index.lock" in detail, f"脱敏不能把排障信息一起删掉：{detail}"

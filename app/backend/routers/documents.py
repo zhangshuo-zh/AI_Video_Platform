@@ -22,6 +22,7 @@ import services
 from access import ensure, ensure_by
 from config import LOCK_MINUTES
 from deps import actor_name, require_permission
+from paths import describe as describe_path
 from models import (DocAiApplyOut, DocAiJobOut, DocAiOptionsOut, DocAiPreviewOut,
                     DocAiSubmitIn, DocContentIn, DocContentOut, DocDiffOut, DocLockOut,
                     DocStatusIn, DocumentIn, DocumentOut, DocSaveOut, DocVersionOut,
@@ -29,6 +30,24 @@ from models import (DocAiApplyOut, DocAiJobOut, DocAiOptionsOut, DocAiPreviewOut
 from repositories.content import episodes as episode_repo
 from repositories.documents import documents as docs
 from workspace import PathError, path_of
+
+def _git_detail(prefix: str, err: Exception) -> str:
+    """把 `git` 的原话拼进 5xx 文案，但**先把路径脱敏**。
+
+    为什么要带原话：git 的 stderr 往往就是原因本身——"没有配置用户身份"、
+    "工作区不在磁盘上"、"权限不对"。只回一句"内部错误"的话，人对着屏幕
+    无从下手。这是 `gitrepo.GitError` 的既有口径（见它的类注释）。
+
+    为什么要脱敏：实测同一个 stderr 在锁冲突时会写成
+    `fatal: Unable to create '/Users/<谁>/…/data/workspace/.git/index.lock'`——
+    部署机的家目录与安装路径就这么跟着一条报错出门了，会进 HTTP 响应、
+    进浏览器控制台、进用户截图。`paths.describe()` 把这些根换成
+    `data/workspace/…` 这种标签：一样能定位，不出家门。
+    （`services.py` 里那条 `GitSaveFailed` 早就是这么做的；这里两处直接抛
+    `gitrepo.GitError` 的路上漏了。）
+    """
+    return f"{prefix}{describe_path(str(err))}"
+
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -98,9 +117,10 @@ def create_document(project_id: int, payload: DocumentIn,
     except services.DocTooLarge as err:
         raise HTTPException(status_code=413, detail=str(err)) from err
     except gitrepo.GitError as err:
-        # 建文档失败说 507/500 都行，但要带上 git 原话：
+        # 建文档失败说 507/500 都行，但要带上 git 原话（已脱敏）：
         # 工作区不在磁盘上、权限不对、git 没装，人看到的都是同一句"失败了"最难查
-        raise HTTPException(status_code=500, detail=f"正文没能提交到 Git：{err}") from err
+        raise HTTPException(status_code=500,
+                            detail=_git_detail("正文没能提交到 Git：", err)) from err
     return DocumentOut.from_row(result["row"])
 
 
@@ -149,8 +169,11 @@ def delete_document(doc_id: int, user=Depends(require_permission("doc:write"))) 
         gitrepo.remove_file(row["rel_path"], f"删除文档：{row['title']}", actor_name(user))
     except gitrepo.GitError as err:
         # 历史记不上就不删元数据：留着行、文件也留着，让人能再试一次，
-        # 而不是留下"库里说没了、盘上还有一份"的对不上状态
-        raise HTTPException(status_code=500, detail=f"Git 没记上这笔删除，文档保持原样：{err}")
+        # 而不是留下"库里说没了、盘上还有一份"的对不上状态。
+        # 回的是脱敏后的 git 原话（见 `_git_detail`）。
+        raise HTTPException(status_code=500,
+                            detail=_git_detail("Git 没记上这笔删除，文档保持原样：",
+                                               err))
     try:
         path_of(row["rel_path"]).unlink(missing_ok=True)
     except PathError:

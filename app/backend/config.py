@@ -157,6 +157,30 @@ PORT = _env_int("FASTVIDEO_PORT", 8000)
 # 登录会话有效期（小时）。到期后要重新登录，库里的行同时失效
 SESSION_HOURS = _env_int("FASTVIDEO_SESSION_HOURS", 12)
 
+# ---------- 首个超级用户（`bootstrap.ensure_admin` 用） ----------
+# 这三个原来在 `bootstrap.py` 里裸读 `os.environ.get`，是"集中配置"里唯一的
+# 漏网处：拿不到 `_env` 的空串回退（`FASTVIDEO_ADMIN_USER="  "` 会建出一个
+# 用户名叫空白的账号）与统一的报错口径。
+#
+# **注意这三个是函数而不是常量**：`ensure_admin()` 只在库为空时跑一次，
+# 而部署方（`run.sh`、容器 entrypoint、`FASTVIDEO_ADMIN_PASSWORD=xxx python main.py`）
+# 是"在进程里**先设环境变量再拉起应用**"的用法，`test_infra.py` 也按这个口径
+# 用 monkeypatch 验。写成 import 期常量会把这条路径锁死成"必须在 import 前设"，
+# 那是把可用的部署方式改坏。所以这里保留取值函数、只把**解析规则**收进 config。
+#
+# `ADMIN_PASSWORD` 是**口令明文**：只在建号那一次用，不进库（库里存 scrypt
+# 派生值）、不进日志；没设就由 bootstrap 随机生成。
+def admin_username() -> str:
+    return _env("FASTVIDEO_ADMIN_USER", "superadmin")
+
+
+def admin_display() -> str:
+    return _env("FASTVIDEO_ADMIN_DISPLAY", "超级管理员")
+
+
+def admin_password() -> str:
+    return _env("FASTVIDEO_ADMIN_PASSWORD", "")
+
 # 会话 cookie 是否要求 HTTPS 传输。默认 0＝局域网明文 http 也能用；
 # 一旦把平台挂到 HTTPS/反向代理后面，**必须**设 FASTVIDEO_COOKIE_SECURE=1，
 # 否则 cookie 仍会随明文请求发出去（同网段可嗅探后直接接管会话）。
