@@ -865,7 +865,7 @@ def test_接口权限与归属(as_role, mock_route, people, fresh_project, clean
     assert r.status_code == 201, r.text
     run_id = r.json()["id"]
     assert editor.get(f"/api/pipeline/runs/{run_id}").status_code == 200
-    assert editor.get(f"/api/pipeline/templates").status_code == 200
+    assert editor.get("/api/pipeline/templates").status_code == 200
     assert editor.get(f"/api/projects/{setup['project_id']}/pipeline/runs"
                       ).json()[0]["id"] == run_id
     assert editor.post(f"/api/pipeline/runs/{run_id}/advance").status_code == 200

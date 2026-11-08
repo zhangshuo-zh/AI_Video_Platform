@@ -28,7 +28,6 @@ from pathlib import Path
 import adapters
 import diskplan
 import error_catalog
-import jobfiles
 from repositories.content import episodes, shots
 from repositories.jobs import jobs as job_repo
 from repositories.production import production
@@ -109,8 +108,6 @@ def audio_status_view() -> dict:
     它们今天连 capability 都没有，透明化的意思是把"没有"这件事也摆到同一张表上，
     而不是让人在界面上找了半天才发现这功能不存在。
     """
-    import runners
-    import services
 
     wired = _audio_wired()
 

@@ -763,7 +763,7 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                 extra["provider"] = receipt
             cancel_request_id = receipt.get("request_id")
             if _cloud_uncertain(job, "cancelled_unconfirmed", cancel_request_id):
-                _write(log, f"状态：needs_attention（取消，但供应商任务可能已建立）")
+                _write(log, "状态：needs_attention（取消，但供应商任务可能已建立）")
                 jobs.needs_attention(
                     job["id"], wid, "cancelled_unconfirmed",
                     f"{exc}；供应商任务可能已建立，请先核对账单再决定是否重试。",

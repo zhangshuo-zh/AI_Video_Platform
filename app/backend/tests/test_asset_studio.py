@@ -259,7 +259,7 @@ def test_文字设定作业排进同一个队列(as_role, studio):
 
     job = job_repo.get(body["job_id"])
     refs = json.loads(job["input_refs_json"])
-    assert f"op:character_profile" in refs
+    assert "op:character_profile" in refs
     assert f"asset:{studio['aid']}" in refs
     # 提示词冻进快照：事后能回答"当时喂了模型什么"
     assert "别写超能力" in job["prompt_snapshot"]
@@ -818,6 +818,8 @@ def test_形态的图可以单独摘掉且文件跟着删(as_role, studio):
     c = as_role("editor")
     first = c.post(f"/api/assets/{aid}/generated-images",
                    json={"job_id": job["id"], "artifact_index": 0, "variant_id": vid})
+    assert first.status_code == 200, first.text
+    assert len(first.json()["ref_images"]) == 1, "第一次导入应当只有一张"
     again = c.post(f"/api/assets/{aid}/generated-images",
                    json={"job_id": job["id"], "artifact_index": 0, "variant_id": vid})
     paths = again.json()["ref_images"]

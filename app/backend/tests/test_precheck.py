@@ -9,7 +9,6 @@
 2. 三档汇总的口径（阻塞优先于警告，警告优先于通过）；
 3. 预检与真实提交/合成的一致性——拿同一条数据两边各跑一次。
 """
-import json
 
 import precheck
 import services

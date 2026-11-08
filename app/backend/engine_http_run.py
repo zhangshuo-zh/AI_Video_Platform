@@ -71,7 +71,6 @@ def main() -> int:
         req = Request(url, data=payload, headers=headers, method="POST")
         with urlopen(req, timeout=float(request.get("timeout") or POLL_HINT)) as resp:
             raw = resp.read()
-            status_code = resp.status
     except HTTPError as exc:
         # 422 是这个服务最有信息量的一种失败：它会把不认识的键原样点名。
         detail = exc.read()[:600].decode("utf-8", "replace") if exc.fp else ""

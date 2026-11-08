@@ -24,7 +24,6 @@ import extraction
 import gitrepo
 import jobfiles
 import reviewgate
-import validations
 from config import (ALLOW_MOCK, DOC_MAX_BYTES, FILES_DIR, LOCK_MINUTES,
                     LOG_SILENCE_SECONDS, QUEUE_STALL_SECONDS, WORKER_MAX_RUNTIME_SECONDS,
                     WORKER_ONLINE_SECONDS)
@@ -36,7 +35,7 @@ from repositories.audio import clips
 # `job_checklist()` 里有个局部变量也叫 `clips`（装这一镜的音频片段，
 # 与仓储同名不同物）；那里用这个别名读**仓储**，避免遮蔽后再回函数内部重复 import。
 from repositories.audio import clips as audio_clips
-from repositories.content import assets, episodes as episode_repo, profiles, shots, variants
+from repositories.content import assets, episodes as episode_repo, shots, variants
 from repositories.dashboard import dashboard
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
@@ -45,7 +44,6 @@ from repositories.model_center import model_center as registration_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from repositories.providers import providers as provider_repo
-from repositories.validation import validations as validation_repo
 from repositories.workbench import workbench as workbench_repo
 from workspace import PathError
 from workspace import atomic_write, path_of, plan_rel_path, read as read_file

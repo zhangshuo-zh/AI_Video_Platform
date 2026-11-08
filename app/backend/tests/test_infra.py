@@ -6,17 +6,14 @@
 import ast
 import re
 import uuid
-from datetime import datetime, timedelta
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 import migrate
 from db import get_conn
-from repositories.projects import projects as project_repo
-from repositories.users import sessions, users as user_repo
-from security import hash_password, new_session_token
+from repositories.users import users as user_repo
+from security import hash_password
 
 BACKEND = Path(__file__).resolve().parents[1]
 FRONTEND = BACKEND.parent / "frontend"
@@ -57,8 +54,6 @@ def test_备份只留最近五份且带走_sidecar(tmp_path, monkeypatch):
     """老代码用 glob('.bak-*') 数份数，把 -wal/-shm 也当成独立备份：
     于是"保留 5 份"实际只留两三份真备份，而被删备份的 sidecar 永远清不掉。"""
     db = tmp_path / "platform.db"
-    with get_conn() as src:
-        pass
     import sqlite3
     sqlite3.connect(db).close()
     monkeypatch.setattr(migrate, "DB_PATH", db)
@@ -670,7 +665,7 @@ def test_告警标签和后端告警码对齐():
     # 三个视图都不许再自带一份（2026-11-08 拆分后模型中心那份在 models/monitor.js）
     for rel in ("views/generate.js", "views/overview.js", "views/models/monitor.js"):
         src = (FRONTEND / "js" / rel).read_text()
-        assert "alertLabel(" in src, f"{name} 没走唯一出口"
+        assert "alertLabel(" in src, f"{rel} 没走唯一出口"
         assert "const ALERT_CODE" not in src and "const ALERT_LABEL" not in src, \
             f"{rel} 又抄了一份告警标签"
 

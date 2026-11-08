@@ -74,6 +74,7 @@ def test_只重投本机失败的那几镜(as_role, fresh_project):
     eid = episodes.create(pid, "第 1 集")["id"]
     s1, s2, s3 = _shots(c, pid, eid, 3)
     failed = _job(c, pid, eid, s1["id"], status="failed")
+    assert failed["status"] == "failed", "第一条要真的是失败态，否则下面重投就没意义"
     _job(c, pid, eid, s2["id"], status="succeeded")
     _job(c, pid, eid, s3["id"], status="queued", priority=0)
 

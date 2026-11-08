@@ -17,14 +17,12 @@
 """
 import json
 from pathlib import Path
-import os
 import uuid
 
 import pytest
 
 import adapters
 import jobfiles
-import model_center as mc
 import validations
 from repositories.jobs import jobs as job_repo
 from repositories.model_center import RegistrationError, model_center
@@ -257,9 +255,10 @@ def test_标签只从参数表数出来不从模型名猜(as_admin, clean_regist
 
 
 def test_人工声明未核验时不算已验证(as_admin, clean_registrations):
-    rid = as_admin.post("/api/models", json={
+    created = as_admin.post("/api/models", json={
         "capability": "image", "backend": "local", "provider": "mflux",
-        "model_code": "flux1-schnell", "capabilities": ["角色一致性"]}).json()["id"]
+        "model_code": "flux1-schnell", "capabilities": ["角色一致性"]})
+    assert created.status_code == 201, created.text
     item = _item_of(as_admin.get("/api/models").json()["items"], "mflux", "flux1-schnell")
     manual = [t for t in item["tags"] if t["tag"] == "角色一致性"]
     assert manual and manual[0]["source"] == "manual"
@@ -275,9 +274,10 @@ def test_真调用与产物验收之后人工声明才升级(as_admin, clean_reg
         "id": provider_repo.slot("video", "cloud")["id"], "provider": "wan",
         "model": "wan2.7-t2v", "enabled": True, "is_default": False,
         "key_env": "", "notes": ""}])
-    rid = as_admin.post("/api/models", json={
+    created = as_admin.post("/api/models", json={
         "capability": "video", "backend": "cloud", "provider": "wan",
-        "model_code": "wan2.7-t2v", "capabilities": ["首尾帧控制"]}).json()["id"]
+        "model_code": "wan2.7-t2v", "capabilities": ["首尾帧控制"]})
+    assert created.status_code == 201, created.text
     job = _succeeded_cloud_job(fresh_project())
     validations.from_job(job["id"], "real_call", None, "模型中心用例")
     validations.from_job(job["id"], "artifact_review", None, "看过产物", passed="pass")
@@ -910,7 +910,6 @@ def test_三个未登记的状态名说得出缺哪一侧(as_admin):
     `registration_only`／`name_only`）；② 三种行在同一张目录里真的分得开——
     不是换了名字但算出来的还是同一档。
     """
-    import model_center as mc
 
     labels = as_admin.get("/api/models").json()["status_labels"]
     # 旧的三个键一个都不许留：留着就说明还有一条路径在产出旧值
@@ -1000,7 +999,6 @@ def test_非_http_连接方式的实例不假装探过(as_admin):
     """
     import db
     import engines
-    from repositories.engine_instances import engine_instances
 
     # 绕过写入口造一条历史行（写入口已经拒了；这里模拟"当年存进去的"）
     with db.get_conn() as conn:

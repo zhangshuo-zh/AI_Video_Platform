@@ -1,0 +1,37 @@
+# 约束文件：把"验证过的那一代"钉死成确切版本（2026-11-08 补）。
+#
+# 与 requirements.txt 的分工：
+#   requirements.txt  → **范围**（>=X,<Y），说明"允许用哪些"，供人读与升级决策；
+#   constraints.txt   → **快照**（==），说明"这台机器上验证过的是哪几个"，
+#                       用 `-c` 传给 pip / uv，不改变依赖解析的"要什么"，
+#                       只把"能选哪个"收窄到这份清单。
+#
+# 用法：
+#   uv pip install --python .venv/bin/python -c constraints.txt -r requirements.txt
+#   .venv/bin/python -m pip install -c constraints.txt -r requirements.txt
+#
+# 为什么不是 uv.lock：这个仓库没有 uv 可用的 lock 生成环境（venv 由 uv 建但
+# 机器上没装 uv 命令行），而 `constraints.txt` 是 pip 与 uv **都认**的最小交集，
+# 一行命令就能复现，不必引入新的工具链依赖。将来真要上 uv.lock 时，
+# 这份文件可以直接删掉（信息是它的子集）。
+#
+# 更新方式：改完依赖或升级后，跑
+#   .venv/bin/python -m pip freeze | grep -iE '^(fastapi|starlette|pydantic|uvicorn|python-multipart|pytest|httpx)'
+# 把结果贴回来，并在提交信息里写明"在哪个 Python / 哪个平台验证过"。
+
+# ---- 生产依赖 ----
+fastapi==0.162.0
+starlette==1.10.0
+pydantic==2.14.2
+pydantic_core==2.50.2
+uvicorn==0.54.0
+python-multipart==0.0.32
+
+# ---- 上面几条的传递依赖（固定它们才能真的复现）----
+anyio==4.15.1
+typing_extensions==4.16.0
+annotated-types==0.8.0
+
+# ---- 测试/开发依赖 ----
+pytest==9.2.0
+httpx==0.28.1

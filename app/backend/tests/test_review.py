@@ -1,5 +1,4 @@
 """W14：校验器 gate、版本绑定与按锚点签字。"""
-import pytest
 
 import reviewgate
 import services

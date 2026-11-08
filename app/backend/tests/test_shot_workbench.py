@@ -13,8 +13,7 @@ import json
 
 import production
 import services
-from repositories.content import assets as asset_repo, episodes, shots
-from repositories.content import variants as variant_repo
+from repositories.content import assets as asset_repo, shots
 
 # ---------------------------------------------------------------- 建数据
 

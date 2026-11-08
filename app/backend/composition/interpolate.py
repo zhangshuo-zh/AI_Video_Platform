@@ -35,7 +35,6 @@ from config import (COMPOSE_CRF, COMPOSE_PRESET, FFMPEG_BIN, RIFE_MODEL_VERSION)
 from runners import RunnerUnavailable
 
 from composition import validators
-from composition.validators import MediaInvalid
 
 
 class InterpolateUnavailable(Exception):
@@ -111,10 +110,6 @@ def interpolate(video: Path, outputs: Path, job_id: int, target_fps: float,
     if not source_fps:
         raise InterpolateUnavailable(
             f"读不出 {video.name} 的平均帧率，补帧不做")
-    target_frames = max(source_frames or 0,
-                        round((source_frames or 0) * target_fps / source_fps)) \
-        if source_frames else 0
-
     workdir = outputs / ("%s-interp" % job_id)
     frames_dir = workdir / "frames"
     pre = outputs / ("%s-pre-interp.mp4" % job_id)

@@ -29,7 +29,7 @@ import diskplan
 import error_catalog
 import jobfiles
 import services
-from config import COMPOSE_MAX_SHOTS, DISK_MIN_FREE_GB, FFMPEG_BIN, FILES_DIR
+from config import COMPOSE_MAX_SHOTS, FFMPEG_BIN, FILES_DIR
 from db import get_conn, transaction
 from models import JOB_FINISHED, JOB_STATUSES
 from paths import describe as describe_path
@@ -37,7 +37,7 @@ from paths import resolve_within
 from repositories.audio import clips
 from repositories.content import assets, episodes, shots
 from repositories.documents import documents as docs
-from repositories.jobs import (RETRYABLE_JOB_STATUSES, jobs as job_repo,
+from repositories.jobs import (jobs as job_repo,
                                retry_reason)
 from repositories.pipeline import (NODE_ATTENTION, NODE_CANCELLED, NODE_DONE,
                                    NODE_FAILED, NODE_FINAL, NODE_PENDING,

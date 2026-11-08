@@ -754,9 +754,7 @@ def test_付费步骤批准之后才带得动云端确认(as_role, clean_queue, 
     （真调用那一条腿由 mock／假适配器那条用例管）。
     """
     import agents
-    import agent_tools
     import services
-    from models import JobSubmitIn
 
     plan_server.reply = json.dumps([
         {"tool": "text_job_submit",

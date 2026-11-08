@@ -1,3 +1,20 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-python-multipart>=0.0.9
+# 生产依赖：三行就够，但**每一条都要有上界**。
+#
+# 为什么必须有上界（2026-11-08）：原来只有 `>=`。换个时间装机就可能得到
+# 另一个 fastapi / pydantic 大版本——这个项目里 `models.py` 有 121 个
+# Pydantic BaseModel、26 个 `from_row()` classmethod，对 v1/v2 的行为差异
+# 非常敏感（`Field(min_length=...)`、`model_dump()`、校验错误结构都变过）。
+# 上界写在这里，等于把"我们只在验证过的这一代上跑"变成机器可读的事实。
+#
+# 为什么 `pydantic` 要显式写：它原来是**靠 fastapi 传递进来的**——本项目
+# 直接 `from pydantic import BaseModel`（models.py 与 routers/auth.py），
+# 属于直接依赖。传递依赖的版本不受我们控制，也不该由我们猜。
+# 显式声明之后，`pip check` / 依赖冲突排查才有准确的那一行。
+#
+# 当前验证过的组合（app/backend/.venv 实测）：
+#   fastapi 0.162.0 / starlette 1.10.0 / pydantic 2.14.2 /
+#   uvicorn 0.54.0 / python-multipart 0.0.32
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-multipart>=0.0.9,<1
+pydantic>=2.9,<3

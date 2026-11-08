@@ -1,0 +1,51 @@
+# 项目工具链配置（2026-11-08 补）。
+#
+# 为什么补这个文件：仓库有 2.3 万行后端代码、51 个测试文件，此前**没有任何**
+# 静态检查与统一的工具配置——未用导入、死分支、重复字典键、未定义变量
+# （会变成 NameError）只能靠人眼，而人眼已经漏过：`models.py` 的
+# `else row.keys()` 死了很久、`error_catalog.py` 同一个键定义两次导致
+# 前一份文案永远不生效、`test_infra.py` 一条断言里引用了未定义的变量名
+# （真失败时抛 NameError 而不是给出那句话）。这些 ruff 一次全找出来了。
+#
+# **规则集刻意保守**：只开 F（真问题）+ E9/E4/W 里那几个零成本的。
+# 不开 E501（行长度）：本仓大量中文注释与长中文串，字节长度与视觉宽度
+# 不一致，硬套 88/100 会逼出大量无意义折行。等哪天要开，单独一轮处理。
+
+[tool.ruff]
+# 不用默认的 88：本仓注释与文案偏长，行长度规则本来就没开，这里只是个占位。
+line-length = 100
+# 与 `.gitignore` 保持同一批：这些目录下的代码不属于"我们的源码"。
+exclude = [
+    ".venv",
+    "__pycache__",
+    "data",
+    "migrations",
+]
+
+[tool.ruff.lint]
+# F   = pyflakes：未用导入/未用变量/未定义名/重复定义/重复字典键/f-string 无占位
+# E4  = 导入位置（只在 conftest 有豁免，见下）
+# E9  = 语法级错误（必须为 0，否则运行时必崩）
+# W   = 空白类（文件末尾换行等）
+select = ["F", "E4", "E9", "W"]
+ignore = [
+    # F811「重复定义」对 pytest 是**误报**：`from test_pipeline import mock_route`
+    # 之后在测试函数参数里写 `mock_route` 是在**使用**那个夹具，不是重新定义。
+    # ruff 的静态分析看不出 pytest 的注入语义，这类在本仓有 5 处全部是夹具。
+    "F811",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `tests/conftest.py` 必须在**项目模块 import 之前**设置一堆 `FASTVIDEO_*`
+# 环境变量（`config.py` 在模块导入时就把它们读成常量，晚设等于没设）。
+# 于是它天然会有一串 E402「导入不在文件顶部」——那是设计，不是问题。
+"tests/conftest.py" = ["E402"]
+
+[tool.pytest.ini_options]
+# 测试的根目录与 import 路径：`tests/` 里的用例直接 `import main` /
+# `import services`，它们都在 `app/backend/` 下，所以 roots 指向自己。
+testpaths = ["tests"]
+# 不显示第三方库的弃用噪音（`httpx` 那条每次跑都刷一屏）。
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+]

@@ -5,7 +5,6 @@ POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `
 """
 import json
 import mimetypes
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
 from fastapi.responses import FileResponse
@@ -15,10 +14,9 @@ import error_catalog
 import job_state
 import jobfiles
 import services
-from config import WORKER_ONLINE_SECONDS
 from db import get_conn
 from deps import require_permission, require_user
-from models import (CAPABILITIES, JOB_FINISHED, JOB_STATUSES, CostBucket,
+from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                    JobRetryBatchIn,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,

@@ -4,7 +4,6 @@
 一是口径漂（工作台、成片、首页各算各的），二是没样本时给个 0 冒充读数。
 这里把两条口径直接钉在服务函数上，绕过接口的全局项目集合，避免相互污染。
 """
-import pytest
 
 import jobfiles
 import services

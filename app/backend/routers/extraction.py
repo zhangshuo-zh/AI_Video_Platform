@@ -13,7 +13,6 @@ import services
 from deps import require_permission
 from models import (ExtractAcceptIn, ExtractItemOut, ExtractMergeIn, ExtractRejectIn,
                     ExtractRunOut, ExtractSubmitIn)
-from repositories.content import assets
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
 from workspace import PathError

@@ -92,16 +92,28 @@ hash_file() {
   fi
 }
 STAMP=".venv/.requirements.sha256"
-WANT="$(hash_file requirements.txt)"
+# 指纹要覆盖**两个**文件（2026-11-08）：`constraints.txt` 是钉住确切版本的
+# 那一份，只改它（比如回退某个包）同样必须触发重装。原来只算 requirements.txt，
+# 改 constraints 会静默不生效——那种"我明明改了配置却没反应"最难查。
+WANT="$(hash_file requirements.txt)-$(hash_file constraints.txt 2>/dev/null || echo none)"
 
 if [ ! -x .venv/bin/python ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$WANT" ]; then
-  echo "准备 .venv（首次运行或 requirements.txt 变了）..."
+  echo "准备 .venv（首次运行或 requirements/constraints 变了）..."
+  # `-c constraints.txt` 把版本收窄到"验证过的那一代"；文件不存在时退回
+  # 只按 requirements 的范围装（老检出没有这个文件也不该起不来）。
+  if [ -f constraints.txt ]; then
+    CONSTRAINT_ARGS="-c constraints.txt"
+  else
+    CONSTRAINT_ARGS=""
+  fi
   if command -v uv >/dev/null 2>&1; then
     [ -x .venv/bin/python ] || uv venv --python 3.12 .venv
-    uv pip install --python .venv/bin/python -r requirements.txt
+    # shellcheck disable=SC2086  # 这里的展开是故意的：要么空、要么两个词
+    uv pip install --python .venv/bin/python $CONSTRAINT_ARGS -r requirements.txt
   else
     [ -x .venv/bin/python ] || python3 -m venv .venv
-    .venv/bin/python -m pip install -q -r requirements.txt
+    # shellcheck disable=SC2086
+    .venv/bin/python -m pip install -q $CONSTRAINT_ARGS -r requirements.txt
   fi
   # 装成功才写指纹：中途失败时下次还会重试
   printf '%s' "$WANT" > "$STAMP"

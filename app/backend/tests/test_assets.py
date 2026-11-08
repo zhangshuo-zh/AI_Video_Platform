@@ -9,7 +9,6 @@
 """
 import uuid
 
-import pytest
 
 from db import get_conn
 

@@ -105,7 +105,6 @@ def test_协作人不能把项目转走(as_role, people):
                        people['editor']['id'])['id']
     mate = _user('editor')
     as_role('editor').post(f"/api/projects/{pid}/members", json={"user_id": mate['id']})
-    c = as_role('editor')
     tok = mate['id']
     # 用协作人自己的身份打：先给他铸一个会话
     from datetime import datetime, timedelta

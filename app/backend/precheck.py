@@ -32,7 +32,7 @@ import diskplan
 import jobfiles
 import pipeline
 import services
-from config import DISK_MIN_FREE_GB, FFMPEG_BIN
+from config import FFMPEG_BIN
 from composition import subtitles as subtitles_mod
 from composition import timeline as timeline_mod
 from repositories.content import assets, episodes, shots, variants

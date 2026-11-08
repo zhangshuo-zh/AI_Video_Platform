@@ -22,7 +22,6 @@ from config import FFMPEG_BIN
 from repositories.audio import clips as audio_repo
 from repositories.content import episodes, shots
 from repositories.jobs import jobs as job_repo
-from repositories.projects import projects as project_repo
 from db import get_conn
 from repositories.reviews import reviews
 

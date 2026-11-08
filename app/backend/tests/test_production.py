@@ -11,14 +11,12 @@
    但不能进"下一步任务"——`runners.build()` 里没有 tts/music 分支，
    给一个点了必失败的按钮比不写这一阶段更糟。
 """
-import json
 
 import jobfiles
 import production
 import services
-from repositories.content import episodes, shots
+from repositories.content import shots
 from repositories.reviews import reviews
-from repositories.context import context
 from repositories.jobs import jobs as job_repo
 from repositories.projects import projects as project_repo
 
@@ -173,7 +171,9 @@ def test_生产总览九阶段与数字一致(as_role, fresh_project, clean_queu
     pid = fresh_project("editor")
     eid = _episode(c, pid)
     s1 = _shot(c, eid, "第一镜")
-    s2 = _shot(c, eid, "第二镜")
+    # 第二镜**故意不给作业**：这一条要验的是"没有产物的镜头"在统计里怎么算，
+    # 所以它必须存在且空白（s2 只在下面按数量断言里出现）。
+    _s2 = _shot(c, eid, "第二镜")
     _succeeded_video_job(pid, eid, s1["id"])
 
     body = c.get(f"/api/projects/{pid}/production?episode_id={eid}").json()

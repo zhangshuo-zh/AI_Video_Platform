@@ -11,7 +11,6 @@ import time
 
 import pytest
 
-import adapters
 import jobfiles
 import services
 import worker

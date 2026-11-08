@@ -175,7 +175,7 @@ def test_镜头帧率不一致就停下点名(tmp_path, monkeypatch):
 def _clip_at(tmp_path: Path, fps: int) -> Path:
     path = tmp_path / f"clip{fps}.mp4"
     subprocess.run([FFMPEG_BIN, "-hide_banner", "-y", "-f", "lavfi",
-                    "-i", f"color=c=red:s=128x96:d=1", "-r", str(fps),
+                    "-i", "color=c=red:s=128x96:d=1", "-r", str(fps),
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
                    capture_output=True, check=True)
     return path

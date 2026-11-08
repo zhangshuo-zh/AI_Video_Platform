@@ -9,13 +9,10 @@
 可用性（worker 冷启动）五个不同关注点，混进一个"守卫"文件里，
 下次有人改状态机时不会被提醒去跑 SSRF 断言。
 """
-import json
-import pathlib
 import threading
 
 import pytest
 
-import job_state
 import safenet
 from db import get_conn
 from repositories.jobs import jobs as job_repo
@@ -383,3 +380,113 @@ def test_git错误回给前端的文案不含部署机绝对路径(as_role, fres
     detail = str(r.json().get("detail", ""))
     assert ws not in detail, f"部署机路径不该跟着错误出门：{detail}"
     assert "index.lock" in detail, f"脱敏不能把排障信息一起删掉：{detail}"
+
+
+# ---------- 第二批：工具链与静态检查（2026-11-08） ----------
+
+def test_依赖声明齐全且都有上界():
+    """`pydantic` 曾被漏声明（靠 fastapi 传递进来），而 models.py 直接 import 它。
+
+    同时要求**每条都有上界**：只写下界时，换个时间装机可能拿到下一个大版本，
+    121 个 BaseModel 对 v1/v2 差异非常敏感。
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "requirements.txt").read_text(encoding="utf-8")
+    specs = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)(\[[^\]]+\])?(.*)$", line)
+        if m:
+            specs[m.group(1).lower()] = m.group(3)
+
+    for name in ("fastapi", "uvicorn", "python-multipart", "pydantic"):
+        assert name in specs, f"{name} 必须在 requirements.txt 里显式声明"
+        assert "<" in specs[name], f"{name} 必须有上界，现在是 {specs[name]!r}"
+
+
+def test_约束文件的版本与已装版本一致():
+    """`constraints.txt` 是"验证过的那一代"的快照，不能和实际情况脱节。"""
+    import importlib.metadata as md
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pinned = {}
+    for line in (root / "constraints.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or "==" not in line:
+            continue
+        name, ver = line.split("==", 1)
+        pinned[name.strip()] = ver.strip()
+
+    assert pinned, "constraints.txt 里应当有钉住的版本"
+    for name in ("fastapi", "pydantic", "uvicorn", "python-multipart"):
+        assert name in pinned, f"{name} 应当钉在 constraints.txt 里"
+        actual = md.version(name)
+        assert pinned[name] == actual, (
+            f"{name} 约束写的是 {pinned[name]}，实际装的是 {actual}——"
+            "改了依赖就要更新 constraints.txt")
+
+
+def test_静态检查配置存在且规则集说明了理由():
+    """工具配置必须留在仓库里，否则每个人本地的 ruff 行为都不一样。"""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.ruff]" in text
+    assert "select" in text, "要写明开了哪些规则集"
+    # F811 必须被忽略且写明原因（pytest 夹具会被 ruff 误判成重复定义）
+    assert "F811" in text, "pytest 夹具的 F811 误报必须显式忽略"
+
+
+def test_错误目录里没有重复的错误码():
+    """同一个键定义两次时，后一份会静默覆盖前一份——文案永远不生效。
+
+    `upstream_job_missing` 就重复过：104 行那份（写了 technical 依据）
+    被 326 行那份覆盖，人看到的标签和代码里的实际语义对不上。
+    """
+    # CATALOG 是普通 dict，重复键在构造时就已塌陷；这里守的是"以后别再写出重复"。
+    # 做法：重新解析源码里的字面量键，数一遍。
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "error_catalog.py").read_text(encoding="utf-8"))
+    catalog = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict) and len(node.keys) > 50:
+            catalog = node
+            break
+    assert catalog is not None, "没找到错误目录的字典字面量"
+
+    keys = [k.value for k in catalog.keys if isinstance(k, ast.Constant)]
+    dupes = {k for k in keys if keys.count(k) > 1}
+    assert not dupes, f"错误目录里这些码定义了不止一次（后者会静默覆盖前者）：{sorted(dupes)}"
+
+
+def test_测试里不再引用未定义的变量名():
+    """`test_infra.py` 有條断言写成 `f"{name} 没走唯一出口"`，而 name 未定义。
+
+    它平时不会暴露——只有断言真的失败时才抛 NameError，把"哪个文件没走唯一出口"
+    这句话吃掉。ruff 的 F821 一次就找出来了。
+    """
+    import pathlib
+    import subprocess
+    import sys
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select", "F821",
+             "--no-cache", "--output-format=concise", "tests/"],
+            cwd=root, capture_output=True, text=True, timeout=120)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pytest.skip("这台机器没装 ruff（开发依赖，见 requirements-dev.txt）")
+    if proc.returncode not in (0, 1):
+        pytest.skip(f"ruff 跑不起来：{proc.stderr[:200]}")
+    assert "F821" not in proc.stdout, f"测试里有未定义的名字：{proc.stdout[:500]}"

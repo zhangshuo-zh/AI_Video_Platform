@@ -93,7 +93,9 @@ def upload_subtitle(project_id: int, file: UploadFile = File(...),
         suffix = subtitles.check(file.filename or "", content)
     except subtitles.SubtitleInvalid as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
-    rel = jobfiles.save_subtitle(project_id, content[:MAX_SUBTITLE_BYTES], suffix)
+    # 保存的返回值（相对路径）不单独回给前端：`_subtitle_out()` 已经把
+    # 这一集现有的全部字幕列了一遍，多回一条"刚存的那个"是第二份口径。
+    jobfiles.save_subtitle(project_id, content[:MAX_SUBTITLE_BYTES], suffix)
     return _subtitle_out(project_id)
 
 

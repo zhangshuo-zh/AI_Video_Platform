@@ -14,8 +14,6 @@ import services
 import worker
 from db import get_conn
 from repositories.content import assets
-from repositories.documents import documents as docs
-from repositories.extraction import runs as extraction_runs
 from repositories.jobs import jobs as job_repo
 
 SECRET = "sk-w13-test-secret"

@@ -12,7 +12,6 @@ import pathlib
 
 import error_catalog as catalog
 import worker
-from repositories.jobs import jobs as job_repo
 
 # 任务书 §14 列的十二类，按目录标题里的关键词找
 REQUIRED = ["模型不可用", "引擎异常", "Worker 离线", "本地资源不足", "依赖缺失",

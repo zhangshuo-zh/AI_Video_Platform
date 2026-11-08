@@ -3,10 +3,8 @@
 路径按层级走：/api/projects/{id}/episodes → /api/episodes/{id}/shots，
 这样前端拿到的永远是"当前对象下面的东西"，不用自己拼过滤条件。
 """
-import json
 import uuid
 from functools import wraps
-from pathlib import Path
 
 from fastapi import (APIRouter, Depends, File, HTTPException, UploadFile,
                      status as http_status)

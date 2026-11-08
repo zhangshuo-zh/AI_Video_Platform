@@ -14,7 +14,6 @@
 
 全部用仓储层造数据，不打真供应商、不真跑模型。
 """
-import json
 from datetime import datetime, timedelta
 
 import pytest
