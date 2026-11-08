@@ -276,7 +276,9 @@ def test_统一出口之外不许直接调_toJson():
 def test_业务视图不直接拼_url():
     """规格 01-6-6／02 §3.1：前端只用 api.js 一个出口，视图里不该出现 fetch(。"""
     offenders = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         if "fetch(" in f.read_text():
             offenders.append(f.name)
     assert not offenders, f"这些视图绕过了 api.js：{offenders}"
@@ -299,7 +301,9 @@ def test_危险确认不再用原生_confirm():
     """W02-c：删集／删镜／停用账号原来用原生 confirm()，跟两套主题脱节，
     而且"删除"和"知道了"长得一样。现在全站一套 confirmDanger。"""
     hits = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         for n, line in enumerate(f.read_text().split("\n"), 1):
             if re.search(r"(?<![\w.])confirm\s*\(", line) and not line.strip().startswith("//"):
                 hits.append(f"{f.name}:{n}")
@@ -309,7 +313,9 @@ def test_危险确认不再用原生_confirm():
 def test_每张表都在横向滚动容器里():
     """W02-d：卡片是 overflow:hidden，窄屏时列被裁掉又没有滚动条。"""
     offenders = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         text = f.read_text()
         tables = text.count("<table")
         wraps = text.count('class="table-wrap"')
@@ -355,7 +361,9 @@ def test_页内切换器改完导航必须重渲染():
     只有这一处漏，正是"同一个规矩八处各写一遍"的下场，所以钉成文件级判据。
     """
     bad = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         text = f.read_text()
         for m in re.finditer(r"bindSubChips\(", text):
             tail = text[m.start():m.start() + 300]      # 够看完一个箭头函数体
@@ -431,7 +439,8 @@ def test_模型中心的二级页与模块清单一致():
     import re
 
     modules = (FRONTEND / "js" / "modules.js").read_text()
-    view = (FRONTEND / "js" / "views" / "models.js").read_text()
+    # 2026-11-08 拆分后 SUBS 住在 models/shared.js（入口只 import 不声明）。
+    view = (FRONTEND / "js" / "views" / "models" / "shared.js").read_text()
     block = re.search(r"id: 'models'.*?subs: \[([^\]]*)\]", modules, re.S)
     assert block, "modules.js 里找不到模型中心的 subs"
     listed = re.findall(r"'([^']+)'", block.group(1))
@@ -527,7 +536,9 @@ def test_前端枚举表和后端枚举对齐():
     # 锚只认 `million_token`／`second` 这两个不会撞车的键名——`character` 在资产那边
     # 是"人物／角色"的意思，拿它当锚会误报两条正常代码。
     copies = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         for n, line in enumerate(f.read_text().splitlines(), 1):
             if re.search(r"\b(million_token|second):\s*'[^']*[一-鿿]", line):
                 copies.append(f"{f.name}:{n}: {line.strip()[:70]}")
@@ -543,7 +554,9 @@ def test_视图不再自己写第二份状态字典():
     所以扫描整个目录而不是点某几个文件——新页面也会犯同样的错。
     """
     offenders = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         for n, line in enumerate(f.read_text().splitlines(), 1):
             if re.match(r"\s*(queued|starting|needs_attention|cancel_requested):"                          r"\s*(\[|'|\{)", line):
                 offenders.append(f"{f.name}:{n}")
@@ -561,7 +574,9 @@ def test_多久前只有util一处写法():
     守的是"再写一份"这个动作，所以扫整个 views 目录而不是点那两个文件。
     """
     offenders = []
-    for f in (FRONTEND / "js" / "views").glob("*.js"):
+    # 2026-11-08 起 views/ 下还有一层子目录（models/repo.js 等），要一并扫到，
+    # 否则「再写一份 agoText」可以躲进子目录不被发现。
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         for n, line in enumerate(f.read_text().splitlines(), 1):
             if re.search(r"function agoText", line):
                 offenders.append(f"{f.name}:{n} 又定义了一份 agoText")
@@ -569,10 +584,11 @@ def test_多久前只有util一处写法():
                 offenders.append(f"{f.name}:{n} 又手写了一遍相对时间")
     assert not offenders, f"这些行在视图里另写了一份「多久前」：{offenders}"
 
-    # 反向半边：两张 worker 表必须真在调用那一处，不然扫描通过而行为没改
-    for name in ("models.js", "pipeline.js"):
-        text = (FRONTEND / "js" / "views" / name).read_text()
-        assert "agoText(" in text, f"{name} 的 worker 表没用 util.js 那一份 agoText"
+    # 反向半边：两张 worker 表必须真在调用那一处，不然扫描通过而行为没改。
+    # 2026-11-08 拆分后模型中心的运行监控搬到 models/monitor.js。
+    for rel in ("views/models/monitor.js", "views/pipeline.js"):
+        text = (FRONTEND / "js" / rel).read_text()
+        assert "agoText(" in text, f"{rel} 的 worker 表没用 util.js 那一份 agoText"
     util = (FRONTEND / "js" / "util.js").read_text()
     assert "86400" in util, "util.js 的 agoText 没有天这一级，2 天前的行还会念成 66 小时"
 
@@ -651,12 +667,12 @@ def test_告警标签和后端告警码对齐():
     backend = set(_re.findall(r'\{"level": "(?:bad|warn)", "code": "([a-z_]+)"', services_src))
     assert backend, "没在后端找到告警码，说明这条测试的取样方式过期了"
     assert set(table) == backend, f"前端 {sorted(table)} ≠ 后端 {sorted(backend)}"
-    # 三个视图都不许再自带一份
-    for name in ("generate.js", "overview.js", "models.js"):
-        src = (FRONTEND / "js" / "views" / name).read_text()
+    # 三个视图都不许再自带一份（2026-11-08 拆分后模型中心那份在 models/monitor.js）
+    for rel in ("views/generate.js", "views/overview.js", "views/models/monitor.js"):
+        src = (FRONTEND / "js" / rel).read_text()
         assert "alertLabel(" in src, f"{name} 没走唯一出口"
         assert "const ALERT_CODE" not in src and "const ALERT_LABEL" not in src, \
-            f"{name} 又抄了一份告警标签"
+            f"{rel} 又抄了一份告警标签"
 
 
 def test_同视图重绘不重播入场动画():
@@ -795,7 +811,8 @@ def test_模型仓库筛选下拉有不折行的宽度():
     """
     from pathlib import Path
 
-    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views" / "models.js").read_text()
+    # 2026-11-08 拆分后模型仓库的标记住在 models/repo.js
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views" / "models" / "repo.js").read_text()
     css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text()
     assert js.count('class="ctl repo-filter"') == 2, "两个筛选下拉没都带上 repo-filter 类"
     assert ".repo-filter{width:" in css, "没给显式宽度（原生按最短选项算 92px 会折行）"

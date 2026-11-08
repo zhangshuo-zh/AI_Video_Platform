@@ -892,8 +892,9 @@ def test_清单轴上只折一次(as_admin):
     assert payload["axis"] == adapters.MANIFEST_AXIS
     assert payload["axis"]["remote"] == "local"
     # 折回判据不许在前端再写一遍字面量
+    # 2026-11-08 拆分后 manifestAxis 住在 models/shared.js
     js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
-          / "models.js").read_text()
+          / "models" / "shared.js").read_text()
     assert "=== 'remote' ? 'local'" not in js, "界面还在自己折"
     assert "manifestAxis(" in js
     # 后端也只留一处：路由里不许再出现那个三元表达式
@@ -1074,3 +1075,48 @@ def test_整批覆盖配置有弱版本闸(as_admin, provider_state):
     assert "被别人改过" in r.json()["detail"]
     # ⑤ 冲突时整批一个字节都没写：库里是乙那句，不是我这句
     assert as_admin.get("/api/providers").json()[0]["notes"] == "乙改的"
+
+
+# ---------- 场景骨架：生成中心的提交框要能自己列场景（2026-11-07） ----------
+def test_场景骨架登录即可读且不含建议轨(as_role, seeded):
+    """普通编辑者站在提交框前面，得能列出九个场景——但只该看到"要什么能力"。
+
+    为什么这条值得单独钉：`GET /api/model-policies` 是 system:config，
+    于是生成中心这一格原来只能由管理员口头告诉人填哪个 scene_key。
+    把场景骨架降到登录即可的同时，**建议轨与备用轨必须一起挡住**：
+    那两个字段一旦下发，前端很容易顺手画成"已选中"，而裁定 MC1 是只提示不自动切。
+    """
+    c = as_role("editor")            # 有 job:submit，没有 system:config
+    r = c.get("/api/model-policies/scenes")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    items = body["items"]
+    assert len(items) == 9, f"场景数定死在 0035 种子里，现在是 {len(items)}"
+    keys = {it["scene_key"] for it in items}
+    assert "shot_video" in keys and "storyboard" in keys and "character_variant" in keys
+    shot = next(it for it in items if it["scene_key"] == "shot_video")
+    assert shot["capability"] == "video"
+    assert shot["capability_label"] == "视频"
+    assert shot["required"] == ["文生视频"]
+    # 配置项一个都不许漏出来：这是"骨架"，不是"策略"
+    for forbidden in ("slot_provider", "slot_model", "fallback_provider",
+                      "fallback_model", "preference", "cloud_confirm_required"):
+        assert all(forbidden not in it for it in items), \
+            f"场景骨架把配置项 {forbidden} 发出去了：那会让人以为平台替你选了轨"
+
+
+def test_场景骨架把配不出来与还没配分开(as_admin, clean_registrations):
+    """`character_variant` 要「图生图 + 参考图」，image 轴这一版产不出来。
+
+    两个数在界面上说不同的话：`required_producible=false` 是要改 adapters.py，
+    true 只是还没登记、还没点探测。混成一句"待配置"，人就会对着一个
+    永远点不亮的场景反复配——2026-11-07 审查里四个场景正是这样。
+    """
+    items = as_admin.get("/api/model-policies/scenes").json()["items"]
+    variant = next(it for it in items if it["scene_key"] == "character_variant")
+    assert variant["required_producible"] is False
+    assert set(variant["impossible_required"]) == {"图生图", "参考图"}
+    # 对照组：分镜生成要的两项清单里都产得出来，它只是"还没配"
+    story = next(it for it in items if it["scene_key"] == "storyboard")
+    assert story["required_producible"] is True
+    assert story["impossible_required"] == []
