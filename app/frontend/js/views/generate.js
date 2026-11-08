@@ -35,6 +35,15 @@ const state = {
 };
 let pollTimer = null;
 let searchTimer = null;
+/* 无主作业（所属项目已删除）默认折叠。
+ * 为什么默认可折叠：管理员在「全部项目」视图里，这类行可能占绝大多数——实测
+ * 本地库 16 条作业里 13 条是孤儿（81%），而且它们都是旧作业（入队时间早），
+ * 按"最近入队"倒序排在真正的活上面，把有价值的三条挤到下面去了。
+ *
+ * 但它们**不能删也不能藏死**：迁移 0039 专门把 job.project_id 从
+ * ON DELETE CASCADE 改成 SET NULL，就是为了"删项目别把花过的钱一起抹掉"
+ * （作业是花钱的记录）。所以这里只是**收起来**，一行入口随时展开审计。 */
+let showOrphanJobs = false;
 
 const money = formatMoney;
 
@@ -248,7 +257,11 @@ function costHtml() {
 }
 
 function filtersHtml() {
-  const projectOpts = [`<option value="">全部项目</option>`]
+  // 「无主（项目已删除）」是前端专用哨兵值：后端不认识它，请求时不传 project_id，
+  // 拿到全量后在前端筛出 project_id 为空的那批。为一个纯展示分组去改接口不划算，
+  // 而且那条语义本来就只有管理员拿得到（access.ensure 对 NULL 只放行管理员）。
+  const orphanOpt = `<option value="__orphan__"` + (state.projectId === '__orphan__' ? ' selected' : '') + '>无主（项目已删除）</option>';
+  const projectOpts = [`<option value="">全部项目</option>`, orphanOpt]
     .concat(store.projects.map((p) => `<option value="${p.id}" ${String(p.id) === state.projectId ? 'selected' : ''}>${escapeHtml(p.name)}${p.status === 'archived' ? '（已归档）' : ''}</option>`));
   const statusOpts = [
     ['', '全部状态'], ['queued,starting,running,cancel_requested', '进行中'],
@@ -301,6 +314,8 @@ export default {
           </table>
         </div>
         <div id="gen-empty"></div>
+        <!-- 无主作业（所属项目已删除）的折叠入口：默认收着，一行按钮展开审计 -->
+        <div id="gen-orphan-bar" class="gen-orphan-bar"></div>
       </div>
 
       <div class="card mt-card" >
@@ -429,6 +444,7 @@ export default {
   mount(root) {
     const rows = root.querySelector('#gen-rows');
     const empty = root.querySelector('#gen-empty');
+    const orphanBar = root.querySelector('#gen-orphan-bar');
     const stats = root.querySelector('#gen-stats');
     const alerts = root.querySelector('#gen-alerts');
     const cost = root.querySelector('#gen-cost');
@@ -480,18 +496,43 @@ export default {
       stats.innerHTML = statsHtml();
       alerts.innerHTML = alertsHtml();
       paintError();
+      // 按「有没有所属项目」拆两批：
+      //   有项目的 —— 日常要看的那批，默认全显示；
+      //   无主的   —— 所属项目已删除（迁移 0039 刻意保留的记账记录），
+      //               默认收在列表下方一行入口里，点开才列。
+      // 只有管理员在不筛项目时才拿得到无主作业（后端 access.ensure 对
+      // project_id IS NULL 只放行管理员），所以这里不用再判权限。
+      const live = state.jobs.filter((j) => j.project_id != null);
+      const orphans = state.jobs.filter((j) => j.project_id == null);
+      // 选了「无主（项目已删除）」就只看这一批：这时的列表本来就是审计视图，
+      // 不再折叠，也不用再给一行「点开看」。
+      const auditOnly = state.projectId === '__orphan__';
+      if (auditOnly) showOrphanJobs = true;
+      if (orphanBar) {
+        orphanBar.innerHTML = (orphans.length && !auditOnly) ? `
+          <button class="btn xs" id="gen-orphan-toggle">
+            ${showOrphanJobs ? '收起无主作业'
+              : `另有 ${orphans.length} 条无主作业 · 所属项目已删除（点开看）`}</button>
+          <span class="t-desc">作业与成本账不会随项目删除而消失（迁移 0039 改 SET NULL 就是为了保住这笔账）。
+            它们不进任何项目的成本汇总，也不占日常列表——项目已经不在了，硬算进谁的账都是假账。</span>` : '';
+      }
+      const shown = showOrphanJobs ? state.jobs : live;
       if (state.error) {
         rows.innerHTML = '';
         empty.innerHTML = '';
-      } else if (!state.jobs.length) {
+      } else if (!shown.length) {
         rows.innerHTML = '';
-        empty.innerHTML = emptyHtml();
+        // 只有孤儿作业、又收着的时候，别说「队列是空的」——那是在骗人
+        empty.innerHTML = (orphans.length && !showOrphanJobs)
+          ? emptyBox('这个范围内只有无主作业',
+              `<p>${orphans.length} 条所属项目已删除的作业收在下面，点开看。</p>`)
+          : emptyHtml();
       } else {
         empty.innerHTML = '';
         // 走 animateRows：轮询每 3 秒重画一次，新作业进来、跑完的换状态时，
         // 新行会淡入一次（2px 位移）。没有这层的话整块重绘看着像"屏幕闪了一下
         // 但说不出哪变了"。整批同时播，不逐条错峰。
-        animateRows(rows, () => { rows.innerHTML = state.jobs.map(rowHtml).join(''); }, 'data-job');
+        animateRows(rows, () => { rows.innerHTML = shown.map(rowHtml).join(''); }, 'data-job');
       }
       cost.innerHTML = costHtml();
     }
@@ -507,11 +548,16 @@ export default {
       try {
         const [jobs, costs, worker] = await Promise.all([
           api.jobs({
-            project_id: state.projectId, status: state.status,
+            // __orphan__ 是前端哨兵值，别传给后端（它不认识，会当成项目 id）
+            project_id: state.projectId === '__orphan__' ? '' : state.projectId,
+            status: state.status,
             capability: state.capability, execution_mode: state.mode,
             q: state.q, limit: 100,
           }),
-          api.jobCosts(state.projectId || undefined),
+          // 成本汇总同样不能吃哨兵值：__orphan__ 传给后端会 404，
+          // 而 Promise.all 里一条失败整批失败——那样队列也会跟着空白。
+          // 无主作业不进任何项目的账（迁移 0039 的口径），所以这里传 undefined。
+          api.jobCosts(state.projectId === '__orphan__' ? undefined : (state.projectId || undefined)),
           api.workerStatus(),
         ]);
         state.jobs = jobs;
@@ -1621,7 +1667,17 @@ export default {
     root.querySelector('#gen-refresh')?.addEventListener('click', () => refresh());
     root.querySelector('#gen-project')?.addEventListener('change', (e) => {
       state.projectId = e.target.value;
+      // 切到「无主」时自动展开那批；从「无主」切回别的就收起。
+      // 否则人点了筛选却还看到折叠栏，会以为筛错了。
+      showOrphanJobs = state.projectId === '__orphan__';
       refresh();
+    });
+    // 无主作业的展开/收起。按钮内容是重画出来的，委托绑在容器上，
+    // 免得每轮轮询重绘都要重新绑一次。
+    orphanBar?.addEventListener('click', (e) => {
+      if (!e.target.closest('#gen-orphan-toggle')) return;
+      showOrphanJobs = !showOrphanJobs;
+      paint();
     });
     root.querySelector('#gen-status')?.addEventListener('change', (e) => {
       state.status = e.target.value;

@@ -1374,6 +1374,19 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .job-actions .btn{vertical-align:middle}
 /* 只放一颗按钮时也吃同样的行高，不让这一格比别的格矮 */
 .job-actions{line-height:1}
+
+/* 无主作业（所属项目已删除）的折叠栏。
+   位置在表格下方、卡片内部；空时不占位（:empty 不显示）。
+   与运行监控页「另有 N 个进程已离线」同一套写法：一行按钮 + 一句灰字说明，
+   点开才列——日常视图干净，审计路径不断。 */
+.gen-orphan-bar:empty{display:none}
+.gen-orphan-bar{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding:10px 16px;border-top:1px solid var(--line);
+}
+.gen-orphan-bar .t-desc{flex:1 1 320px;min-width:0}
+
+
 .gen-inline-err{
   display:flex;align-items:center;gap:10px;padding:10px 16px;
   font-size:12px;color:var(--bad);background:var(--bad-soft);
