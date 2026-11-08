@@ -709,3 +709,84 @@ def test_没有样本的读数是_None_而不是_0():
     assert empty.image_avg_sec is None
     assert empty.per_minute_sec is None
     assert empty.samples == 0
+
+
+# ---------- 第五批：models.py 拆成 schemas/ 包（2026-11-08） ----------
+
+def test_models_只是门面不再膨胀():
+    """`models.py` 现在只做 re-export。
+
+    它原来是 2513 行的单文件（172 个定义）。拆成 `schemas/` 后如果没人看着，
+    很容易又往里加东西、重新长成第二个大文件。这条测试守住"它是个门面"这件事。
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "models.py").read_text(encoding="utf-8")
+    body_lines = [ln for ln in text.splitlines()
+                  if ln.strip() and not ln.strip().startswith("#")]
+    assert len(body_lines) < 40, \
+        f"models.py 又长起来了（{len(body_lines)} 行非注释）——新模型请加到 schemas/<域>.py"
+
+
+def test_拆分没有丢任何一个公开名字():
+    """拆分是**纯搬迁**：`from models import X` 必须一个都不能失效。
+
+    这条不是核对某个具体名字，而是核对"门面导出的数量与 schemas 里定义的一致"——
+    将来往 schemas 加了模型却忘了在 `__init__.py` 里 re-export，这里会红。
+    """
+    import ast
+    import pathlib
+
+    import models
+    import schemas
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pkg = root / "schemas"
+    defined = set()
+    for f in pkg.glob("*.py"):
+        if f.name == "__init__.py":
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+                if not node.name.startswith("_"):
+                    defined.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                target = (node.targets[0] if isinstance(node, ast.Assign) else node.target)
+                if isinstance(target, ast.Name) and not target.id.startswith("_"):
+                    defined.add(target.id)
+
+    missing = sorted(n for n in defined if not hasattr(models, n))
+    assert not missing, f"这些名字定义在 schemas 里但 models 门面没导出：{missing}"
+    # __all__ 与实际可导入的一致
+    assert set(schemas.__all__) >= defined, "schemas.__all__ 漏了定义好的名字"
+
+
+def test_schemas_每层都能单独导入():
+    """拆包的价值在于**依赖方向清楚**。任何一个模块单独 import 失败，
+    说明它引了还没就绪的东西——那正是循环依赖的前兆。"""
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    names = sorted(p.stem for p in (root / "schemas").glob("*.py") if p.name != "__init__.py")
+    assert names, "schemas 包是空的？"
+    for name in names:
+        importlib.import_module(f"schemas.{name}")     # 失败会直接抛，不需要断言
+
+
+def test_schemas_的模块划分是有序的():
+    """`enums` 必须是最底层（纯常量，被很多人依赖）。
+
+    它一旦反过来依赖别人，整个包的分层就塌了——`repositories/ordering.py`
+    直接依赖 `models.BACKENDS`，那条路径不能被拖进更深的依赖链。
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "schemas" / "enums.py").read_text(encoding="utf-8"))
+    relative = [n.module for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(".") ]
+    assert not relative, f"enums 不该依赖包内其他模块（会形成环），现在依赖了 {relative}"
