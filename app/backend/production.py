@@ -20,7 +20,6 @@
 """
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
@@ -518,14 +517,9 @@ def project_stats(project_id: int, overview: dict | None = None) -> dict:
     # 一集里每条提示词都新的话，这就是排产的真实成本，不能拿均值一句话糊过去。
     cold_s: list[float] = []
     warm_s: list[float] = []
-    for item in cost["locals"]:
-        try:
-            metrics = json.loads(item.get("resources_json") or "{}")
-        except (ValueError, TypeError):
-            metrics = {}
-        encode = (metrics.get("adapter_metrics") or {}).get("prompt_encode_s")
-        if encode is None:
-            continue
+    # 仓储层已经把 `prompt_encode_s` 单独取出来了（2026-11-08）：
+    # 原来这里要解析每条作业的整块 `resources_json` 才拿到那一个数。
+    for encode in cost["local_encodes"]:
         (cold_s if float(encode) > 1.0 else warm_s).append(float(encode))
     cold_extra_ms = int((sum(cold_s) / len(cold_s) * 1000) -
                         (sum(warm_s) / len(warm_s) * 1000)) if cold_s and warm_s else 0

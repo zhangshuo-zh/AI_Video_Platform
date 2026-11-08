@@ -1,4 +1,5 @@
 import access
+import jobfiles
 
 from db import get_conn
 from repositories.documents import documents as docs
@@ -6,7 +7,7 @@ from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from repositories.workbench import workbench as workbench_repo
 
-from .artifact_review import artifact_version
+from .artifact_review import artifact_version_of_manifest
 from .documents import read_content
 from .errors import ARTIFACT_ANCHOR, WHOLE_DOC_ANCHOR
 
@@ -59,8 +60,14 @@ def _pending_artifacts_for(project_ids: list[int]) -> dict[int, int]:
         return out
     signs_by_job = reviews.signs_by_targets(
         reviews.JOB, [int(r["job_id"]) for r in rows])
-    for job in rows:
-        version = artifact_version(job)
+    # **一次列完所有产物目录**（2026-11-08 基准测出的热点）。
+    # 原来逐条调 `artifact_version(job)`，每条再对每个产物 stat 一次：
+    # 1500 镜那一档实测单次打开首页 **18 000 次文件探测**。
+    # 现在按作业目录分组、每目录一次 `scandir`，把 N 次 stat 压成 1 次目录读。
+    # 摘要口径仍是同一个（`artifact_version_of_manifest`），只是清单来源换了。
+    manifests = jobfiles.artifacts_many([r["result_paths_json"] for r in rows])
+    for job, manifest in zip(rows, manifests):
+        version = artifact_version_of_manifest(manifest)
         signed = any(s["anchor"] == ARTIFACT_ANCHOR and s["base_version"] == version
                      for s in signs_by_job.get(int(job["job_id"]), []))
         if not signed:

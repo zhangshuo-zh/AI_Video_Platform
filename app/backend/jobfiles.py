@@ -125,9 +125,106 @@ def artifacts(result_paths_json: str) -> list[dict]:
         except JobPathError:
             out.append({"path": str(rel), "exists": False, "size": 0})
             continue
-        exists = target.is_file()
-        out.append({"path": str(rel), "exists": exists,
-                    "size": target.stat().st_size if exists else 0})
+        # 一次 `stat()` 就够（2026-11-08）：原来写的是 `is_file()` + `stat()`，
+        # 那是**两次**系统调用（`is_file()` 内部就是一次 `stat` 再看类型）。
+        # 首页工作台一次要跑几千条产物，每次省一次 stat 就是省几千次。
+        # 用 try/except 而不是 `exists()` 判断：文件不在时 `stat()` 抛
+        # FileNotFoundError，比"先问存在再取大小"少一次往返。
+        try:
+            st = target.stat()
+        except OSError:
+            out.append({"path": str(rel), "exists": False, "size": 0})
+            continue
+        out.append({"path": str(rel), "exists": True, "size": st.st_size})
+    return out
+
+
+def artifacts_many(manifests: list[str]) -> list[list[dict]]:
+    """批量版 `artifacts()`：一次列目录，替掉"逐文件 stat"。
+
+    ## 为什么需要它（2026-11-08 基准量出来的）
+
+    首页工作台的「产物待签」要算最近 200 条作业的 `artifact_version()`，
+    每条作业再对它的每条产物做一次 `stat()`。1500 镜那一档实测
+    **单次打开首页 18 000 次文件探测**（`tools/bench_queries.py`）——
+    而这条路径是**每次打开首页都跑**。
+
+    ## 做法
+
+    产物都住在 `JOBS_DIR/<job_id>/outputs/*`，同一个作业的产物在**同一个目录**里。
+    所以每个目录用一次 `os.scandir()` 把名字→大小全读回来，
+    再按路径查表，把 N 次 `stat()` 压成 1 次目录读。
+    `DirEntry.stat()` 在多数文件系统上还能命中 readdir 已经带回来的信息，
+    连一次系统调用都省掉。
+
+    ## 与 `artifacts()` 的关系
+
+    单条版本保留不动（作业详情页只查一条，走目录扫描反而多做一次 listdir）。
+    两条实现共用同一套判据：路径越界/坏 JSON → `exists=False, size=0`。
+    """
+    if not manifests:
+        return []
+
+    # 先解析每条 manifest 的路径，按目录分组
+    parsed: list[list[str]] = []
+    by_dir: dict[str, set[str]] = {}
+    for raw in manifests:
+        try:
+            paths = json.loads(raw or "[]")
+        except ValueError:
+            parsed.append([])
+            continue
+        if not isinstance(paths, list):
+            parsed.append([])
+            continue
+        clean = [str(x).strip().replace("\\", "/") for x in paths]
+        parsed.append(clean)
+        for rel in clean:
+            parts = Path(rel).parts
+            if not rel or rel.startswith("/") or ".." in parts or len(parts) < 2:
+                continue
+            by_dir.setdefault("/".join(parts[:-1]), set()).add(parts[-1])
+
+    # 每个目录读一次
+    sizes: dict[str, dict[str, int]] = {}
+    root = JOBS_DIR.resolve()
+    for reldir, names in by_dir.items():
+        sizes[reldir] = {}
+        try:
+            directory = (root / reldir).resolve()
+        except OSError:
+            continue
+        # 边界复核：目录本身也要落在 JOBS_DIR 里（与 `_resolve` 同一条规则）
+        if not str(directory).startswith(str(root) + os.sep):
+            continue
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    if entry.name in names:
+                        try:
+                            if entry.is_file():
+                                sizes[reldir][entry.name] = entry.stat().st_size
+                        except OSError:
+                            pass
+        except OSError:
+            # 目录不在／没权限：这一组的产物统一按"不在"处理
+            continue
+
+    out: list[list[dict]] = []
+    for clean in parsed:
+        manifest = []
+        for rel in clean:
+            parts = Path(rel).parts
+            if not rel or rel.startswith("/") or ".." in parts or len(parts) < 2:
+                manifest.append({"path": rel, "exists": False, "size": 0})
+                continue
+            reldir = "/".join(parts[:-1])
+            size = sizes.get(reldir, {}).get(parts[-1])
+            if size is None:
+                manifest.append({"path": rel, "exists": False, "size": 0})
+            else:
+                manifest.append({"path": rel, "exists": True, "size": size})
+        out.append(manifest)
     return out
 
 

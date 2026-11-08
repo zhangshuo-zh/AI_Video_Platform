@@ -51,7 +51,8 @@
 
 
 from .artifact_review import (
-    artifact_version, _artifact_anchors, _job_id_of, _job_reviewable, job_review_state,
+    artifact_version,
+    artifact_version_of_manifest, _artifact_anchors, _job_id_of, _job_reviewable, job_review_state,
     job_review_queue, job_checklist, job_checklist_save, job_retry_batch,
     job_review_batch, job_review_sign
 )
@@ -168,6 +169,7 @@ __all__ = [
     "_throughput_for",
     "apply_doc_ai",
     "artifact_version",
+    "artifact_version_of_manifest",
     "audio_clip_view",
     "audio_submit",
     "audio_sync",

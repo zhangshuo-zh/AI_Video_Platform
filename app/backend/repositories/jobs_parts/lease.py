@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from config import WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE
+from config import RESOURCE_CLASSES, WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE
 from db import get_conn
 
 from .common import RESOURCE_CLASS_SQL, _loads
@@ -43,15 +43,36 @@ class JobsLeaseMixin:
             active = {row["cls"]: int(row["n"]) for row in active_rows}
             if sum(active.values()) >= max_global:
                 return None
-            candidates = conn.execute(
+            # **把资源类过滤下推到 SQL**（2026-11-08 基准测出的热点）。
+            #
+            # 原来是 `SELECT id, <cls> FROM job WHERE status='queued'` 全量 fetchall，
+            # 再在 Python 里 `next(...)` 挑第一条——基准实测每轮读 **1003 行**，
+            # 而 worker 轮询是**一秒一次**。积压越多，每秒白读的行越多。
+            #
+            # 改法分两步，都还在同一个 `BEGIN IMMEDIATE` 里：
+            #   ① 先按上面已经查到的 `active` 算出"哪些资源类还有空槽位"；
+            #      一个都没有就直接返回（与原来 `row is None` 同一条出口）。
+            #   ② 只在这些类里 `LIMIT 1` 取一条，排序保持
+            #      `priority DESC, queued_at, id`（与原来完全一致）。
+            #
+            # 为什么要用两个查询而不是一条更聪明的 SQL：`per` 是按类给的字典，
+            # 拼成 `CASE`/`IN` 都可以，但"某一类 quota=0 就别取"这件事在 SQL 里
+            # 要写成 `cls NOT IN (…)`，而 `cls` 本身是个 CASE 表达式，重复展开
+            # 三次既难读也容易写错。分两步的语义与原来逐字对应，更好核对。
+            free_classes = [cls for cls in RESOURCE_CLASSES
+                            if active.get(cls, 0) < int(per.get(cls, 1))]
+            if not free_classes:
+                return None
+            marks = ",".join("?" * len(free_classes))
+            row = conn.execute(
                 f"""SELECT id, {RESOURCE_CLASS_SQL} AS cls
                       FROM job
                      WHERE status = 'queued'
-                     ORDER BY priority DESC, queued_at, id"""
-            ).fetchall()
-            row = next((r for r in candidates
-                        if active.get(r["cls"], 0) < int(per.get(r["cls"], 1))),
-                       None)
+                       AND {RESOURCE_CLASS_SQL} IN ({marks})
+                     ORDER BY priority DESC, queued_at, id
+                     LIMIT 1""",
+                free_classes,
+            ).fetchone()
             if row is None:
                 return None
             cur = conn.execute(

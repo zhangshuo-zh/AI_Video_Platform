@@ -22,7 +22,17 @@ def artifact_version(job) -> str:
     产物被清理、被新一次生成顶掉，摘要就变，界面显示"已失配"，
     不会出现"文件早就没了、页面上还挂着通过"。
     """
-    manifest = jobfiles.artifacts(job["result_paths_json"])
+    return artifact_version_of_manifest(jobfiles.artifacts(job["result_paths_json"]))
+
+
+def artifact_version_of_manifest(manifest: list[dict]) -> str:
+    """由**已算好的产物清单**求摘要。
+
+    单独抽出来是为了让批量路径（首页工作台一次算 200 条）能共用同一套
+    摘要口径：那边先用 `jobfiles.artifacts_many()` 一次列完所有目录，
+    再逐条调本函数。两处口径若各写一遍，就会出现"工作台说没签、详情页说签了"
+    这种最难查的分叉。
+    """
     blob = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 

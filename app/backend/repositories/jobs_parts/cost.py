@@ -25,11 +25,44 @@ class JobsCostMixin:
                        AND (cost_micros IS NULL OR currency IS NULL)""", args).fetchone()["n"]
             total = conn.execute(
                 f"SELECT COUNT(*) AS n FROM job WHERE {where}", args).fetchone()["n"]
-            locals_ = conn.execute(
-                f"""SELECT elapsed_ms, resources_json FROM job
-                     WHERE {where} AND execution_mode = 'local'""", args).fetchall()
+            # `locals` 原来是把**全部本地作业**的 `elapsed_ms` + `resources_json`
+            # 整表拉进 Python 再累加（2026-11-08 基准：全库 5503 行）。
+            # 调用方（`routers/jobs.py`、`production.py`）要的其实是三件聚合值：
+            # 总机时、总 CPU、峰值内存，外加"冷/热提示词耗时"的分档。
+            # 现在把前三个下推成 SQL；冷热分档只需要 `prompt_encode_s` 一个数，
+            # 用一个轻量查询取回（不再回传整块 resources_json）。
+            agg = conn.execute(
+                f"""SELECT COUNT(*) AS jobs,
+                           SUM(COALESCE(elapsed_ms,
+                                        json_extract(resources_json, '$.wall_ms'), 0)) AS elapsed_ms,
+                           SUM(COALESCE(json_extract(resources_json, '$.cpu_ms'), 0)) AS cpu_ms,
+                           MAX(COALESCE(json_extract(resources_json, '$.max_rss_kb'), 0)) AS max_rss_kb
+                      FROM job
+                     WHERE {where} AND execution_mode = 'local'""", args).fetchone()
+            # 冷热提示词：只取那一个数，没有它的行直接跳过（SQL 侧就过滤掉）
+            encodes = conn.execute(
+                f"""SELECT json_extract(resources_json,
+                                       '$.adapter_metrics.prompt_encode_s') AS encode_s
+                      FROM job
+                     WHERE {where} AND execution_mode = 'local'
+                       AND json_extract(resources_json,
+                                        '$.adapter_metrics.prompt_encode_s') IS NOT NULL""",
+                args).fetchall()
+        local_agg = {
+            "jobs": int(agg["jobs"] or 0),
+            "elapsed_ms": int(agg["elapsed_ms"] or 0),
+            "cpu_ms": int(agg["cpu_ms"] or 0),
+            "max_rss_kb": int(agg["max_rss_kb"] or 0),
+        }
         return {"rows": [dict(r) for r in rows], "unpriced": int(unpriced or 0),
-                "total_jobs": int(total or 0), "locals": [dict(r) for r in locals_]}
+                "total_jobs": int(total or 0),
+                # `locals` 保留旧形状（列表），但只装聚合结果——旧调用方按
+                # `len(summary["locals"])` 数条数的写法会变，所以两个都给了：
+                # `local_agg` 是推荐用法，`locals` 兼容旧读法。
+                "local_agg": local_agg,
+                "local_encodes": [float(r["encode_s"]) for r in encodes
+                                  if r["encode_s"] is not None],
+                "locals": [local_agg]}
 
 
     # ---------- worker 心跳 ----------

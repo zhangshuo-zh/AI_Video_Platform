@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -109,13 +110,56 @@ def _connect() -> sqlite3.Connection:
     必须这样做：Python 的 sqlite3 只会为 INSERT/UPDATE 这类 DML 自动开事务，
     CREATE TABLE 走的是自动提交。不手动包一层的话，一个迁移跑到一半失败，
     前面建的表已经落库了，回滚回不去。
+
+    ## 为什么 WAL 要先读再设（2026-11-08，实测出的必现缺陷）
+
+    `PRAGMA journal_mode=WAL` **不是幂等的无副作用操作**：它要对库文件加
+    排他锁才能改写文件头。而 **PRAGMA 不受 `busy_timeout` 保护**——
+    上面那个 `timeout=5.0` 对它是**不生效**的，锁着就直接抛
+    `sqlite3.OperationalError: database is locked`。
+
+    于是「两个进程同时启动」这条真实路径必炸：`main.py` 与 `worker.py`
+    都调 `migrate()`，`run.sh` 拉起 API+worker 正好就是同时启动。
+    基准脚本量出来是 **5 轮 5 次失败**（`tools/bench_queries.py` 里
+    `_probe_migrate_race`），失败点就在这一行。
+
+    改法：**先读回当前模式，已经就是 wal 就什么都不做**。WAL 是**库级持久
+    状态**，写出去了就一直有效——没有理由每个连接都重设一遍。
+    只有真的是新库（或别人把它改回 delete 模式）时才设，此时再加重试兜住
+    并发首次建库那一下争锁。
     """
     conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.isolation_level = None          # 手动事务
-    conn.execute("PRAGMA journal_mode=WAL")
+    _ensure_wal(conn)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _ensure_wal(conn: sqlite3.Connection, *, attempts: int = 5) -> None:
+    """把库切到 WAL 模式；已经是 wal 就跳过。
+
+    读 `PRAGMA journal_mode` 返回一行一列（模式名，小写）。
+    设的时候带重试：并发首次建库时两个进程都要抢那把排他锁，
+    抢不到的那个**不该让整次启动失败**——退避几十毫秒再试即可，
+    因为先到的那一个成功之后库就永久是 wal 了，后来者会直接走"跳过"那条路。
+    """
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    except sqlite3.Error:
+        mode = ""
+    if str(mode or "").lower() == "wal":
+        return
+    delay = 0.02
+    for attempt in range(attempts):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.5)
 
 
 def migrate(*, verbose: bool = True) -> int:
@@ -150,6 +194,25 @@ def migrate(*, verbose: bool = True) -> int:
             # 一个迁移一个事务：这个失败，前面的迁移不受影响，它自己完全回滚
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # **拿到写锁之后再看一眼**（2026-11-08，实测出的必现缺陷）。
+                #
+                # `applied` 是在 BEGIN 之外读的，两个进程同时启动时都读到
+                # 同一份集合，于是都认为这一版还没应用——后一个执行到
+                # `INSERT INTO schema_version` 就撞主键
+                # （`UNIQUE constraint failed: schema_version.version`），
+                # 整次启动失败。基准里 8 轮撞了 2 轮。
+                #
+                # `BEGIN IMMEDIATE` 已经在开头拿到写锁，所以这里的读是
+                # **串行化之后**的事实：如果别人刚应用完这一版，直接跳过
+                # 本轮，不重复执行（重复 CREATE TABLE 也是错）。
+                already = conn.execute(
+                    "SELECT 1 FROM schema_version WHERE version = ?", (version,)
+                ).fetchone()
+                if already is not None:
+                    conn.execute("ROLLBACK")
+                    if verbose:
+                        print(f"跳过 {path.name}（另一个进程已应用）")
+                    continue
                 for statement in _split_statements(path.read_text(encoding="utf-8")):
                     conn.execute(statement)
                 conn.execute(

@@ -1058,3 +1058,183 @@ def test_jobs_门面没有丢模块级常量():
                  "RESOURCE_CLASS_SQL", "COPY_FIELDS", "BILLABLE_WHERE",
                  "JOB_ACTIVE_STATUSES", "RETRYABLE_JOB_STATUSES"):
         assert hasattr(m, name), f"jobs 门面缺 {name}（外部有 import）"
+
+
+# ---------- 第九批：性能四条（2026-11-08） ----------
+
+def test_迁移并发不再失败(app, tmp_path, monkeypatch):
+    """两个进程同时对全新空库 `migrate()` 必须都能成功。
+
+    改之前基准实测 **5 轮 5 次失败**，两条独立窗口：
+      · `_connect()` 的 PRAGMA journal_mode=WAL 并发首次建库争锁
+        （PRAGMA 不受 busy_timeout 保护，timeout=5.0 不生效）
+      · 迁移末尾 INSERT INTO schema_version 撞主键（两进程读到同一份 applied）
+    真实路径：main.py 与 worker.py 都会调 migrate()，run.sh 同时拉起两者。
+    """
+    import pathlib
+    import subprocess
+    import sys
+    import tempfile
+    import shutil
+
+    backend = pathlib.Path(__file__).resolve().parents[1]
+    code = ("import sys;sys.path.insert(0,sys.argv[1]);"
+            "import migrate;migrate.migrate(verbose=False)")
+    failures = 0
+    rounds = 3
+    for _ in range(rounds):
+        d = tempfile.mkdtemp(prefix="fv-test-migrace-")
+        try:
+            env = {**__import__("os").environ, "FASTVIDEO_DB": str(pathlib.Path(d) / "r.db")}
+            procs = [subprocess.Popen([sys.executable, "-c", code, str(backend)],
+                                      env=env, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.PIPE) for _ in range(2)]
+            outs = [p.communicate() for p in procs]
+            bad = [e.decode()[-300:] for p, (o, e) in zip(procs, outs) if p.returncode != 0]
+            if bad:
+                failures += 1
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    assert failures == 0, f"{rounds} 轮并发迁移里有 {failures} 轮失败——启动期竞态回来了"
+
+
+def test_WAL_已经是_wal_时不再重设(app):
+    """`_ensure_wal()` 对已是 wal 的库必须什么都不做。
+
+    WAL 是**库级持久状态**，没有理由每个连接都重设一遍；
+    而重设要对文件加排他锁，正是并发失败的来源。
+    """
+    import sqlite3
+
+    import config
+    from migrate import _ensure_wal
+
+    conn = sqlite3.connect(config.DB_PATH, timeout=5.0)
+    try:
+        # 先确保它是 wal（测试库本来就该是）
+        conn.execute("PRAGMA journal_mode=WAL")
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert str(mode).lower() == "wal"
+        # 再调一次：不应抛异常
+        _ensure_wal(conn)
+        assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+    finally:
+        conn.close()
+
+
+def test_产物清单批量版与单条版结果一致(app, tmp_path, monkeypatch):
+    """`artifacts_many()` 是 `artifacts()` 的批量替代，两者必须逐字段相同。
+
+    首页工作台走批量版（一次 scandir 替掉逐文件 stat）。
+    两条实现若各写一份判据，就会出现"工作台说没签、详情页说签了"的分叉。
+    """
+    import json
+
+    import jobfiles
+
+    jobs_dir = tmp_path / "jobs"
+    monkeypatch.setattr(jobfiles, "JOBS_DIR", jobs_dir)
+    # 造两个作业目录，各两个产物，其中一个不存在
+    for jid in (11, 12):
+        out = jobs_dir / str(jid) / "outputs"
+        out.mkdir(parents=True)
+        (out / "a.mp4").write_bytes(b"x" * 10)
+    (jobs_dir / "12" / "outputs" / "b.mp4").write_bytes(b"y" * 7)
+    manifests = [
+        json.dumps(["11/outputs/a.mp4", "11/outputs/missing.mp4"]),
+        json.dumps(["12/outputs/b.mp4"]),
+        "",                      # 空串（老数据）
+        "not-json",              # 坏 JSON
+        json.dumps(["/etc/passwd"]),        # 绝对路径：必须判不存在
+        json.dumps(["../../etc/passwd"]),   # 上跳：必须判不存在
+    ]
+    single = [jobfiles.artifacts(m) for m in manifests]
+    batched = jobfiles.artifacts_many(manifests)
+    assert single == batched, f"批量版与单条版不一致：\n单条={single}\n批量={batched}"
+
+
+def test_claim_next_资源类过滤下推后挑选结果不变(app, fresh_project, monkeypatch):
+    """下推是**性能改动**，挑选语义必须与"全量 fetchall 再 next"完全等价。
+
+    这条守的正是"改性能顺手改了行为"这类最隐蔽的回归：
+    它用同一份数据、同一个 active 快照，比对两条挑选路径选中的作业。
+    """
+    from config import RESOURCE_CLASSES, WORKER_MAX_PER_RESOURCE
+    from db import get_conn
+    from repositories.jobs_parts.common import RESOURCE_CLASS_SQL
+
+    pid = fresh_project("editor")
+    with get_conn() as conn:
+        conn.execute("DELETE FROM job WHERE status = 'queued'")
+        for cap, prov in (("video", "mock"), ("image", "mock"), ("tts", "mock"),
+                          ("video", "ffmpeg"), ("text", "mock")):
+            conn.execute(
+                """INSERT INTO job (project_id, capability, kind, execution_mode,
+                       provider_code, model_code, adapter_version, prompt_snapshot,
+                       params_json, input_refs_json, status, priority, idempotency_key,
+                       attempt, queued_at, billable_status, created_by, created_at,
+                       updated_at, result_paths_json)
+                   VALUES (?, ?, 'video_local', 'local', ?, 'm', 'v1', 'p', '{}', '[]',
+                           'queued', 1, ?, 1, datetime('now','localtime'),
+                           'not_billable', 1, datetime('now','localtime'),
+                           datetime('now','localtime'), '[]')""",
+                (pid, cap, prov, f"perf-{cap}-{prov}"))
+
+    per = dict(WORKER_MAX_PER_RESOURCE)
+    with get_conn() as conn:
+        active = {r["cls"]: int(r["n"]) for r in conn.execute(
+            f"""SELECT {RESOURCE_CLASS_SQL} AS cls, COUNT(*) AS n FROM job
+                 WHERE status IN ('starting','running','cancel_requested')
+                 GROUP BY cls""")}
+        # 旧实现的挑选逻辑（全量 + next）
+        cands = conn.execute(
+            f"""SELECT id, {RESOURCE_CLASS_SQL} AS cls FROM job
+                 WHERE status = 'queued'
+                 ORDER BY priority DESC, queued_at, id""").fetchall()
+        expected = next((r["id"] for r in cands
+                         if active.get(r["cls"], 0) < int(per.get(r["cls"], 1))), None)
+        # 新实现的下推 SQL（只挑选，不改状态）
+        free = [cls for cls in RESOURCE_CLASSES
+                if active.get(cls, 0) < int(per.get(cls, 1))]
+        got = None
+        if free:
+            marks = ",".join("?" * len(free))
+            row = conn.execute(
+                f"""SELECT id FROM job WHERE status = 'queued'
+                      AND {RESOURCE_CLASS_SQL} IN ({marks})
+                    ORDER BY priority DESC, queued_at, id LIMIT 1""", free).fetchone()
+            got = row["id"] if row else None
+    assert got == expected, f"下推后挑的作业变了：期望 {expected}，实得 {got}"
+
+
+def test_成本账的聚合值与原逐行累加口径一致(app, fresh_project):
+    """`cost_summary` 的三个聚合值改成 SQL 后，口径必须和原来一致。"""
+    import json
+
+    from db import get_conn
+    from repositories.jobs import jobs
+
+    pid = fresh_project("editor")
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO job (project_id, capability, kind, execution_mode,
+                   provider_code, model_code, adapter_version, prompt_snapshot,
+                   params_json, input_refs_json, status, priority, idempotency_key,
+                   attempt, queued_at, billable_status, created_by, created_at,
+                   updated_at, elapsed_ms, resources_json, result_paths_json)
+               VALUES (?, 'video', 'video_local', 'local', 'mock', 'm', 'v1', 'p',
+                       '{}', '[]', 'succeeded', 1, 'cost-口径-1', 1,
+                       datetime('now','localtime'), 'not_billable', 1,
+                       datetime('now','localtime'), datetime('now','localtime'),
+                       1200, ?, '[]')""",
+            (pid, json.dumps({"cpu_ms": 900, "max_rss_kb": 2048,
+                              "adapter_metrics": {"prompt_encode_s": 0.007}})))
+
+    summary = jobs.cost_summary([pid])
+    agg = summary["local_agg"]
+    assert agg["jobs"] == 1
+    assert agg["elapsed_ms"] == 1200
+    assert agg["cpu_ms"] == 900
+    assert agg["max_rss_kb"] == 2048
+    # 冷热分档用的那一个数被单独取出来了
+    assert summary["local_encodes"] == [0.007]

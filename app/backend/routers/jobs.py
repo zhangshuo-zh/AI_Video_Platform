@@ -3,7 +3,6 @@
 POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `worker.py` 进程里。
 这条边界是规格 02 §7.2 的原话：请求接口不得等待模型跑完。
 """
-import json
 import mimetypes
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
@@ -179,23 +178,13 @@ def job_costs(project_id: int | None = None,
             ],
         ))
 
-    local_jobs = len(summary["locals"])
-    elapsed = cpu = peak = 0
-    for row in summary["locals"]:
-        try:
-            res = json.loads(row["resources_json"] or "{}")
-        except ValueError:
-            res = {}
-        if not isinstance(res, dict):
-            res = {}
-        elapsed += int(row["elapsed_ms"] or res.get("wall_ms") or 0)
-        cpu += int(res.get("cpu_ms") or 0)
-        peak = max(peak, int(res.get("max_rss_kb") or 0))
-
+    # 三个数已经由仓储层在 SQL 里聚合好（2026-11-08）：原来是把全部本地作业的
+    # `resources_json` 整表拉进来再在 Python 里累加，全库 5503 行。
+    agg = summary["local_agg"]
     return CostSummaryOut(
         currencies=currencies, unpriced_jobs=summary["unpriced"],
-        local=LocalCostOut(jobs=local_jobs, elapsed_ms=elapsed, cpu_ms=cpu,
-                           max_rss_kb=peak),
+        local=LocalCostOut(jobs=agg["jobs"], elapsed_ms=agg["elapsed_ms"],
+                           cpu_ms=agg["cpu_ms"], max_rss_kb=agg["max_rss_kb"]),
         total_jobs=summary["total_jobs"],
     )
 
