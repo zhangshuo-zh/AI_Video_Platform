@@ -28,8 +28,13 @@
 
   /* 浮层按"离内容多远"分档：卡片只透不糊（背后是固定的极光底，不是滚动内容，
      挂磨砂纯属白付 GPU）；侧栏/顶栏/弹层压在滚动内容上，才需要 blur。 */
-  --panel:rgba(255,255,255,.66);
-  --panel-2:rgba(255,255,255,.5);
+  /* 卡片透明度 .66→.52：那三层极光是这一套主题的名字（"极光玻璃"），
+     但 .66 的白盖上去之后，内容区实际渲染接近纯白/浅灰，极光只在页面最底部
+     露一点边——设计意图被自己盖掉了。降到 .52 让它真的透出来。
+     对比度实测（极光最亮处 #dfe7ff 之上）：正文 16.04、三级文字 5.22，
+     都远在 AA 4.5 之上，不是拿可读性换通透。 */
+  --panel:rgba(255,255,255,.52);
+  --panel-2:rgba(255,255,255,.4);
   --field:#fff;                       /* 输入框与次级按钮的底 */
   --field-hi:#f3f5fa;                 /* 上者悬停 */
   --frost:rgba(250,250,252,.72);      /* 侧栏与顶栏 */
@@ -93,6 +98,11 @@
   --scroll-hi:rgba(30,40,90,.28);
   --avatar-fg:#fff;
   --avatar-grad:linear-gradient(180deg,#93a6bd,#5b6f86);
+  /* 媒体底：视频与图片预览的衬底。它不是主题色，是想让画面自己发亮——
+     深色衬底能压住视频里溢出的亮边，浅色衬底反而显脏。所以两套主题都取近黑，
+     但**必须走令牌**：写死 #000 就等于在「除变量外没有裸颜色」这条规则上留例外，
+     下一处想抄的人就找不到入口。 */
+  --media-bg:#000;
 
   /* 阴影：白边靠 inset 一圈极淡的深色收口，外面才是投影 */
   --sh-1:inset 0 0 0 1px rgba(30,40,90,.035), 0 1px 2px rgba(30,40,90,.05), 0 6px 18px rgba(30,40,90,.055);
@@ -195,6 +205,7 @@
   /* 和 --accent-grad 同一档亮度：头像里是用户名首字，深字压得住；
      原来那枚渐变末端 #8a6516 太暗，深字压上去只有 1.9 */
   --avatar-grad:linear-gradient(180deg,#f0be63,#c98a25);
+  --media-bg:#000;
 
   --sh-1:inset 0 1px 0 rgba(255,255,255,.04), 0 2px 10px rgba(0,0,0,.42);
   --sh-2:inset 0 1px 0 rgba(255,255,255,.05), 0 6px 20px rgba(0,0,0,.5);
@@ -264,20 +275,26 @@ body{
 /* 项目切换器已挪到顶栏面包屑（见下方 .proj-pick / .proj-menu），
    侧栏这里原来那套常驻 select 的样式整块删掉。 */
 
-.nav{padding:12px 10px;flex:1;overflow:auto}
+.nav{padding:8px 10px 12px;flex:1;overflow:auto;
+  /* 滚动条画细一点，别在窄侧栏里再吃掉 10px 横向宽度 */
+  scrollbar-width:thin;scrollbar-color:var(--scroll) transparent}
 .nav-group{margin-bottom:4px}
 /* 没有二级项的模块不带 .nav-group 外壳（buildNav 直接返回裸项），
    补一条同样的组间距，否则它和下一组会贴得比别处近 */
 .nav > .nav-item{margin-bottom:4px}
 /* 0037 分组导航：一行小标题 + 它下面的模块。标题不可点，所以刻意不做成
    .nav-item 的样子（不描边、不上底、字号更小），否则会被误读成一个页面入口。 */
-.nav-section{margin:0 0 10px}
-.nav-section + .nav-section{margin-top:2px}
-.nav-section-t{padding:8px 10px 4px;font-size:10.5px;font-weight:650;letter-spacing:.06em;
+/* 侧栏在 857px 高的笔记本上原本溢出 90–224px，最后两项（智能体中心／
+   系统设置）得滚动才够得着。这里只压**留白**，不动字号与行高，
+   省出约 90px：section 间距 10→6、标题上下 padding 8/4→4/2、
+   单项 padding 8→6。14 项 ×4px + 5 标题 ×6px + 5 间距 ×4px = 106px。 */
+.nav-section{margin:0 0 6px}
+.nav-section + .nav-section{margin-top:0}
+.nav-section-t{padding:4px 10px 2px;font-size:10.5px;font-weight:650;letter-spacing:.06em;
   color:var(--ink-3);text-transform:none;user-select:none;
 }
 .nav-item{
-  display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:9px;
+  display:flex;align-items:center;gap:12px;padding:6px 10px;border-radius:9px;
   color:var(--ink-2);cursor:pointer;user-select:none;font-size:14px;letter-spacing:-.005em;
   transition:background var(--fast) var(--ease),color var(--fast),transform var(--fast);
 }
@@ -374,8 +391,32 @@ body{
    cursor 只给这一枚——.chip 管状态不带交互（见标签分工那条注），可点性要显式声明。 */
 .mc-attention{cursor:pointer}
 .mc-attention:hover{filter:brightness(.96)}
-.mc-strip .st-caliber{flex:1 1 100%;font-size:11px;color:var(--ink-3);
-  border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+/* 顶部四个数全部点得下去（2026-11-07）：判据是 data-stlink 属性而不是类名——
+   「点得出东西」这件事由 JS 在渲染时决定（0 登记的「已登记」不给属性），
+   CSS 只负责"带这个属性的就长个可点的样子"。悬停给下划线不变色：
+   它是 .st 的一部分而不是徽章，变色会和状态徽章抢注意力。 */
+.mc-strip [data-stlink]{cursor:pointer}
+.mc-strip [data-stlink]:hover b{text-decoration:underline}
+/* 四数之间用竖线分开：原来只靠 24px gap，"引擎 15" 与 "任务 0" 容易连读成一串。
+   分界线用伪元素，不额外加 DOM。第一格不加。 */
+.mc-strip .st + .st{position:relative;padding-left:24px}
+.mc-strip .st + .st::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:1px;height:22px;background:var(--line)}
+/* 概览格里那枚行内链接（原来的页头按钮）：贴着数字读，不抢一级位置 */
+.mc-inline-link{appearance:none;border:0;background:none;font:inherit;font-size:11px;
+  color:var(--accent);cursor:pointer;padding:0;margin-left:2px;border-bottom:1px solid transparent}
+.mc-inline-link:hover{border-bottom-color:var(--accent-line)}
+/* 口径说明收进 <details>：默认只占一个词的宽度，点开才读。
+   原来它是横贯整卡的一行 71 字小字，和四个大数抢注意力。 */
+.mc-caliber{flex:0 0 auto;margin-left:auto;font-size:11px;color:var(--ink-3)}
+.mc-caliber>summary{cursor:pointer;list-style:none;padding:2px 8px;border-radius:999px;
+  border:1px solid var(--line);user-select:none;white-space:nowrap}
+.mc-caliber>summary::-webkit-details-marker{display:none}
+.mc-caliber>summary:hover{border-color:var(--line-hover);color:var(--ink-2)}
+.mc-caliber[open]{flex:1 1 100%;margin-left:0;margin-top:8px;padding-top:8px;
+  border-top:1px solid var(--line)}
+.mc-caliber p{margin:6px 0 0;line-height:1.7;max-width:78ch}
+@media (max-width:860px){.mc-caliber{margin-left:0}}
 
 /* 能力轨：默认一槽一行，细节点开才看。
    上一版每槽固定两行，备注带里又塞了清单、参数、备注、密钥四层——
@@ -420,8 +461,17 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
   border-radius:5px;padding:1px 4px;color:var(--ink-2);background:var(--field);
 }
 
-/* 空状态：靠排版撑，不塞插画 */
+/* 空状态：靠排版撑，不塞插画。
+   2026-11-08 撤掉了上一轮加的品牌水印（`.empty::after` 放一张 184px 的品牌图、
+   压在文字之后）。当时想的是"空状态太素，给点品牌感"，实际上：
+   ① 那张图是**人物立绘**，缩到 184px 只剩一团形状，认不出是谁；
+   ② 它和上方标题、下方说明叠在一起，读起来像背景脏了一块而不是水印；
+   ③ 它出现在所有空状态里（资产中心、审核队列、各种"还没有…"），
+      同一团灰影反复出现，反而成了噪音。
+   结论：空状态靠排版与文案撑就够了，不要再加装饰图。 */
 .empty{padding:56px 24px;text-align:center}
+/* 空状态在卡片里时（多数场合）上下留白可以小一点，别把卡片撑得太高 */
+.card .empty{padding:44px 24px}
 .empty-t{font-size:14px;font-weight:600;letter-spacing:-.01em;margin-bottom:6px}
 .empty p{font-size:12.5px;color:var(--ink-3);line-height:1.75;max-width:420px;margin:0 auto 16px}
 .empty-form{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:4px}
@@ -457,7 +507,12 @@ tr.mc-collapsed:hover,tr.mc-offline:hover{background:transparent}
    不然 12.5px 的灰字压在 11.5px 的提示上面，一行里两种字号 */
 .role-pick .t-dim{font-size:11.5px;color:var(--ink-3)}
 .empty .hint{font-size:11.5px;color:var(--ink-3);margin-top:12px;margin-bottom:0}
-.side-foot{border-top:1px solid var(--line);padding:16px 16px;font-size:11.5px;color:var(--ink-2);display:grid;gap:8px;flex:none}
+/* 侧栏底部状态区。上沿那道线原本是硬边框，导航内容被裁在这里时看着像
+   "页面就到这儿了"。现在换成一层向上的渐隐：既把导航与状态分开，
+   又暗示"上面还能滚"，最后几个模块不会被误认为不存在。 */
+.side-foot{position:relative;padding:12px 16px 10px;font-size:11.5px;color:var(--ink-2);display:grid;gap:6px;flex:none}
+.side-foot::before{content:"";position:absolute;left:0;right:0;top:-14px;height:14px;
+  pointer-events:none;background:linear-gradient(to top,var(--frost),transparent)}
 .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .dot.idle{background:var(--dot-idle)}
 /* 指示灯用硬闪，不用呼吸：呼吸是生物感，闪是设备感 */
@@ -573,6 +628,22 @@ main{min-width:0;display:flex;flex-direction:column}
    窄屏那一段本来就把 .right 收成整行宽，这里只补"里面可以再折一行"。 */
 .page-head .right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
+
+/* ---------- 间距语义类 ----------
+ * 2026-11-08：把散落在 JS 模板里的 style="margin-top:14px" 这类收回来。
+ * 内联间距的问题不是啰嗦——它绕过了「间距只有一个出处」这条原则：
+ * CSS 里有 --sp 刻度（4/8/12/16/24/36）和 .stack/.row 容器，JS 里却另写一套数字，
+ * 改版式时要 grep 十几个文件。名字按**用途**起，不按数值：
+ *   .mt-card    卡片与上一块之间（原来散着 14px/12px 两种）
+ *   .mb-card    卡片与下一块之间
+ *   .flush      段落/列表自身不带边距（原来写作 style="margin:0"）
+ *   .tight      相邻控件之间的紧凑排布（gap:6px）
+ * 数值只有一处定义，将来调版式改这里。 */
+.mt-card{margin-top:14px}
+.mb-card{margin-bottom:14px}
+.flush{margin:0}
+.tight{gap:6px}
+
 .card{
   background:var(--panel);border:1px solid var(--edge);border-radius:var(--r-card);
   box-shadow:var(--sh-1);transition:box-shadow var(--mid) var(--ease);
@@ -584,6 +655,11 @@ main{min-width:0;display:flex;flex-direction:column}
 .card-head .sub{font-size:11.5px;color:var(--ink-3)}
 .card-head .right{margin-left:auto;display:flex;gap:6px;align-items:center}
 .card-body{padding:16px}
+/* 表格卡片的尾部（提示条／脚注／动作按钮）。卡片本身 padding:0——表格要铺满整宽
+   才对齐、悬停底色才不漏出来——所以表格之外的那几行必须自己带内距，
+   否则最后一个按钮会贴着卡片下边框（实测只剩 1px）。 */
+.card-foot{padding:12px 16px 16px;display:grid;gap:10px}
+.card-foot>*{margin:0}
 .grid{display:grid;gap:16px}
 .g-2{grid-template-columns:minmax(0,1.55fr) minmax(0,1fr)}
 .stack{display:grid;gap:16px}
@@ -595,12 +671,27 @@ main{min-width:0;display:flex;flex-direction:column}
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{
-  text-align:left;font-weight:600;color:var(--ink-3);font-size:11.5px;letter-spacing:.03em;padding:10px 16px;border-bottom:1px solid var(--line);background:transparent;white-space:nowrap;
+  text-align:left;font-weight:600;color:var(--ink-3);font-size:11.5px;letter-spacing:.03em;padding:10px 16px;
+  /* 表头与数据行原来同一条 --line，扫十几行时容易串行。
+     抬高到 --line-strong：只差一档透明度，但"这一行是表头"一眼能认出来。 */
+  border-bottom:1px solid var(--line-strong);background:transparent;white-space:nowrap;
 }
-td{padding:10px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+/* 行内距 10→7：模型仓库与生成中心都是一屏扫十几行的表，10px 上下内距
+   在 61px 行高里占掉三分之一。7px 仍留得出呼吸，但一屏多出两行。
+   这是**全局表格**内距，改之前量过两个主表（仓库 61→55、作业 67→61）。 */
+td{padding:7px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr:last-child td{border-bottom:0}
 tbody tr{transition:background var(--fast)}
 tbody tr:hover{background:var(--row-hover)}
+
+/* 所属项目已被删除的作业行（生成中心）。
+   这类行只增不减，一屏排七八条长得一模一样；不藏起来是因为人正要看
+   "哪些作业没了归属"，但也不该和正常作业抢注意力。做法：整行降透明度 +
+   项目名那格加一条短竖线，读起来像"这条挂在空处"。
+   只改视觉，不改可点性——详情、重试、核对都还照常能点。 */
+tbody tr[data-orphan] > td{opacity:.62}
+tbody tr[data-orphan] > td:nth-child(2){box-shadow:inset 2px 0 0 var(--line-strong)}
+tbody tr[data-orphan]:hover > td{opacity:.85}
 tbody tr.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
 #proj-rows tr{cursor:pointer}
 td.r,th.r{text-align:right}
@@ -624,6 +715,10 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    比 1134px 的表格容器宽出 100px 并顶掉最后一列。下拉的可见文字最多十来个字，
    给 200px 足够；选项超长时浏览器自己省略，鼠标停在选项上仍看得全。 */
 .policy select.ctl{max-width:168px}
+/* 模型仓库顶上「全部类型／全部来源」两个筛选：原生 <select> 按最短选项算宽，
+   实测只给 92px，自绘按钮照抄后就折成两行。给足一行文字＋箭头的宽度。 */
+.repo-filter{width:120px;flex:none}
+.fv-pick .repo-filter,.fv-pick-btn{white-space:nowrap}
 /* 健康那句长解释（"环境变量 X 没有值；改完要重启服务"）不在主行显示：
    一句 30 字的话能把一行撑成三层楼，整表就废了。它出现在两处——
    徽章的 title 里，以及点开这一槽后的细节行里。 */
@@ -906,6 +1001,55 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .mod p{font-size:12px;color:var(--ink-2);line-height:1.65}
 .mod .ents{margin-top:10px;font-size:11.5px;color:var(--ink-3);border-top:1px solid var(--line);padding-top:8px}
 
+/* ==========================================================================
+   模块地图看板（2026-11-08 改版）
+
+   原来 9 张一模一样的卡平铺，问题不是「卡片这个形态不好」，而是：
+     · 没有分组 —— 看不出「准备 → 生产 → 交付」的先后
+     · 高度参差 —— 每张卡凭文案长短长得不一样（实测 158/138 两档），像没对齐的砖
+     · 没有状态 —— 看板最该回答「我现在该去哪个模块」，而它什么都没说
+
+   这里三件事一起补：分组标题、活动点、正文限两行。
+   ========================================================================== */
+.mod-board{display:grid;gap:20px}
+.mod-group-t{
+  font-size:10.5px;font-weight:650;letter-spacing:.06em;color:var(--ink-3);
+  margin:0 0 8px;user-select:none;
+  /* 组标题与侧栏的小标题同一套字形，两处说的是同一件事，不该长得不一样 */
+}
+/* 组内卡片：不再 auto-fit 全宽铺开，按组内数量走。
+   minmax(240px,1fr) 让「平台能力」那组 3 张排一行、「工作台」2 张各占一半。 */
+.mod-group .mods{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:stretch}
+/* 同一组里的卡片要等高：正文限两行只管住文本块，但卡片整体高度还受「实体名占几行」影响（有的 1 行、有的 2 行）。让格子拉伸、卡片填满，一排才是真正的一排。 */
+.mod-group .mod{height:100%}
+
+/* 活动点：只看"有/无"，不显示数字（数字在顶部待办卡里已有，不摆第二个出处）。 */
+.mod-dot{
+  display:inline-block;width:6px;height:6px;border-radius:50%;
+  margin-right:7px;vertical-align:2px;
+}
+.mod-dot.live{background:var(--ok);animation:led 1.2s steps(1,end) infinite}
+.mod-dot.idle{background:var(--dot-idle)}
+
+/* 正文限两行：高度齐了，一排看过去才是"一排"。
+   用 -webkit-line-clamp（这台的 Chrome/Safari 都认），没有 fallback 的必要——
+   不支持时只是不限行，退回改版前的样子，不会坏。 */
+.mod p{
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;
+}
+
+/* 技术栈：从模块卡里移出来的一条说明。
+   它不是入口、不可点，之前混在卡里只是被 .static 弱化了一下，仍然误导。 */
+.mod-stack{
+  margin:14px 0 0;padding:10px 14px;font-size:11.5px;color:var(--ink-3);
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-ctl);
+  line-height:1.7;
+}
+.mod-stack code{font-family:var(--mono);font-size:11px}
+
+
+
 /* ---------- 发起运行前的生产前检查 ---------- */
 .pl-pre{margin-top:12px;max-height:220px;overflow:auto;border:1px solid var(--line);
   border-radius:10px;background:var(--panel-2);padding:8px 10px}
@@ -923,7 +1067,12 @@ button.chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
    四格：待签字／失败作业／待核对账单／进行中的运行。数字是主角，所以给 22px；
    标签与出处各降一档。宽屏一行，1080 以下两列，760 以下一列。
    用 <button> 而不是 div：这三格都是"点一下去对应页面"，键盘要能到达。 */
-.wb-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+/* 五张待办卡原来写死四列，第 5 张必然独占一行、右边一大片空白——
+   截图里看着像"缺了一块"。改成按可用宽度自适应：
+   宽屏 5 列排满，窄一点回到 3+2，再窄 2 列、1 列。
+   auto-fit 而不是 auto-fill：卡片数少于列数时不要留空轨道。 */
+.wb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:12px;margin-bottom:16px}
 .wb-card{
   display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:12px 16px;text-align:left;font:inherit;color:inherit;cursor:pointer;
   background:var(--panel);border:1px solid var(--edge);border-radius:var(--r-card);
@@ -1066,6 +1215,22 @@ td input[type="checkbox"],td input[type="radio"]{accent-color:var(--accent);curs
   animation:fade-in .12s var(--ease);
 }
 .modal[hidden]{display:none}
+
+/* 弹窗的退场。
+   打开有 fade-in（遮罩）+ sheet-in（盒子）两层；关闭原来是把 hidden 置上、瞬间消失，
+   跟打开不对称。这里补一条 150ms 的退场：遮罩淡出、盒子同时下移 8px——
+   方向与入口相反，读起来是"收回去"而不是"又淡了一次"。
+
+   怎么触发：.modal 上挂 .closing 类，150ms 后才真正设 hidden。
+   这个类由 util.js 的 closeModal 加，不需要每个调用点各写一遍。 */
+@keyframes fade-out{from{opacity:1}to{opacity:0}}
+@keyframes sheet-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(8px)}}
+.modal.closing{animation:fade-out 150ms var(--ease) forwards;pointer-events:none}
+.modal.closing .modal-box{animation:sheet-out 150ms var(--ease) forwards}
+/* 退场期间盒子顶端那条"上电亮线"不该再跑一遍 */
+.modal.closing .modal-box::after{display:none}
+
+
 .modal-box{
   position:relative;width:452px;background:var(--sheet);border:1px solid var(--edge);border-radius:16px;
   overflow:hidden;box-shadow:var(--sh-pop);animation:sheet-in .18s var(--ease);
@@ -1125,8 +1290,8 @@ p.modal-meta{margin:16px 0 0;font-size:11.5px;line-height:1.7;
     linear-gradient(to right,var(--grid-line) 1px,transparent 1px),
     linear-gradient(to bottom,var(--grid-line) 1px,transparent 1px);
   background-size:46px 46px;
-  -webkit-mask-image:radial-gradient(circle at 50% 42%,#000 0%,transparent 70%);
-  mask-image:radial-gradient(circle at 50% 42%,#000 0%,transparent 70%);
+  -webkit-mask-image:radial-gradient(circle at 50% 42%,var(--media-bg) 0%,transparent 70%);
+  mask-image:radial-gradient(circle at 50% 42%,var(--media-bg) 0%,transparent 70%);
 }
 
 .gate-card{
@@ -1220,6 +1385,27 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .modal-box.wide .modal-actions{flex:none}
 .gen-form{max-width:none}
 .gen-cost{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
+/* 场景候选那一块横跨两列：它长在 form-grid 里（label／控件两列），
+   占单列会被压成一条 80px 宽的窄条。 */
+.gen-scene-panel{grid-column:1/-1;border:1px solid var(--line);border-radius:12px;
+  background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
+.gen-scene-panel[hidden]{display:none}
+/* 预填留痕那一行：紧贴在「槽位」下拉之后（被改动的两个控件旁边），
+   同样横跨两列；左边一道细竖线把它与表单本身分开——它是"刚才发生了什么"，
+   不是表单字段。 */
+.gen-scene-prefill{grid-column:1/-1;border-left:2px solid var(--accent);
+  padding:2px 0 2px 10px;display:grid;gap:4px}
+.gen-scene-prefill[hidden]{display:none}
+.gen-scene-prefill .btn.sm{margin-left:6px}
+.gen-scene-lede{margin:0;line-height:1.7}
+.gen-scene-warn{margin:0;font-size:11.5px;line-height:1.7;color:var(--bad)}
+.gen-scene-table td{white-space:nowrap}
+.gen-scene-table .hint{margin-top:2px}
+/* 「为什么别的不行」折起来：这一段是排查用的长文本，
+   九个场景里常见的四五条挡路原因会把弹窗撑到看不见提交按钮。 */
+.gen-scene-more>summary{cursor:pointer;font-size:11.5px;color:var(--ink-3)}
+.gen-scene-more>ul.hint{margin:6px 0 0;padding-left:16px;line-height:1.7}
+.gen-scene-more>ul.hint li+li{margin-top:4px}
 .cost-inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
 .cost-inputs label{display:grid;gap:4px;font-size:11px;color:var(--ink-3)}
 .cost-inputs label.wide{grid-column:1/-1}
@@ -1274,7 +1460,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .artifact:hover{border-color:var(--accent-line);background:var(--accent-soft)}
 .artifact i{font-style:normal;font-size:11px;color:var(--ink-3);flex:none}
 .artifact-item{display:grid;gap:8px}
-.artifact-video{width:100%;max-height:420px;border-radius:12px;background:#000;
+.artifact-video{width:100%;max-height:420px;border-radius:12px;background:var(--media-bg);
   border:1px solid var(--line)}
 .artifact-image{width:100%;max-height:420px;object-fit:contain;border-radius:12px;
   background:var(--field);border:1px solid var(--line)}
@@ -1396,6 +1582,62 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 }
 
 /* 系统设置里偏好"减少动态效果"的人不少，这条得听 */
+
+/* ==========================================================================
+   动效（2026-11-08 补）
+
+   这一套的语言是**设备感**，不是"柔顺感"：指示灯硬闪、按下 1px 下沉、
+   切页用 clip-path 擦除而不是上浮。所以新加的四条也守同一条：
+   短（120–200ms）、位移小（≤8px）、只做一件事，绝不逐条错峰。
+
+   为什么不做逐行错峰入场：文件里早就写过理由——错峰在慢机器上像多米诺，
+   而且截图会拍到半透明的中间态。这条继续有效，新动效一律整批同时播。
+   ========================================================================== */
+
+/* ① 列表行的进入／离开。
+   用于"任务跑完多了一行、审核队列少了一行"这类变化：原来整块重绘，
+   新行直接出现、旧行直接消失，人眼很难察觉刚才什么变了。
+   位移只给 2px——它是提示"这里变了"，不是表演。 */
+@keyframes row-in{
+  from{opacity:0;transform:translateY(-2px)}
+  to{opacity:1;transform:none}
+}
+@keyframes row-out{
+  from{opacity:1}
+  to{opacity:0;transform:translateY(2px)}
+}
+tr.row-enter{animation:row-in var(--fast) var(--ease)}
+tr.row-leave{animation:row-out var(--fast) var(--ease) forwards}
+
+/* ② 保存成功的回执脉冲：只播一次，不常驻、不循环。
+   原来保存成功只在后台刷一下，人说不出"到底成没成"。 */
+@keyframes save-pulse{
+  0%{box-shadow:0 0 0 0 var(--accent-glow)}
+  60%{box-shadow:0 0 0 6px transparent}
+  100%{box-shadow:0 0 0 0 transparent}
+}
+.btn.save-ok{animation:save-pulse var(--mid) var(--ease)}
+
+/* ④ 进度条上的流动高光：宽条才有，细条上跑光只会显得脏。
+   用已有的 --scan 令牌，不自造一套色。 */
+@keyframes bar-flow{
+  from{transform:translateX(-100%)}
+  to{transform:translateX(100%)}
+}
+.pl-bar i{position:relative;overflow:hidden}
+.pl-bar i::after{
+  content:"";position:absolute;inset:0;background:var(--scan);
+  animation:bar-flow 1.4s linear infinite;
+}
+/* 跑完的进度条不再流光——那会让人以为还在动 */
+.pl-bar.done i::after{display:none}
+
+/* ③ 排序位移：由 view-transition 接管，不需要自定义 keyframes。
+   这里只把"行"标成可参与过渡的元素，时长与曲线跟全站一致。 */
+::view-transition-old(root),
+::view-transition-new(root){animation-duration:0s}
+tr{view-transition-name:none}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0 !important;
     transition-duration:.001ms !important;scroll-behavior:auto !important}
@@ -1433,6 +1675,43 @@ pre.diff.ai{max-height:min(46vh,420px);overflow:auto;margin:6px 0 2px}
 
 @media (max-width:760px){
   .ai-price{grid-template-columns:minmax(0,1fr)}
+}
+
+/* ---------- ≤640px：手机竖屏的一道闸 ----------
+   原来最低断点是 860px，再窄就没有专门的处理，只有 `.table-wrap` 的横向滚动。
+   380px（iPhone 竖屏）上会撞两件事：
+   ① `.form-grid` 是 `max-content minmax(0,1fr)`——字段名那一列按最长的那个
+      撑开，弹窗里"云端调用已确认计费"这种十几个字的标签能把右列压到只剩半格；
+   ② 表格横向滚动时人看不出还有内容（没有滚动提示），
+      且 `.table-wrap` 的 `-webkit-overflow-scrolling` 在老 Safari 上不生效。
+   这一档改成单列：字段名在上、控件占满一行，弹窗内边距与按钮尺寸都收一档。 */
+@media (max-width:640px){
+  /* 单列表单：label 靠左、控件满宽。flex-direction 那一套是给 .pf-row 的，
+     .form-grid 是 grid，必须换列定义而不是换方向 */
+  .form-grid{grid-template-columns:minmax(0,1fr);gap:6px}
+  .form-grid > label,.form-grid > .pf-label{justify-self:start;white-space:normal}
+  .form-grid > label.top,.form-grid > .pf-label.top{padding-top:0}
+  /* 表单项之间的间距别再靠 gap：单列后每对(label,控件)之间要近、每对之间要远 */
+  .form-grid > label + *{margin-top:-2px}
+  /* 弹窗铺满且内边距收一档，380px 上不至于只剩 300px 可用宽度 */
+  .modal{padding:8px}
+  .modal-box{padding:14px;border-radius:12px}
+  .modal-box.wide{max-height:calc(100vh - 16px)}
+  .modal-actions{gap:6px;flex-wrap:wrap}
+  .modal-actions .btn{flex:1 1 auto;justify-content:center}
+  /* 表格：给横向滚动一条可见的边（阴影提示还有内容），并把单元格再收紧一档 */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;background:
+    linear-gradient(to right,var(--panel) 30%,rgba(0,0,0,0)) left center,
+    linear-gradient(to right,rgba(0,0,0,0),var(--panel) 70%) right center;
+    background-repeat:no-repeat;background-size:24px 100%;background-attachment:local,local}
+  th,td{padding:6px 8px}
+  /* 页头与卡片头在 380px 上不要挤成两行：标题一行、操作换行在下 */
+  .page-head h1{font-size:19px}
+  .card-head h2{font-size:14px}
+  /* 概览那条带子是 flex，不是 grid：窄屏让它两列对齐就行 */
+  .mc-strip{gap:4px 16px;padding:10px 12px}
+  .mc-strip .st{font-size:11px}
+  .kv-grid{grid-template-columns:minmax(0,1fr)}
 }
 
 /* ---------- W12：分镜表与资产引用 ---------- */
@@ -1574,7 +1853,7 @@ td.shot-jobs .t-desc{max-width:180px}
  * 状态色继续沿用全局 chip 语义，不另开色板。 */
 .cp-detail .card-body{padding-top:12px}
 .cp-video{display:block;width:100%;max-width:min(100%,760px);margin:0 auto;
-  max-height:min(62vh,560px);background:#000;
+  max-height:min(62vh,560px);background:var(--media-bg);
   border-radius:12px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:contain}
 .cp-meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin-top:10px;font-size:11.5px;color:var(--ink-3)}
 .cp-meta .mono{font-size:11px;overflow-wrap:anywhere;min-width:0}

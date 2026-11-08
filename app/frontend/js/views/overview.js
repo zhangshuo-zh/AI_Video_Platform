@@ -102,12 +102,54 @@ export default {
     if (todoResult.status === 'fulfilled') todo = todoResult.value;
     const w = store.worker;
     const q = w?.queue || { queued: 0, running: 0 };
-    const cards = MODULES.filter((m) => m.id !== 'overview' && !m.utility && !m.hidden).map((m) => `
-        <div class="mod" data-go="${m.id}">
-          <h3>${m.label}</h3>
-          <p>${m.desc}</p>
-          <div class="ents">${m.ents}</div>
-        </div>`).join('');
+    /* ---------------- 模块地图 ----------------
+     * 2026-11-08：从「9 张一模一样的卡平铺」改成「按业务阶段分组的看板」。
+     *
+     * 三个改动，各自解决一个具体问题：
+     *   1. **分组**（用 MODULES 里已有的 group 字段，侧栏也是这一套）：
+     *      9 个平级卡片看不出先后；分组之后「左→右」就是「准备→生产→交付」的流程。
+     *   2. **活动点**：看板最该回答「我现在该去哪个模块」。判据全部来自
+     *      /api/workbench 的 counts（服务端一处算），前端不自己数。
+     *      **只显示「有/无」、不显示数字**：数字在顶部那五张待办卡里已经有了，
+     *      这里再摆一遍就是同一件事两个出处。
+     *      没有对应计数的模块（资产/创作/设定/模型/智能体）不画点——
+     *      画个恒灰的点等于告诉人「它空闲」，而事实是「这一项对它不适用」。
+     *   3. **固定正文行数**：原来每张卡凭文案长短长得不一样（158/138 两档），
+     *      一排看过去像没对齐的砖。CSS 里限两行，高度自然齐。
+     */
+    const c = todo?.counts || {};
+    // 模块 → 它关心的那几个计数。没有键的模块不参与活动判定。
+    const ACTIVITY = {
+      production: () => (c.runs_active || 0),
+      pipeline: () => (c.runs_active || 0),
+      generate: () => (c.jobs_failed || 0) + (c.needs_attention || 0),
+      review: () => (c.review_documents || 0) + (c.review_artifacts || 0),
+      composition: () => (c.signed_ready || 0),
+    };
+    const modCard = (m) => {
+      const probe = ACTIVITY[m.id];
+      const n = probe ? probe() : null;
+      const dot = n === null ? ""
+        : n > 0 ? '<span class="mod-dot live" title="这个模块有在等你的活"></span>'
+                : '<span class="mod-dot idle" title="这个模块现在没有待办"></span>';
+      return ''
+        + '<div class="mod" data-go="' + m.id + '">'
+        + '<h3>' + dot + m.label + '</h3>'
+        + '<p>' + m.desc + '</p>'
+        + '<div class="ents">' + m.ents + '</div>'
+        + '</div>';
+    };
+    // 按 group 分组，组的先后按 MODULES 里第一次出现的顺序（与侧栏一致）
+    const visible = MODULES.filter((m) => m.id !== 'overview' && !m.utility && !m.hidden);
+    const groups = [];
+    visible.forEach((m) => {
+      const g = groups.find((x) => x.key === m.group);
+      if (g) g.items.push(m);
+      else groups.push({ key: m.group, label: m.group_label, items: [m] });
+    });
+    const cards = groups.map((g) => ''
+      + '<div class="mod-group"><div class="mod-group-t">' + g.label + '</div>'
+      + '<div class="mods">' + g.items.map(modCard).join('') + '</div></div>').join('');
 
     // 归档的项目不计进"在产"，但也不藏起来：单独一行摆出来，
     // 否则首页那个数字会让人以为项目被删了
@@ -123,18 +165,17 @@ export default {
 
       ${todoStrip(todo)}
 
-      <div class="mods">
+      <div class="mod-board">
         ${cards}
-        <div class="mod static">
-          <h3>技术栈</h3>
-          <p>FastAPI + SQLite WAL + 静态前端（ES Module，无构建链）。适配器一律 CLI 子进程。</p>
-          <div class="ents">/api 只返回 JSON</div>
-        </div>
       </div>
+      <!-- 技术栈不是模块：它不可点、也不属于任何阶段，混在模块卡里会让人
+           以为它也是个入口。单独一条说明摆在看板下方。 -->
+      <p class="mod-stack">技术栈：FastAPI + SQLite WAL + 静态前端（ES Module，无构建链）；
+        适配器一律 CLI 子进程，<code>/api</code> 只返回 JSON。</p>
 
       ${dashCard(dash, dashErr)}
 
-      <div class="grid g-2" style="margin-top:14px">
+      <div class="grid g-2 mt-card" >
         <div class="card">
           <div class="card-head"><h2>九实体怎么连</h2><span class="sub">主干管属于谁，支线管挂在哪</span></div>
           <div class="card-body">
@@ -208,13 +249,13 @@ export default {
 
 function dashCard(d, err) {
   if (!store.current) {
-    return `<div class="card" style="margin-top:14px"><div class="empty">
+    return `<div class="card mt-card" ><div class="empty">
       <div class="empty-t">还没有当前项目</div>
       <p>去项目中心选一个项目，这里会显示集、镜、作业、成本、审核与音频的实时汇总。</p>
     </div></div>`;
   }
   if (err) {
-    return `<div class="card" style="margin-top:14px"><div class="bar bad">
+    return `<div class="card mt-card" ><div class="bar bad">
       读不到项目看板：${escapeHtml(err.message || String(err))}</div></div>`;
   }
   if (!d) return '';
@@ -224,7 +265,7 @@ function dashCard(d, err) {
   const costs = d.costs.length
     ? d.costs.map((c) => `<span class="chip green">${formatMoney(c.micros, c.currency)} · ${c.jobs} 条</span>`).join(' ')
     : '<span class="t-dim">还没有计入成本的作业</span>';
-  return `<div class="card" style="margin-top:14px">
+  return `<div class="card mt-card" >
     <div class="card-head"><h2>项目看板</h2>
       <span class="sub">${escapeHtml(store.current.name)} · 全部数字从权威表只读聚合</span>
       <div class="right">
