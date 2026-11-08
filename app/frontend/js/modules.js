@@ -27,7 +27,11 @@ export const MODULES = [
   {
     // 0037：项目生产工作台。它是"看进度、给下一步"的一页，不写业务事实——
     // 提交仍在生成中心、签字仍在审核中心，所以它排在项目中心之前但不是任何表的家。
-    id: 'production', label: '项目工作台', icon: 'ic-projects', subs: [],
+    // 项目工作台与项目中心原来共用 ic-projects（同一个文件夹图形），
+    // 侧栏里两个相邻入口长得一模一样，只能靠读字分辨。
+    // 工作台是「一集的进度与下一步」，用带勾选行的看板图形；
+    // 文件夹留给项目中心——那才是管 Project 实体本身的一页。
+    id: 'production', label: '项目工作台', icon: 'ic-board', subs: [],
     group: 'desk', group_label: G.desk, perms: ['project:read'],
     desc: '一个项目、一集的生产进度与下一步任务：九阶段的数字全部现算，'
       + '点一行跳到真正做那件事的页面。这里不建作业、不签字、不合成。',
