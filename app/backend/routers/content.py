@@ -499,15 +499,22 @@ def delete_asset(asset_id: int,
 
 
 @router.post("/assets/{asset_id}/images", response_model=AssetOut)
-async def upload_asset_image(asset_id: int, file: UploadFile = File(...),
-                            user=Depends(require_permission("asset:write"))) -> AssetOut:
+def upload_asset_image(asset_id: int, file: UploadFile = File(...),
+                       user=Depends(require_permission("asset:write"))) -> AssetOut:
+    # 这里是 `def` 而不是 `async def`（2026-11-08，P1）：函数体里除了读上传流，
+    # 还要**同步**写盘（20MB 的 write_bytes）与一次同步 DB 写（add_image，
+    # 最坏要等 5 秒的写锁）。写在 `async def` 里就是把这些阻塞直接压在
+    # 唯一的事件循环上——一次上传期间 `/api/worker/status`、健康检查、
+    # 其它任何 async 请求全在排队。声明成 `def` 之后 FastAPI 会把这个
+    # 端点整体丢进线程池，与 platform 里其余 190+ 个 `def` 端点同一条路。
+    # 代价只是 `await file.read(...)` 变成同步的 `file.file.read(...)`。
     # 全局资产也要能传图／删图，所以走 ensure_asset 而不是 ensure_by("asset")：
     # 后者要绕回项目，而全局资产的 project_id 是 NULL，绕不回去会被错判成 404
     ensure_asset(asset_id, user, "write")
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail="只收 PNG / JPEG / WebP")
 
-    data = await file.read(MAX_IMAGE_BYTES + 1)
+    data = file.file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="图片不能超过 20MB")
     if is_heic(file.content_type, data[:32]):

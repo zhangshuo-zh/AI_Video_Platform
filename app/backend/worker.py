@@ -46,6 +46,7 @@ from pathlib import Path
 import adapters
 import jobfiles
 import agents
+from migrate import migrate
 import pipeline
 import seasons
 from composition import ffmpeg_runner, interpolate
@@ -865,6 +866,13 @@ def main(argv: list[str] | None = None) -> int:
     _install_signals()
     wid = worker_id()
     limits = _limits_from_args(args)
+    # **库要先补到最新**（2026-11-08，P1）。
+    # 原来只有 `main.create_app()` 里调 `migrate()`，于是"只跑 worker 不跑 API"
+    # （`./run.sh worker`，或批处理机）在全新库上会直接崩：下面那句
+    # `ensure_builtin_templates()` 要写 `pipeline_template` 表，表还不存在。
+    # 而且这个异常发生在 while 循环之前、没有任何 try 兜着，进程起不来。
+    # 重复执行是安全的（`migrate()` 自己按 schema_version 幂等）。
+    migrate(verbose=False)
     # 模板表补齐：worker 可能比 API 进程先起来（比如只跑 worker 做批处理），
     # 那时候产线运行照样要能推进，所以两边都调一次；重复调用是空操作。
     pipeline.ensure_builtin_templates()

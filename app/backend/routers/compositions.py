@@ -82,10 +82,13 @@ def list_subtitles(project_id: int, user=Depends(require_permission("job:read"))
 @router.post("/projects/{project_id}/composition-subtitles",
              response_model=SubtitleFileOut,
              status_code=http_status.HTTP_201_CREATED)
-async def upload_subtitle(project_id: int, file: UploadFile = File(...),
-                          user=Depends(require_permission("job:submit"))):
+def upload_subtitle(project_id: int, file: UploadFile = File(...),
+                    user=Depends(require_permission("job:submit"))):
+    # `def` 而不是 `async def`（2026-11-08，P1）：读完之后 `subtitles.check`
+    # 校验与 `jobfiles.save_subtitle` 写盘都是同步阻塞，压在事件循环上会让
+    # 同时其它请求排队。丢给线程池与平台其余端点保持一致。
     access.ensure(user, project_id, "write")
-    content = await file.read(MAX_SUBTITLE_BYTES + 1)
+    content = file.file.read(MAX_SUBTITLE_BYTES + 1)
     try:
         suffix = subtitles.check(file.filename or "", content)
     except subtitles.SubtitleInvalid as exc:

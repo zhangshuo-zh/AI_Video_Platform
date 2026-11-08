@@ -24,6 +24,7 @@ from __future__ import annotations
 import sqlite3
 from urllib.parse import urlparse
 
+import safenet
 from db import get_conn
 
 # 连接方式。**这里有两把，别混用**（2026-11-07 第三批分开）：
@@ -95,6 +96,15 @@ def validate_endpoint(raw: str) -> str:
         raise EngineInstanceError(f"端口 {port} 不合法：只接受 1024—65535")
     if parsed.path not in ("", "/"):
         raise EngineInstanceError(f"endpoint 只写到主机与端口，不要带路径：{parsed.path}")
+    # 第五条规矩（2026-11-08 补）：不许指向云元数据接口。
+    # 本机与局域网是**正常用法**（注释里那三个例子就是 127.0.0.1/192.168.x），
+    # 所以这里不封 loopback/私网，只拒"不可能是一台模型服务"的链路本地地址
+    # 与 metadata 主机名——`engines.probe()` 会照着这个端点发 GET 并把失败原因
+    # 回显给界面，那等于给了一个内网探测口（见 safenet 模块头）。
+    try:
+        safenet.check_url(text)
+    except safenet.UnsafeTarget as exc:
+        raise EngineInstanceError(f"endpoint 指向了平台不予放行的地址：{exc}") from exc
     return text.rstrip("/")
 
 

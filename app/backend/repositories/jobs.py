@@ -11,8 +11,9 @@ import sqlite3
 import uuid
 from datetime import datetime
 
-from db import get_conn
 import job_state
+import jobfiles
+from db import get_conn, transaction
 from config import (RESOURCE_CLASSES, WORKER_MAX_GLOBAL,
                     WORKER_MAX_PER_RESOURCE)
 
@@ -135,6 +136,30 @@ def _require_owned(cur, job_id: int, worker_id: str, terminal: str) -> None:
     """终态 UPDATE 必须恰好命中一行；0 行＝这次收尾不再是它的了。"""
     if cur.rowcount != 1:
         raise JobOwnershipLost(job_id, worker_id, terminal)
+
+
+def _check_terminal(conn, job_id: int, worker_id: str, new_status: str,
+                    terminal: str) -> None:
+    """收尾前的两道前置检查，**先归属、后状态机**，顺序不能反。
+
+    为什么先判归属：一条作业被 `recover_stale()` 收成 failed 之后，原来那个
+    worker 如果还活着并回来写终态，"不是我收的尾"才是真正的原因；
+    此时若先跑状态机，会抛一句"failed 不能直接变 succeeded"——那是把一个
+    归属问题说成了状态问题，排障的人会去翻状态表而不是查租约。
+    `JobOwnershipLost` 是调用方（worker）明确会捕获并安静退出的一类，
+    换了异常类型就会变成一条 internal_error 噪音。
+
+    归属靠 UPDATE 的 `AND worker_id = ?` 保证（写不中就有 `_require_owned`
+    抛 `JobOwnershipLost`），所以这里只需要在**写之前**先用一次轻量读
+    把"明显已经不归我"的情形提前挡掉；真正的拦截仍在写那一步。
+    """
+    row = conn.execute(
+        "SELECT status, worker_id FROM job WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        return
+    if row["worker_id"] != worker_id:
+        raise JobOwnershipLost(job_id, worker_id, terminal)
+    job_state.assert_transition(row["status"], new_status)
 
 
 class JobRepository:
@@ -474,6 +499,7 @@ class JobRepository:
                 resources: dict | None = None,
                 provider_request_id: str | None = None) -> None:
         with get_conn() as conn:
+            _check_terminal(conn, job_id, worker_id, job_state.SUCCEEDED, "succeeded")
             cur = conn.execute(
                 """UPDATE job SET status = 'succeeded', finished_at = datetime('now','localtime'),
                           elapsed_ms = ?, return_code = ?, log_path = ?,
@@ -495,6 +521,7 @@ class JobRepository:
         """失败**不动成本列**：一条云端作业失败时，供应商可能已经计过费；
         这里替人把金额清零，账就再也对不上了（数据字典 §5.3「禁止」）。"""
         with get_conn() as conn:
+            _check_terminal(conn, job_id, worker_id, job_state.FAILED, "failed")
             cur = conn.execute(
                 """UPDATE job SET status = 'failed', finished_at = datetime('now','localtime'),
                           error_code = ?, error_message = ?, log_path = ?,
@@ -522,6 +549,7 @@ class JobRepository:
         用同一条规则。调用方（worker.process）本来就传着自己那一份 wid。
         """
         with get_conn() as conn:
+            _check_terminal(conn, job_id, worker_id, job_state.CANCELLED, "cancelled")
             cur = conn.execute(
                 """UPDATE job SET status = 'cancelled', finished_at = datetime('now','localtime'),
                           error_code = 'cancelled', error_message = ?, log_path = ?,
@@ -545,6 +573,7 @@ class JobRepository:
         由人在详情里核对；核对动作在 `reconcile()`，不自动重投。
         """
         with get_conn() as conn:
+            _check_terminal(conn, job_id, worker_id, job_state.NEEDS_ATTENTION, "needs_attention")
             cur = conn.execute(
                 """UPDATE job SET status = 'needs_attention',
                           finished_at = datetime('now','localtime'),
@@ -584,19 +613,35 @@ class JobRepository:
                         WHERE id = ?""",
                     (row["attention_reason"], (note or "")[:2000], job_id))
             elif decision in ("succeeded", "failed"):
+                # `AND status = 'needs_attention'`（2026-11-08，P0）：两个人几乎
+                # 同时核对同一条时，后写者原来会静默覆盖前者的结论与实际金额，
+                # 账本上"谁核的、核成什么"就不再有唯一答案。带上状态条件之后，
+                # 第二个人这次 UPDATE 命中 0 行，返回的是重读后的行——
+                # 界面能看出"已经被别人核过了"，而不是以为自己的决定生效了。
                 conn.execute(
                     """UPDATE job SET status = ?, actual_cost_micros = ?,
                               billable_status = 'known', reconciled_by = ?,
                               reconciled_at = datetime('now','localtime'),
                               reconcile_note = ?, updated_at = datetime('now','localtime')
-                        WHERE id = ?""",
+                        WHERE id = ? AND status = 'needs_attention'""",
                     (decision, actual_cost_micros, user_id, (note or "")[:2000], job_id))
             else:
                 return row
             return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
 
     def request_cancel(self, job_id: int) -> sqlite3.Row | None:
-        """取消是"请求式"：排队中的当场取消，跑着的只记下意愿。"""
+        """取消是"请求式"：排队中的当场取消，跑着的只记下意愿。
+
+        **两条 UPDATE 都带 `AND status = ...`（2026-11-08，P0）**。
+        原来它们只带 `WHERE id = ?`：取消与 worker 领取交错时，
+        取消方在读到 `queued` 之后、写 `cancelled` 之前，worker 可能已经
+        在 `BEGIN IMMEDIATE` 里把同一条领成 `starting` 并起了子进程；
+        那条无条件 UPDATE 会把状态覆盖回 `cancelled`——DB 说没跑，
+        子进程却在跑模型、占显存，产物还照写 outputs/。
+        带上状态条件之后，这种竞争会让 rowcount=0，本次取消**不生效**、
+        返回的是重读后的真实状态（此时通常已是 starting/running，
+        调用方再点一次取消就会走"记意愿"那一支）。
+        """
         with get_conn() as conn:
             row = conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
             if row is None:
@@ -612,15 +657,19 @@ class JobRepository:
                               billable_status = CASE WHEN execution_mode = 'cloud'
                                                      THEN 'not_billable'
                                                      ELSE billable_status END,
-                              updated_at = datetime('now','localtime') WHERE id = ?""",
+                              updated_at = datetime('now','localtime')
+                        WHERE id = ? AND status = 'queued'""",
                     (job_id,),
                 )
             elif row["status"] in ("starting", "running"):
                 conn.execute(
                     """UPDATE job SET status = 'cancel_requested',
-                              updated_at = datetime('now','localtime') WHERE id = ?""",
+                              updated_at = datetime('now','localtime')
+                        WHERE id = ? AND status IN ('starting','running')""",
                     (job_id,),
                 )
+            # 状态仍以库里为准：竞争失败时这里读到的是别人写进去的那个，
+            # 调用方据此判断"取消请求有没有被记下"。
             return conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
 
     def retry(self, original: sqlite3.Row, created_by: int | None) -> sqlite3.Row:
@@ -641,30 +690,56 @@ class JobRepository:
         cloud = original["execution_mode"] == "cloud"
         billable = "pending_reconciliation" if cloud and original["unit_price_micros"] is not None \
             else "not_billable"
-        with get_conn() as conn:
+        # 整段放进 `transaction()`（`BEGIN IMMEDIATE`，写锁一开始就拿到）：
+        # "有没有已存在的重试行" 与 "插一条新行" 之间不能有窗口，否则两个
+        # 并发重试各看各的、各插一条。`transaction()` 里所有 `get_conn()`
+        # 借用同一条连接，所以下面不需要再开第二个。
+        with transaction() as conn:
+            # **先确认"这一条还没被重试过"，再建新行**（2026-11-08，P1 幂等）。
+            #
+            # 原来是"先 INSERT 新作业、再 UPDATE 原行"，而那条 UPDATE 的条件是
+            # `superseded_by_job_id IS NULL`——它只能阻止**第二次回写**，
+            # 拦不住第二次 INSERT。于是用户对同一条 failed 作业快速双击、或者
+            # 「批量重试」与单条重试并发时，库里会真真切切多出两条 attempt=2
+            # 的排队作业，worker 把两条都领走、跑两遍模型（云端就是两笔钱）。
+            #
+            # `BEGIN IMMEDIATE` 让"查 + 插 + 回写"落在同一个写事务里，
+            # 两个并发的重试因此会串行：后来那一个在 `existing` 这一步就看见
+            # 前一个建好的新行，直接把它返回。用户看到的是"同一条重试"，
+            # 而不是又排了一件活。
+            #
+            # 为什么不用 `superseded_by_job_id = -1` 占位：那一列有
+            # `REFERENCES job(id)` 外键（0020），写一个不存在的 id 会直接
+            # FOREIGN KEY constraint failed。
+            existing = conn.execute(
+                """SELECT * FROM job WHERE retry_of_job_id = ?
+                    ORDER BY id DESC LIMIT 1""",
+                (original["id"],)).fetchone()
+            if existing is not None:
+                return existing
             cur = conn.execute(
                 """INSERT INTO job
-                   (project_id, episode_id, shot_id, capability, kind, execution_mode,
-                    provider_code, model_code, adapter_version, prompt_snapshot,
-                    params_json, input_refs_json, status, priority, idempotency_key,
-                    retry_of_job_id, attempt, user_confirmed_cloud, quantity, unit,
-                    unit_price_micros, cost_micros, currency, pricing_snapshot_json,
-                    billable_status, source_version, created_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (original["project_id"], original["episode_id"], original["shot_id"],
-                 original["capability"], original["kind"], original["execution_mode"],
-                 original["provider_code"], original["model_code"],
-                 original["adapter_version"], original["prompt_snapshot"],
-                 original["params_json"], original["input_refs_json"],
-                 original["priority"], key, original["id"],
-                 int(original["attempt"] or 1) + 1,
-                 original["user_confirmed_cloud"], original["quantity"],
-                 original["unit"], original["unit_price_micros"],
-                 original["cost_micros"], original["currency"],
-                 original["pricing_snapshot_json"], billable,
-                 original["source_version"] if "source_version" in original.keys() else "",
-                 created_by),
-            )
+                       (project_id, episode_id, shot_id, capability, kind, execution_mode,
+                        provider_code, model_code, adapter_version, prompt_snapshot,
+                        params_json, input_refs_json, status, priority, idempotency_key,
+                        retry_of_job_id, attempt, user_confirmed_cloud, quantity, unit,
+                        unit_price_micros, cost_micros, currency, pricing_snapshot_json,
+                        billable_status, source_version, created_by)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (original["project_id"], original["episode_id"], original["shot_id"],
+                     original["capability"], original["kind"], original["execution_mode"],
+                     original["provider_code"], original["model_code"],
+                     original["adapter_version"], original["prompt_snapshot"],
+                     original["params_json"], original["input_refs_json"],
+                     original["priority"], key, original["id"],
+                     int(original["attempt"] or 1) + 1,
+                     original["user_confirmed_cloud"], original["quantity"],
+                     original["unit"], original["unit_price_micros"],
+                     original["cost_micros"], original["currency"],
+                     original["pricing_snapshot_json"], billable,
+                     original["source_version"] if "source_version" in original.keys() else "",
+                     created_by),
+                )
             conn.execute(
                 """UPDATE job SET superseded_by_job_id = ?,
                           updated_at = datetime('now','localtime')
@@ -973,9 +1048,11 @@ class JobRepository:
             oldest = conn.execute(
                 """SELECT MIN(queued_at) AS at FROM job WHERE status = 'queued'"""
             ).fetchone()["at"]
+            # 把 `log_path` 也取出来：`silent_seconds` 必须按**日志文件的 mtime**
+            # 算，不能按 `updated_at`（见下面 running_rows 里的注释）。
             running = conn.execute(
                 """SELECT id, status, project_id, started_at, updated_at, lease_until,
-                          capability, provider_code, model_code, execution_mode
+                          capability, provider_code, model_code, execution_mode, log_path
                      FROM job
                     WHERE status IN ('starting','running','cancel_requested')
                     ORDER BY id"""
@@ -1022,7 +1099,16 @@ class JobRepository:
                 "capability": r["capability"], "provider": r["provider_code"],
                 "model": r["model_code"], "execution_mode": r["execution_mode"],
                 "started_seconds": started,
-                "silent_seconds": age(r["updated_at"]),
+                # **静默秒数按日志文件的 mtime 算，不是 `updated_at`**（2026-11-08）。
+                # `renew()` 每 0.2 秒就把 `updated_at` 刷成 now，所以只要 worker
+                # 活着、`_pump` 还在转，`updated_at` 永远是"刚刚"——拿它判静默，
+                # `log_silent` 告警永远不会触发，而 config 里那句话承诺的正是
+                # "日志多久没有字节增长就提示可能卡住"（模型加载权重卡死不写日志
+                # 是这台机器上真实发生过的形状）。
+                # 日志还没建出来（领取后极早期）时退回 `updated_at`：
+                # 那一刻"多久没动静"确实只能看行更新时间。
+                "silent_seconds": (jobfiles.stat_log(r["log_path"])["silent_seconds"]
+                                   if r["log_path"] else age(r["updated_at"])),
                 "lease_expired": (r["lease_until"] is None
                                   or age(r["lease_until"]) is None
                                   or r["lease_until"] < now.strftime("%Y-%m-%d %H:%M:%S")),

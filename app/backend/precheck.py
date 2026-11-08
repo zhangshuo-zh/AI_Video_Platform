@@ -155,6 +155,34 @@ def _free_gb() -> float | None:
     return round(usage.free / 1024 ** 3, 1) if usage else None
 
 
+def _disk_item(disk: dict, locate: str) -> dict:
+    """磁盘这一项：**空间不够就是阻塞，不只是提醒**（2026-11-08，P1）。
+
+    原来这里是 `WARN if disk_low else PASS`，而 `disk_low` 在
+    "预计还要 12 GB、只剩 3 GB" 的时候也是 True——它只换来一句黄色提醒，
+    `check["blocking"]` 仍为空，发起照走。于是一条作业跑到一半把盘写满，
+    留下的半截产物还要靠 `runners.verify` 的魔数与非空校验事后判 failed。
+    这台机器上磁盘是共享瓶颈（`release_blockers.json` 那条也挂着），
+    所以"明知放不下还放行"不是提醒不够，是没挡住。
+
+    判据分三种，只有第一种是阻塞：
+      * `shortfall_bytes > 0`：按本项目自己的产物样本算，**确实放不下** → BLOCK；
+      * 读不到盘余（`None`）：无法判断 → WARN，不替人拍板说"放得下"；
+      * 只是低于固定提醒线（没有样本可比）：WARN——那是保守的地板，不是结论。
+    """
+    shortfall = disk.get("shortfall_bytes")
+    if shortfall is not None and shortfall > 0:
+        return _item("env.disk", BLOCK,
+                     f"{disk['sentence']} 放不下：按本项目的产物尺寸还差"
+                     f" {shortfall / 1024 ** 3:.1f} GB。先清理 or 换更大的盘再发起",
+                     locate)
+    if disk.get("free_bytes") is None:
+        return _item("env.disk", WARN, disk["sentence"], locate)
+    if disk["free_bytes"] < disk["floor_bytes"]:
+        return _item("env.disk", WARN, disk["sentence"], locate)
+    return _item("env.disk", PASS, disk["sentence"], locate)
+
+
 def _rollup(items: list[dict]) -> dict:
     """三档汇总。`status` 是界面顶部那一枚徽章，不是每项的状态拼字符串。"""
     blocking = sum(1 for i in items if i["level"] == BLOCK)
@@ -288,11 +316,7 @@ def shot_precheck(shot_id: int, *, capability: str = "video",
     # "预计还要约 X GB、还剩 Y GB"——后者才答得出人真正想问的问题。
     _ep = episodes.get(int(shot["episode_id"])) if shot["episode_id"] else None
     disk = diskplan.disk_readout(int(_ep["project_id"]) if _ep else 0, shots_missing=1)
-    disk_low = (disk["free_bytes"] is None
-                or disk["free_bytes"] < max(disk["estimated_need_bytes"],
-                                            disk["floor_bytes"]))
-    items.append(_item("env.disk", WARN if disk_low else PASS,
-                       disk["sentence"], LOCATE["generate"]))
+    items.append(_disk_item(disk, LOCATE["generate"]))
     queued = worker["queue"]["queued"]
     items.append(_item("resource.queue",
                        WARN if queued > 5 else PASS,
@@ -445,11 +469,7 @@ def composition_precheck(project_id: int, episode_id: int,
     # 所以按 `shots_missing=0` 问估算（镜头重生成不在这一步的账里）。
     # 没有样本时退回固定提醒线那句话——两处用同一个 `diskplan.sentence()`。
     disk = diskplan.disk_readout(project_id, shots_missing=0)
-    disk_low = (disk["free_bytes"] is None
-                or disk["free_bytes"] < max(disk["estimated_need_bytes"],
-                                            disk["floor_bytes"]))
-    items.append(_item("env.disk", WARN if disk_low else PASS,
-                       disk["sentence"], LOCATE["composition"]))
+    items.append(_disk_item(disk, LOCATE["composition"]))
 
     out = _rollup(items)
     out["output_plan"] = output_plan

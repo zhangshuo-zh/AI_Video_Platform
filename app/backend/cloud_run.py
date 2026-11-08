@@ -28,6 +28,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import safenet
+
 DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
 DEFAULT_WAN_KEY_ENV = "DASHSCOPE_API_KEY"
 
@@ -90,19 +92,71 @@ def _get_json(url: str, headers: dict, timeout: float):
         return resp.status, dict(resp.headers), json.loads(raw.decode("utf-8") or "{}")
 
 
-def _download(url: str, target: Path, timeout: float) -> int:
-    """视频是签名 URL，不能带 Authorization；只按 URL 取字节。"""
+def _download(url: str, target: Path, timeout: float,
+              max_bytes: int | None = None) -> int:
+    """视频是签名 URL，不能带 Authorization；只按 URL 取字节。
+
+    **这条 URL 来自供应商应答，是外部输入**（2026-11-08 补两道闸）：
+
+    1. 地址校验：不许指向云元数据/链路本地地址、不许是 `file:` 这类非 http(s)
+       scheme。这条挡住"被劫持的应答让 worker 去读宿主内网"的形状。
+       **loopback 与局域网仍然放行**：本机的假 HTTP 服务（测试替身）、
+       内网的对象存储代理都是正常拓扑；真正危险的是链路本地的元数据接口，
+       那是"不用凭据就能读到实例凭据"的一类地址。
+    2. 字节上限：`MAX_DOWNLOAD_BYTES`（默认 2 GiB，可用
+       `FASTVIDEO_CLOUD_MAX_DOWNLOAD_GB` 调）。原来 `while True` 读到
+       流结束，一条无限流或一个 GB 级文件就能把 `data/jobs` 撑爆，
+       而磁盘预检只出 WARN（见 `precheck`）。超限当场抛，
+       由 worker 记成一条明确的 `download_too_large`，不留半截文件。
+    """
+    limit = max_bytes if max_bytes is not None else _max_download_bytes()
+    try:
+        safenet.check_url(url)
+    except safenet.UnsafeTarget as exc:
+        raise _ProviderError("unsafe_download_url", f"视频地址不可信：{exc}") from exc
     req = urllib.request.Request(url, method="GET")
     target.parent.mkdir(parents=True, exist_ok=True)
     size = 0
-    with urllib.request.urlopen(req, timeout=timeout) as resp, target.open("wb") as fh:
-        while True:
-            chunk = resp.read(1024 * 256)
-            if not chunk:
-                break
-            fh.write(chunk)
-            size += len(chunk)
+    # 不跟随重定向：一次 302 就能绕开上面那条地址校验。
+    opener = safenet.opener_without_redirects()
+    try:
+        with opener.open(req, timeout=timeout) as resp, target.open("wb") as fh:
+            declared = resp.headers.get("Content-Length")
+            if declared and declared.isdigit() and int(declared) > limit:
+                raise _ProviderError(
+                    "download_too_large",
+                    f"供应商声明视频有 {int(declared)} 字节，超过上限 {limit}")
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise _ProviderError(
+                        "download_too_large",
+                        f"下载超过上限 {limit} 字节，已中止（可能是无限流或异常大文件）")
+                fh.write(chunk)
+    except _ProviderError:
+        # 半截文件必须收掉：留在 outputs/ 里会被当成"成功产物"再被 ffprobe 验一遍。
+        target.unlink(missing_ok=True)
+        raise
+    except safenet.UnsafeTarget as exc:
+        target.unlink(missing_ok=True)
+        raise _ProviderError("unsafe_download_url", f"视频地址不可信：{exc}") from exc
     return size
+
+
+def _max_download_bytes() -> int:
+    """下载上限：默认 2 GiB，`FASTVIDEO_CLOUD_MAX_DOWNLOAD_GB` 可调（整数 GB）。"""
+    raw = (os.environ.get("FASTVIDEO_CLOUD_MAX_DOWNLOAD_GB") or "").strip()
+    if raw:
+        try:
+            gb = int(raw)
+            if gb > 0:
+                return gb * 1024 ** 3
+        except ValueError:
+            pass
+    return 2 * 1024 ** 3
 
 
 def _http_error(exc: urllib.error.HTTPError, secret: str) -> tuple[int, dict, str]:

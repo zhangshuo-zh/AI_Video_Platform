@@ -1617,12 +1617,22 @@ def retry_node(node_id: int, user_id: int | None) -> dict:
 
     new_job_id = None
     new_status = NODE_PENDING
-    if node["node_type"] in JOB_NODES and node["job_id"]:
-        new_job_id = job_repo.retry(job, user_id)["id"]
-        # 新作业已经排进队列了，节点直接跟着它走；回 pending 会让调度器再提交一条
-        new_status = NODE_RUNNING
-
+    # `job_repo.retry()` 必须与节点回写在**同一个事务**里（2026-11-08，P0）。
+    #
+    # 原来是两段：`retry()` 自己开 `get_conn()` 提交（一条 INSERT 新 queued 作业
+    # ＋ 一条 UPDATE 旧行的 superseded_by_job_id），然后才进 `with transaction()`
+    # 回写节点。进程若死在这两行之间，库里就留下一条**已排队、worker 会照常领走、
+    # 可能真的去调云端并按秒计费、但没有任何节点指向它**的作业——界面上查不到，
+    # 这正是《设计稿》D2 裁定要避免的"没有归属的付费作业"。
+    #
+    # 放进事务里安全，是因为这两步都只是库内写（`retry()` 与 `reset_for_retry()`
+    # 都走 `get_conn()`，会自动借用外层那条连接），没有文件、Git 或网络操作——
+    # 符合 `db.transaction()` 文档写的那条边界。
     with transaction():
+        if node["node_type"] in JOB_NODES and node["job_id"]:
+            new_job_id = job_repo.retry(job, user_id)["id"]
+            # 新作业已经排进队列了，节点直接跟着它走；回 pending 会让调度器再提交一条
+            new_status = NODE_RUNNING
         pipeline_repo.reset_for_retry(node_id, job_id=new_job_id, status=new_status)
         # 已经收尾的运行要重新打开，否则节拍只会对齐真相、不再往下派活
         pipeline_repo.reopen(run["id"])

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from db import get_conn
+from db import get_conn, transaction
 from repositories.projects import touch
 from repositories.reviews import reviews
 
@@ -225,8 +225,16 @@ class DocumentRepository:
 
         自己已经拿着时是续期（刷新页面无所谓、心跳一次一次把 expires_at 推下去）；
         别人拿着且没过期时不动任何东西；过期行直接覆盖（这就是"超时回收"）。
+
+        **整段在一个写事务里（2026-11-08，P1）**。原来是"先 SELECT 判有没有活锁，
+        再 INSERT ... ON CONFLICT DO UPDATE"——两条语句都在 `get_conn()` 的
+        DEFERRED 事务里，两个几乎同时的 `acquire_lock` 都能读到"无活锁"，
+        然后各自的 upsert 都成功，**后写者覆盖 holder，两人都拿到 acquired**，
+        都以为自己持锁，接着各写各的正文。
+        `BEGIN IMMEDIATE` 让后来的那一个在第一句 SELECT 之前就排队等写锁，
+        读到的一定是前一个已经写好的 holder，于是老老实实返回 `held`。
         """
-        with get_conn() as conn:
+        with transaction() as conn:
             current = conn.execute(
                 "SELECT holder_user_id FROM doc_lock WHERE doc_id = ?", (doc_id,)
             ).fetchone()

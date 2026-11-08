@@ -22,6 +22,12 @@ CAPABILITIES: dict[str, str] = {
 
 BACKENDS: dict[str, str] = {"local": "本地", "cloud": "云端"}
 
+# 排序轴比展示轴宽一档：`BACKENDS` 是"作业执行分流"（job.execution_mode，0015 的
+# CHECK 只有 local／cloud），而 `provider_config`／`model_registration` 这两张表
+# 的 `backend` 列收 remote（0035／0045）。`backend_order()` 拿它生成 CASE，
+# 少写 remote 的后果是远程自建那几行在列表里落到 `ELSE`、沉到最后并被当成脏值。
+BACKEND_ORDER: tuple[str, ...] = ("local", "cloud", "remote")
+
 # 计费单位白名单。不做自由文本：单位是给人对账的，
 # "sec"／"秒"／"seconds" 混着存，汇总时就成了三个口径。
 UNITS: dict[str, str] = {
@@ -759,9 +765,17 @@ class ValidationIn(BaseModel):
 
     `artifact_review` 额外要求 `passed`：这一档记的是人看过产物之后的结论，
     通过与否必须明说，服务端不猜、界面不默认。
+
+    **`backend` 收三档（local／cloud／remote），与 0045 的 DDL 一致**。
+    原来这里只认两档，于是 0045 为远程自建扩的 CHECK `IN ('local','cloud','remote')`
+    在 Pydantic 层就被 422 拒掉——DDL 放开的功能被表现层堵死，
+    「远程自建也能留一条 real_call 凭据」那条裁定根本走不到仓储层。
+    注意 `execution_mode`（作业执行分流）仍然是两档：0015/0039 的
+    `job.execution_mode CHECK IN ('local','cloud')` 没放开，remote 登记
+    实际跑起来仍折回本地子进程，两条轴不是一回事，别一起改。
     """
     capability: Literal["text", "image", "video", "tts", "music"]
-    backend: Literal["local", "cloud"]
+    backend: Literal["local", "cloud", "remote"]
     provider: str = Field(default="", max_length=40)
     model: str = Field(default="", max_length=120)
     kind: Literal["env_check", "mock", "real_call", "target_machine", "artifact_review"]

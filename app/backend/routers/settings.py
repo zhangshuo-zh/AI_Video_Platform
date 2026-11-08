@@ -249,6 +249,15 @@ def run_env_validation(payload: ValidationIn,
     if payload.kind != "env_check":
         raise HTTPException(status_code=422,
                             detail="这个入口只做环境检查；真实调用要从一条已成功的作业登记")
+    # `provider_config` 是固定十行（5 类能力 × local／cloud），远程自建那条轴
+    # 不存在这样的"槽位行"：它的环境结论由「模型中心 · 引擎管理」按登记行现查
+    # （本机查不了别人的文件系统 ⇒ unknown）。所以这里对 remote 说清楚去哪儿查，
+    # 不要回一句"这一轨不存在"让人以为是配置坏了。
+    if payload.backend == "remote":
+        raise HTTPException(
+            status_code=422,
+            detail="远程自建没有 provider_config 槽位行；它的环境检查请用"
+                   "「模型中心 · 引擎管理」里那条登记记录上的检查按钮")
     row = providers.slot(payload.capability, payload.backend)
     if row is None:
         raise HTTPException(status_code=422, detail="这一轨不存在")

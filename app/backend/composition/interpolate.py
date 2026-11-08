@@ -160,8 +160,30 @@ def interpolate(video: Path, outputs: Path, job_id: int, target_fps: float,
                 "model_load_s": result.get("model_load_s"),
                 "read_s": result.get("read_s"), "write_s": result.get("write_s")}
     finally:
+        # 收尾的第一件事是**把原片放回去**（2026-11-08，P0 丢产物）。
+        #
+        # 进这一段时 `video` 已经被改名成 `pre`（上面那句 os.replace），
+        # 只有三条成功路径会把它换回来：skipped、正常换 `final`、以及…没有了。
+        # 补帧脚本报错、编码失败、帧率不符、"补帧后编码没有产出文件"——
+        # 这些异常都会走到 finally，而原来的 finally 只做 rmtree + `pre.unlink()`：
+        # 那个**已经合成成功、只是等着补帧**的成片于是被直接删掉，
+        # 作业记 failed，人只能整条合成重跑一遍。
+        # `config.py` 那句"这一道会直接失败，不会退回复制帧"是说自己不悄悄降级，
+        # 不是说可以连原片一起赔进去。
+        #
+        # 判据用"video 不在而 pre 在"：成功路径已经把 video 换回来了，
+        # 这时 pre 也不存在，不会误动。
+        if not video.exists() and pre.is_file():
+            try:
+                os.replace(pre, video)
+            except OSError:
+                # 放不回去就**不要**删 pre（下面那句 unlink 靠 video.exists() 把关）：
+                # 它至少是那条成片的唯一副本，删掉就真的没了。
+                pass
         shutil.rmtree(workdir, ignore_errors=True)
-        if pre.is_file():
+        # 只有在成片确实回到 video 上时才清 pre：movie 已经在了，pre 就是多余的备份；
+        # 成片没回来（上面 replace 失败）时留着它，让人有机会手工捞回来。
+        if video.exists() and pre.is_file():
             try:
                 pre.unlink()
             except OSError:

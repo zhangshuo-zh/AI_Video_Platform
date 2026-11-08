@@ -147,13 +147,31 @@ SEASON_MAX_EPISODES = _env_int("FASTVIDEO_SEASON_MAX_EPISODES", 200)
 # 打开后 API 与 worker 才认识 provider=mock，生产环境不该出现它。
 ALLOW_MOCK = _env_bool("FASTVIDEO_ALLOW_MOCK", False)
 
-# 默认只监听本机；平台要供局域网用时设 FASTVIDEO_HOST=0.0.0.0
-# （一期还没做登录，整个网段都能建项目，别提前暴露）
+# 默认只监听本机。**平台早就做了登录与权限**（见 `deps.require_permission`），
+# 原来那句"一期还没做登录，整个网段都能建项目"是 0010 之前的事实，早已过期——
+# 留着它只会让部署的人以为可以放心把 0.0.0.0 开到公网。真要供局域网使用，
+# 除了这里改地址，还应该把 COOKIE_SECURE 与 SESSION_HOURS 一起复核（见下）。
 HOST = _env("FASTVIDEO_HOST", "127.0.0.1")
 PORT = _env_int("FASTVIDEO_PORT", 8000)
 
 # 登录会话有效期（小时）。到期后要重新登录，库里的行同时失效
 SESSION_HOURS = _env_int("FASTVIDEO_SESSION_HOURS", 12)
+
+# 会话 cookie 是否要求 HTTPS 传输。默认 0＝局域网明文 http 也能用；
+# 一旦把平台挂到 HTTPS/反向代理后面，**必须**设 FASTVIDEO_COOKIE_SECURE=1，
+# 否则 cookie 仍会随明文请求发出去（同网段可嗅探后直接接管会话）。
+COOKIE_SECURE = _env_bool("FASTVIDEO_COOKIE_SECURE", False)
+
+# 是否对外暴露 /api/docs 与 /api/openapi.json。默认关：这两个页面不用登录就能拿到
+# 全部接口清单、参数模型与权限点名称，对"局域网里谁都能打开"的部署是白送的侦察材料。
+# 本机调试需要时设 FASTVIDEO_DOCS=1。
+DOCS_ENABLED = _env_bool("FASTVIDEO_DOCS", False)
+
+# 登录失败限速：同一个"用户名+来源 IP"连续失败 N 次后锁 M 秒。
+# 为什么需要：`/api/auth/login` 是全平台唯一不用登录的入口，没有计数就能一直撞库；
+# 初始口令是随机 16 位不怕，但管理员自建的 6 位口令挡不住在线爆破。
+LOGIN_MAX_FAILS = _env_int("FASTVIDEO_LOGIN_MAX_FAILS", 5)
+LOGIN_LOCK_SECONDS = _env_int("FASTVIDEO_LOGIN_LOCK_SECONDS", 300)
 
 # 前端换 nginx 托管时（与 API 不同源）把来源填进来，逗号分隔；留空＝不开 CORS
 CORS_ORIGINS = [o.strip() for o in _env("FASTVIDEO_CORS", "").split(",") if o.strip()]

@@ -6,7 +6,10 @@
 - 停用的账号（is_active=0）一律返回空集合。
 """
 import sqlite3
+import threading
+import time
 
+from config import LOGIN_LOCK_SECONDS, LOGIN_MAX_FAILS
 from db import get_conn
 
 
@@ -213,12 +216,22 @@ class SessionRepository:
     def get(self, token_hash: str) -> sqlite3.Row | None:
         # 返回当前用户的身份列（见 _USER_COLUMNS），这样调用方拿到的就是"这个人"，
         # 不用再查一次；口令哈希不在其中。
+        #
+        # `AND u.is_active = 1`（2026-11-08，P1）：停用账号必须立刻失效。
+        # `set_active()` 停用时会顺手删会话行，那条路是好的；但只要有任何一条
+        # 路径**只改 is_active 而没删会话**（迁移脚本、手工 SQL、将来新增的
+        # 批量停用接口），旧会话就会继续有效——而 `require_user` 只看"查不查得到
+        # 这个人"，于是 `/files/...`、`/api/context` 这些只挂 `require_user`
+        # 的端点全部放行。权限空集只挡住了挂 `require_permission` 的那部分。
+        # 把条件放在这条 SQL 里，等于把"停用即失效"绑在**唯一**的会话读取口上，
+        # 不管是谁改的那一格，下一次请求就失效。
         with get_conn() as conn:
             return conn.execute(
                 f"""SELECT {self._USER_COLUMNS}, s.expires_at
                       FROM session s JOIN app_user u ON u.id = s.user_id
                      WHERE s.token_hash = ?
-                       AND s.expires_at > datetime('now','localtime')""",
+                       AND s.expires_at > datetime('now','localtime')
+                       AND u.is_active = 1""",
                 (token_hash,),
             ).fetchone()
 
@@ -238,3 +251,86 @@ class SessionRepository:
 
 users = UserRepository()
 sessions = SessionRepository()
+
+
+class LoginThrottle:
+    """登录失败限速：同一「用户名+来源 IP」连续失败 N 次后锁一段时间。
+
+    为什么不落库：这是**易于重建的瞬时状态**，不是业务事实。落表要迁移、
+    要清理、要在备份里跟着走，而它全部的信息量就是"最近几分钟失败了几次"。
+    进程重启后计数清零完全可以接受（局域网 2—5 人的部署，重启本身就很罕见）。
+
+    为什么按「用户名+IP」而不是只按 IP：一个办公室常共用出口 IP，
+    只按 IP 会让一个人输错三次、整个办公室一起被锁；只按用户名则挡不住
+    "换着用户名撞"的扫描。两个都算上，既能拦住针对某个账号的暴力破解，
+    又不至于让同事互相牵连。
+
+    边界说清楚：进程内的字典**只覆盖本进程**。本平台是单进程 uvicorn
+    （`run.sh` 起一条 API + 一条 worker，worker 不接 HTTP），所以够用；
+    哪天上了多进程/多副本，这里要换成共享存储（Redis 或落库），
+    否则每个进程各算一份，实际可试次数会乘上进程数。
+    """
+
+    def __init__(self, max_fails: int, lock_seconds: int):
+        self.max_fails = max(0, int(max_fails))
+        self.lock_seconds = max(0, int(lock_seconds))
+        self._fails: dict[tuple[str, str], list[float]] = {}
+        self._locked: dict[tuple[str, str], float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(username: str, client: str) -> tuple[str, str]:
+        return ((username or "").strip().lower(), (client or "").strip())
+
+    def _prune(self, key: tuple[str, str], now: float) -> None:
+        """只留最近 `lock_seconds` 内的失败时刻——更早的失败不该继续累计。"""
+        window = max(self.lock_seconds, 60)
+        hits = [t for t in self._fails.get(key, []) if now - t < window]
+        if hits:
+            self._fails[key] = hits
+        else:
+            self._fails.pop(key, None)
+
+    def retry_after(self, username: str, client: str) -> int:
+        """还要等多少秒才能再试；0＝现在就可以试。"""
+        if self.max_fails <= 0 or self.lock_seconds <= 0:
+            return 0
+        key = self._key(username, client)
+        now = time.monotonic()
+        with self._lock:
+            until = self._locked.get(key)
+            if until is not None:
+                if until > now:
+                    return max(1, int(round(until - now)))
+                self._locked.pop(key, None)
+                self._fails.pop(key, None)
+            return 0
+
+    def record_failure(self, username: str, client: str) -> None:
+        if self.max_fails <= 0 or self.lock_seconds <= 0:
+            return
+        key = self._key(username, client)
+        now = time.monotonic()
+        with self._lock:
+            self._prune(key, now)
+            hits = self._fails.setdefault(key, [])
+            hits.append(now)
+            if len(hits) >= self.max_fails:
+                self._locked[key] = now + self.lock_seconds
+                self._fails.pop(key, None)
+
+    def reset(self, username: str, client: str) -> None:
+        """登录成功：把这个组合的失败记录清掉。"""
+        key = self._key(username, client)
+        with self._lock:
+            self._fails.pop(key, None)
+            self._locked.pop(key, None)
+
+    def clear(self) -> None:
+        """全清。只给测试用。"""
+        with self._lock:
+            self._fails.clear()
+            self._locked.clear()
+
+
+login_throttle = LoginThrottle(LOGIN_MAX_FAILS, LOGIN_LOCK_SECONDS)

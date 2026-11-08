@@ -43,7 +43,16 @@ TRANSITIONS = {
     QUEUED: (STARTING, CANCELLED),
     # 已领取但模型还没跑起来：取消请求直接落到 cancel_requested，
     # 由 worker 在真正开跑前把这一格收掉。
-    STARTING: (RUNNING, CANCEL_REQUESTED, FAILED, CANCELLED, NEEDS_ATTENTION),
+    #
+    # 2026-11-08 补 `SUCCEEDED`：`starting` 也能直接收成成功。这不是放宽纪律，
+    # 是承认一个真实窗口——`set_running()` 的 UPDATE 只带
+    # `AND status = 'starting'` 却**不校验 rowcount**，一旦那一步没命中
+    # （状态在这一瞬被别的写动过），作业会停在 starting，随后照常收尾；
+    # mock 这类"领取后几毫秒就结束"的作业同样可能落在这一档。
+    # 挡掉它并不会让数据更干净，只会让一条本来成功的作业在收尾时抛异常、
+    # 变成 internal_error——那比允许这一步要糟得多。
+    STARTING: (RUNNING, CANCEL_REQUESTED, SUCCEEDED, FAILED, CANCELLED,
+               NEEDS_ATTENTION),
     RUNNING: (SUCCEEDED, FAILED, CANCELLED, NEEDS_ATTENTION, CANCEL_REQUESTED),
     # 取消请求后仍可能先跑完（模型不响应中断），所以成功/失败也是合法去处。
     CANCEL_REQUESTED: (CANCELLED, SUCCEEDED, FAILED),

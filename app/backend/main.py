@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 
 import pipeline
 from bootstrap import ensure_admin
-from config import CORS_ORIGINS, FILES_DIR, FRONTEND_DIR, HOST, PORT
+from config import (CORS_ORIGINS, DOCS_ENABLED, FILES_DIR, FRONTEND_DIR,
+                    HOST, PORT)
 from gitrepo import GitError
 from migrate import migrate
 from routers import (agents as agents_api, audio, auth, compositions, content,
@@ -37,13 +38,28 @@ def create_app() -> FastAPI:
         ensure_workspace()
     except GitError as err:
         print(f"[启动] 文档工作区没准备好，创作中心的正文功能不可用：{err}")
-    app = FastAPI(title="AI 视频生产平台 API", docs_url="/api/docs",
-                  openapi_url="/api/openapi.json")
+    # 接口文档默认**不开**（2026-11-08，P1）：`/api/docs` 与 `/api/openapi.json`
+    # 不用登录就能拿到全部接口清单、参数模型与权限点名称——对"局域网里谁都能
+    # 打开"的部署，这是白送的侦察材料。本机调试时设 FASTVIDEO_DOCS=1 打开。
+    app = FastAPI(title="AI 视频生产平台 API",
+                  docs_url="/api/docs" if DOCS_ENABLED else None,
+                  redoc_url="/api/redoc" if DOCS_ENABLED else None,
+                  openapi_url="/api/openapi.json" if DOCS_ENABLED else None)
     # 同源部署（本进程托管静态文件）时不需要 CORS；前端搬去 nginx 再开
     if CORS_ORIGINS:
+        # `*` 与"按 cookie 认证"不能共存：一旦将来有人加 allow_credentials=True，
+        # 浏览器会拒绝这个组合，而更糟的情况是有人把 `*` 当真了，以为已经限好来源。
+        # 这里在启动期就把它拒掉，让配置错误当场可见，而不是等浏览器里出现怪现象。
+        if "*" in CORS_ORIGINS:
+            raise SystemExit(
+                "FASTVIDEO_CORS 不能是 *：这个平台用 cookie 认证，通配来源等于"
+                "允许任意站点带着登录态访问。请写明确的来源（如 http://192.168.1.9:8000）")
         app.add_middleware(
             CORSMiddleware,
             allow_origins=CORS_ORIGINS,
+            # 显式关掉：登录态走 cookie，若允许跨源携带凭据，来源白名单就是唯一
+            # 的防线，而它很容易被配宽。同源部署用不到这一条。
+            allow_credentials=False,
             allow_methods=["*"],
             allow_headers=["*"],
         )
