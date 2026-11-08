@@ -558,6 +558,49 @@ def test_视图不再自己写第二份状态字典():
     assert not offenders, f"这些行又在视图里抄了一份作业状态表：{offenders}"
 
 
+def test_前端调用的api方法名必须真的存在():
+    """`api.X()` 的 X 必须在 `api.js` 的导出对象里，一个都不许凭印象写。
+
+    直接起因（2026-11-09 体检）：`generate.js:1857` 调 `api.modelScenes()`，而
+    801b2c9 把 api.js 收敛成 get/send 出口时压根没导出过这个名字——git log -S
+    确认它从未存在。这不是"接口 404"那种能看见的坏：`Promise.all([..., api.modelScenes()...])`
+    里方法名写错是**同步抛 TypeError**，挂在返回 value 上的 `.catch()` 根本来不及
+    接管，外层 try 把它咽进一个永不渲染的 `optionsError`，于是提交弹窗的场景／
+    路线／槽位三个下拉一起变空而页面一声不吭。`generate_scene_check.py` 当场 8 项红。
+
+    机器上没有 node、也不给一条测试装 JS 解析器：按"两空格缩进一行一键"的字面量
+    形状取导出名（api.js 全文就是这个写法），调用面扫 views/（含 models/ 子目录）
+    与 app.js。动态取用 `api[name]` 不在射程内——那是注释里要写明的豁免，不是漏网。
+    """
+    src = (FRONTEND / "js" / "api.js").read_text()
+    start = src.find("export const api = {")
+    assert start >= 0, "api.js 的导出形状变了，这条守卫要跟着改而不是静默放行"
+    depth, end = 0, start
+    for i in range(start + len("export const api = "), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    exports = set(re.findall(r"(?m)^  ([A-Za-z_]\w*):", src[start:end]))
+    assert len(exports) > 100, f"导出名只取到 {len(exports)} 个，多半是形状解析漂了"
+
+    offenders = []
+    files = (list((FRONTEND / "js" / "views").glob("*.js"))
+             + list((FRONTEND / "js" / "views").rglob("*.js"))
+             + [FRONTEND / "js" / "app.js"])
+    for f in dict.fromkeys(files):          # 去重：glob 与 rglob 在 views 顶层重叠
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            for name in re.findall(r"\bapi\.([A-Za-z_]\w*)\s*\(", line):
+                if name not in exports:
+                    offenders.append(f"{f.name}:{n}: api.{name}()")
+    assert not offenders, (
+        "这些调用点用了 api.js 没导出的方法名（同步 TypeError，.catch 接不住）："
+        + "；".join(offenders))
+
+
 def test_多久前只有util一处写法():
     """「多久前」只许住 `js/util.js` 的 `agoText()`。
 

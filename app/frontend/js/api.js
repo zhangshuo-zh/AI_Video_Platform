@@ -168,6 +168,10 @@ export const api = {
   saveModelPolicies: (rows) => send('PUT', '/api/model-policies', rows),
   // 场景候选：只读、登录即可。返回里带 auto_switch=false——备用轨不会自动顶上。
   resolveScene: (key) => get(`/api/model-policies/resolve/${encodeURIComponent(key)}`),
+  // 场景骨架（九个任务场景的只读清单）。801b2c9 把 api.js 收敛成 get/send 出口时
+  // 漏了这个方法名，generate.js 调用时同步抛 TypeError，提交弹窗的场景/路线/槽位
+  // 三个下拉一起空掉——test_infra 的"方法名一致性"守卫就是为钉住这类漏口子而加。
+  modelScenes: () => get('/api/model-policies/scenes'),
 
   // 引擎实例（0040）：这一族管的是"这一档引擎在哪个端点"，不是"跑了什么模型"。
   // 后端从 W-B 起就有这五个口子，但界面一直没接——于是 `engines.probe()` 只能对着
