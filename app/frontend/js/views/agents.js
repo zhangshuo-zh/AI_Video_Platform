@@ -89,7 +89,7 @@ function legsHtml(configs) {
   return `<div class="table-wrap"><table>
     <thead><tr><th>哪条腿</th><th>配的档</th><th>现在能不能用</th><th>端点</th>
       <th>驻留</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="modal-meta">${escapeHtml(configs.caliber || '')}</p>`;
+    <div class="card-foot"><p class="modal-meta">${escapeHtml(configs.caliber || '')}</p></div>`;
 }
 
 function runsTable(runs) {
@@ -355,11 +355,13 @@ export default {
         <div class="card-head"><h2>本地与云端两条腿</h2>
           <span class="sub">要改的是模型中心那三张表；这一页只读，每次进来现查一次健康</span></div>
         ${legsHtml(cache.configs)}
-        ${cards.map((c) => `<p class="modal-meta"><b>${escapeHtml(c.backend_label)}</b>：
-          密钥 ${c.key_env
-            ? `${escapeHtml(c.key_env)}·${c.secret_present ? '环境里有值' : '环境里没值'}`
-            : '本机服务不需要密钥'}（值从不入库、不进出参）；
-          计价 ${escapeHtml(c.cost_note || '—')}</p>`).join('')}
+        <div class="card-foot">
+          ${cards.map((c) => `<p class="modal-meta"><b>${escapeHtml(c.backend_label)}</b>：
+            密钥 ${c.key_env
+              ? `${escapeHtml(c.key_env)}·${c.secret_present ? '环境里有值' : '环境里没值'}`
+              : '本机服务不需要密钥'}（值从不入库、不进出参）；
+            计价 ${escapeHtml(c.cost_note || '—')}</p>`).join('')}
+        </div>
       </div>
       <div class="card">
         <div class="card-head"><h2>工具白名单</h2>
@@ -374,9 +376,11 @@ export default {
             <td><span class="t-desc">${escapeHtml(t.data_out)}</span></td>
             <td><span class="t-desc">${escapeHtml(t.verify)}</span></td></tr>`).join('')}
           </tbody></table></div>
-        <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.note) || '')}</p>
-        <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
-          ｜一次计划上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
+        <div class="card-foot">
+          <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.note) || '')}</p>
+          <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
+            ｜一次计划上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
+        </div>
       </div>`;
   },
 
@@ -408,14 +412,19 @@ export default {
           <thead><tr><th>场景</th><th>要的能力</th><th>必需标签</th><th>建议轨</th>
             <th>偏好</th><th>备用轨</th><th>状态</th></tr></thead>
           <tbody>${rows}</tbody></table></div>
-        <p class="bar">${data.no_auto_fallback
-          ? '<b>备用轨不会自动顶上。</b>默认轨的唯一来源仍是「引擎管理」里打勾那一行；'
-            + '智能体也一样：它只按人确认过的轨提交，本地失败不静默换云端。'
-          : '清单说允许自动兜底——这条与智能体的授权要求冲突，需要人先看一眼策略。'}</p>
-        <p class="modal-meta">智能体发起时读的就是这张表的场景那一行；
-          「建议轨」显示给人看，最终走哪条仍由默认轨与人的确认决定。</p>
-        <div class="row" style="margin-top:10px">
-          <button class="btn" data-goto-models="policy">去模型中心·调用策略改这些行</button></div>
+        <!-- 表格卡片的下半段统一坐进 .card-foot：卡片本身 padding 是 0（表格要铺满），
+             所以表外那几行（提示条、脚注、动作按钮）必须自己带内距。
+             原来这里三样都直接挂在 .card 下，按钮行离卡片下沿只有 1px，贴着边框。 -->
+        <div class="card-foot">
+          <p class="bar">${data.no_auto_fallback
+            ? '<b>备用轨不会自动顶上。</b>默认轨的唯一来源仍是「引擎管理」里打勾那一行；'
+              + '智能体也一样：它只按人确认过的轨提交，本地失败不静默换云端。'
+            : '清单说允许自动兜底——这条与智能体的授权要求冲突，需要人先看一眼策略。'}</p>
+          <p class="modal-meta">智能体发起时读的就是这张表的场景那一行；
+            「建议轨」显示给人看，最终走哪条仍由默认轨与人的确认决定。</p>
+          <div class="row" style="margin-top:12px">
+            <button class="btn" data-goto-models="policy">去模型中心·调用策略改这些行</button></div>
+        </div>
       </div>`;
   },
 
