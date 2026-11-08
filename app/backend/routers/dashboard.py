@@ -8,15 +8,16 @@ from fastapi import APIRouter, Depends, Response
 import access
 import services
 from deps import require_permission
+from models import ProjectDashboardOut
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
 
-@router.get("/projects/{project_id}/dashboard")
+@router.get("/projects/{project_id}/dashboard", response_model=ProjectDashboardOut)
 def get_dashboard(project_id: int,
-                  user=Depends(require_permission("project:read"))) -> dict:
+                  user=Depends(require_permission("project:read"))) -> ProjectDashboardOut:
     access.ensure(user, project_id, "read")
-    return services.project_dashboard(project_id)
+    return ProjectDashboardOut(**services.project_dashboard(project_id))
 
 
 @router.get("/projects/{project_id}/export/shots.csv")

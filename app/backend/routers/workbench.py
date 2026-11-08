@@ -11,15 +11,16 @@ from fastapi import APIRouter, Depends
 
 import services
 from deps import require_permission
+from models import WorkbenchOut
 
 router = APIRouter(prefix="/api", tags=["workbench"])
 
 
-@router.get("/workbench")
-def get_workbench(user=Depends(require_permission("project:read"))) -> dict:
+@router.get("/workbench", response_model=WorkbenchOut)
+def get_workbench(user=Depends(require_permission("project:read"))) -> WorkbenchOut:
     """看得见的在产项目的待办计数 + 分项目明细。
 
     单独一个 `project:read` 就够：它数的是"我本来就看得见的东西"。
     看不见的项目在这里既不出现，也不计入任何数字（服务端按可见性先筛）。
     """
-    return services.workbench(user)
+    return WorkbenchOut(**services.workbench(user))

@@ -592,3 +592,120 @@ def test_错误目录的条目键必须统一():
     shapes = {tuple(sorted(k for k in e)) for e in error_catalog.CATALOG.values()}
     shapes.add(tuple(sorted(k for k in error_catalog.UNKNOWN_TEMPLATE)))
     assert len(shapes) == 1, f"条目键有 {len(shapes)} 种组合，response_model 会丢字段：{shapes}"
+
+
+# ---------- 第四批：聚合视图收成模型（2026-11-08） ----------
+
+def _keys_of(obj, prefix=""):
+    """递归收集一个响应体的所有键路径。列表只看第一个元素（同构）。"""
+    out = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.add(prefix + k)
+            out |= _keys_of(v, prefix + k + ".")
+    elif isinstance(obj, list) and obj:
+        out |= _keys_of(obj[0], prefix + "[].")
+    return out
+
+
+def test_工作台模型覆盖响应里的每一个键(as_role, fresh_project):
+    """给聚合视图加 `response_model` 会**静默剔除**未声明的字段。
+
+    `overview.js` 依赖 counts.review_documents / runs_active 这些键；
+    模型漏一个，接口照样 200、页面却少一格。所以这条测试逐键比对：
+    模型序列化出来的键必须与服务层原始返回**完全一致**。
+    """
+    import services
+    from models import WorkbenchOut
+    from repositories.users import users as user_repo
+
+    # 建一个项目让 projects 列表非空——空列表会让"模型漏字段"这件事
+    # 在比对里自动通过（没有元素就没有键可比）。
+    fresh_project("editor")
+    user = user_repo.get_by_username("superadmin")
+    raw = services.workbench(user)
+    modeled = WorkbenchOut(**raw).model_dump()
+    assert _keys_of(raw) == _keys_of(modeled), \
+        f"模型与响应不一致：多 {_keys_of(modeled) - _keys_of(raw)}，少 {_keys_of(raw) - _keys_of(modeled)}"
+
+
+def test_看板模型覆盖响应里的每一个键(fresh_project):
+    import services
+    from models import ProjectDashboardOut
+
+    pid = fresh_project("editor")
+    raw = services.project_dashboard(pid)
+    modeled = ProjectDashboardOut(**raw).model_dump()
+    assert _keys_of(raw) == _keys_of(modeled), \
+        f"模型与响应不一致：多 {_keys_of(modeled) - _keys_of(raw)}，少 {_keys_of(raw) - _keys_of(modeled)}"
+
+
+def test_生产模型覆盖响应里的每一个键(fresh_project):
+    """这一组键最多（实测 132 条路径），也最容易漏。
+
+    实测踩过两次：`memory.parallel_reference` 是 dict 不是 str、
+    `stats.signs` 是两层字典不是 `dict[str,int]`、`by_capability` 的值是
+    "一包计数"不是 int——全是按字段名猜类型会错的地方。
+    """
+    import json
+
+    import production
+    from models import ProjectProductionOut
+    from repositories.content import episodes, shots
+
+    pid = fresh_project("editor")
+    eid = episodes.create(pid, "第 1 集")["id"]
+    shots.create(eid, "开场", "", 5.0, [])
+    overview = production.project_overview(pid, current_episode_id=eid)
+    raw = {"overview": overview,
+           "board": production.episode_board(pid, int(eid)),
+           "stats": production.project_stats(pid, overview),
+           "stages": production.STAGES,
+           "statuses": production.PUBLIC_STATUSES}
+    modeled = json.loads(ProjectProductionOut(**raw).model_dump_json())
+    assert _keys_of(raw) == _keys_of(modeled), \
+        f"模型与响应不一致：多 {_keys_of(modeled) - _keys_of(raw)}，少 {_keys_of(raw) - _keys_of(modeled)}"
+
+
+def test_动态键字典里的任意键都会被保留():
+    """`by_status` / `by_capability` / `signs` 的键来自库里的数据。
+
+    写成固定字段的话，库里冒出第六类能力、第十种状态时，那个键会被
+    `response_model` 静默剔掉——数字凭空少一块。一律用 `dict[str, ...]` 接住。
+    """
+    import json
+
+    from models import ProjectProductionOut
+
+    payload = {
+        "overview": {"project_id": 1, "episodes": 0, "delivered_episodes": 0,
+                     "progress": None, "current": None, "per_episode": [],
+                     "assets": {}},
+        "board": {"stages": [], "next_tasks": []},
+        "stats": {"jobs_total": 0,
+                  "by_status": {"某个还没实现的状态": 7},
+                  "by_capability": {"ninth_capability": {"total": 3}},
+                  "top_error_codes": [], "retries": {}, "memory": None,
+                  "disk": None, "team": None, "money": None,
+                  "signs": {"document": {"approved": 2}},
+                  "estimate": None, "not_computed": []},
+        "stages": [], "statuses": [],
+    }
+    modeled = json.loads(ProjectProductionOut(**payload).model_dump_json())
+    assert modeled["stats"]["by_status"]["某个还没实现的状态"] == 7
+    assert modeled["stats"]["by_capability"]["ninth_capability"]["total"] == 3
+    assert modeled["stats"]["signs"]["document"]["approved"] == 2
+
+
+def test_没有样本的读数是_None_而不是_0():
+    """样本为 0 时不能给 0——"没有数据"和"数值是零"是两回事。
+
+    产能读数写成 0 会让界面显示"每分钟出 0 秒成片"，那是假警报。
+    """
+    from models import WorkbenchThroughput
+
+    empty = WorkbenchThroughput(samples=0)
+    assert empty.video_avg_sec is None
+    assert empty.image_avg_sec is None
+    assert empty.per_minute_sec is None
+    assert empty.samples == 0

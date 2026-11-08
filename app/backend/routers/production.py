@@ -18,7 +18,7 @@ import access
 import precheck
 import production
 from deps import require_permission, require_user
-from models import ContextIn
+from models import ContextIn, ProjectProductionOut
 from repositories.content import episodes
 from repositories.context import context
 
@@ -71,9 +71,10 @@ def put_context(payload: ContextIn, user=Depends(require_user)) -> dict:
     return _view(row)
 
 
-@router.get("/projects/{project_id}/production")
+@router.get("/projects/{project_id}/production", response_model=ProjectProductionOut)
 def project_production(project_id: int, episode_id: int | None = None,
-                       user=Depends(require_permission("project:read"))) -> dict:
+                       user=Depends(require_permission("project:read"))
+                       ) -> ProjectProductionOut:
     """项目生产总览。`episode_id` 不传时按上下文那一集算，没有上下文就取第一集。"""
     access.ensure(user, project_id, "read")
     eps = episodes.list_by_project(project_id)
@@ -89,10 +90,13 @@ def project_production(project_id: int, episode_id: int | None = None,
              if target is not None else {"stages": [], "next_tasks": []})
     # `stats` 挂在这同一条接口上而不是新开一条：项目工作台一次读取就该同时给出
     # 「走到哪」与「跑了多少、花了多少、还要多久」；开两条迟早一处新一处旧。
-    return {"overview": overview, "board": board,
-            "stats": production.project_stats(project_id, overview),
-            "stages": production.STAGES,
-            "statuses": production.PUBLIC_STATUSES}
+    # 空板时 `episode_board` 只给 `{"stages": [], "next_tasks": []}`，
+    # 而模型会给 episode_id/shots/counts 等补上默认值（None/0）。这**不是丢数据**，
+    # 是补默认值：前端本来就写着 `board.shots || 0`、`board.stages || []`。
+    return ProjectProductionOut(
+        overview=overview, board=board,
+        stats=production.project_stats(project_id, overview),
+        stages=production.STAGES, statuses=production.PUBLIC_STATUSES)
 
 
 # ---------------------------------------------------------------- 统一预检
