@@ -66,10 +66,11 @@ def list_providers(_=Depends(require_permission("system:config"))) -> list[Provi
     # 窗口函数就只在十组里挑最新，不必先把整张 model_validation 算一遍再丢弃。
     # 0043 起键带 model：窗口按 (槽位, model, kind) 分区，"生产可用"只认
     # 这一槽位当前那一档自己的记录，与模型仓库同一把尺子。
+    rows = providers.all()   # 一次查询两处用；原来矩阵和返回各打一遍同一张表
     slots = {(r["capability"], r["backend"], r["provider"], r["model"])
-             for r in providers.all()}
+             for r in rows}
     matrix = validation_repo.latest_matrix(slots, by_model=True)
-    return [_row_out(row, matrix) for row in providers.all()]
+    return [_row_out(row, matrix) for row in rows]
 
 
 @router.get("/providers/manifest")
@@ -92,11 +93,14 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
     # 同上：这一页只关心 provider_config 那十行的验证史，定向查。
     # 0043：按档取——提交弹窗里的"已验证"说的是这一槽位当前那一档，
     # 不是这一 provider 历史上随便哪一档。
+    # rows 只查一遍：原来这里、下面的循环、slot_keys 各查一次，
+    # 同一个请求三趟一模一样的 SELECT。
+    rows = providers.all()
     matrix = validation_repo.latest_matrix(
         {(r["capability"], r["backend"], r["provider"], r["model"])
-         for r in providers.all()}, by_model=True)
+         for r in rows}, by_model=True)
     out: list[ProviderOptionOut] = []
-    for row in providers.all():
+    for row in rows:
         if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
@@ -128,7 +132,7 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
     #   ② 只列**已启用**的登记（`model_registration.enabled`）；
     #   ③ 与槽位重复的不再列一遍（槽位那份已经在上面的循环里，且带槽位级的健康）。
     slot_keys = {(r["capability"], r["backend"], r["provider"], r["model"])
-                 for r in providers.all()}
+                 for r in rows}
     extra: list[dict] = []
     for reg in registration_repo.registrations():
         key = (reg["capability"], reg["backend"], reg["provider"], reg["model_code"])

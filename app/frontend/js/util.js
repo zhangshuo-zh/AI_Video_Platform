@@ -518,7 +518,10 @@ export function softFilter(root, apply, opts = {}) {
     const visible = !tr.hidden && tr.style.display !== 'none';
     if (visible === before[i]) return;
     tr.style.transition = 'opacity 120ms cubic-bezier(.2,0,0,1)';
-    tr.style.opacity = visible ? '0' : '0';
+    // 只给"刚变可见"的行上透明再淡入；变隐藏的方向不需要动画——
+    // 行已经不可见了，给它做淡出只是白占一次重绘。
+    // （这里原来写成 `visible ? '0' : '0'`，两个分支同一个值，是笔误的形状。）
+    if (visible) tr.style.opacity = '0';
     if (visible) {
       requestAnimationFrame(() => { tr.style.opacity = ''; });
     }

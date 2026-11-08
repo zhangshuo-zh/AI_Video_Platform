@@ -175,12 +175,10 @@ export function slotRow(r, providerLists) {
    剩下七行不该和已配置的等重——这是这一屏最大的噪声源。 */
 export function slotCollapsed(r) {
   if (emptyOpen.has(r.id)) return slotRow(r, {});
-  const marked = '';
   return `<tr class="mc-collapsed" data-empty-for="${r.id}">
     <td class="t-strong">${r.capability_label}</td>
     <td><span class="chip gray">${r.backend_label}</span></td>
-    <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button>
-      ${marked}</td>
+    <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button></td>
   </tr>`;
 }
 

@@ -56,8 +56,9 @@ import engines
 import safenet
 
 # 与本机服务同一把尺：显式动作等得起 5 秒；半死的网关卡在这一档，
-# 人看到的是"连不上"加一句原因，而不是页面转圈。
-PROBE_TIMEOUT_SECONDS = 5.0
+# 人看到的是"连不上"加一句原因，而不是页面转圈。共用 engines 的常量而不是
+# 抄一个 5.0——抄来的数字会各自漂移，改了一边没人改另一边。
+PROBE_TIMEOUT_SECONDS = engines.PROBE_TIMEOUT_SECONDS
 
 # provider code → 探测目标。只有这两家登记了路径：它们的请求形状是执行链
 # （`cloud_run._deepseek`／`cloud_run._wan`）真正在发的，鉴权行为实测过。

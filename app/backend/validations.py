@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import adapters
 import jobfiles
@@ -35,7 +36,6 @@ def _row_of(row, key: str, default=None):
 
 def _artifact_digest(job) -> tuple[str, int | None]:
     """取第一个产物的 sha256 与字节数。只用于"确实落盘过"这一条证据，不做完整性体系。"""
-    import json
     try:
         paths = json.loads(job["result_paths_json"] or "[]")
     except ValueError:
@@ -89,8 +89,7 @@ def from_job(job_id: int, kind: str, created_by: int | None,
 
     resources = {}
     try:
-        import json
-        resources = json.loads(job["resources_json"] or "{}")
+            resources = json.loads(job["resources_json"] or "{}")
     except ValueError:
         resources = {}
     provider = resources.get("provider") if isinstance(resources.get("provider"), dict) else {}
@@ -154,7 +153,6 @@ def env_check(row, created_by: int | None, health: dict | None = None) -> dict:
 
 
 def json_loads(text: str) -> dict:
-    import json
     try:
         value = json.loads(text or "{}")
     except ValueError:
@@ -163,7 +161,6 @@ def json_loads(text: str) -> dict:
 
 
 def _first_path(job) -> str:
-    import json
     try:
         paths = json.loads(job["result_paths_json"] or "[]")
     except ValueError:
@@ -221,9 +218,4 @@ def badge(summary: dict) -> tuple[str, str]:
 
 
 def recent(limit: int = 50) -> list[dict]:
-    rows = repo.list_recent(limit)
-    out = []
-    for r in rows:
-        item = dict(r)
-        out.append(item)
-    return out
+    return [dict(r) for r in repo.list_recent(limit)]

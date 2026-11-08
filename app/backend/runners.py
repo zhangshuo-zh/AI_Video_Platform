@@ -158,7 +158,7 @@ def _fastmetal(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         meta={"adapter": "fastmetal", "model": model_code,
               "model_dir": v["model"], "python": v["python"],
               "seed": seed, "width": width, "height": height, "frames": frames,
-              "generation_steps": 3 if not is_5b else 3,
+              "generation_steps": 3,
               "metrics_path": str(metrics)})
 
 

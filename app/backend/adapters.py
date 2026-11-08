@@ -727,7 +727,7 @@ def validate_mock_params(params) -> list[str]:
 
 def health(row, *, probe_service: bool = True,
            probe_timeout: float | None = None) -> dict:
-    """实时健康：不加载权重、不发请求。
+    """实时健康：不加载权重；除服务型引擎那一族外不发请求（例外见下面第三段）。
 
     四种状态分开，是因为人要做的事不同：
     unconfigured＝先选 provider；unregistered＝清单没这个 provider（不要硬填）；

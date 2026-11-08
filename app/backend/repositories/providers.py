@@ -11,11 +11,6 @@ from db import get_conn
 from repositories.ordering import backend_order, capability_order
 
 
-def key_env_name(provider: str) -> str:
-    """兜底约定：provider 填 volc 就读 FV_KEY_VOLC。"""
-    return "FV_KEY_" + provider.strip().upper().replace("-", "_")
-
-
 def has_key(row, env_name: str = "") -> bool:
     """row 是 provider_config 的一行；env_name 由调用方先算好（有效变量名）。
 

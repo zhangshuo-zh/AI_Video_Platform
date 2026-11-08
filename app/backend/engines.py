@@ -53,6 +53,9 @@ MODEL_GATED_ENGINES = frozenset({"draw_things"})
 _INFO_PATHS = {"draw_things": "/sdapi/v1/options", "ollama": "/api/tags"}
 
 _TIMEOUT_SECONDS = 5.0
+# 公开别名：显式探测档的超时只有这一把尺。cloud_probe 原来自己抄了一份 5.0，
+# 两份数字会各自漂移——改了一边没人改另一边，"同一把尺"就成了注释里的谎话。
+PROBE_TIMEOUT_SECONDS = _TIMEOUT_SECONDS
 
 # 列表接口用的超时。为什么与手动探测分开：
 # 「打开一页」不该被一台卡住的服务拖住，而「点一下检查连接」是人明确要求

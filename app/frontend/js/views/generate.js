@@ -173,8 +173,8 @@ function jobCostCell(job) {
     return `<span class="t-dim">预计 ${amount}</span>
       <span class="t-desc">不计费</span>`;
   }
-  // 账单中文标签也由服务端下发（`billable_status_label`），本地只做兜底，
-  // 免得界面与账本各有一套说法（比如 known 一处写「已确认」一处写「已核价」）。
+  // 账单中文标签**以服务端 `billable_status_label` 为准**；下面这行兜底
+  // 只在遇到不带该字段的旧响应时生效，新数据一律读后端那份，不在这里另立说法。
   const note = job.billable_status_label
     || (job.billable_status === 'known' ? '已确认' : '待核对');
   return `<b>${amount}</b><span class="t-desc">${note}</span>`;
