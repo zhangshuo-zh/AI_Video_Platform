@@ -792,3 +792,24 @@ def test_下拉浮层宽度跟着按钮与最长选项定():
     assert "Math.max(Math.round(r.width), 160)" not in code, "浮层宽度又写死 160 了"
     assert "measureText" in code, "没按选项文字量宽度"
     assert "list.style.minWidth" in code
+
+def test_t_desc_不许直接用在单元格上():
+    """`.t-desc` 是给单元格**里面**那段次要文字用的，不能套在 `<td>` 上。
+
+    病根：`.t-desc{display:block;max-width:320px;text-overflow:ellipsis}`。
+    套在 `<td>` 上会让那一格丢掉 `table-cell` 布局、再被 320px 限宽——
+    浏览器重新分配列宽，于是同一张表里有的列被撑得很宽、有的被挤窄，
+    竖线也对不齐（智能体中心「九个任务场景」那一张就是这么坏的，实测第 4／6
+    列的 display 是 block 而其余是 table-cell）。
+
+    正确写法：`<td><span class="t-desc">…</span></td>`。
+    """
+    from pathlib import Path
+
+    views = Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
+    bad = []
+    for p in sorted(views.glob('*.js')):
+        text = p.read_text(encoding='utf-8')
+        if '<td class="t-desc">' in text:
+            bad.append(p.name)
+    assert not bad, f"这些视图把 .t-desc 套在 <td> 上了：{bad}（应改成 <td><span class=\"t-desc\">）"

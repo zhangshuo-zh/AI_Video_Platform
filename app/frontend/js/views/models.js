@@ -1130,7 +1130,7 @@ function pageMonitor() {
         <td>${stateChip(v.state)}</td>
         <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
         <td>${v.job_id ? '#' + v.job_id : '—'}</td>
-        <td class="t-desc">${escapeHtml(v.detail || '')}</td>
+        <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
         <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
     </table></div>
@@ -1931,7 +1931,7 @@ function mountEngines(root) {
         <td><span class="chip plain">${escapeHtml(r.kind_label || VAL_KIND_LABEL[r.kind] || r.kind)}</span></td>
         <td>${stateChip(r.state)}</td>
         <td>${r.job_id ? `#${r.job_id}` : '—'}</td>
-        <td class="t-desc">${escapeHtml(r.detail || '')}</td>
+        <td><span class="t-desc">${escapeHtml(r.detail || '')}</span></td>
         <td>${escapeHtml(r.created_by_name || '—')}</td>
         <td class="t-dim">${escapeHtml(String(r.created_at || '').slice(0, 16))}</td>
       </tr>`).join('')}</tbody></table></div>`;
@@ -2166,7 +2166,7 @@ function mountMonitor(root) {
           <td>${stateChip(v.state)}</td>
           <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
           <td>${v.job_id ? '#' + v.job_id : '—'}</td>
-          <td class="t-desc">${escapeHtml(v.detail || '')}</td>
+          <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
           <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
         </tr>`).join(''));
         const pager = btn.closest('.right');

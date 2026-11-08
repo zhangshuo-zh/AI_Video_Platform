@@ -81,8 +81,8 @@ function legsHtml(configs) {
       : '<span class="t-desc">槽位还没填</span>'}</td>
     <td>${chip(HEALTH_TONE[c.health_state] || 'gray',
       c.health_detail || '未检查')}</td>
-    <td class="t-desc">${escapeHtml(c.endpoint || '（这一档不是本机服务型）')}</td>
-    <td class="t-desc">${escapeHtml(c.resident || '—')}</td>
+    <td><span class="t-desc">${escapeHtml(c.endpoint || '（这一档不是本机服务型）')}</span></td>
+    <td><span class="t-desc">${escapeHtml(c.resident || '—')}</span></td>
     <td class="r"><button class="btn sm" data-goto-models="${escapeHtml(c.backend)}"
       >去模型中心</button></td>
   </tr>`).join('');
@@ -114,8 +114,8 @@ function runsTable(runs) {
         <td>${chip(RUN_TONE[r.status] || 'gray', r.status_label)}
           ${waiting ? `<span class="t-desc">等 ${waiting} 步</span>` : ''}</td>
         <td class="num">${r.steps.length ? `${done}/${r.steps.length}` : '—'}</td>
-        <td class="t-desc">${escapeHtml([snap.backend, snap.provider, snap.model]
-          .filter(Boolean).join(' / ') || '—')}</td>
+        <td><span class="t-desc">${escapeHtml([snap.backend, snap.provider, snap.model]
+          .filter(Boolean).join(' / ') || '—')}</span></td>
         <td class="num t-desc">${stamp ? escapeHtml(agoText(Math.round(
           Date.now() / 1000 - new Date(stamp).getTime() / 1000))) : '—'}</td>
         <td class="r"><button class="btn sm ${r.id === openRunId ? '' : 'primary'}"
@@ -131,7 +131,7 @@ function eventRows(events) {
     <tbody>${events.slice(0, 20).map((e) => `<tr>
       <td class="num t-desc">${escapeHtml((e.created_at || '').slice(5, 16))}</td>
       <td>${chip('gray', eventLabel(e.event_type))}</td>
-      <td class="t-desc">${escapeHtml(eventText(e))}</td></tr>`).join('')}</tbody>
+      <td><span class="t-desc">${escapeHtml(eventText(e))}</span></td></tr>`).join('')}</tbody>
     </table></div>`;
 }
 
@@ -165,9 +165,9 @@ function detailHtml(d) {
       ? `<button class="btn xs" data-goto-job="${s.job_id}">作业 #${s.job_id}</button>
          <span class="t-desc">${escapeHtml(s.job_status_label || '')}</span>`
       : '<span class="t-desc">—</span>'}</td>
-    <td class="t-desc">${s.error_code
+    <td><span class="t-desc">${s.error_code
       ? `<span class="t-bad">${escapeHtml(s.error_code)}</span> ${escapeHtml(s.error_message || '')}`
-      : '—'}</td>
+      : '—'}</span></td>
   </tr>`).join('');
   const snap = d.model_snapshot || {};
   return `
@@ -371,8 +371,8 @@ export default {
             <td><code>${escapeHtml(code)}</code></td>
             <td>${escapeHtml(t.label)}</td>
             <td>${chip('gray', t.risk_label)}</td>
-            <td class="t-desc">${escapeHtml(t.data_out)}</td>
-            <td class="t-desc">${escapeHtml(t.verify)}</td></tr>`).join('')}
+            <td><span class="t-desc">${escapeHtml(t.data_out)}</span></td>
+            <td><span class="t-desc">${escapeHtml(t.verify)}</span></td></tr>`).join('')}
           </tbody></table></div>
         <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.note) || '')}</p>
         <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
@@ -394,10 +394,10 @@ export default {
         <span class="t-desc">${escapeHtml(p.scene_key)}</span></td>
       <td>${escapeHtml(p.capability_label)}</td>
       <td>${(p.required || []).map((r) => chip('gray', r)).join(' ') || '—'}</td>
-      <td class="t-desc">${escapeHtml(p.slot_provider ? `${p.slot_provider}/${p.slot_model}` : '未配')}</td>
+      <td><span class="t-desc">${escapeHtml(p.slot_provider ? `${p.slot_provider}/${p.slot_model}` : '未配')}</span></td>
       <td>${chip('gray', p.preference_label || p.preference)}</td>
-      <td class="t-desc">${escapeHtml(p.fallback_provider
-        ? `${p.fallback_provider}/${p.fallback_model}` : '—')}</td>
+      <td><span class="t-desc">${escapeHtml(p.fallback_provider
+        ? `${p.fallback_provider}/${p.fallback_model}` : '—')}</span></td>
       <td>${p.enabled ? chip('green', '已启用') : chip('gray', '待配置')}</td>
     </tr>`).join('');
     return `
@@ -444,7 +444,7 @@ export default {
             <th class="num">有效期到</th><th class="r"></th></tr></thead>
           <tbody>${waiting.map((s) => `<tr>
             <td class="num">${s.seq}</td><td>${escapeHtml(s.tool_label)}</td>
-            <td class="t-desc">${escapeHtml(s.goal)}</td>
+            <td><span class="t-desc">${escapeHtml(s.goal)}</span></td>
             <td>${chip('gray', s.risk_label)}</td>
             <td class="num t-desc">${escapeHtml(s.approval_expires_at || '—')}</td>
             <td class="r"><button class="btn sm primary" data-goto-review="2">去审核中心</button></td>

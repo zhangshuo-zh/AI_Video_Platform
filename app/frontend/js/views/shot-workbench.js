@@ -122,7 +122,7 @@ function audioBlock(d) {
     <thead><tr><th>类型</th><th>说话人</th><th>文本</th><th>状态</th><th>时长</th></tr></thead>
     <tbody>${clips.map((c) => `<tr><td>${escapeHtml(c.kind)}</td>
       <td>${escapeHtml(c.speaker || '—')}</td>
-      <td class="t-desc">${escapeHtml((c.text || '').slice(0, 60))}</td>
+      <td><span class="t-desc">${escapeHtml((c.text || '').slice(0, 60))}</span></td>
       <td>${chip(c.status === 'ready' ? 'green' : c.status === 'failed' ? 'red' : 'gray',
         CLIP_LABEL[c.status] || c.status)}</td>
       <td class="hint">${c.duration_ms ? Math.round(c.duration_ms / 100) / 10 + 's' : '—'}</td></tr>`).join('')}
@@ -184,7 +184,7 @@ function picker(shots, currentId) {
       <thead><tr><th>镜号</th><th>内容</th><th>时长</th><th></th></tr></thead>
       <tbody>${shots.map((s) => `<tr>
         <td class="t-strong">${s.seq}</td>
-        <td class="t-desc">${escapeHtml((s.summary || '').slice(0, 60))}</td>
+        <td><span class="t-desc">${escapeHtml((s.summary || '').slice(0, 60))}</span></td>
         <td class="hint">${s.duration}s</td>
         <td><button class="btn xs" data-open-shot="${s.id}">打开工作台</button></td></tr>`).join('')}
       </tbody></table></div></div>`;
@@ -345,6 +345,8 @@ export default {
       }
       setJobPrefill({ projectId: store.currentId, episodeId: store.currentEpisodeId,
         shotId: Number(shotId), capability: 'video',
+        // 同一镜的生成入口，场景键与分镜页那一处一致（`shot_video`）。
+        sceneKey: 'shot_video',
         prompt: (root.querySelector('#sw-prompt') || {}).value || '' });
       renderView('generate');
     });

@@ -64,7 +64,7 @@ function stageTable(board) {
       <td class="c">${s.pending || '—'}</td>
       <td class="c">${s.failed || '—'}</td>
       <td class="c">${s.blocked ? `<span class="chip red">${s.blocked}</span>` : '—'}</td>
-      <td class="t-desc">${escapeHtml(s.note || '')}</td>
+      <td><span class="t-desc">${escapeHtml(s.note || '')}</span></td>
       <td><button class="btn xs" data-goto="${escapeHtml(JSON.stringify(s.entry))}">进入</button></td>
     </tr>`).join('');
   return `
