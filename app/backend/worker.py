@@ -107,6 +107,38 @@ def _write(log, message: str) -> None:
     log.flush()
 
 
+# 这些 argv 键后面跟的那一格是**用户创作正文**（提示词/负向提示词/文本）。
+# 它们既进 `run.log`，也随 `extra["command"]` 进 `resources_json` 落库，
+# 于是"日志里躺着完整提示词"——排查时没用（要复现看的是参数与种子），
+# 转发日志给外部时却是白送出去的创作内容。
+_PROMPT_ARGV_FLAGS = frozenset({"--prompt", "--negative-prompt", "-p", "--text",
+                                "--caption", "--negative"})
+# 截断长度：留够"这是在讲什么"的判断量，又不至于把整段正文抄走。
+_ARGV_TEXT_PREVIEW = 40
+
+
+def _argv_for_record(argv: list[str]) -> list[str]:
+    """把要落盘/进日志的 argv 里那一格正文换成摘要。
+
+    **只动记录，不动真跑的 argv**：`_run_spec` 用原始 `spec.argv` 拉起子进程，
+    这里返回的是副本，两个用途必须分开——写进日志的东西和交给内核的东西
+    不该是同一个对象，否则以后有人图省事在这里原地改就会改坏执行。
+
+    形状：`--prompt 一只猫…(共 812 字)`。字数照实给，因为排查时"提示词多长"
+    常常就是线索（比如撞到 77 token 上限）；内容本身不给。
+    """
+    out = list(argv)
+    for i, item in enumerate(out[:-1]):
+        if item not in _PROMPT_ARGV_FLAGS:
+            continue
+        text = out[i + 1]
+        # 已经短到没必要截的就原样留：把 "1girl, solo" 换成摘要反而更难读。
+        if len(text) <= _ARGV_TEXT_PREVIEW:
+            continue
+        out[i + 1] = f"{text[:_ARGV_TEXT_PREVIEW]}…(共 {len(text)} 字)"
+    return out
+
+
 def _rss_kb(value: int) -> int:
     # ru_maxrss 的单位随系统走：Linux 给 KB，macOS 给字节。不归一就写进库，
     # 界面上会得到"21344 MB"这种荒唐数字（W08 真截图抓到的）。
@@ -542,7 +574,10 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     """
     started = time.monotonic()
     child_rss_kb = 0
-    _write(log, "命令：" + json.dumps(spec.argv, ensure_ascii=False))
+    # 落日志前把提示词换成摘要：日志会被贴进工单、发给外部排查，
+    # 而"当时提示词写了什么"不是排查要的信息，"多长、什么模型、什么种子"才是。
+    _write(log, "命令：" + json.dumps(_argv_for_record(spec.argv),
+                                      ensure_ascii=False))
     _write(log, "工作目录：" + str(spec.cwd))
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -589,7 +624,9 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
             pass
 
     elapsed = int((time.monotonic() - started) * 1000)
-    extra["command"] = spec.argv
+    # 同一份摘要进 resources：它跟着 Job 落库并回给界面，
+    # 与日志同一口径——两处各写各的迟早一处漏、一处不漏。
+    extra["command"] = _argv_for_record(spec.argv)
     extra["runner"] = spec.runner
     extra.update({k: v for k, v in spec.meta.items()
                   if k not in ("command", "request_path", "result_path")})

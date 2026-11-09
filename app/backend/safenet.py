@@ -157,3 +157,36 @@ def opener_without_redirects():
     """返回一个不跟随重定向的 opener（`urllib` 的 opener 可复用）。"""
     from urllib import request as _r
     return _r.build_opener(NoRedirect().handler)
+
+
+def safe_urlopen(req, *, timeout=None):
+    """`urlopen` 的替代品：不跟随 3xx，其余行为一致。
+
+    为什么要有这个函数（而不是让六处各自 `build_opener`）：`opener_without_redirects()`
+    存在了半年，只有下载与云端探测两处用上，真正**带 Authorization 出门**的六处
+    全是裸 `urlopen`。差别不在代码风格——`urllib` 跟随 3xx 时会把原请求头一起
+    带到新地址（`redirect_request` 保留除 Content-Length/Content-Type 之外的项），
+    所以一次 302 就足以让 `Authorization: Bearer <真密钥>` 落到攻击者域。
+    一个名字好记、签名与 `urlopen` 一样的函数，比"记得用 opener"可靠。
+
+    `req` 可以是 `Request` 或 URL 字符串，`timeout` 语义与 `urlopen` 相同。
+
+    抛的异常：3xx 抛 `safenet.UnsafeTarget`（**注意它是 `ValueError` 的子类**，
+    调用方的 `except ValueError` 会把它一起接住——这是有意的好事，但捕获顺序上
+    要排在 `URLError` 之前单独说清楚，否则会被当成"网络不通"而丢掉"有人在指路"
+    这个信息）。
+    """
+    opener = opener_without_redirects()
+    if timeout is None:
+        return opener.open(req)
+    return opener.open(req, timeout=timeout)
+
+
+def is_unsafe_target(exc: BaseException) -> bool:
+    """`exc` 是不是"地址没过安全边界/被要求重定向"这一类。
+
+    六处的异常处理各写各的（有的 `except ValueError`、有的只接 `URLError`），
+    直接比较 `UnsafeTarget` 容易在某个分支里被更宽的 `except` 提前吃掉。
+    这个判据让每个调用方都能用一行把"没发出去"与"发出去了但连不上"分开说。
+    """
+    return isinstance(exc, UnsafeTarget)

@@ -78,7 +78,12 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float):
     req.add_header("Content-Type", "application/json")
     for key, value in headers.items():
         req.add_header(key, value)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # 不跟随重定向：这两个函数带的是 `Authorization: Bearer <真密钥>`，
+    # 而 urllib 跟随 3xx 时会把原请求头一起带到新地址——一次 302 就够把密钥
+    # 交出去。`safenet.safe_urlopen` 与 urlopen 同签名、只是关掉跟随；
+    # 3xx 在那里抛 UnsafeTarget（ValueError 子类），由 run() 的
+    # `except ValueError` 落在 cloud_run_error 上，与"网络不通"分开。
+    with safenet.safe_urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
         return resp.status, dict(resp.headers), json.loads(raw.decode("utf-8") or "{}")
 
@@ -87,7 +92,8 @@ def _get_json(url: str, headers: dict, timeout: float):
     req = urllib.request.Request(url, method="GET")
     for key, value in headers.items():
         req.add_header(key, value)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # 同 _post_json：轮询也带 Bearer，也不跟随重定向。
+    with safenet.safe_urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
         return resp.status, dict(resp.headers), json.loads(raw.decode("utf-8") or "{}")
 

@@ -795,14 +795,65 @@ def test_schemas_的模块划分是有序的():
 # ---------- 第六批：services.py 拆成 services/ 包（2026-11-08） ----------
 
 def test_services_只是门面不再膨胀():
-    """`services.py` 现在只做 re-export（原来 2392 行、93 个定义）。"""
+    """`services/__init__.py` 现在只做 re-export（原来 2392 行、93 个定义）。
+
+    2026-11-09 修正：这条原来读的是**根目录的 `services.py`**，而那个文件
+    根本不参与加载——`services.py` 与 `services/` 同名时 Python 取包，
+    `import services` 拿到的永远是 `services/__init__.py`（本文件另一条
+    `test_拆分没有丢任何一个_services_公开名字` 里 `import services` 也证明了这点）。
+    于是这条守卫「绿着看一个死文件」：真正会膨胀的 `__init__.py` 没有任何约束。
+    这就是"测试绿、守的东西不在"的一类，比没有测试更危险。
+
+    现在守真对象。`services.py` 若还留在盘上，另有一条
+    `test_没有同名的死模块被包遮蔽()` 专门盯它。
+    """
+    import ast
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    text = (root / "services.py").read_text(encoding="utf-8")
-    body = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    assert len(body) < 40, \
-        f"services.py 又长起来了（{len(body)} 行非注释）——新函数请加到 services/<域>.py"
+    tree = ast.parse((root / "services" / "__init__.py").read_text(encoding="utf-8"))
+    # 判据是"这里有没有定义实体"，不是行数：
+    # 文件里有 180 行 docstring（模块划分表、分层理由、踩过的环），
+    # 那是**该留**的东西——按行数设阈值的守卫迟早会被人用删注释的方式糊过去。
+    # 门面一旦出现第一个 def/class，它就开始重新长成第二个 2392 行。
+    defined = [n.name for n in tree.body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    assert not defined, (
+        f"services/__init__.py 里出现了定义 {defined}——"
+        "门面只放 re-export，新函数请加到 services/<域>.py")
+    assigned = [n.targets[0].id for n in tree.body
+                if isinstance(n, ast.Assign) and hasattr(n.targets[0], "id")]
+    assert assigned == ["__all__"], (
+        f"services/__init__.py 顶层只该有 __all__ 这一个赋值，现在是 {assigned}")
+
+
+def test_没有同名的死模块被包遮蔽():
+    """根目录的 `.py` 与同名包并存时，那个 `.py` 永远不会被加载。
+
+    这类文件是最坏的一种"看起来还在"：编辑器里搜得到、`git log` 里改过、
+    守卫测试可能还在读它，但运行时它一个字节都不参与。
+    `services.py`（2026-11-08 拆包后留下的 13 行门面）就是被 `services/` 遮蔽的那个。
+
+    判据用 Python 的真实取舍规则，不靠维护一张人肉清单：扫出同名对，
+    再 `import` 一次看加载的是谁——被遮蔽就报出来。
+    """
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    modules = {p.stem for p in root.glob("*.py") if p.stem != "__init__"}
+    packages = {p.name for p in root.iterdir()
+                if p.is_dir() and (p / "__init__.py").exists()}
+    shadowed = sorted(modules & packages)
+    alive = []
+    for name in shadowed:
+        loaded = pathlib.Path(importlib.import_module(name).__file__).resolve()
+        if loaded == (root / f"{name}.py").resolve():
+            continue                      # 这个 .py 真的在被加载，没问题
+        alive.append(name)
+    assert not alive, (
+        f"这些根目录 .py 被同名包遮蔽、永远不会被加载，应当删掉：{alive}\n"
+        "（删之前先确认没有测试在读它的文件内容——读了就是假绿守卫）")
 
 
 def test_拆分没有丢任何一个_services_公开名字():

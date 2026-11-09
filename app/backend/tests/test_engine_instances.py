@@ -24,6 +24,7 @@ import pytest
 
 import adapters
 import engine_http_run
+import safenet
 import engines
 import runners
 import services
@@ -300,7 +301,11 @@ def _call_script(monkeypatch, tmp_path, responses=None, extra=None, transport=No
     if transport is None:
         queue = iter(responses or [])
         transport = lambda *a, **k: next(queue)      # noqa: E731
-    monkeypatch.setattr(engine_http_run, "urlopen", transport)
+    # 2026-11-09：`engine_http_run` 不再直接用 `urlopen`，改成走
+    # `safenet.safe_urlopen`（不跟随 3xx，防 Authorization 被 302 带去别的域）。
+    # 替身跟着换地方——补丁打在**它真正调用的那个名字**上，
+    # 否则这个 helper 会变成"patched 了没人用的函数"，六条用例全部假绿。
+    monkeypatch.setattr(engine_http_run.safenet, "safe_urlopen", transport)
     out = tmp_path / "out.png"
     receipt = tmp_path / "receipt.json"
     request = tmp_path / "req.json"

@@ -760,6 +760,11 @@ function paintEx(root) {
   }
   const o = ex.options;
   const price = (o.unit_price_micros / 1_000_000).toFixed(2);
+  // 单位念后端下发的 `o.unit`（`services/doc_ai.py:67` 的 `unit`），
+  // 不写死"百万 Token"：清单里换成 second／request 时，硬写的那句会静默说谎。
+  // `unitLabel()` 是 `enums.js` 里那张唯一的口径表（认不出来就原样念 code，
+  // 不猜近义单位）——本文件第 6 行早就 import 它了，只是先前没用在这两处。
+  const unitText = unitLabel(o.unit);
   if (!ex.run) {
     body.innerHTML = `
       <p class="modal-meta">从《${escapeHtml(o.doc_title)}》里抽角色／场景／道具／镜头。
@@ -768,8 +773,8 @@ function paintEx(root) {
         <div><span class="grp">文档</span><b>${escapeHtml(o.doc_title)}</b></div>
         <div><span class="grp">正文</span><b>${o.chars} 字</b></div>
         <div><span class="grp">模型</span><b>${escapeHtml(o.provider)} / ${escapeHtml(o.model)}</b></div>
-        <div><span class="grp">单价</span><b>¥${price} / 百万 Token</b></div>
-        <div><span class="grp">预计用量</span><b>${o.estimated_quantity} 百万 Token</b></div>
+        <div><span class="grp">单价</span><b>¥${price} / ${escapeHtml(unitText)}</b></div>
+        <div><span class="grp">预计用量</span><b>${o.estimated_quantity} ${escapeHtml(unitText)}</b></div>
         <div><span class="grp">健康</span><b>${escapeHtml(o.health_detail)}</b></div>
       </div>
       <label class="modal-label" for="ex-instruction">额外要求（可不填，最多 2000 字）</label>

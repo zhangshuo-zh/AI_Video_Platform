@@ -26,7 +26,9 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+import safenet
 
 DEFAULT_TIMEOUT = 180.0
 
@@ -109,10 +111,18 @@ def main() -> int:
     timeout = float(request.get("timeout") or DEFAULT_TIMEOUT)
     started = time.perf_counter()
     try:
-        with urlopen(Request(url, data=payload, headers=headers, method="POST"),
-                     timeout=timeout) as resp:
+        # 不跟随重定向：可带 `Authorization: Bearer <sharedSecret>`，一次 307
+        # 就够把密钥带到别的域。UnsafeTarget 是 ValueError 子类，单独接在最前面。
+        with safenet.safe_urlopen(
+                Request(url, data=payload, headers=headers, method="POST"),
+                timeout=timeout) as resp:
             raw = resp.read()
             http_status = resp.status
+    except safenet.UnsafeTarget as exc:
+        return _finish(receipt_path, ok=False, code="unsafe_redirect",
+                       message=f"{url} 没有发出请求：{exc}",
+                       model=model,
+                       latency_ms=int((time.perf_counter() - started) * 1000))
     except HTTPError as exc:
         detail = exc.read()[:400].decode("utf-8", "replace") if exc.fp else ""
         return _finish(receipt_path, ok=False, code=f"http_{exc.code}",

@@ -31,8 +31,9 @@ import json
 import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+import safenet
 from repositories.engine_instances import engine_instances
 
 # 这一族引擎的状态来自"打一次本机服务"，不是"看一次文件系统"。
@@ -132,8 +133,14 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
     url = endpoint.rstrip("/") + path
     try:
         request = Request(url, method="GET")
-        with urlopen(request, timeout=timeout or _TIMEOUT_SECONDS) as response:
+        # 不跟随重定向：端点是人填的，一次 302 就能把它指去任何地方
+        # （包括云元数据接口）。这里抛的 UnsafeTarget 是 ValueError 子类，
+        # 必须单独接在下面——否则会被当成"连不上"，丢掉"有人在指路"这个信息。
+        with safenet.safe_urlopen(request,
+                                  timeout=timeout or _TIMEOUT_SECONDS) as response:
             raw = response.read()
+    except safenet.UnsafeTarget as exc:
+        return {"error": f"{url} 没有发出请求：{exc}", "timed_out": False}
     except (URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)

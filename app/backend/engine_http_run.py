@@ -27,7 +27,9 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+import safenet
 
 POLL_HINT = 600     # 单次本机出图的上限（秒）。远小于 worker 的 7200 作业上限
 
@@ -69,8 +71,16 @@ def main() -> int:
     started = time.perf_counter()
     try:
         req = Request(url, data=payload, headers=headers, method="POST")
-        with urlopen(req, timeout=float(request.get("timeout") or POLL_HINT)) as resp:
+        # 不跟随重定向：这条请求可能带 `Authorization: Bearer <真实 sharedSecret>`，
+        # 而 urllib 跟随 3xx 会把请求头一起带到新地址。UnsafeTarget 是 ValueError
+        # 子类，必须排在最前面接住，否则会落到下面的网络分支被说成"连不上"。
+        with safenet.safe_urlopen(
+                req, timeout=float(request.get("timeout") or POLL_HINT)) as resp:
             raw = resp.read()
+    except safenet.UnsafeTarget as exc:
+        return _finish(receipt_path, ok=False, code="unsafe_redirect",
+                       message=f"{url} 没有发出请求：{exc}",
+                       latency_ms=int((time.perf_counter() - started) * 1000))
     except HTTPError as exc:
         # 422 是这个服务最有信息量的一种失败：它会把不认识的键原样点名。
         detail = exc.read()[:600].decode("utf-8", "replace") if exc.fp else ""
@@ -111,10 +121,13 @@ def main() -> int:
     # 这一步失败不影响作业成败——它是账，不是闸门（闸门在 submit_job）。
     engine_model = ""
     try:
-        with urlopen(Request(endpoint + "/sdapi/v1/options"), timeout=10) as resp:
+        with safenet.safe_urlopen(Request(endpoint + "/sdapi/v1/options"),
+                                  timeout=10) as resp:
             engine_model = str(json.loads(resp.read().decode("utf-8", "replace"))
                                .get("model") or "")
     except (URLError, OSError, ValueError, HTTPError):
+        # 含 safenet.UnsafeTarget（ValueError 子类）：这一步是账不是闸门，
+        # 被重定向拦下就留空 engine_model，不让整个作业失败。
         pass
 
     return _finish(receipt_path, ok=True, code="", message="",
