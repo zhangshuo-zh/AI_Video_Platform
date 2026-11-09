@@ -98,7 +98,20 @@ def _pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    # **`kill -0` 成功不等于活着**：等父进程 `wait()` 之前它是僵尸（`ps stat=Z`），
+    # 照样返回成功。本进程起的用上面的 `poll()` 就能回收；但 `stop_one` 面对的是
+    # **别处起的** worker（`./run.sh worker`，或 API 重启前那一个），那些没有 Popen
+    # 句柄，只能靠这条兜底。
+    #
+    # 不看这一条会怎样（实测）：`stop_one` 对别人的 worker 发完 SIGTERM，
+    # 它 0.3 秒就退了、变成僵尸，而这里判"还活着"→ 等满 8 秒 → 走 SIGKILL 分支 →
+    # 回执写成「8 秒内没退，已强杀」。一次干净的退出被报成强杀。
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3)
+        return not out.stdout.strip().startswith("Z")
+    except (OSError, subprocess.SubprocessError):
+        return True      # 查不到就按"活着"处理：宁可多等，不要误判成已退
 
 
 def _pid_files() -> list[Path]:
@@ -364,6 +377,22 @@ def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
     worker 装了信号处理（`worker.py` 的 STOP 标志），SIGTERM 会让它跑完当前
     这一轮再退——所以给它 8 秒，不是 1 秒就强杀。
     """
+    # **只允许停"我们自己登记过的 worker"**（2026-11-10 复核修）。
+    #
+    # 原来这里拿到 pid 就 `os.kill`——`stop_one` 是 `POST /worker/process/stop-one`
+    # 的实现，那个接口的入参 `pid` 来自请求体。于是**任意 pid 都能被 SIGTERM、
+    # 8 秒后 SIGKILL**：实测拿一个与本平台无关的 Python 进程试，它被直接强杀了。
+    # 有 `system:config` 的人能借此打掉 API 自己、数据库、别的服务；
+    # 叠加一个跨站请求（如果 CSRF 防线有缺口）危害更大。
+    #
+    # 判据用 `PID_DIR` 下的登记文件，而不是"这个 pid 看起来像 worker"：
+    # 登记文件是本平台起进程时才写的，是唯一可信的"这是我们的人"的凭据。
+    # 我不去读 /proc 的 cmdline 之类——那要靠猜命令行长什么样。
+    registered = {item["pid"] for item in list_workers()}
+    if pid not in registered:
+        return {"ok": False, "pid": pid,
+                "message": f"PID {pid} 不是本机登记的 worker，拒绝操作"}
+
     _reap(pid)
     if not _pid_alive(pid):
         _cleanup_pid_if(pid)

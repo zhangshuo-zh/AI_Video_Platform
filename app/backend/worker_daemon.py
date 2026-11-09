@@ -125,16 +125,29 @@ def _tick() -> None:
 
     cfg = load_config()
     _STATE["last_check"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    if not cfg["enabled"]:
-        return
 
     state = sup.current()
     online = state["count"]
     desired = cfg["desired"]
 
-    # 通知受影响的项目：**无论守护开没开都要做**。守护只管"要不要自动拉起"，
-    # 而"队列停了要告诉人"是另一件事——守护关着的时候更需要这条提醒。
+    # **通知必须在"守没守"这个判断之前**（2026-11-10 复核修）。
+    #
+    # 原来这里先 `if not cfg["enabled"]: return`，再 `_notify_state()`——
+    # 而守护**默认就是关的**（opt-in）。结果是：
+    # worker 掉了、队列里还排着活、受影响的项目**一条通知都收不到**，
+    # 除非有人先去把守护打开。等于"worker 掉线要通知项目成员"这条需求
+    # 在默认配置下完全不工作。
+    #
+    # 这两件事本来就是独立的：
+    #   * 守护 = 要不要**自动拉起**（opt-in，默认关）
+    #   * 通知 = 队列停了要**告诉人**（无论谁去拉，都该通知）
+    # 我上一版甚至把这句话写进了注释（"无论守护开没开都要做"），
+    # 但代码把它放在了早退之后——注释成了空话。实测确认：
+    # 守护关闭时 `_tick()` 后通知表 0 条，而队列里确实有 1 条在等。
     _notify_state(online)
+
+    if not cfg["enabled"]:
+        return                       # 守护关着：到此为止，不自动拉起
 
     if online >= desired:
         _STATE["failures"] = 0      # 恢复正常就清零，否则一次故障会永久卡住

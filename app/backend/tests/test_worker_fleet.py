@@ -438,3 +438,78 @@ class TestOptimizations:
                 "AND tbl_name='notification'")}
         assert "idx_notification_audience" in names, (
             f"缺 audience 索引，实有：{sorted(names)}")
+
+
+class TestP0Regressions:
+    """复核时发现的两条 P0。两条都是"注释写了正确意图、代码是另一回事"。"""
+
+    def test_守护关着也要发掉线通知(self, env, uniq, monkeypatch):
+        """**H1**：`_tick` 原来先 `if not cfg["enabled"]: return`，再调
+        `_notify_state()`——而守护**默认关**（opt-in）。于是 worker 掉了、
+        队列里还排着活、受影响的项目**一条通知都收不到**，除非有人先去开守护。
+        等于"worker 掉线通知项目成员"这条需求在默认配置下完全不工作。
+
+        讽刺的是我上一版把"无论守护开没开都要做"写进了注释，代码却把它放在
+        早退之后——注释成了空话。实测确认过：修之前 `_tick()` 后通知表 0 条。
+        """
+        import worker_daemon as daemon
+        import worker_notice
+        from db import get_conn
+
+        _insert_project(uniq, owner_id=uniq)
+        _insert_queued_job(uniq)
+        daemon.save_config(enabled=False, desired=1)     # 默认状态：守护关
+
+        # 确保"当前没有 worker 在跑"（fixture 已隔离 PID 目录）
+        assert env["sup"].current()["count"] == 0
+
+        daemon._tick()
+
+        box = __import__("notifications").inbox(_fake_user(id=uniq))
+        offline = [x for x in box["items"] if x["kind"] == "worker_offline"]
+        assert offline, "守护关着时没发掉线通知——通知链路被早退挡掉了"
+
+    def test_stop_one_拒绝不是本平台登记的_pid(self, env, uniq):
+        """**H2**：`stop_one(pid)` 原来拿到 pid 就 `os.kill`，而 pid 来自
+        `POST /worker/process/stop-one` 的请求体。于是任意 pid 都能被
+        SIGTERM、8 秒后 SIGKILL——实测拿一个无关进程试，它被直接强杀了。
+        有 `system:config` 的人能借此打掉 API 自己。
+
+        判据用 `PID_DIR` 下的登记文件，不是猜命令行长什么样。
+        """
+        sup = env["sup"]
+        import subprocess
+        # 起一个与本平台无关的进程
+        victim = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(20)"],
+            start_new_session=True)
+        try:
+            assert sup._pid_alive(victim.pid)
+            result = sup.stop_one(victim.pid, timeout=1)
+            assert result["ok"] is False
+            assert "不是本机登记的 worker" in result["message"]
+            # **关键**：进程必须还活着
+            assert victim.poll() is None, "任意 pid 被杀了"
+        finally:
+            victim.kill()
+            victim.wait()
+
+    def test_stop_one_对自己的_worker_仍然有效(self, env, uniq):
+        """上一条的配对：加了存在性校验之后，真 worker 还得停得掉。
+        只验"拒外部"会让实现倾向于无脑全拒也能绿。"""
+        sup = env["sup"]
+        import subprocess
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(20)"],
+            start_new_session=True)
+        try:
+            sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+            (sup.PID_DIR / f"{worker.pid}.pid").write_text(str(worker.pid))
+            result = sup.stop_one(worker.pid, timeout=5)
+            assert result["ok"] is True
+            assert "worker 已停止" in result["message"]
+            assert worker.poll() is not None, "自己的 worker 没停掉"
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait()
