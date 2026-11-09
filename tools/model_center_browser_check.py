@@ -9,9 +9,15 @@
   - FASTVIDEO_WORKSPACE / JOBS / FILES 全指临时目录，
     不然测试文档会被 git 提交进你真正的稿子目录（conftest 里就写了这条教训）。
 
+接着要给这份副本**铺一份"用过一阵"的痕迹**（`seed_db()`）：本机跑时
+prepare_backend_db 会复制现役库，那些登记与心跳是人一点点点的；CI 的 runner
+没有现役库，只能从迁移起一个空库。空库是合法输入，验收该自己把数据摆出来——
+否则一次跑下来二十条红全是"库里本来就没有"，红得与页面无关。
+
 会话是直接在副本库里铸的，不碰任何口令。
 
 用法：python3 tools/model_center_browser_check.py
+（当前解释器缺后端依赖时，脚本会用 `app/backend/.venv` 的解释器重执行自己）
 """
 from __future__ import annotations
 
@@ -24,6 +30,35 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _harness as H
+
+
+def _ensure_backend_deps() -> None:
+    """脚本自己的进程也要能 import 后端：种子直插仓储会一路拉到 pydantic。
+
+    服务与 worker 一直由 `H.backend_python()` 起，但那只管子进程；CI 把依赖
+    装进系统解释器，本机却只在 `app/backend/.venv` 里。缺依赖时用 venv 那只
+    解释器**重执行自己一次**，于是 `python3 tools/...` 在哪都能直接跑。
+    重执行后还缺就直说，不在这里无休止地重入。
+    """
+    try:
+        import pydantic  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    target = Path(H.backend_python())
+    # 比字符串而不是 resolve()：venv 的 bin/python 是软链，resolve() 后两个
+    # 解释器会变成同一个真实文件，"已经在 venv 里"就永远判不出来。
+    if Path(sys.executable) == target:
+        raise SystemExit("这个解释器连 pydantic 都没有，后端 venv 里那份也一样："
+                         "先按 requirements.txt 装依赖再跑")
+    entry = sys.argv[0] if str(sys.argv[0]).endswith(".py") else __file__
+    os.execv(str(target), [str(target), str(Path(entry).resolve()), *sys.argv[1:]])
+
+
+# 模块导入时切：production_browser_check 也是 import 本模块复用壳的，
+# 在入口脚本里写这一行会漏掉那条路径。入口取 sys.argv[0] 而不是 __file__——
+# 被 import 时 __file__ 是本文件，重执行会跑错脚本。
+_ensure_backend_deps()
 
 BACKEND = H.BACKEND
 TMP = H.temp_dir("fv-mc-")
@@ -45,15 +80,8 @@ def prepare_env():
     H.prepare_backend_db(TMP / "platform.db")
 
 
-def mint_admin_session() -> str:
-    """给副本库里那个 admin 角色账号铸一个会话。不猜口令，也不改口令。"""
-    from datetime import datetime, timedelta
-
-    from repositories.users import sessions
-    from security import new_session_token
-
-    import sqlite3
-
+def _admin_id() -> int:
+    """副本库里那个 admin 角色账号的 id。会话与种子数据都记在它名下。"""
     from db import get_conn
 
     with get_conn() as conn:
@@ -64,17 +92,155 @@ def mint_admin_session() -> str:
                     WHERE r.code = 'admin' AND u.is_active = 1
                     ORDER BY u.is_superuser DESC, u.id LIMIT 1"""
         ).fetchone()
-        if row is None:
-            raise SystemExit("副本库里没有可用的 admin 账号，验不了模型中心")
+    if row is None:
+        raise SystemExit("副本库里没有可用的 admin 账号，验不了模型中心")
+    return int(row["id"])
+
+
+def seed_db() -> None:
+    """给副本库铺一份"用过一阵"的痕迹：登记、引擎实例、验证留痕、worker 心跳。
+
+    为什么必须有这一步：这套验收原来默认"库副本是现役库的拷贝"，登记与留痕
+    都是人点出来的。CI 的 runner 没有现役库（prepare_backend_db 会从迁移起空库），
+    于是「已登记/可用/需要看一眼」三格、引擎实例表、验证翻页、引擎连接结果窗、
+    worker 表全红在"库里本来就没有"——2026-11-09 那次 60/81 就是这么来的。
+
+    这里直插仓储、不走 HTTP：服务还没起，而且这些是"库里的历史"，不是要验的
+    写路径（写路径由脚本自己在页面上再走一遍）。本地跑时库副本已经带着现役
+    数据，所以登记与实例只补缺的；文本档只在不是 deepseek 时才改——它是一次性
+    副本，改动不会回流到现役库。
+    """
+    if str(BACKEND) not in sys.path:
+        sys.path.insert(0, str(BACKEND))
+
+    from db import get_conn
+    from repositories.engine_instances import engine_instances as inst_repo
+    from repositories.model_center import model_center as reg_repo
+    from repositories.projects import projects as project_repo
+    from repositories.providers import providers as prov_repo
+    from repositories.validation import validations as val_repo
+
+    admin = _admin_id()
+
+    # 文本的云端档是唯一默认轨（0014 只把另外四类归位到本地）。空库里这一格
+    # 没有 provider，于是永远没有"可用"档，云端探测也没有对象可查。
+    # 直接指到 deepseek：这一档有适配器、有计价、也能被假网关探通，
+    # 后面「可用」「路通、钥匙被接受」两段才有真对象。
+    slot = prov_repo.slot("text", "cloud")
+    if slot is not None and (slot["provider"], slot["model"],
+                             int(slot["enabled"]), int(slot["is_default"])) != (
+            "deepseek", "deepseek-flash", 1, 1):
+        prov_repo.replace_many([{
+            "id": slot["id"], "provider": "deepseek", "model": "deepseek-flash",
+            "enabled": 1, "is_default": 1, "key_env": "",
+            "notes": "浏览器验收种子：文本档指到 deepseek",
+        }])
+
+    for cap, backend, provider, model, note, caps in (
+        ("text", "cloud", "deepseek", "deepseek-flash", "", []),
+        # 故意没有 DASHSCOPE 密钥：云端这一段要验「键缺＝连接失败」那一档
+        ("video", "cloud", "wan", "wan2.7-t2v",
+         "浏览器验收种子：云端视频（没有密钥）", []),
+        # 人工标签：未核验前界面要标「人工声明 · 未核验」；它也是重复登记用例的对象
+        ("image", "local", "mflux", "flux1-schnell",
+         "浏览器验收种子：带人工能力标签的底模", ["角色一致性"]),
+    ):
+        if reg_repo.find_registration(cap, backend, provider, model) is not None:
+            continue
+        reg_repo.create({"capability": cap, "backend": backend, "provider": provider,
+                         "model_code": model, "source": backend, "engine_code": provider,
+                         "capabilities": caps, "note": note, "created_by": admin})
+
+    # 可用档需要"这一档自己有过真实调用或产物验收"；假网关只证明钥匙通，
+    # 不替它声明可用。这条 real_call 是种子里唯一的"证据"，其余都是环境检查。
+    with get_conn() as conn:
+        proven = conn.execute(
+            """SELECT 1 FROM model_validation
+                WHERE capability = 'text' AND backend = 'cloud'
+                  AND provider = 'deepseek' AND model = 'deepseek-flash'
+                  AND kind IN ('real_call', 'artifact_review') AND state = 'ok'
+                LIMIT 1""").fetchone()
+    if proven is None:
+        val_repo.record({
+            "capability": "text", "backend": "cloud", "provider": "deepseek",
+            "model": "deepseek-flash", "adapter_code": "deepseek",
+            "kind": "real_call", "state": "ok",
+            "detail": "浏览器验收种子：这一档真跑过一条作业",
+            "created_by": admin,
+        })
+    # 验证历史一页 50 条：「更早的」入口要在总数多过一页时才出现。
+    total = val_repo.count()
+    for i in range(total, 60):
+        val_repo.record({
+            "capability": "text", "backend": "cloud", "provider": "deepseek",
+            "model": "deepseek-flash", "adapter_code": "deepseek",
+            "kind": "env_check", "state": "ok",
+            "detail": f"浏览器验收种子：历史环境检查 #{i + 1}",
+            "created_by": admin,
+        })
+
+    # 引擎实例：结果窗按实例逐台列（draw_things 与 ollama 各一台）。
+    # CI 上这两个端口多半没人听——那正是要验的"连不上也要如实列出来"。
+    for code, endpoint, name in (
+        ("draw_things", "http://127.0.0.1:7860", "Draw Things（本机画图应用）"),
+        ("ollama", "http://127.0.0.1:11434", "Ollama（本机文本服务）"),
+    ):
+        with get_conn() as conn:
+            dup = conn.execute(
+                "SELECT 1 FROM engine_instance WHERE engine_code = ? AND endpoint = ?",
+                (code, endpoint)).fetchone()
+        if dup is not None:
+            continue
+        inst_repo.create({"engine_code": code, "endpoint": endpoint,
+                          "display_name": name, "enabled": True,
+                          "note": "浏览器验收种子", "created_by": admin})
+
+    # 整季页是按项目组织的：没有当前项目时它只念「先选一个项目」，
+    # worker 表根本不会被画出来。
+    with get_conn() as conn:
+        has_project = conn.execute("SELECT 1 FROM project LIMIT 1").fetchone()
+    if has_project is None:
+        project_repo.create("验收用项目",
+                            "浏览器验收种子：整季页要先有一个当前项目才画得出来",
+                            [], admin)
+
+    # 离线心跳行：worker 表默认只列在线，「另有 N 个进程 · 现已离线」与
+    # 心跳的"天/小时"写法都要有对象。在线那一行不在这里造——种子写下的
+    # 心跳 20 秒就过期，真在线必须由接下来拉起的 worker 进程持续续租。
+    with get_conn() as conn:
+        for wid, ago in (("mc-seed-offline-1", "-1 day"),
+                         ("mc-seed-offline-2", "-3 days")):
+            if conn.execute("SELECT 1 FROM worker_node WHERE worker_id = ?",
+                            (wid,)).fetchone():
+                continue
+            conn.execute(
+                """INSERT INTO worker_node
+                       (worker_id, pid, host, started_at, heartbeat_at,
+                        current_job_id, version, limits_json, resources_json)
+                   VALUES (?, 0, ?, datetime('now','localtime', ?, '-10 minutes'),
+                           datetime('now','localtime', ?), NULL, 'seed', '{}', '{}')""",
+                (wid, wid, ago, ago))
+
+
+def mint_admin_session() -> str:
+    """给副本库里那个 admin 角色账号铸一个会话。不猜口令，也不改口令。"""
+    from datetime import datetime, timedelta
+
+    from repositories.users import sessions
+    from security import new_session_token
+
+    from db import get_conn
+
+    admin = _admin_id()
     token, token_hash = new_session_token()
     expires = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
-    sessions.create(token_hash, row["id"], expires)
+    sessions.create(token_hash, admin, expires)
     # CI 干净库的 superadmin 由 bootstrap 建出来时带 must_change_password=True，
     # deps.py 那道「改密前只放行 me/password/logout」的闸门会把业务接口全 403。
     # 这是一次性验收副本库（不是生产），清掉标志让验收走到真页面；production
     # 验收复用本函数，一并修好。生产建号仍保留强制改密，不受影响。
     with get_conn() as conn:
-        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE id = ?", (row["id"],))
+        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE id = ?", (admin,))
     return token
 
 
@@ -126,10 +292,14 @@ def main():
     os.environ["DEEPSEEK_API_KEY"] = MOCK_SECRET
     os.environ.pop("ALIYUN_WAN_BASE_URL", None)
 
+    # 数据摆在起服务之前：直插仓储要的是"库里的历史"，不是 HTTP 写路径。
+    seed_db()
+
     proc = subprocess.Popen(
         [str(H.backend_python()), "-m", "uvicorn", "main:app",
          "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
         cwd=str(BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    worker = None
     results: list[tuple[str, bool, str]] = []
 
     def check(name, ok, detail=""):
@@ -139,6 +309,12 @@ def main():
 
     try:
         wait_server()
+        # 在线那一行必须由真进程持续续租：种子写下的心跳 20 秒就过期，
+        # 而这一轮要跑几分钟。它与产线验收拉起的是同一个 worker。
+        worker = subprocess.Popen(
+            [str(H.backend_python()), "worker.py", "--poll", "0.2"],
+            cwd=str(BACKEND), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        time.sleep(1.2)
         import proto_cdp_check as P
 
         chrome = start_chrome(P.PORT)
@@ -1026,6 +1202,8 @@ def main():
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
     finally:
         proc.terminate()
+        if worker is not None:
+            worker.terminate()
         try:
             chrome.terminate()
         except NameError:
