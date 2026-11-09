@@ -127,7 +127,7 @@ export const store = {
         this.currentEpisodeId = before;
         window.dispatchEvent(new CustomEvent('app:refresh'));
         window.dispatchEvent(new CustomEvent('app:toast', {
-          detail: { text: '这一集没记住：上下文写回失败，可能是项目已不可见' } }));
+          detail: { text: '这一集没记住：上下文写回失败，可能是项目已不可见', kind: 'err' } }));
       });
   },
 

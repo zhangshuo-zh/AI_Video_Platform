@@ -2019,3 +2019,55 @@ td.shot-jobs .t-desc{max-width:180px}
 .rev-checklist .rev-check-list {margin:6px 0 0;padding-left:16px; display: grid;gap:8px; }
 .rev-checklist .rev-check-list li { display: grid;gap:4px; }
 .rev-checklist .rev-check-list b {margin-right:6px; }
+
+/* ---------- 轻提示堆栈（app.js toast） ----------
+   原来每条提示各自 fixed 到右下角同一坐标，同时来两条就叠成一张脸。
+   现在一个容器纵向排：新的在下（离拇指最近），旧的往上顶。
+   层级用 --z-top 而不是 --z-pop：轻提示要压过弹层与抽屉才有意义——
+   "写回失败"常常正是从弹层里点出来的，被自己的弹层盖住等于没说。
+   但仍在 --z-pick 之下：自绘下拉展开时不能有东西横在上面。 */
+.toast-host{
+  position:fixed;right:24px;bottom:24px;z-index:var(--z-top);
+  display:flex;flex-direction:column;gap:8px;   /* 新的追加在末尾＝最靠下，离右下角最近 */
+  max-width:min(560px,calc(100vw - 48px));
+  pointer-events:none;                 /* 空白处不挡点击，只有条目本身可点 */
+}
+.toast-item{
+  pointer-events:auto;
+  display:flex;align-items:flex-start;gap:8px;
+  padding:10px 12px;border-radius:var(--r-ctl);
+  border:1px solid var(--line-strong);background:var(--sheet);color:var(--ink);
+  box-shadow:var(--sh-pop);
+  font-size:12.5px;line-height:1.5;text-align:left;white-space:normal;
+  animation:toast-in .16s var(--ease);
+}
+.toast-item.toast-out{animation:toast-out .16s var(--ease) forwards}
+/* 左侧一道 3px 竖条承担"这是什么性质的提示"：颜色比整块染色克制，
+   也不会把正文的对比度拖下来（整块 --bad-soft 上的深红字只有 4.6:1，压线）。 */
+.toast-item.tone-err{border-left:3px solid var(--bad)}
+.toast-item.tone-warn{border-left:3px solid var(--warn)}
+.toast-item.tone-ok{border-left:3px solid var(--ok)}
+.toast-item.tone-info{border-left:3px solid var(--accent)}
+.toast-item .toast-text{flex:1;min-width:0;overflow-wrap:anywhere}
+/* 合并计数：同一个问题重复发生时给的次数，别让 5 张一样的脸并排站着 */
+.toast-item .toast-count{
+  flex:none;font-size:11px;font-variant-numeric:tabular-nums;
+  color:var(--ink-2);background:var(--hover);
+  border-radius:var(--capsule);padding:0 6px;
+}
+/* 关闭键：失败提示不自动消失，必须留一个明确的出口。
+   命中区做到 24px——12px 的 × 在触屏上点不中。 */
+.toast-item .toast-x{
+  flex:none;width:24px;height:24px;margin:-3px -4px -3px 0;
+  display:inline-flex;align-items:center;justify-content:center;
+  border:0;border-radius:var(--r-ctl);background:none;color:var(--ink-2);
+  font-size:15px;line-height:1;cursor:pointer;
+  transition:background var(--fast),color var(--fast);
+}
+.toast-item .toast-x:hover{background:var(--hover);color:var(--ink)}
+/* 窄屏（手机）：贴满两边，别让 560px 的提示挤成一条竖线 */
+@media (max-width:640px){
+  .toast-host{left:12px;right:12px;bottom:12px;max-width:none}
+}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes toast-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px)}}

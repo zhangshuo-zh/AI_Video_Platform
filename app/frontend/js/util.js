@@ -29,7 +29,7 @@ export async function run(label, fn) {
     // 由 `app.js:641` 接住渲染成右下角那条。`util.js` 不 import `app.js`——
     // 那是壳，反向依赖会把工具模块和应用壳绑死。
     window.dispatchEvent(new CustomEvent('app:toast', {
-      detail: { text: `${label}失败：${err.message}` } }));
+      detail: { text: `${label}失败：${err.message}`, kind: 'err' } }));
     return false;
   }
 }

@@ -334,13 +334,14 @@ export default {
       let check;
       try { check = await api.precheckShot(shotId); } catch (err) {
         window.dispatchEvent(new CustomEvent('app:toast', {
-          detail: { text: '预检没跑成：' + (err.message || '未知错误') } }));
+          detail: { text: '预检没跑成：' + (err.message || '未知错误'), kind: 'err' } }));
         return;
       }
       if (check.status === '阻塞') {
         window.dispatchEvent(new CustomEvent('app:toast', {
           detail: { text: `预检阻塞 ${check.blocking} 项：` + check.items
-            .filter((i) => i.level === '阻塞').map((i) => i.text).join('；') } }));
+            .filter((i) => i.level === '阻塞').map((i) => i.text).join('；'),
+            kind: 'warn' } }));
         return;
       }
       setJobPrefill({ projectId: store.currentId, episodeId: store.currentEpisodeId,

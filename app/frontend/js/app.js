@@ -283,16 +283,91 @@ function setupEpPick() {
 /* ---------------- 轻提示 ----------------
  * 全站共用一条：写回失败、预检阻塞这类"只有一句话"的反馈，
  * 不值得弹一层模态，但也不能什么都不说。
+ *
+ * 2026-11-09 从"一条自己 fixed 定位的浮层"改成"一个堆栈"，两条硬理由：
+ *   ① 原来每条 toast 各自 `position:fixed;right:24px;bottom:24px`，坐标完全
+ *      相同。批量操作连失败三次，第 2、3 条直接盖在第 1 条身上——人只看见
+ *      最后一句，还以为只错了一次。现在一个容器纵向排，谁也别压谁。
+ *   ② 原来恒为 `chip amber` 且 4200ms 一律自动消失。于是"写回失败"和
+ *      "记住这一集了"共用一张脸，失败提示还会在人读完之前自己走掉。
+ *      现在按 kind 分色；失败类不自动消失，必须点掉。
+ *
+ * 调用约定：`toast(文案, kind)`，kind ∈ err|warn|ok|info（缺省 info）。
+ * 视图照旧只派 `app:toast` 事件，把 kind 放进 detail——util.js 不 import
+ * 这个壳（反向依赖会把工具模块和应用壳绑死）。
  */
 
-function toast(text) {
+const TOAST_TONE = { err: 'tone-err', warn: 'tone-warn', ok: 'tone-ok', info: 'tone-info' };
+const TOAST_MAX = 4;      // 最多同时挂 4 条，再多先挤掉最老的非失败条目
+const TOAST_TTL = 4200;   // 非失败类的自动消失时长
+let toastHost = null;
+
+function ensureToastHost() {
+  if (toastHost && document.body.contains(toastHost)) return toastHost;
+  toastHost = document.createElement('div');
+  toastHost.className = 'toast-host';
+  toastHost.id = 'toast-host';
+  document.body.appendChild(toastHost);
+  return toastHost;
+}
+
+function toastDismiss(el) {
+  if (!el || el.dataset.leaving || !el.isConnected) return;
+  el.dataset.leaving = '1';
+  if (el.dataset.timer) clearTimeout(Number(el.dataset.timer));
+  el.classList.add('toast-out');
+  setTimeout(() => el.remove(), 160);
+}
+
+function toastArmTimer(el) {
+  el.dataset.timer = String(setTimeout(() => toastDismiss(el), TOAST_TTL));
+}
+
+function toastTrim(host) {
+  const items = [...host.querySelectorAll('.toast-item')];
+  while (items.length > TOAST_MAX) {
+    // 先挤最老的非失败条目；清一色失败条目时再挤最老那条
+    const idx = items.findIndex((el) => el.dataset.kind !== 'err');
+    const victim = items.splice(idx >= 0 ? idx : 0, 1)[0];
+    if (victim) victim.remove();
+  }
+}
+
+function toast(text, kind = 'info') {
+  const body = String(text || '').trim();
+  if (!body) return;
+  const k = TOAST_TONE[kind] ? kind : 'info';
+  const host = ensureToastHost();
+
+  // 同文案合并计数：批量失败的 5 条原因常常一字不差——那不是 5 个问题，
+  // 是同一个问题发生了 5 次。合并成一条 ×5 比并排挂 5 张一样的脸好读。
+  for (const el of host.querySelectorAll('.toast-item')) {
+    if (el.dataset.kind !== k || el.dataset.text !== body) continue;
+    const n = Number(el.dataset.count || 1) + 1;
+    el.dataset.count = String(n);
+    const badge = el.querySelector('.toast-count');
+    if (badge) { badge.textContent = `x${n}`; badge.hidden = n < 2; }
+    if (el.dataset.timer) clearTimeout(Number(el.dataset.timer));
+    delete el.dataset.timer;
+    if (k !== 'err') toastArmTimer(el);
+    return;
+  }
+
   const el = document.createElement('div');
-  el.className = 'chip amber';
-  el.textContent = text;
-  el.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:60;'
-    + 'padding:10px 14px;max-width:min(560px,80vw);white-space:normal;text-align:left';
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  el.className = `toast-item ${TOAST_TONE[k]}`;
+  el.dataset.kind = k;
+  el.dataset.text = body;
+  el.dataset.count = '1';
+  el.innerHTML = '<span class="toast-text"></span>'
+    + '<span class="toast-count" hidden></span>'
+    + '<button class="toast-x" type="button" aria-label="关闭">&times;</button>';
+  el.querySelector('.toast-text').textContent = body;   // 调用方给什么显示什么
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('.toast-x')) toastDismiss(el);
+  });
+  host.appendChild(el);
+  toastTrim(host);
+  if (k !== 'err') toastArmTimer(el);   // 失败不自动消失：人得有机会读完
 }
 
 /* ---------------- 登录闸门 ----------------
@@ -638,7 +713,7 @@ async function boot() {
   // 会出现"列表里已经没有这个项目、顶栏还写着它"。
   window.addEventListener('app:go', (e) => goView(e.detail));
   // 轻提示的统一出口：视图只派事件，不各自攒一个浮层
-  window.addEventListener('app:toast', (e) => toast(e.detail?.text || ''));
+  window.addEventListener('app:toast', (e) => toast(e.detail?.text || '', e.detail?.kind || 'info'));
   let refreshTimer = 0;
   window.addEventListener('app:refresh', () => {
     // 一次操作常连发两三条（保存 + 刷新列表 + 切集）。合并成一次重绘，
