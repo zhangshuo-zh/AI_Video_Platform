@@ -20,7 +20,8 @@ from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                    JobRetryBatchIn,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
-                    JobSubmitIn, LocalCostOut, WorkerStatusOut)
+                    JobSubmitIn, LocalCostOut, WorkerStatusOut,
+                    WorkerLimitIn, WorkerLimitOut)
 from repositories.content import episodes
 from repositories.jobs import clamp_limit, jobs, retry_reason
 from repositories.projects import projects as project_repo
@@ -353,3 +354,32 @@ def worker_status(user=Depends(require_user)) -> WorkerStatusOut:
     这些都不改任何作业状态，只是把"没人干活"和"刚入队"分开说。
     """
     return WorkerStatusOut(**services.worker_status(user))
+
+
+@router.get("/worker/concurrency", response_model=WorkerLimitOut)
+def get_worker_concurrency(user=Depends(require_user)) -> WorkerLimitOut:
+    """并发上限的现值与这台机器的承载评估。
+
+    任何登录者都能看：这不是项目内容，是"这台机器能跑几条"的客观状态，
+    与队列长度同一性质。改它才要 `system:config`（见下面的 PUT）。
+    """
+    return WorkerLimitOut(**services.concurrency_now())
+
+
+@router.put("/worker/concurrency", response_model=WorkerLimitOut)
+def put_worker_concurrency(payload: WorkerLimitIn,
+                           user=Depends(require_permission("system:config"))
+                           ) -> WorkerLimitOut:
+    """改并发上限。危险档（估算撑破本机内存）不勾 `acknowledge_risk` 会被 400 挡下。
+
+    为什么要权限点：并发上限是整台机器的资源闸，不是某个项目的设置。
+    沿用 `system:config`——不新开权限点（与模型中心同一条理由）。
+
+    400 而不是 422：这不是"参数格式不对"，是**参数合法但后果危险**。
+    界面靠这个状态码 + 那句话决定要不要弹「仍要保存吗」，
+    与格式错误（422）分开，才不会把"填错了"和"你确定吗"混成一套处置。
+    """
+    try:
+        return WorkerLimitOut(**services.set_concurrency(payload, user))
+    except services.JobInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

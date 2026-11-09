@@ -142,6 +142,9 @@ export const ALERT_LABEL = {
   run_timeout: '运行超时',
   log_silent: '日志静默',
   needs_attention: '待核对',
+  // 0047：并发上限与本机内存的关系。bad＝估算会撑破，warn＝余量偏薄。
+  concurrency_over_memory: '并发超内存',
+  concurrency_tight_memory: '并发余量薄',
 };
 
 /** 告警那句中文；认不出来的 code 原样回（不会变成空白）。 */

@@ -204,6 +204,9 @@ ROUTES = [
     # 成本账按可见项目汇总：看不见那个项目时就是空账，不是 404
     ("GET", "/api/jobs/costs", None, 200),
     ("GET", "/api/worker/status", None, 200),
+    # 0047：并发设置。读是任何登录者都行（客观状态），写要 system:config ⇒ 403。
+    ("GET", "/api/worker/concurrency", None, 200),
+    ("PUT", "/api/worker/concurrency", {"global_max": 2}, 403),
     # ---------- 自动化漫剧产线（0026／阶段 B） ----------
     # 模板是全局的、只读，有 job:read 就能看 ⇒ editor（outsider）200。
     # 运行／节点一定挂项目：看不见那个项目就 404，连"这条运行存在"都不透露。

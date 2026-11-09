@@ -87,7 +87,8 @@ from .extraction import (
 
 from .jobs import (
     JobEstimateIn, JobSubmitIn, JobOut, JobDetailOut, JobLogOut, JobArtifactOut,
-    WorkerStatusOut, JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut
+    WorkerStatusOut, WorkerLimitIn, WorkerLimitOut,
+    JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut
 )
 
 from .members import (
@@ -318,6 +319,8 @@ __all__ = [
     "WorkbenchProject",
     "WorkbenchThroughput",
     "WorkerStatusOut",
+    "WorkerLimitIn",
+    "WorkerLimitOut",
     "_digest",
     "asset_version",
     "profile_version",

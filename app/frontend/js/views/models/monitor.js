@@ -158,7 +158,9 @@ function liveCards() {
       ${alerts ? `<ul class="hint flush" >${alerts}</ul>`
               : '<p class="note flush" >现在没有告警。</p>'}
     </div>
-  </div>`;
+  </div>
+
+  ${concurrencyCard()}`;
 }
 
 export function pageMonitor() {
@@ -211,8 +213,158 @@ function bindWorkerHistory(root) {
   });
 }
 
+
+/* ================= 并发设置（0047） ================= */
+/**
+ * 这一段要解决的是一个具体矛盾：并发上限**本来就是安全的**（默认 1，见
+ * `worker.py` 的模块头），但它只能从命令行改，于是想调的人不知道调多少才不炸；
+ * 而想改到网页上，就会让这个安全阈值变成随手能点掉的东西。
+ *
+ * 平衡点：**允许改，但把代价摆在旁边**。所以这张卡不是三个输入框，
+ * 而是"实测每类占多少 → 这套上限要多少 → 本机还剩多少"一条算式，
+ * 结论为 `over` 时按钮变成危险色、并要求勾一个确认框。
+ *
+ * 算式归后端（`concurrency_plan`），这里只显示——两处各算一次迟早分家。
+ */
+const VERDICT_UI = {
+  safe:    { chip: 'green', label: '放得下' },
+  tight:   { chip: 'amber', label: '余量偏薄' },
+  over:    { chip: 'red',   label: '会溢出' },
+  unknown: { chip: 'gray',  label: '估不出' },
+};
+
+function concurrencyCard() {
+  const c = (cache.worker || {}).concurrency || {};
+  const a = c.assessment || {};
+  const ui = VERDICT_UI[a.verdict] || VERDICT_UI.unknown;
+  const classes = ['text', 'image', 'video', 'audio', 'compose'];
+  const labels = { text: '文本', image: '图像', video: '视频', audio: '音频', compose: '成片' };
+  const effective = c.effective || {};
+  const per = effective.per || {};
+
+  const num = (id, value) => `<input class="inp" type="number" min="0" max="64"
+      id="${id}" value="${value == null ? '' : escapeHtml(String(value))}"
+      style="width:74px" ${value == null ? 'placeholder="默认"' : ''}>`;
+
+  const rows = classes.map((cls) => {
+    const peak = (a.peak_by_class_mb || {})[cls];
+    const slot = per[cls];
+    return `<tr>
+      <td>${labels[cls] || cls}</td>
+      <td class="hint">${peak == null
+        ? '<span class="t-dim">没有样本</span>'
+        : `实测峰值 ${peak} MB`}</td>
+      <td>${num(`mc-conc-per-${cls}`, slot)}</td>
+    </tr>`;
+  }).join('');
+
+  const detail = (a.detail || []).map((d) =>
+    `${labels[d.class] || d.class} ${d.unit_peak_mb} MB × ${d.slots} = ${d.sum_mb} MB`).join('；');
+
+  const basis = a.verdict === 'unknown'
+    ? `<p class="note flush" style="margin-top:8px">${escapeHtml(a.sentence || '')}</p>`
+    : `<p class="note flush" style="margin-top:8px">
+         <b>${escapeHtml(ui.label)}</b>：${escapeHtml(a.sentence || '')}
+       </p>
+       <p class="hint" style="margin:4px 0 0">
+         依据：${escapeHtml(detail || '—')}（各类取峰值而不是平均，并把余量系数
+         ${a.safety_ratio ?? '—'} 计入）。总内存 ${a.total_mb
+           ? `${Math.round(a.total_mb / 1024)} GB` : '读不到'}，
+         已扣系统常驻 ${a.reserved_mb ? `${Math.round(a.reserved_mb / 1024)} GB` : '—'}。
+       </p>`;
+
+  const sourceText = c.source === 'web'
+    ? `当前生效：<b>网页设置</b>（全局 ${effective.global ?? '—'}）`
+    : `当前生效：<b>进程默认</b>（全局 ${effective.global ?? '—'}，来自启动参数或环境变量）`;
+
+  return `
+  <div class="card mb-card">
+    <div class="card-head"><h2>并发设置</h2>
+      <span class="sub">同时最多跑几条作业。改完 worker 下一轮就按新值领活，不用重启</span>
+      <span class="right">
+        <span class="chip ${ui.chip}">${escapeHtml(ui.label)}</span>
+      </span>
+    </div>
+    <div class="card-body">
+      <p class="note flush">${sourceText}</p>
+      <div class="table-wrap" style="margin-top:8px"><table>
+        <thead><tr><th>资源类</th><th>本机实测占用</th><th>上限</th></tr></thead>
+        <tbody>
+          <tr><td>全局</td><td class="hint">这条作业总数上限</td>
+              <td>${num('mc-conc-global', c.global_max)}</td></tr>
+          ${rows}
+        </tbody>
+      </table></div>
+      ${basis}
+      <p class="hint" style="margin-top:10px">
+        留空＝跟随进程默认（<code>./run.sh worker --max-global N</code> 或
+        <code>FASTVIDEO_WORKER_MAX_GLOBAL</code>）。命令行显式给的参数优先于这里，
+        不会被网页上的旧值盖掉。
+      </p>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn" id="mc-conc-save">保存并发设置</button>
+        <span class="hint" id="mc-conc-msg"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function readConcurrencyForm(root) {
+  const read = (id) => {
+    const el = root.querySelector(`#${id}`);
+    if (!el) return null;
+    const raw = String(el.value || '').trim();
+    if (raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : null;
+  };
+  const per = {};
+  for (const cls of ['text', 'image', 'video', 'audio', 'compose']) {
+    const v = read(`mc-conc-per-${cls}`);
+    if (v != null) per[cls] = v;
+  }
+  return { global_max: read('mc-conc-global'), per };
+}
+
+async function saveConcurrency(root, payload, acknowledgeRisk) {
+  const msg = root.querySelector('#mc-conc-msg');
+  const btn = root.querySelector('#mc-conc-save');
+  if (btn) btn.disabled = true;
+  try {
+    const body = { ...payload, acknowledge_risk: !!acknowledgeRisk };
+    const out = await api.setWorkerConcurrency(body);
+    if (msg) {
+      msg.textContent = out?.assessment?.verdict === 'safe'
+        ? '已保存；worker 下一轮按新值领活。'
+        : `已保存（${out?.assessment?.sentence || ''}）`;
+    }
+  } catch (err) {
+    const text = String(err?.message || err || '');
+    // 后端把"会溢出，要确认"做成了 400 + 那句话。这里**不猜**该不该继续：
+    // 判断这句话是不是那道闸，用 confirm 让人再决定一次，而不是静默重试。
+    if (/内存溢出风险/.test(text) && !acknowledgeRisk) {
+      if (window.confirm(`${text}\n\n仍要保存吗？`)) {
+        await saveConcurrency(root, payload, true);
+        return;
+      }
+      if (msg) msg.textContent = '已取消，没有保存。';
+      return;
+    }
+    if (msg) msg.textContent = text || '没保存成功。';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function bindConcurrency(root) {
+  root.querySelector('#mc-conc-save')?.addEventListener('click', () => {
+    saveConcurrency(root, readConcurrencyForm(root), false);
+  });
+}
+
 export function mountMonitor(root) {
   bindWorkerHistory(root);
+  bindConcurrency(root);
 
   // 验证历史翻页：再取一页**追加**到后面，而不是重载整页。
   // 重载整页会把上面 worker 表、告警、模型维度一起重画，而人想看的就是这一张表；

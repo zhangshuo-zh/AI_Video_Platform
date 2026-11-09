@@ -932,15 +932,56 @@ def _limits_from_args(args) -> dict:
 
     默认仍是全局 1／每类 1：并发是 operator 明确抬上限并多开进程才发生的事，
     不会因为升级代码就悄悄在 16GB 机器上同时跑两条视频。
+
+    返回值里 `explicit` 记下"哪些项是命令行显式给的"——每轮从库里读网页设置时，
+    这些项不许被库里的值顶掉（见 `_limits_for_round`）。
     """
     per = {}
+    explicit_per = set()
     for name in RESOURCE_CLASSES:
         value = getattr(args, f"max_{name}", None)
         if value is not None:
             per[name] = max(0, int(value))
+            explicit_per.add(name)
     global_max = (args.max_global if args.max_global is not None
                   else WORKER_MAX_GLOBAL)
-    return {"global": max(0, int(global_max)), "per": per}
+    return {"global": max(0, int(global_max)), "per": per,
+            "explicit": {"global": args.max_global is not None,
+                         "per": explicit_per}}
+
+
+def _limits_for_round(cli_limits: dict) -> dict:
+    """这一轮领取该用哪套上限：命令行显式给的 > 网页设的 > 进程默认。
+
+    为什么要每轮读一次库而不是启动时读一次：网页上改完期望"下一轮就生效"，
+    而不是"等你重启 worker"。`claim_next` 本来就每轮查库（它要数活跃槽位），
+    多读一行单例配置不构成新的读放大；改完立刻生效也省掉"改了没反应"的排查。
+
+    **命令行优先**是硬规矩：`./run.sh worker --max-global 2` 是 operator 当下
+    对着这台机器下的指令，不该被网页上一周前设的旧值悄悄盖掉。反过来若命令行
+    没给，网页设过就用网页的——这正是"能在网页上改"这件事本身。
+    """
+    try:
+        from repositories import worker_limit
+        saved = worker_limit.limits_or_none()
+    except Exception:
+        # 表还没建（老库没跑 0047）或库暂时读不了：退回命令行/默认值。
+        # 这里绝不能抛——一句配置读不到不该让队列停摆。
+        saved = None
+    if not saved:
+        return cli_limits
+
+    out = dict(cli_limits)
+    explicit = cli_limits.get("explicit") or {}
+    if not explicit.get("global") and saved.get("global") is not None:
+        out["global"] = max(0, int(saved["global"]))
+    per = dict(cli_limits.get("per") or {})
+    explicit_per = explicit.get("per") or set()
+    for name, value in (saved.get("per") or {}).items():
+        if name in RESOURCE_CLASSES and name not in explicit_per:
+            per[name] = max(0, int(value))
+    out["per"] = per
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -958,7 +999,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signals()
     wid = worker_id()
-    limits = _limits_from_args(args)
+    cli_limits = _limits_from_args(args)
     # **库要先补到最新**（2026-11-08，P1）。
     # 原来只有 `main.create_app()` 里调 `migrate()`，于是"只跑 worker 不跑 API"
     # （`./run.sh worker`，或批处理机）在全新库上会直接崩：下面那句
@@ -969,6 +1010,10 @@ def main(argv: list[str] | None = None) -> int:
     # 模板表补齐：worker 可能比 API 进程先起来（比如只跑 worker 做批处理），
     # 那时候产线运行照样要能推进，所以两边都调一次；重复调用是空操作。
     pipeline.ensure_builtin_templates()
+    # 并发上限放在 migrate 之后读：0047 的 `worker_limit` 表要等迁移建出来，
+    # 在它之前读会撞"no such table"（虽然 `_limits_for_round` 兜住了不抛，
+    # 但那样启动横幅会显示成默认值，与人设的值不符——横幅是第一眼证据）。
+    limits = _limits_for_round(cli_limits)
     recovered = jobs.recover_stale()
     if recovered["failed"] or recovered["cancelled"]:
         print(f"启动恢复：failed={recovered['failed']} cancelled={recovered['cancelled']}")
@@ -1015,6 +1060,12 @@ def main(argv: list[str] | None = None) -> int:
         # 而那一条正在跑的作业会被下一轮的 recover_stale 收成 failed（云端可能已计费）。
         # 兜住的后果和"让它崩"是一样的（作业靠租约回收、下一轮重来），
         # 区别只是队列不停。
+        # 每轮重新算一次上限：网页上改完，下一轮就该按新值领活。
+        # 放在 try 里是因为它要读库——读不到就用上一轮的值，不该让队列停。
+        try:
+            limits = _limits_for_round(cli_limits)
+        except Exception as exc:
+            print(f"[并发] 这一轮读配置失败，沿用上一轮：{type(exc).__name__}: {exc}")
         did = None
         try:
             did = run_once(wid, limits=limits)

@@ -160,6 +160,12 @@ export const api = {
   // worker 在线状态与队列长度（顶栏/侧栏/首页共用）
   workerStatus: () => get('/api/worker/status'),
 
+  // 并发上限（0047）：读任何登录者都行，改要 system:config。
+  // 危险档（估算撑破本机内存）必须在 body 里带 acknowledge_risk: true，
+  // 否则后端 400 —— 界面把这句话显示出来，不自己替人决定。
+  workerConcurrency: () => get('/api/worker/concurrency'),
+  setWorkerConcurrency: (body) => send('PUT', '/api/worker/concurrency', body),
+
   // 生成中心：队列、成本账、参数模板。
   // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
   // 队列要翻页，所以这个函数比别的多两件事：

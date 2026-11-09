@@ -93,7 +93,8 @@ from .jobs import (
     job_kind, shot_source_version, shots_view, shot_asset_ids, shot_variant_ids,
     job_source_stale, _service_engine_gate, submit_job, _cost_of, JobMissing,
     JobStateConflict, _seconds_since, worker_status, job_detail_view, retry_preview,
-    json_loads_dict, reconcile_job, mark_job_attention
+    json_loads_dict, reconcile_job, mark_job_attention,
+    set_concurrency, concurrency_now
 )
 
 from .project_stats import (
@@ -223,6 +224,8 @@ __all__ = [
     "version_token",
     "workbench",
     "worker_status",
+    "set_concurrency",
+    "concurrency_now",
 ]
 
 # ---------- 兼容：原单文件暴露的间接引用 ----------

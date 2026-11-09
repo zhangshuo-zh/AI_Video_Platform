@@ -261,6 +261,43 @@ class WorkerStatusOut(BaseModel):
     running_jobs: list[dict] = []
     expired_leases: int = 0
     needs_attention: int = 0
+    # 并发设置（0047）：网页上设过的值 + 这台机器扛不扛得住的评估。
+    # 与 `alerts` 同一条纪律——只报告，不改任何状态；越界的告警由服务层塞进
+    # `alerts`，这里给的是完整依据（每类峰值、总内存、需要多少、还剩多少）。
+    concurrency: dict = {}
+
+
+class WorkerLimitIn(BaseModel):
+    """网页上改并发上限的入参（0047）。
+
+    `global` 与 `per` 都是可选：只改一条也可以。`per` 的键必须在
+    `RESOURCE_CLASSES` 里，值 0 表示这一类不接活（与 `claim_next` 的语义一致）。
+
+    `acknowledge_risk` 是**危险档的知情确认**：评估为 `over`（估算需求超过本机
+    可用内存）时，不勾就不给保存。这不是走过场——`claim_next` 只认数字，
+    一旦存进去下一轮就真的会去领那么多条，OOM 起来是整台机器的事。
+    """
+    global_max: int | None = Field(default=None, ge=0, le=64)
+    per: dict[str, int] | None = None
+    acknowledge_risk: bool = False
+    note: str = ""
+
+
+class WorkerLimitOut(BaseModel):
+    """并发设置的现值 + 为什么是这个结论。"""
+    # `global`/`per` 为 None／空 表示"没人在网页上设过"，此时 worker 走命令行或默认。
+    # 与"人设成 1"是两件事，所以用 nullable 而不是补个默认值。
+    global_max: int | None = None
+    per: dict[str, int] = {}
+    updated_at: str | None = None
+    updated_by: int | None = None
+    note: str = ""
+    # 生效来源：cli／web／default，以及当前真正会被 claim_next 用到的那套数。
+    source: str = "default"
+    effective: dict = {}
+    # 这台机器扛不扛得住（concurrency_plan.assess 的返回体）。
+    assessment: dict = {}
+    needs_acknowledge: bool = False
 
 
 
