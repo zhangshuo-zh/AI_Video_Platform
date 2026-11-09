@@ -14,7 +14,7 @@
  * 所以批完之后界面说的话是"下一拍会执行"，而不是"已执行"。
  */
 import { api } from '../api.js';
-import { escapeHtml, run } from '../util.js';
+import { escapeHtml, run, skeleton } from '../util.js';
 import { DECISION_TONE } from '../validation.js';
 
 const RISK_TONE = { read: 'gray', write: 'amber', paid: 'amber', formal: 'red' };
@@ -87,7 +87,7 @@ export async function renderActions(project) {
           <p class="hint">批完不会立刻执行——worker 的下一拍才会真的动。</p></div>`}
     </div>
     ${openStepId ? '<div id="action-detail" class="card mt-card" >'
-      + '<div class="card-body"><p class="hint">正在读这一步的参数…</p></div></div>' : ''}`;
+      + '<div class="card-body">' + skeleton(3, 'text') + '</div></div>' : ''}`;
 }
 
 /** 详情那张卡：把"要送出去什么、按什么计价、绑的是哪个指纹"一次说全。 */

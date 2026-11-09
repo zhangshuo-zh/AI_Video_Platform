@@ -582,3 +582,45 @@ export function announce(text, force = false) {
     host.textContent = body + (liveSeq % 2 ? '\u200b' : '\u200b\u200b');
   });
 }
+
+/**
+ * 骨架占位：数据还没到手时，先把**将要长出来的形状**摆出来。
+ *
+ * 原来这九处都写一句「正在读……」。问题不在措辞，在几何：一行 13px 的字
+ * 与一张三行卡片的高度差着好几倍，数据一到，页面就「腾」地撑开或瘪下去——
+ * 人的眼睛正盯着那块，视线被甩一次。骨架屏用同一套行高与间距占住位置，
+ * 数据到了只换内容、不动版。
+ *
+ * 为什么不放转圈：转圈只说明「在等」，不说明「等的是什么、会出来几行」。
+ * 骨架的条数就是预期的条数，人一眼能看出这一屏大概会有多少东西。
+ *
+ * `rows` 是预期行数，`kind` 挑形状：
+ *   card （默认）三行卡片：标题条 + 两行正文
+ *   row   表格行：一条细长条，配 `rows` 铺满
+ *   text  单段文字：两行，用于抽屉、详情这类
+ *   grid  卡片网格：每格封面 + 一行标题
+ *
+ * 无障碍：外层 `aria-busy="true"` + `role="status"`，并塞一句给读屏的
+ * 「正在读取」——骨架条本身是装饰（`aria-hidden`），读屏不该去念一堆空 div。
+ * 数据到了把整块换掉，`aria-busy` 随之消失，读屏那边就是「忙完了」。
+ */
+export function skeleton(rows = 3, kind = 'card') {
+  const n = Math.max(1, Math.min(Number(rows) || 3, 12));
+  const bar = (w, h = 12) => `<div class="sk-bar" style="width:${w}%;height:${h}px"></div>`;
+  let body;
+  if (kind === 'row') {
+    body = Array.from({ length: n }, () => `<div class="sk-line">${bar(100, 14)}</div>`).join('');
+  } else if (kind === 'text') {
+    body = bar(92) + bar(64) + bar(78, 10);
+  } else if (kind === 'grid') {
+    body = `<div class="sk-grid">` + Array.from({ length: n }, () =>
+      `<div class="sk-cell"><div class="sk-cover"></div>${bar(70, 10)}</div>`).join('') + '</div>';
+  } else {
+    body = Array.from({ length: n }, () =>
+      `<div class="sk-card">${bar(38)}${bar(100, 10)}${bar(84, 10)}</div>`).join('');
+  }
+  return `<div class="sk" aria-busy="true" role="status">
+    <span class="sr-only">正在读取</span>
+    <div aria-hidden="true">${body}</div>
+  </div>`;
+}

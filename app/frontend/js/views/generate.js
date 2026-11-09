@@ -9,8 +9,7 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney,
-         animateRows }
-  from '../util.js';
+         animateRows, skeleton } from '../util.js';
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
 import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
@@ -233,7 +232,7 @@ function alertsHtml() {
 
 function costHtml() {
   const costs = state.costs;
-  if (!costs) return '<div class="empty"><p class="hint">正在读成本账……</p></div>';
+  if (!costs) return skeleton(2, 'card');
   const local = costs.local || { jobs: 0 };
   if (!costs.currencies.length && !local.jobs) {
     return `<div class="empty">
@@ -334,7 +333,7 @@ export default {
       <div class="card mt-card" >
         <div class="card-head"><h2>成本账</h2>
           <span class="sub">由 Job 汇总，不可手改</span></div>
-        <div id="gen-cost"><div class="empty"><p class="hint">正在读成本账……</p></div></div>
+        <div id="gen-cost">${skeleton(2, 'card')}</div>
       </div>
 
       <div class="drawer" id="gen-drawer" hidden tabindex="-1">
@@ -609,7 +608,7 @@ export default {
       if (!alive()) return;
       root.querySelector('#gen-drawer-title').textContent = `作业 #${id}`;
       root.querySelector('#gen-drawer-sub').innerHTML = '';
-      drawerBody.innerHTML = '<p class="hint">正在读详情与日志……</p>';
+      drawerBody.innerHTML = skeleton(3, 'text');
     }
 
     function providerHtml(job, res) {
@@ -1598,7 +1597,7 @@ export default {
         `<option value="${p.id}" ${String(p.id) === String(pid) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`);
       if (store.isManager) scopes.unshift('<option value="global">全局（所有项目可见）</option>');
       root.querySelector('#pf-scope').innerHTML = scopes.join('');
-      root.querySelector('#pf-list').innerHTML = '<p class="hint">正在读模板……</p>';
+      root.querySelector('#pf-list').innerHTML = skeleton(3, 'card');
       refreshProfileRoute();
       try {
         await reloadProfiles();

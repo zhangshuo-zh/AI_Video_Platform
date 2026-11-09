@@ -20,7 +20,7 @@ import { gotoEntry } from '../goto.js';
 import { store } from '../store.js';
 import { getParam, getSub, setParam, setSub } from '../navstate.js';
 import {
-  agoText, bindModalDismiss, bindSubChips, escapeHtml, errorBox, run, subChipRow,
+  agoText, bindModalDismiss, bindSubChips, escapeHtml, errorBox, run, skeleton, subChipRow,
 } from '../util.js';
 
 const SUBS = ['总览', '智能体配置', '任务路由', '运行与审批'];
@@ -459,7 +459,7 @@ export default {
             <td class="r"><button class="btn sm primary" data-goto-review="2">去审核中心</button></td>
           </tr>`).join('')}</tbody></table></div></div>` : ''}
       ${openRunId ? '<div id="ag-run-detail" class="card"><div class="card-body">'
-        + '<p class="hint">正在读这条运行…</p></div></div>' : ''}
+        + skeleton(3, 'text') + '</div></div>' : ''}
       <div id="ag-modal-slot"></div>`;
   },
 

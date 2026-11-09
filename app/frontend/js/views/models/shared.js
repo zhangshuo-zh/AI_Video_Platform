@@ -10,7 +10,7 @@
  */
 import { api } from '../../api.js';
 import { store } from '../../store.js';
-import { escapeHtml } from '../../util.js';
+import { escapeHtml, skeleton } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
 import { HEALTH, VAL_BADGE, VAL_KIND_LABEL } from '../../validation.js';
 import { REG_SOURCES, unitLabel } from '../../enums.js';
@@ -414,7 +414,7 @@ export const MODALS = `
           产物验收记的是人看过文件后的结论，通过与否必须明说。环境检查请用列表里的「环境检查」按钮，不走这里。</p>
         <p class="modal-err" id="val-error"></p>
         <h3 class="drawer-h">最近记录</h3>
-        <div id="val-list"><p class="hint">正在读验证历史……</p></div>
+        <div id="val-list">${skeleton(3, 'card')}</div>
       </div>
       <div class="modal-actions">
         <button class="btn" id="val-close">关闭</button>

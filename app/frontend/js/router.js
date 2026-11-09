@@ -104,6 +104,24 @@ export async function renderView(id) {
   const innerTop = sameView ? root.scrollTop : 0;
   const innerLeft = sameView ? root.scrollLeft : 0;
 
+  // 这个坐标是在 `await view.render()` **之前**取的，而 render 要走一次网络。
+  // 人在这几百毫秒里很可能自己滚了一下——那一动比手里这个旧坐标新，是他的
+  // 意图。落地时若无条件写回，就是在人已经看别处之后把页面拽回原处。
+  // 所以只认**手势**（滚轮/触摸/键盘），程序性滚动不算：内容替换会让浏览器
+  // 自己钳一次 scrollY，那不是人干的，不能当成"他滚了"。
+  let movedWhileWaiting = false;
+  const noteMove = () => { movedWhileWaiting = true; };
+  const dropMoveWatch = () => {
+    window.removeEventListener('wheel', noteMove);
+    window.removeEventListener('touchmove', noteMove);
+    window.removeEventListener('keydown', noteMove);
+  };
+  if (sameView) {
+    window.addEventListener('wheel', noteMove, { passive: true });
+    window.addEventListener('touchmove', noteMove, { passive: true });
+    window.addEventListener('keydown', noteMove);
+  }
+
   // 视图 render 抛错必须在这里落地，不能让它变成一条未捕获的 Promise 拒绝：
   // 那样页面会**停在上一屏不动**（root.innerHTML 根本没执行），人看到的是
   // "点了没反应"，控制台里才有一行红字。宁可摆一张"这一页没渲染出来"的卡片。
@@ -111,6 +129,7 @@ export async function renderView(id) {
   try {
     html = await view.render();
   } catch (err) {
+    dropMoveWatch();
     if (seq !== renderSeq) return;
     console.error(`[router] ${id} 渲染失败`, err);
     root.classList.toggle('cold', false);
@@ -123,7 +142,7 @@ export async function renderView(id) {
       </div></div></section>`;
     return;
   }
-  if (seq !== renderSeq) return;      // 已经有一次更晚的导航在跑了，这份作废
+  if (seq !== renderSeq) { dropMoveWatch(); return; }  // 已有更晚的导航在跑，这份作废
   root.innerHTML = html;
   view.mount?.(root);          // 视图自己绑事件，路由不掺和
   // 夜间主题的把 `<select>` 换成自绘下拉，必须**在这一次渲染里就做完**。
@@ -139,20 +158,21 @@ export async function renderView(id) {
   root.scrollLeft = innerLeft;
   restoreFocus(root, focusSnap);
   if (sameView) {
-    // 内容高度可能晚一点才长回来（列表在 mount 里异步填），一次 scrollTo
-    // 会被浏览器钳到当前最大滚动位置。所以最多重试 6 次、每次 50ms，
-    // 到位就停——比"滚回顶部"和"死等"都好。
-    let tries = 0;
-    const restoreScroll = () => {
-      window.scrollTo(0, scrollY);
-      if (Math.abs(window.scrollY - scrollY) > 1 && tries < 6) {
-        tries += 1;
-        setTimeout(restoreScroll, 50);
-      }
-    };
-    restoreScroll();
-    requestAnimationFrame(restoreScroll);
+    // 一次到位。原来这里是个 6 次 × 50ms 的重试循环：那时列表由 mount 异步
+    // 填内容，页面先矮着，scrollTo 当场被浏览器钳到"当前最大滚动位置"，
+    // 只能反复试到内容长够为止——最长拖 300ms，而且每一跳都落在肉眼可见的
+    // 位置，人看到的是页面自己往下"蹭"了三四下。
+    //
+    // 现在异步填充的地方摆的是骨架占位（util.js 的 `skeleton()`），高度当场
+    // 就是最终的形状，一次 scrollTo 就已经滚得到位——那个循环失去了存在理由。
+    // 留着它反而有害：它会对着**已经正确**的位置反复写 window.scrollY，
+    // 人在这 300ms 里主动滚动会被它拽回去。
+    //
+    // 同一个道理也适用于"一次到位"：位置是 render 之前量的，人在这段时间里
+    // 自己滚过就别再写——他手上的动作比这个旧坐标新。
+    if (!movedWhileWaiting) window.scrollTo(0, scrollY);
   }
+  dropMoveWatch();
 
   currentId = id;
   document.body.dataset.view = id;

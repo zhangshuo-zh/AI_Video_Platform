@@ -2077,3 +2077,33 @@ td.shot-jobs .t-desc{max-width:180px}
 }
 @keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes toast-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px)}}
+
+/* ---------------- 骨架占位 ----------------
+   数据没到手时先把形状摆出来，到了只换内容、不动版。
+   「正在读……」那种一行字存在的问题不是措辞，是几何：13px 的一行与三行卡片
+   差着好几倍高，数据一到页面就撑开/瘪下去，正盯着那块的眼睛被甩一次。
+
+   动效只用两个安全的东西：一是 1.4s 的浅色扫光（不是霓虹那种跳闪），
+   二是行高、间距与真实内容对齐。
+   注意：本文件那段 `prefers-reduced-motion` 通配只是把 duration 压到 .001ms，
+   **没有**把 animation-name 置 none —— 动画仍会以每秒几十次的频率重跑（
+   肉眼看不见，但持续重绘）。扫光是要连轴转十几秒的动效，这里必须自己关掉。 */
+.sk{display:flex;flex-direction:column;gap:10px;padding:2px 0}
+.sk-card{display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid var(--line);
+  border-radius:var(--r-card);background:var(--panel)}
+.sk-line{padding:2px 0}
+.sk-bar{position:relative;overflow:hidden;border-radius:6px;
+  background:linear-gradient(90deg,var(--hover),var(--line),var(--hover));
+  background-size:200% 100%;animation:sk-sweep 1.4s var(--ease) infinite}
+.sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.sk-cell{display:flex;flex-direction:column;gap:8px}
+.sk-cover{aspect-ratio:3/4;border-radius:var(--r-card);
+  background:linear-gradient(90deg,var(--hover),var(--line),var(--hover));
+  background-size:200% 100%;animation:sk-sweep 1.4s var(--ease) infinite}
+@keyframes sk-sweep{0%{background-position:100% 0}100%{background-position:-100% 0}}
+/* 扫光要连轴转到数据回来，属于"持续动效"，不是一次性过渡：
+   reduced-motion 下必须 animation-name:none 真停，而不是靠 duration≈0 空转。
+   停下后保留静态条——它仍然占着位置，只是不闪。 */
+@media (prefers-reduced-motion:reduce){
+  .sk-bar,.sk-cover{animation:none}
+}
