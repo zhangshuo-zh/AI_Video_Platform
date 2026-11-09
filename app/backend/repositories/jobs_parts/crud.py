@@ -89,7 +89,8 @@ class JobsCrudMixin:
              statuses: list[str] | None = None, execution_mode: str | None = None,
              keyword: str | None = None, episode_id: int | None = None,
              shot_id: int | None = None,
-             refs_prefix: str | None = None) -> list[sqlite3.Row]:
+             refs_prefix: str | None = None,
+             before_id: int | None = None) -> list[sqlite3.Row]:
         """project_ids=None 表示管理员看全部；空列表表示一个都看不见。
 
         status 与 statuses 是同一件事的两种写法：前者给旧调用方与深链，
@@ -104,6 +105,11 @@ class JobsCrudMixin:
         界面于是显示"还没有生成记录"——那是**假空态**，不是没数据。
         别的写家不会误命中：docai 存的是对象数组（`[{"doc_id"...`）、
         成片与产线存的是路径数组（`["data/jobs/...`），都不以 `["op:` 开头。
+
+        `before_id` 是队列翻页的游标：只回 id 严格小于它的行（列表本来就是
+        `ORDER BY id DESC`）。用游标而不是 offset，是因为 queue 每 3 秒轮询一次、
+        期间还在不断入队——offset 翻页会让新入队的行把整页往下挤，人翻第二页时
+        会看到第一页末尾那几条重复出现。游标钉在 id 上，新行只会出现在更上面。
         """
         if project_ids is not None and not project_ids:
             return []
@@ -140,6 +146,10 @@ class JobsCrudMixin:
             # keyword 与 refs_prefix 守同一条纪律：通配符一律转义后再进 LIKE。
             conds.append("""(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ? ESCAPE '\\')""")
             args += [keyword, f"%{_like_escape(keyword)}%"]
+        if before_id is not None:
+            # 严格小于：游标本身就是上一页最后一行，不能再回它
+            conds.append("id < ?")
+            args.append(int(before_id))
         args.append(clamp_limit(limit))
         # 管理员看全部、又没加任何筛选时 conds 是空的；直接拼会得到
         # "WHERE  ORDER BY" 这种语法错误（W08 真浏览器第一轮就打出来了）
@@ -155,6 +165,61 @@ class JobsCrudMixin:
                             WHERE u.id = j.reconciled_by) AS reconciled_by_name
                      FROM job j WHERE {where}
                      ORDER BY j.id DESC LIMIT ?""", args).fetchall()
+
+
+    def count_listed(self, project_ids: list[int] | None, status: str | None = None,
+                     capability: str | None = None,
+                     statuses: list[str] | None = None, execution_mode: str | None = None,
+                     keyword: str | None = None, episode_id: int | None = None,
+                     shot_id: int | None = None,
+                     refs_prefix: str | None = None) -> int:
+        """`list` 的**同口径**总数，给队列翻页当分母。
+
+        为什么不复用 `cost_summary` 的 `total_jobs`：那个数只按项目范围过滤，
+        不知道 q／status／capability／mode。加了筛选之后两者就不是一回事——
+        界面上会出现「筛选出 3 条／共 412」这种把两套口径并列给人看的假分母。
+        （`generate.js` 早先那段注释已经点到这件事，当时的处理是「拿不准就不显示」，
+        现在有了同口径计数，可以真的显示。）
+
+        条件拼装与 `list` 保持逐条对应：这一段重复是刻意的——把 where 抽成共享
+        函数会让 `list` 的语义与计数耦合，而 `list` 有 12 个调用方。这里只读地
+        复制同一套判据，任何一边加筛选时另一边的测试会立刻红（见 test_jobs_count.py）。
+        """
+        if project_ids is not None and not project_ids:
+            return 0
+        conds: list[str] = []
+        args: list = []
+        if project_ids is not None:
+            marks = ",".join("?" for _ in project_ids)
+            conds.append(f"project_id IN ({marks})")
+            args += list(project_ids)
+        wanted = list(statuses or ([] if not status else [status]))
+        if wanted:
+            marks = ",".join("?" for _ in wanted)
+            conds.append(f"status IN ({marks})")
+            args += wanted
+        if capability:
+            conds.append("capability = ?")
+            args.append(capability)
+        if execution_mode:
+            conds.append("execution_mode = ?")
+            args.append(execution_mode)
+        if episode_id is not None:
+            conds.append("episode_id = ?")
+            args.append(episode_id)
+        if shot_id is not None:
+            conds.append("shot_id = ?")
+            args.append(shot_id)
+        if refs_prefix:
+            conds.append("""input_refs_json LIKE ? ESCAPE '\\'""")
+            args.append(_like_escape(refs_prefix) + "%")
+        if keyword:
+            conds.append("""(CAST(id AS TEXT) = ? OR prompt_snapshot LIKE ? ESCAPE '\\')""")
+            args += [keyword, f"%{_like_escape(keyword)}%"]
+        where = " AND ".join(conds) or "1"
+        with get_conn() as conn:
+            return int(conn.execute(
+                f"SELECT COUNT(*) FROM job WHERE {where}", args).fetchone()[0])
 
 
     def ids_for_project(self, project_id: int) -> list[int]:

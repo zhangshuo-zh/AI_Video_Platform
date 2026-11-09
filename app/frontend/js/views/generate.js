@@ -22,10 +22,18 @@ import { diagnosisHtml } from './diagnosis.js';
 // 健康状态的英文枚举不往界面上端：人要看的是"现在缺什么"，不是 missing 这个词。
 // 译名从 js/validation.js 取——模型中心与这一页共用一份，
 // 别让同一个 ok 在两屏一个叫"就绪"一个叫"可用"。
+// 一页取多少条。100 与从前的硬上限一致，所以「第一页」的观感没变；
+// 区别在于超出的部分现在**有路可走**（往下点「更早」），而不是消失。
+const PAGE_SIZE = 100;
+
 // 筛选条件和模块级状态放在外面：轮询重画、切走再回来都还在
 const state = {
   projectId: '', status: '', capability: '', mode: '', q: '',
   jobs: [], costs: null, worker: null, error: null,
+  // 翻页：total 是**与当前筛选同口径**的总数（响应头 X-Total-Count），
+  // ended 表示已经翻到底（再问一次也是空页）。翻页状态放在 state 里而不是
+  // 局部变量，因为轮询每 3 秒会重跑一次 refresh——局部变量会被打回第一页。
+  total: 0, paging: false, ended: false,
   options: [], current: [], profiles: [],
   // 九个任务场景的只读骨架（`/model-policies/scenes`，登录即可）。
   // 读不到时留空数组——提交框照旧可用，只是少一格"按场景看候选"。
@@ -191,6 +199,40 @@ function emptyHtml() {
     <p class="hint">提交前先跑一遍基准清单，速度数字才是真的。</p>`);
 }
 
+/**
+ * 翻页条。三种状态：
+ *   * 第一页且没有更多 → 整条不渲染（不摆一个点不动的按钮）；
+ *   * 还有更早的     → 「更早的 N 条」按钮 + 已显示几／共几；
+ *   * 已经翻到底     → 一行只读说明，明确「到底了」，别让人反复点。
+ * 分母用 state.total（响应头里的同口径总数），不是数组长度——
+ * 数组长度只是「这一屏装了几条」，拿它当分母就是这个缺口最初的样子。
+ */
+function pagerHtml() {
+  const loaded = state.jobs.length;
+  const total = state.total || loaded;
+  if (!loaded) return '';
+  // 分母是**筛完的总数**，但这个数里含无主作业（所属项目已删除），
+  // 而它们在表格里默认是折叠的。所以「已显示」必须按真正列出来的行算，
+  // 否则会出现「已显示 146」但屏幕上只有 133 行——那是我这版最不该犯的错，
+  // 与原来那格停在 100 的假数字是同一类。
+  const visible = showOrphanJobs || state.projectId === '__orphan__'
+    ? loaded
+    : state.jobs.filter((j) => j.project_id != null).length;
+  const more = total > loaded;
+  const left = Math.max(0, total - loaded);
+  const hiddenOrphans = loaded - visible;
+  const count = `<span class="t-desc">已显示 ${visible} / 共 ${total} 条`
+    + (hiddenOrphans > 0 ? `（另有 ${hiddenOrphans} 条无主作业折叠中）` : '')
+    + '</span>';
+  if (!more && !state.ended && loaded <= PAGE_SIZE) return '';
+  if (state.paging) {
+    return `<div class="gen-more-row"><span class="gen-more-spin">正在取更早的</span>${count}</div>`;
+  }
+  return `<div class="gen-more-row">${more
+    ? `<button class="btn" id="gen-more-btn" data-more>更早的 ${Math.min(left, PAGE_SIZE)} 条</button>`
+    : '<span class="t-desc">已经到底了</span>'}${count}</div>`;
+}
+
 function statsHtml() {
   const q = state.worker?.queue || { queued: 0, running: 0 };
   const costs = state.costs;
@@ -326,6 +368,9 @@ export default {
           </table>
         </div>
         <div id="gen-empty"></div>
+        <!-- 翻页条：只在「还有更早的」或「已经翻过页」时出现，
+             第一页且没有更多时整条不渲染——不给一个永远点不动的按钮占位置。 -->
+        <div id="gen-more" class="gen-more"></div>
         <!-- 无主作业（所属项目已删除）的折叠入口：默认收着，一行按钮展开审计 -->
         <div id="gen-orphan-bar" class="gen-orphan-bar"></div>
       </div>
@@ -455,6 +500,7 @@ export default {
 
   mount(root) {
     const rows = root.querySelector('#gen-rows');
+    const moreHost = root.querySelector('#gen-more');
     const empty = root.querySelector('#gen-empty');
     const orphanBar = root.querySelector('#gen-orphan-bar');
     const stats = root.querySelector('#gen-stats');
@@ -546,7 +592,21 @@ export default {
         // 但说不出哪变了"。整批同时播，不逐条错峰。
         animateRows(rows, () => { rows.innerHTML = shown.map(rowHtml).join(''); }, 'data-job');
       }
+      // 翻页条跟着列表一起重画：轮询改了 total（有人新提交作业）也要跟着变。
+      if (moreHost) moreHost.innerHTML = state.error ? '' : pagerHtml();
       cost.innerHTML = costHtml();
+    }
+
+    /** 筛选变了就回到第一页：留着上一次翻出来的行，会让人以为新筛选有那些数据。
+     *  轮询**不能**走这一条（它每 3 秒跑一次，走一次就把翻页打回原点）。
+     */
+    function resetPaging() {
+      state.ended = false;
+      state.paging = false;
+      state.total = 0;
+      // 行也要清：只清标志的话，下一次 refresh 会把「第一页 + 旧筛选翻出来的更早行」
+      // 拼在一起，屏幕上出现一批根本不符合新筛选条件的作业。
+      state.jobs = [];
     }
 
     async function refresh({ quiet = false } = {}) {
@@ -558,13 +618,13 @@ export default {
       if (refreshing) { pendingRefresh = true; return; }
       refreshing = true;
       try {
-        const [jobs, costs, worker] = await Promise.all([
+        const [page, costs, worker] = await Promise.all([
           api.jobs({
             // __orphan__ 是前端哨兵值，别传给后端（它不认识，会当成项目 id）
             project_id: state.projectId === '__orphan__' ? '' : state.projectId,
             status: state.status,
             capability: state.capability, execution_mode: state.mode,
-            q: state.q, limit: 100,
+            q: state.q, limit: PAGE_SIZE,
           }),
           // 成本汇总同样不能吃哨兵值：__orphan__ 传给后端会 404，
           // 而 Promise.all 里一条失败整批失败——那样队列也会跟着空白。
@@ -572,7 +632,19 @@ export default {
           api.jobCosts(state.projectId === '__orphan__' ? undefined : (state.projectId || undefined)),
           api.workerStatus(),
         ]);
-        state.jobs = jobs;
+        // 轮询只重取**第一页**。已经翻出来的更早那些页要留着——否则人翻到第 3 页，
+        // 3 秒后轮询一跑就把他弹回第一页，等于翻页根本不能用。
+        // 第一页的行按 id 覆盖刷新（状态会从 queued 变 running 再变成功），
+        // 更早那些行原样留着；两段都按 id 倒序，拼接顺序天然正确。
+        const first = page.items;
+        // 只保留「比第一页更早」的行：第一页本身按 id 覆盖刷新。
+        // 这里同时起到筛选切换后的清场作用——旧筛选的行不会被拼进来，
+        // 因为 resetPaging 会把它们从 state.jobs 里剔掉（见 resetPaging 调用点）。
+        const older = state.jobs.filter((j) => !first.some((f) => f.id === j.id));
+        state.jobs = first.concat(older);
+        state.total = page.total || state.jobs.length;
+        // 第一页没取满，说明本来就没有更多了
+        if (first.length < PAGE_SIZE) state.ended = true;
         state.costs = costs;
         state.worker = worker;
         state.error = null;
@@ -1675,9 +1747,50 @@ export default {
       }
     }
 
+    /* ---------- 翻页 ---------- */
+    /** 取更早的一页并**追加**到列表后面。
+     *
+     * 为什么追加而不是整块替换：轮询每 3 秒重画一次，替换式翻页会让人刚翻到
+     * 第 3 页就被打回第 1 页。追加则只往后长，第一页由轮询负责保鲜。
+     *
+     * 游标取「当前列表最后一条的 id」——列表本来就是 id 倒序，所以它正是
+     * 「已经看到哪儿」的边界。用 id 而不是 offset：这段过程中还有人不断提交
+     * 新作业，offset 会让新行把整页往下挤，第二页会重复第一页末尾那几条。
+     */
+    async function loadMore() {
+      if (state.paging || state.ended) return;
+      const last = state.jobs[state.jobs.length - 1];
+      if (!last) return;
+      state.paging = true;
+      if (moreHost) moreHost.innerHTML = pagerHtml();   // 立刻显示「正在取」
+      try {
+        const page = await api.jobs({
+          project_id: state.projectId === '__orphan__' ? '' : state.projectId,
+          status: state.status,
+          capability: state.capability, execution_mode: state.mode,
+          q: state.q, limit: PAGE_SIZE, before_id: last.id,
+        });
+        // 去重：翻页期间可能有作业被删（或游标边界正好落在并发写入上），
+        // 列表里出现两行同一个 id 会让人以为重复入库了。
+        const seen = new Set(state.jobs.map((j) => j.id));
+        const fresh = page.items.filter((j) => !seen.has(j.id));
+        state.jobs = state.jobs.concat(fresh);
+        state.total = page.total || state.total;
+        if (page.items.length < PAGE_SIZE) state.ended = true;
+        state.paging = false;
+        if (!alive()) return;
+        paint();
+      } catch (err) {
+        state.paging = false;
+        state.error = err.message || '未知错误';
+        paint();
+      }
+    }
+
     /* ---------- 事件绑定 ---------- */
     root.querySelector('#gen-refresh')?.addEventListener('click', () => refresh());
     root.querySelector('#gen-project')?.addEventListener('change', (e) => {
+      resetPaging();
       state.projectId = e.target.value;
       // 切到「无主」时自动展开那批；从「无主」切回别的就收起。
       // 否则人点了筛选却还看到折叠栏，会以为筛错了。
@@ -1692,24 +1805,33 @@ export default {
       paint();
     });
     root.querySelector('#gen-status')?.addEventListener('change', (e) => {
+      resetPaging();
       state.status = e.target.value;
       refresh();
     });
     root.querySelector('#gen-capability')?.addEventListener('change', (e) => {
+      resetPaging();
       state.capability = e.target.value;
       refresh();
     });
     root.querySelector('#gen-mode')?.addEventListener('change', (e) => {
+      resetPaging();
       state.mode = e.target.value;
       refresh();
     });
     root.querySelector('#gen-q')?.addEventListener('input', (e) => {
+      resetPaging();
       state.q = e.target.value;
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => refresh(), 280);
     });
     errorHost.addEventListener('click', (e) => {
       if (e.target.closest('[data-retry-load]')) refresh();
+    });
+
+    // 委托绑在容器上：翻页条每次都是重画出来的，直接绑按钮点一次就失效。
+    moreHost?.addEventListener('click', (e) => {
+      if (e.target.closest('[data-more]')) loadMore();
     });
 
     rows.addEventListener('click', (e) => {

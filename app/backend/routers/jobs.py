@@ -106,16 +106,26 @@ def _statuses(raw: str | None) -> list[str]:
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(project_id: int | None = None, episode_id: int | None = None,
+def list_jobs(response: Response,
+              project_id: int | None = None, episode_id: int | None = None,
               shot_id: int | None = None, status: str | None = None,
               capability: str | None = None, execution_mode: str | None = None,
               q: str | None = None, limit: int = 100,
+              before_id: int | None = None,
               user=Depends(require_permission("job:read"))) -> list[JobOut]:
     """队列列表。episode_id／shot_id 是给创作中心分镜表用的窄筛选。
 
     传了集或镜就先按它们绕回项目判可见性（看不见回 404，不泄露存在），
     再与 project_id 合并成同一个范围。前端一集只打一次，按 shot_id 分组，
     不为一镜一行各发一条请求。
+
+    翻页（`before_id`）与总量（`X-Total-Count`）是为了解决一个**安静说谎**：
+    队列原来写死 limit 100，作业一多，超出的部分不是「没显示」而是「压根没取」，
+    而界面上那格数字会停在 100，看着像「总共就这些」。现在：
+      * `before_id` = 上一页最后一行的 id，只回比它更早的行（队列本来就是 id 倒序）；
+      * 响应头 `X-Total-Count` = 与当前筛选**同口径**的总数，用作真分母。
+    用游标不用 offset：队列 3 秒轮询一次、期间不断入队，offset 会让新行把整页
+    往下挤，翻第二页时第一页末尾那几条会重复出现。
     """
     if capability and capability not in CAPABILITIES:
         raise HTTPException(status_code=422, detail=f"不认识的能力：{capability}")
@@ -134,10 +144,19 @@ def list_jobs(project_id: int | None = None, episode_id: int | None = None,
         scope = row["id"]
     wanted = _statuses(status)
     ids = _visible_ids(user, scope)
-    rows = jobs.list(ids, capability=capability, limit=limit,
-                     statuses=wanted, execution_mode=execution_mode,
-                     keyword=(q or "").strip()[:200] or None,
-                     episode_id=episode_id, shot_id=shot_id)
+    kw = dict(capability=capability, statuses=wanted,
+              execution_mode=execution_mode,
+              keyword=(q or "").strip()[:200] or None,
+              episode_id=episode_id, shot_id=shot_id)
+    rows = jobs.list(ids, limit=limit, before_id=before_id, **kw)
+    # 分母与列表走同一套筛选参数（kw 是同一份），不给「共 N」留第二种口径。
+    # 只在这一页取满时才真算：没取满说明本来就到底了，多一次 COUNT 没有意义。
+    full = len(rows) >= limit
+    total = jobs.count_listed(ids, **kw) if (full or before_id) else len(rows)
+    response.headers["X-Total-Count"] = str(total)
+    # 跨端口取不到这个头，除非显式放行；前端同源部署时不受影响，
+    # 但本地 5173 调 8000 的开发形态要靠它才能读到分母。
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     return [JobOut.from_row(r) for r in rows]
 
 

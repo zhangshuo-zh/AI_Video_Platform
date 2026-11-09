@@ -94,9 +94,19 @@ export const api = {
 
   // 生成中心：队列、成本账、参数模板。
   // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
-  jobs: (params = {}) => get('/api/jobs?' + new URLSearchParams(
-    Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)),
-  )),
+  // 队列要翻页，所以这个函数比别的多两件事：
+  //   * before_id 是游标（上一页最后一行的 id），只取比它更早的行；
+  //   * 返回值从数组变成 { items, total }，total 来自响应头 X-Total-Count。
+  // 为什么要带总数：原来队列写死 limit 100，超出的部分压根没取，而界面上
+  // 那格数字会停在 100，看着像总共就这些。有真分母才分得开「就这些」和「还有」。
+  // 这一条不能走 get()：get 已经把 body 解析成对象返回了，响应头拿不到。
+  jobs: async (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
+    const res = await fetch(`/api/jobs?${qs}`);
+    const items = await toJson(res);
+    return { items, total: Number(res.headers.get('X-Total-Count') || 0) };
+  },
   job: (id) => get(`/api/jobs/${id}`),
   submitJob: (body) => send('POST', '/api/jobs', body),
   cancelJob: (id) => send('POST', `/api/jobs/${id}/cancel`),

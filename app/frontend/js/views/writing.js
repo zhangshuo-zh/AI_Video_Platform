@@ -1396,7 +1396,9 @@ async function renderShots(tab, subRow) {
     // 20 镜的集就会变成 20 个请求，而作业列只需要"几条 + 最新状态"。
     let jobRows = [];
     let jobErr = null;
-    try { jobRows = await api.jobs({ episode_id: current.id, limit: 200 }); }
+    // api.jobs 现在回 { items, total }（队列要翻页，总数在响应头里）。
+    // 这里只管一集的作业、不翻页，取 items 就好。
+    try { jobRows = (await api.jobs({ episode_id: current.id, limit: 200 })).items; }
     catch (err) { jobErr = err; }
     const jobsByShot = new Map();
     jobRows.forEach((job) => {

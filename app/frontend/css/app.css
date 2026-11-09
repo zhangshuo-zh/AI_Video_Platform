@@ -1392,6 +1392,26 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 }
 .gen-orphan-bar .t-desc{flex:1 1 320px;min-width:0}
 
+/* 队列翻页条：与上面那条同一套写法（表格下方、卡片内、空时不占位）。
+   为什么把「已显示 12 / 共 412 条」摆在按钮右边而不是另起一行：这两个数
+   是同一个问题的答案——「还有多少没看到」。分开摆会让人先点按钮再回头找数字。 */
+.gen-more:empty{display:none}
+.gen-more{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 16px;border-top:1px solid var(--line);
+}
+.gen-more .t-desc{flex:1 1 220px;min-width:0;text-align:right}
+/* 取更早那一下的等待态：与骨架屏同一个灰，但用文字而不是骨架条——
+   已经有内容在屏幕上，整块变骨架会像「列表被清空了」。前导那个小点会呼吸，
+   位置和尺寸都按最终按钮定，取回来时不会跳一下。 */
+.gen-more-spin{display:inline-flex;align-items:center;gap:6px;color:var(--ink-3);font-size:13px}
+.gen-more-spin::before{
+  content:'';width:6px;height:6px;border-radius:50%;background:currentColor;
+  animation:gen-more-pulse 1s var(--ease) infinite;
+}
+@keyframes gen-more-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.gen-more-spin::before{animation:none;opacity:.6}}
+
 
 .gen-inline-err{
   display:flex;align-items:center;gap:10px;padding:10px 16px;
