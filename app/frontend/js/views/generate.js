@@ -1898,7 +1898,17 @@ export default {
     // 是 allowAuto（布尔），事件对象是 truthy 会把"允许自动"变成巧合成立。
     root.querySelector('#jm-scene').addEventListener('change', () => renderScenePanel(true));
     // 「用它」与「撤销预填」都是动态渲染出来的，走委托。
-    root.addEventListener('click', (e) => {
+    //
+    // **委托不能挂在 root（#view-root）上**：那个 div 由 index.html 提供，
+    // router.js:146 每次重绘只换 innerHTML，元素本身一直在，于是挂在它身上的
+    // 监听器不随 DOM 消失。而 mount() 每次重绘都会跑（切页、保存、轮询、
+    // app:refresh 都走 router 的同一个渲染点），刷新 N 次就叠 N 个历史闭包，
+    // 一次点击会把 scenePrefillTo／撤销执行 N 遍——它们各自都读-改-写
+    // #jm-mode 与 scenePrefill，叠起来就是"点一下弹窗里的下拉跳了两次"。
+    // 挂到 .modal-box 上：它在每次 render 里都是新节点，监听器随它一起回收。
+    // （#jm-scene-panel 与 #jm-scene-prefill 都在这个 .modal-box 内。）
+    const sceneHost = root.querySelector('#job-modal .modal-box') || root;
+    sceneHost.addEventListener('click', (e) => {
       const use = e.target.closest('[data-scene-use]');
       if (use) {
         const c = sceneCandidates[Number(use.dataset.sceneUse)];

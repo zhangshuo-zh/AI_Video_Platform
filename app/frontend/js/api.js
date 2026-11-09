@@ -386,9 +386,15 @@ export const api = {
   assetGenerationSubmit: (pid, body) => send('POST', `/api/projects/${pid}/asset-generations`, body),
   assetGeneration: (pid, jobId) => get(`/api/projects/${pid}/asset-generations/${jobId}`),
   // 刷新后把"我刚生成的那批"读回来：状态在 job 表里，不在浏览器里攒副本
+  //
+  // 这里**不能再挂 .then(toJson)**（`:389-391` 原来就是这么写的）：get() 已经是
+  // `fetch().then(toJson)`，解析好的数组会被当成 Response 再喂一次 toJson，
+  // 它第一句就是 `res.text()`——对数组调是 TypeError，于是这两处「最近的生成记录」
+  // 恒为空，而两侧都是 `catch { gens = [] }`，错误被演成"还没有记录"。
+  // 需要读响应头（X-Total-Count 之类）的接口不走 get/send，自己裸 fetch；
+  // 现在只有 jobs（列表面板）和 providerValidations（验证历史）这两处。
   assetGenerations: (pid, assetId) => get(`/api/projects/${pid}/asset-generations?`
-    + new URLSearchParams({ ...(assetId ? { target_asset_id: assetId } : {}), limit: 12 }))
-    .then(toJson),
+    + new URLSearchParams({ ...(assetId ? { target_asset_id: assetId } : {}), limit: 12 })),
   assetImportImage: (id, body) => send('POST', `/api/assets/${id}/generated-images`, body),
 
   /* ---------- 项目生产工作台（0037） ---------- */
