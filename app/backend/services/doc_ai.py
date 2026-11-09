@@ -35,7 +35,10 @@ def text_ai_route() -> dict:
     if price is None:
         raise docai.DocAiInvalid(
             f"文本模型 {model.code} 没有登记百万 token 价格，不能提交计费作业")
-    health = adapters.health(got["row"])
+    # 读路径：只回答「这一档能不能用」，不在读的时候替人去连一次服务。
+    # 服务型引擎返回 unknown + probe_deferred 时，下面的判断会把"未查"与
+    # "查了不通"分开（两者要人做的事不同）。
+    health = adapters.health(got["row"], probe_service=False)
     return {"row": got["row"], "adapter": adapter, "model": model,
             "price": price, "provider": got["provider"],
             "health_state": health["state"], "health_detail": health["detail"]}

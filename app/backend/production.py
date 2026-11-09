@@ -83,7 +83,9 @@ def _audio_wired() -> dict:
         try:
             resolved = services.resolve_provider(capability)
             provider = resolved["provider"]
-            health = adapters.health(resolved["row"])
+            # 项目概览是**读**接口（工作台一次读取要给「跑到哪＋花了多少」），
+            # 不能因为某台服务半死就把整页拖住。要现查走模型中心的显式入口。
+            health = adapters.health(resolved["row"], probe_service=False)
         except services.NoRoute as exc:
             health = {"state": "unconfigured", "detail": str(exc)}
         # `runner_wired` 问 `runners.has_branch()`：这里曾经写死 False，

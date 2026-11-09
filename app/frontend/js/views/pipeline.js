@@ -291,7 +291,10 @@ function detailHtml(detail) {
 
 /* ---------------- 整季生产（阶段 E-2／E-3） ---------------- */
 
-/** 整季成本：`currencies` 是后端 `seasons.currencies()` 给的 `list[str]`。
+/** 整季成本：后端按币种分好桶了（`seasons.py` 的 `_season_cost`）。
+ *
+ * 口径（与 `schemas/costs.py:44` 的 `CostSummaryOut` 同一条）：
+ * **一种币种一个桶，绝不跨币种相加**。
  *
  * 金额格式化只有一份实现——`util.js` 的 `formatMoney()`（`generate.js:48`
  * 也是这么转的）。这里先前自带一份 `toFixed(2)`，代价有三条：
@@ -299,27 +302,22 @@ function detailHtml(detail) {
  *   * 小额被吃掉：云端按秒计价，一笔 ¥0.0036 显示成 `¥0.00`；
  *   * 大额没有千分位。
  *
- * **没有币种就返回「—」**：`currencies` 为空说明这一季只有本地作业
- * （`cost_micros` 计 0、`currency` 为 NULL，`repositories/seasons.py:216`
- * 的 `DISTINCT ... IS NOT NULL` 查不到行）。本地作业不按量计费，
- * 显示 `¥0.00` 是在说"花了 0 元"，而事实是"没有可计价的花费"——
- * 前者会被当成对账结论。`generate.js:225` 对同一种情况的做法是
- * 明确空状态「还没有花费」，这里至少不能给出一个假数字。
+ * **没有币种就返回「—」**：本地作业不按量计费（`cost_micros` 计 0、
+ * `currency` 为 NULL），显示 `¥0.00` 是在说"花了 0 元"，而事实是
+ * "没有可计价的花费"——前者会被当成对账结论。
+ *
+ * 2026-11-09：后端改成按币种分桶后，这条路**不再靠猜**。多币种时后端给
+ * `by_currency = {CNY: ..., USD: ...}` 且 `cost_micros` 为 `null`，
+ * 这里就逐币种列出来——每个数都是真和，不再是一个既不是 A 也不是 B 的加法。
  */
-function money(micros, currencies) {
-  const list = currencies || [];
-  if (!list.length) return '—';
-  if (list.length > 1) {
-    // 多币种时**不能**挑一个贴上去：`cost_micros` 是后端把各集金额直接相加的
-    // （`seasons.py:349`），不同币种的 micros 相加没有意义，而给它贴上
-    // `currencies[0]` 的符号等于宣布那个假和是那种货币。
-    // 今天的清单只有 CNY（`adapters.py` 三处 `currency="CNY"`），所以这条路
-    // 走不到；真到有第二种币种那天，先改后端按币种分桶
-    // （`schemas/costs.py:43` 的 `CostSummaryOut` 就是这么定的：
-    // "一种币种一个桶，绝不跨币种相加"），再说显示。
-    return `多币种（${list.join(' / ')}）`;
-  }
-  return formatMoney(micros, list[0]);
+function money(cost) {
+  const by = cost?.by_currency || {};
+  const codes = Object.keys(by);
+  if (!codes.length) return '—';
+  // 单币种：`cost_micros` 就是真和，走统一格式化
+  if (codes.length === 1) return formatMoney(by[codes[0]], codes[0]);
+  // 多币种：逐桶列出，谁也不加谁
+  return codes.map((c) => formatMoney(by[c], c)).join(' + ');
 }
 
 function workerPanel() {
@@ -388,7 +386,7 @@ function seasonRows(list) {
       <td><span class="chip ${tone}">${escapeHtml(s.status_label)}</span></td>
       <td style="min-width:150px">${progressBar(s.progress)}</td>
       <td class="num">${s.max_active_runs} 条</td>
-      <td class="num">${money(s.cost?.cost_micros, s.cost?.currencies)}</td>
+      <td class="num">${money(s.cost)}</td>
       <td class="num t-dim">${escapeHtml(s.created_at)}</td>
       <td class="r"><button class="btn sm primary" data-open-season="${s.id}">查看</button></td>
     </tr>`;
@@ -408,7 +406,7 @@ function seasonDetailHtml(d, canSubmit) {
           ? `<span class="t-desc">${escapeHtml(i.episode_title)}</span>` : ''}</td>
       <td><span class="chip ${itemTone}">${escapeHtml(i.status_label)}</span></td>
       <td style="min-width:140px">${i.run_id ? progressBar(i.progress) : '<span class="t-desc">还没开始</span>'}</td>
-      <td class="num">${money(i.cost?.cost_micros, d.cost?.currencies)}<span class="t-desc">${i.cost?.jobs ?? 0} 条作业</span></td>
+      <td class="num">${money(i.cost)}<span class="t-desc">${i.cost?.jobs ?? 0} 条作业</span></td>
       <td>${i.error_message ? `<span class="season-err">${escapeHtml(i.error_message)}</span>` : '<span class="t-desc">—</span>'}</td>
       <td class="r">${i.run_id ? `<button class="btn xs" data-open-run="${i.run_id}">运行</button>` : ''}</td>
     </tr>`;
@@ -423,7 +421,7 @@ function seasonDetailHtml(d, canSubmit) {
       <div class="season-stats">
         <div><span class="t-desc">进度</span><b>${d.progress.done} / ${d.progress.total} 集</b></div>
         <div><span class="t-desc">状态分布</span><b>完成 ${d.counts.completed} · 失败 ${d.counts.failed} · 待开始 ${d.counts.pending}</b></div>
-        <div><span class="t-desc">累计成本</span><b>${money(d.cost.cost_micros, d.cost.currencies)}</b>
+        <div><span class="t-desc">累计成本</span><b>${money(d.cost)}</b>
           <span class="t-desc">${d.cost.jobs} 条作业；本地作业为 0</span></div>
       </div>
       ${(canRun || canRetry) ? `<div class="row season-actions">

@@ -304,6 +304,40 @@ def retry_failed(season_id: int, user_id: int | None) -> dict:
     return body
 
 
+def _season_cost(items: list[dict], currencies: list[str]) -> dict:
+    """整季成本：按币种分桶求和，**绝不跨币种相加**。
+
+    原来这里是 `sum(i["cost"]["cost_micros"] for i in items)`——把每条 item 的
+    微单位直接加起来。清单只有 CNY 时它算得对，一旦混入 USD，加出来的数
+    既不是人民币也不是美元。而同一个返回值里还带着 `currencies`（这一季
+    涉及哪几种币），于是接口一边给出无法解释的和、一边给出币种列表。
+
+    现在的口径（对齐 `schemas/costs.py:44` 的 `CostSummaryOut`）：
+    * `by_currency`：`{币种: 微单位}`，**这一份永远可以直接显示**；
+    * `cost_micros` / `currency`：**只在恰好一种币种时**给出，否则 `None`，
+      让调用方自己按 `by_currency` 分桶，而不是默默拿到一个假和；
+    * `currencies`：涉及哪几种，供界面决定"要不要说多币种"。
+    """
+    by_currency: dict[str, int] = {}
+    jobs = 0
+    for item in items:
+        cost = item.get("cost") or {}
+        jobs += int(cost.get("jobs") or 0)
+        for code, micros in (cost.get("by_currency") or {}).items():
+            by_currency[code] = by_currency.get(code, 0) + int(micros)
+    out: dict = {"by_currency": dict(sorted(by_currency.items())),
+                 "jobs": jobs,
+                 "currencies": sorted(set(currencies) | set(by_currency))}
+    if len(by_currency) == 1:
+        code = next(iter(by_currency))
+        out["cost_micros"] = by_currency[code]
+        out["currency"] = code
+    else:
+        out["cost_micros"] = None
+        out["currency"] = None
+    return out
+
+
 def view(season_id: int) -> dict:
     season = _need(season_id)
     rows = seasons.items_for(season_id)
@@ -346,9 +380,7 @@ def view(season_id: int) -> dict:
                    "pending": pending, "running": max(0, running)},
         "progress": {"done": done, "total": total,
                      "percent": round(done * 100.0 / total, 1) if total else 0.0},
-        "cost": {"cost_micros": sum(int(i["cost"]["cost_micros"]) for i in items),
-                 "jobs": sum(int(i["cost"]["jobs"]) for i in items),
-                 "currencies": seasons.currencies(season_id)},
+        "cost": _season_cost(items, seasons.currencies(season_id)),
         "items": items,
         "created_by": season["created_by"],
         "created_by_name": season["created_by_name"] or "",
@@ -357,6 +389,21 @@ def view(season_id: int) -> dict:
         "created_at": season["created_at"],
         "updated_at": season["updated_at"],
     }
+
+
+def _cost_view(cost: dict) -> dict:
+    """单个 item 的成本，按币种分桶原样透出。
+
+    `currencies` 是这一条 item 真正涉及的币种（升序）。多币种时
+    `cost_micros` 为 `None`（见 `repositories/seasons.py` 的 `_one_currency`），
+    界面据此说"多币种"而不是贴一个假数字。
+    """
+    by_currency = cost.get("by_currency") or {}
+    return {"cost_micros": cost.get("cost_micros"),
+            "currency": cost.get("currency"),
+            "currencies": sorted(by_currency),
+            "by_currency": {c: int(v) for c, v in sorted(by_currency.items())},
+            "jobs": int(cost.get("jobs", 0))}
 
 
 def _item_view(row, counts: dict, cost: dict) -> dict:
@@ -371,8 +418,7 @@ def _item_view(row, counts: dict, cost: dict) -> dict:
             "status": status, "status_label": ITEM_LABELS.get(status, status),
             "error_message": row["error_message"] or "",
             "progress": {"done": 0, "total": 0, "percent": 0.0},
-            "cost": {"cost_micros": int(cost.get("cost_micros", 0)),
-                     "jobs": int(cost.get("jobs", 0))},
+            "cost": _cost_view(cost),
         }
     full = _zero_counts()
     full.update(counts)
@@ -394,8 +440,7 @@ def _item_view(row, counts: dict, cost: dict) -> dict:
         "progress": {"done": done, "total": total,
                      "percent": round(done * 100.0 / total, 1) if total else 0.0},
         "counts": full,
-        "cost": {"cost_micros": int(cost.get("cost_micros", 0)),
-                 "jobs": int(cost.get("jobs", 0))},
+        "cost": _cost_view(cost),
     }
 
 

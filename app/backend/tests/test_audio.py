@@ -14,9 +14,12 @@ from repositories.jobs import jobs as job_repo
 
 @pytest.fixture
 def audio_route(monkeypatch, provider_state, register_tier):
+    # 桩要跟真签名一致：`adapters.health(row, *, probe_service=..., probe_timeout=...)`。
+    # 原来只收 `row`，`services/audio.py` 显式传 `probe_service=False`（2026-11-09
+    # 读路径写明意图）之后，这里就 TypeError 了——桩的签名比被测函数窄，是桩的错。
     monkeypatch.setattr(services.adapters, "health",
-                        lambda row: {"state": "ok", "detail": "测试可达",
-                                     "adapter": None, "key_env": ""})
+                        lambda row, **kw: {"state": "ok", "detail": "测试可达",
+                                           "adapter": None, "key_env": ""})
     with get_conn() as conn:
         conn.execute("UPDATE provider_config SET is_default = 0 WHERE capability IN ('tts','music')")
         conn.execute(

@@ -50,7 +50,8 @@ def _row_out(row, matrix: dict | None = None) -> ProviderOut:
     # 超时用列表档（0.8 秒）：这一条是"打开一页"的路径，服务型引擎那一格只是顺带，
     # 不该因为某台服务半死就让人等满 5 秒。要问到底请点引擎实例那一行的「探测」
     # 或模型中心的「检查引擎连接」——那两条是人明确要求的现查。
-    health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
+    health = adapters.health(row, probe_service=False,
+                             probe_timeout=engines.LIST_TIMEOUT_SECONDS)
     env = health["key_env"] if row["backend"] == "cloud" else ""
     # matrix 给了就从里取（一整页一次批量读）；这一格不在矩阵里＝这个槽位从没验证过，
     # 要传**空字典**而不是 None——传 None 会让 summary_for 自己再打五趟查询去确认"没有"。
@@ -105,7 +106,8 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
         # 提交弹窗要读这一份，所以同样用列表档超时：一个端点不通不该让弹窗卡住。
-        health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
+        health = adapters.health(row, probe_service=False,
+                             probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
             row, matrix.get(_slot_model_key(row), {})))
         out.append(ProviderOptionOut(
@@ -150,7 +152,8 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
             reg, adapter = e["reg"], e["adapter"]
             row = {"capability": reg["capability"], "backend": reg["backend"],
                    "provider": reg["provider"], "model": reg["model_code"]}
-            health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
+            health = adapters.health(row, probe_service=False,
+                             probe_timeout=engines.LIST_TIMEOUT_SECONDS)
             badge, at = validations.badge(validations.summary_for(
                 row, matrix2.get(e["key"], {})))
             out.append(ProviderOptionOut(
@@ -209,7 +212,8 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
                 adapter="", health_state="unconfigured",
                 health_detail="没有默认后端"))
             continue
-        health = adapters.health(row, probe_timeout=engines.LIST_TIMEOUT_SECONDS)
+        health = adapters.health(row, probe_service=False,
+                             probe_timeout=engines.LIST_TIMEOUT_SECONDS)
         badge, at = validations.badge(validations.summary_for(
             row, matrix.get(_slot_model_key(row), {})))
         out.append(CurrentProviderOut(

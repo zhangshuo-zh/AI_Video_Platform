@@ -224,3 +224,56 @@ def test_权限与归属(as_role, people, fresh_project, mock_route):  # noqa: F
     # 模板不存在 ⇒ 404；不是自己的集 ⇒ 422
     assert editor.post(f"/api/projects/{setup['project_id']}/seasons",
                        json={"template_id": 999999}).status_code == 404
+
+
+def test_整季成本按币种分桶_不跨币种相加(mock_route, people, clean_queue):
+    """整季的「累计成本」原来是把每条 item 的 micros 直接 `sum()`。
+
+    清单只有 CNY 时它算得对，混入 USD 之后加出来的数既不是人民币也不是美元——
+    而同一个返回值里还带着 `currencies`（这一季涉及哪几种币），于是接口一边
+    给出无法解释的和、一边给出币种列表，两半各自都对、拼起来自相矛盾。
+    前端 `pipeline.js` 曾经只能靠"多币种就不显示数字"绕开，那是把锅停在界面上。
+
+    现在后端按币种分桶（`schemas/costs.py:44` 的 `CostSummaryOut` 早就是这个口径：
+    "一种币种一个桶，绝不跨币种相加"），这里钉住三件事：
+      * 两种币种时 `by_currency` 两个桶各自是真和；
+      * 此时顶层 `cost_micros` 必须是 `None`（不许给假和）；
+      * 只有一种币种时 `cost_micros` 照样给真和（不许把正常情况也变成 None）。
+    """
+    setup = _project(people, n_episodes=1, n_shots=2)
+    tid = _template(GEN)
+    body = seasons.create(setup["project_id"], tid, setup["user_id"])
+    sid = body["id"]
+    run_id = next(i["run_id"] for i in body["items"] if i["run_id"])
+    _pump(run_id)
+
+    # 这一集跑出来的作业，改两种币种：证明"同一季里混币"是能发生的。
+    with get_conn() as conn:
+        job_ids = [int(r["job_id"]) for r in conn.execute(
+            """SELECT n.job_id FROM season_item i
+                 JOIN pipeline_node_run n ON n.run_id = i.pipeline_run_id
+                WHERE i.season_id = ? AND n.job_id IS NOT NULL""", (sid,)).fetchall()]
+        assert job_ids, "这一集没派出任何作业，测试前提不成立"
+        # 两条不同币种（至少两条才谈得上"跨币种"）
+        assert len(job_ids) >= 2, f"作业只有 {len(job_ids)} 条，凑不出两种币种"
+        for job_id, micros, code in ((job_ids[0], 3_000_000, "CNY"),
+                                     (job_ids[1], 2_000_000, "USD")):
+            conn.execute("UPDATE job SET cost_micros = ?, currency = ? WHERE id = ?",
+                         (micros, code, job_id))
+
+    data = seasons.view(sid)
+    cost = data["cost"]
+    assert cost["by_currency"] == {"CNY": 3_000_000, "USD": 2_000_000}
+    # 关键断言：跨币种时**不许**给出一个和
+    assert cost["cost_micros"] is None, (
+        f"多币种仍给了假和 {cost['cost_micros']}（3_000_000 CNY + 2_000_000 USD）")
+    assert cost["currency"] is None
+    assert cost["currencies"] == ["CNY", "USD"]
+
+    # 单币种仍然给真和（别把正常情况也弄成 None）
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET currency = 'CNY' WHERE id = ?", (job_ids[1],))
+    only = seasons.view(sid)["cost"]
+    assert only["by_currency"] == {"CNY": 5_000_000}
+    assert only["cost_micros"] == 5_000_000
+    assert only["currency"] == "CNY"

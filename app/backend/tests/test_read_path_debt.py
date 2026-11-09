@@ -129,3 +129,47 @@ def test_预检不发请求(app, seeded, draw_things_slot, monkeypatch):
     out = precheck.shot_precheck(seeded["shot_id"], capability="image")
     assert isinstance(out.get("items"), list) and out["items"], "预检没跑出结论"
     assert calls == [], f"预检替连了 {len(calls)} 次网：{calls}"
+
+
+def test_每个_health_调用点都自己写明要不要出网():
+    """`adapters.health()` 的默认值是 False，但**不许靠默认值**。
+
+    默认值翻面（2026-11-09）解决了「忘记传参就出网」，但它带出一个新债：
+    读代码的人必须记住默认值才看得懂每个调用点会不会联网。翻面只是把
+    「默认不安全」换成「默认安全」，没有把意图写出来。
+
+    所以这条守住：除 `adapters.py` 自己（默认值定义处）之外，生产代码里
+    每一处 `adapters.health(...)` 都必须显式写 `probe_service=`。
+    新增一个漏写的调用点会立刻红——而不是等某天有人问「这页为什么慢」。
+
+    用 AST 而不是逐行正则：`adapters.health()` 在文档字符串和注释里被**解释**
+    了十几次，逐行扫会把它们全当成调用（第一版就是这么红的）。
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for f in sorted(root.rglob("*.py")):
+        rel = f.relative_to(root).as_posix()
+        if rel.startswith("tests/") or rel == "adapters.py":
+            continue
+        try:
+            tree = ast.parse(f.read_text())
+        except SyntaxError:      # 语法错的文件另有测试管，这里不重复报
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # 认 `adapters.health(...)` 与 `health(...)`（后者只在本模块 import 时出现，
+            # 但本项目都是 `adapters.health` 写法，只认前者以免误伤同名函数）
+            if not (isinstance(func, ast.Attribute) and func.attr == "health"):
+                continue
+            if not (isinstance(func.value, ast.Name) and func.value.id == "adapters"):
+                continue
+            if not any(kw.arg == "probe_service" for kw in node.keywords):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        "这些调用点没写明要不要出网（读路径请显式 probe_service=False，"
+        f"人触发的现查请显式 True）：{offenders}")

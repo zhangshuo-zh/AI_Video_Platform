@@ -222,7 +222,10 @@ def _model_items(capability: str, execution_mode: str | None,
                            f"provider「{provider}」不在清单里，平台不会猜它的参数",
                            LOCATE["models"]))
     else:
-        health = adapters.health(route["row"])
+        # 预检是**只读、确定性**的（本文件第 1 条纪律）：不发请求、不写状态。
+        # 服务型引擎那一档在 probe_service=False 下返回 unknown + probe_deferred，
+        # 由 `test_read_path_debt.py` 的「预检不发请求」守着。
+        health = adapters.health(route["row"], probe_service=False)
         if health["state"] != "ok":
             items.append(_item("model.health", BLOCK,
                               f"{adapter.label} 现在不可用：{health['detail']}",

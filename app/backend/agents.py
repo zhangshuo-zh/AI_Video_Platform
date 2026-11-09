@@ -545,7 +545,11 @@ def config_cards() -> dict:
         card["key_env"] = row["key_env"] or ""
         if card["key_env"]:
             card["secret_present"] = bool(adapters.key_present(row["key_env"]))
-        health = adapters.health(dict(row))
+        # 这是**读**路径：智能体中心的配置卡片一次拼十几行，每行都去连一次
+        # 服务型引擎等于「打开一页顺带扫一遍网」（默认值 2026-11-09 已翻成 False，
+        # 这里显式写出来，让「不出网」是这一行的意思而不是默认值的副作用）。
+        # 要现查请走模型中心的「检查引擎连接」。
+        health = adapters.health(dict(row), probe_service=False)
         card["health_state"] = health["state"]
         card["health_detail"] = health["detail"]
         card["cost_note"] = agent_tools.cost_note("text", row["provider"],

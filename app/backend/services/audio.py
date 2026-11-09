@@ -98,7 +98,8 @@ def audio_submit(clip, user) -> dict:
         raise AudioInvalid(str(exc)) from exc
     if route["backend"] != "local":
         raise AudioInvalid("音频这一期只走本地轨；云端配音/音乐还没有接确认单")
-    health = adapters.health(route["row"])
+    # 读路径：能力表是"打开一页"就要的东西，不代用户连服务。
+    health = adapters.health(route["row"], probe_service=False)
     if health["state"] != "ok":
         raise AudioInvalid(f"{route['adapter'].label} 现在不可用：{health['detail']}")
     # 时长与字级时间戳由适配器自己写；这里只冻结文本与关联

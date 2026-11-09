@@ -31,6 +31,19 @@ _SELECT_ITEM = """
 """
 
 
+def _one_currency(by_currency: dict[str, int]) -> dict:
+    """把"按币种分的桶"折成**只在唯一币种时**才给出的单值。
+
+    多币种时 `cost_micros` 与 `currency` 都给 `None`：调用方要么按
+    `by_currency` 自己分桶显示，要么就不显示数字。给 `None` 是刻意的——
+    它逼调用方处理"这一季有两种钱"这种情况，而不是默默拿到一个假和。
+    """
+    if len(by_currency) == 1:
+        code = next(iter(by_currency))
+        return {"cost_micros": by_currency[code], "currency": code}
+    return {"cost_micros": None, "currency": None}
+
+
 class SeasonRepository:
     def create(self, *, project_id: int, template_id: int, name: str,
                max_active_runs: int, idempotency_key: str | None,
@@ -195,10 +208,23 @@ class SeasonRepository:
 
         金额只认 `job` 里已有的快照；本地作业是 0，云端未对账的仍是 pending，
         这里不替它猜"应该多少钱"。
+
+        **按币种分桶，不跨币种相加**（2026-11-09）：原来是
+        `SUM(j.cost_micros)` 一把加完，而 `currency` 根本不进聚合——两种币种的
+        微单位相加出来的是一个既不是 A 也不是 B 的数。同文件 `currencies()` 早就
+        能告诉调用方"这一季涉及哪几种币"，于是接口一边给出无法解释的和、
+        一边给出币种列表，两半各自都对、拼起来自相矛盾。
+        `schemas/costs.py:44` 的 `CostSummaryOut` 已经把口径写死了
+        （"一种币种一个桶，绝不跨币种相加"），这里是同一条规则推到整季。
+
+        返回 `by_currency` 是 `{币种: 微单位}`；顶层 `cost_micros` **只在恰好
+        一种币种时**给出（那种情况下它就是真和），多币种时为 `None`——
+        宁可不给数字，也不给一个假的。`currency` 同理。
         """
         with get_conn() as conn:
             rows = conn.execute(
                 """SELECT i.id AS item_id,
+                          j.currency AS currency,
                           COALESCE(SUM(j.cost_micros), 0) AS cost_micros,
                           COUNT(DISTINCT j.id) AS jobs,
                           COUNT(DISTINCT CASE WHEN j.status = 'succeeded'
@@ -207,11 +233,25 @@ class SeasonRepository:
                      JOIN pipeline_node_run n ON n.run_id = i.pipeline_run_id
                      JOIN job j ON j.id = n.job_id
                     WHERE i.season_id = ?
-                    GROUP BY i.id""", (season_id,)).fetchall()
-        return {int(r["item_id"]): {"cost_micros": int(r["cost_micros"] or 0),
-                                    "jobs": int(r["jobs"] or 0),
-                                    "succeeded": int(r["succeeded"] or 0)}
-                for r in rows}
+                    GROUP BY i.id, j.currency""", (season_id,)).fetchall()
+        # 同一个 item 现在可能有多行（每种币种一行），先在 Python 里合起来：
+        # 计数要**去重相加会错**（同一个 job 只属于一个币种，所以 jobs 可以直接加），
+        # 金额则按币种分桶。
+        out: dict[int, dict] = {}
+        for r in rows:
+            item_id = int(r["item_id"])
+            bucket = out.setdefault(item_id, {"by_currency": {}, "jobs": 0,
+                                              "succeeded": 0})
+            code = r["currency"]
+            if code is not None:
+                key = str(code)
+                bucket["by_currency"][key] = (bucket["by_currency"].get(key, 0)
+                                              + int(r["cost_micros"] or 0))
+            bucket["jobs"] += int(r["jobs"] or 0)
+            bucket["succeeded"] += int(r["succeeded"] or 0)
+        for bucket in out.values():
+            bucket.update(_one_currency(bucket["by_currency"]))
+        return out
 
     def currencies(self, season_id: int) -> list[str]:
         with get_conn() as conn:
