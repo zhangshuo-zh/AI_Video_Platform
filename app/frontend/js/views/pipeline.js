@@ -13,7 +13,7 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { currentSubTab, getSub, setSub, setParam } from '../navstate.js';
-import { agoText, bindModalDismiss, bindSubChips, confirmDanger, errorBox, escapeHtml, run, subChipRow } from '../util.js';
+import { agoText, bindModalDismiss, bindSubChips, confirmDanger, errorBox, escapeHtml, formatMoney, run, subChipRow } from '../util.js';
 import { publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
 import { diagnosisHtml } from './diagnosis.js';
@@ -291,11 +291,35 @@ function detailHtml(detail) {
 
 /* ---------------- 整季生产（阶段 E-2／E-3） ---------------- */
 
+/** 整季成本：`currencies` 是后端 `seasons.currencies()` 给的 `list[str]`。
+ *
+ * 金额格式化只有一份实现——`util.js` 的 `formatMoney()`（`generate.js:48`
+ * 也是这么转的）。这里先前自带一份 `toFixed(2)`，代价有三条：
+ *   * `null` 显示成 `¥0.00`：凭空造一个金额，本该是「—」；
+ *   * 小额被吃掉：云端按秒计价，一笔 ¥0.0036 显示成 `¥0.00`；
+ *   * 大额没有千分位。
+ *
+ * **没有币种就返回「—」**：`currencies` 为空说明这一季只有本地作业
+ * （`cost_micros` 计 0、`currency` 为 NULL，`repositories/seasons.py:216`
+ * 的 `DISTINCT ... IS NOT NULL` 查不到行）。本地作业不按量计费，
+ * 显示 `¥0.00` 是在说"花了 0 元"，而事实是"没有可计价的花费"——
+ * 前者会被当成对账结论。`generate.js:225` 对同一种情况的做法是
+ * 明确空状态「还没有花费」，这里至少不能给出一个假数字。
+ */
 function money(micros, currencies) {
-  const value = Number(micros || 0) / 1_000_000;
-  const cur = (currencies && currencies[0]) || 'CNY';
-  const symbol = cur === 'CNY' ? '¥' : `${cur} `;
-  return `${symbol}${value.toFixed(2)}`;
+  const list = currencies || [];
+  if (!list.length) return '—';
+  if (list.length > 1) {
+    // 多币种时**不能**挑一个贴上去：`cost_micros` 是后端把各集金额直接相加的
+    // （`seasons.py:349`），不同币种的 micros 相加没有意义，而给它贴上
+    // `currencies[0]` 的符号等于宣布那个假和是那种货币。
+    // 今天的清单只有 CNY（`adapters.py` 三处 `currency="CNY"`），所以这条路
+    // 走不到；真到有第二种币种那天，先改后端按币种分桶
+    // （`schemas/costs.py:43` 的 `CostSummaryOut` 就是这么定的：
+    // "一种币种一个桶，绝不跨币种相加"），再说显示。
+    return `多币种（${list.join(' / ')}）`;
+  }
+  return formatMoney(micros, list[0]);
 }
 
 function workerPanel() {

@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, run, subChipRow,
+import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, formatMoney, run, subChipRow,
          pulseSaved } from '../util.js';
 import { JOB_TERMINAL, jobLabel, jobTone, publicStatus } from '../validation.js';
 import { unitLabel } from '../enums.js';
@@ -759,7 +759,10 @@ function paintEx(root) {
     return;
   }
   const o = ex.options;
-  const price = (o.unit_price_micros / 1_000_000).toFixed(2);
+  // 金额只走 `util.js` 的 `formatMoney()`（`generate.js:48` 也这么转）：
+  // 币种从 `o.currency` 来——后端 `services/doc_ai.py:71` 一直在下发它，
+  // 这里先前把 `¥` 写死，清单换币种时界面会照发人民币符号。
+  const price = formatMoney(o.unit_price_micros, o.currency);
   // 单位念后端下发的 `o.unit`（`services/doc_ai.py:67` 的 `unit`），
   // 不写死"百万 Token"：清单里换成 second／request 时，硬写的那句会静默说谎。
   // `unitLabel()` 是 `enums.js` 里那张唯一的口径表（认不出来就原样念 code，
@@ -773,7 +776,7 @@ function paintEx(root) {
         <div><span class="grp">文档</span><b>${escapeHtml(o.doc_title)}</b></div>
         <div><span class="grp">正文</span><b>${o.chars} 字</b></div>
         <div><span class="grp">模型</span><b>${escapeHtml(o.provider)} / ${escapeHtml(o.model)}</b></div>
-        <div><span class="grp">单价</span><b>¥${price} / ${escapeHtml(unitText)}</b></div>
+        <div><span class="grp">单价</span><b>${price} / ${escapeHtml(unitText)}</b></div>
         <div><span class="grp">预计用量</span><b>${o.estimated_quantity} ${escapeHtml(unitText)}</b></div>
         <div><span class="grp">健康</span><b>${escapeHtml(o.health_detail)}</b></div>
       </div>
@@ -1127,9 +1130,12 @@ async function loadAiOptions(root) {
 
 function aiPriceHtml(o) {
   const unit = escapeHtml(unitLabel(o.unit));
-  const priceYuan = (o.unit_price_micros / 1_000_000).toFixed(2);
+  const priceText = formatMoney(o.unit_price_micros, o.currency);
   const costMicros = Math.round(o.estimated_quantity * o.unit_price_micros);
-  const costYuan = (costMicros / 1_000_000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  // 金额一律走 `formatMoney()`——它按金额自适应小数位（< 0.01 给 4 位），
+  // 正是为了"一笔 ¥0.0036 不被显示成 ¥0.00"。先前这里是
+  // `toFixed(3)` 再手工 trim 尾零，等于第二份口径。
+  const costText = formatMoney(costMicros, o.currency);
   const tokens = Math.round(o.estimated_quantity * 1_000_000);
   const health = o.health_state === 'ok'
     ? '<span class="chip green">可用</span>'
@@ -1138,13 +1144,13 @@ function aiPriceHtml(o) {
   return `
     <div><span class="grp">供应商 / 模型</span><b>${escapeHtml(o.provider)} · ${escapeHtml(o.model)}</b></div>
     <div><span class="grp">健康</span>${health}</div>
-    <div><span class="grp">单价</span><b>¥${priceYuan}</b> / ${escapeHtml(unit)}
+    <div><span class="grp">单价</span><b>${priceText}</b> / ${escapeHtml(unit)}
       <span class="t-dim">（清单价）</span></div>
     <div><span class="grp">本次输入</span><b>${o.chars}</b> 字，输出上限 ${o.max_tokens} token</div>
     <div><span class="grp">预计用量</span><b>${o.estimated_quantity}</b> ${escapeHtml(unit)}
       <span class="t-dim">≈ ${tokens.toLocaleString()} token</span></div>
-    <div><span class="grp">预计费用</span><b>¥${costYuan}</b>
-      <span class="t-dim">（${escapeHtml(o.currency)}，向上取整到 0.001）</span></div>
+    <div><span class="grp">预计费用</span><b>${costText}</b>
+      <span class="t-dim">（向上取整到 0.001）</span></div>
     <div class="ai-source"><span class="grp">价格来源</span>
       <span class="t-dim">${escapeHtml(o.source)}</span></div>`;
 }

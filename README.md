@@ -144,7 +144,7 @@ cd app/backend
 |---|---|
 | 后端代码 | `pytest -q`；再 `python3 tools/make_release_baseline.py --check` |
 | 前端 JS | `python3 tools/js_load_check.py`（模块能不能加载；模块数由脚本现数，本文件不写死，一个失败都不许留） |
-| 界面行为 | `python3 tools/production_browser_check.py`、`tools/model_center_browser_check.py`、`tools/agents_browser_check.py`（各起库副本＋独立端口，不写开发库） |
+| 界面行为 | `python3 tools/production_browser_check.py`、`tools/model_center_browser_check.py`、`tools/agents_browser_check.py`（各起库副本＋独立端口，不写开发库）；改了金额／单位显示另跑 `tools/money_format_check.py`（10 项：null 念「—」、小额留 4 位、千分位、币种从数据来、整季无币种不造假数） |
 | 文档 | `python3 tools/doc_structure_check.py`（目录、锚点、跨册引用、修订记录格式、历史不丢、留档头部、图） |
 | 清临时目录 | `python3 tools/_harness.py --prune`（收 `.pytest-tmp` 下历史残留的 `fv-*`／`fvtest-*`／`test_*` 等，`--dry-run` 先看、`--keep 前缀` 点名保留） |
 

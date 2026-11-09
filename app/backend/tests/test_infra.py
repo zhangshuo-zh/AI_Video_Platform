@@ -631,6 +631,57 @@ def test_多久前只有util一处写法():
     assert "86400" in util, "util.js 的 agoText 没有天这一级，2 天前的行还会念成 66 小时"
 
 
+def test_金额格式化只有util一处写法():
+    """金额只许用 `js/util.js` 的 `formatMoney()` 格式化。
+
+    与上一条同形：`views/pipeline.js` 原先自带一份
+    `money()` —— `toFixed(2)` 加 `currencies[0] || 'CNY'`。三个后果：
+
+    * 金额为 `null` 时显示 `¥0.00`——**凭空造一个数**，本该是「—」；
+    * 小额被吃掉：云端按秒计价，¥0.0036 显示成 `¥0.00`；
+    * 没有币种时硬套 `¥`。整季全是本地作业时后端 `currencies` 是空数组
+      （`repositories/seasons.py:216` 的 `DISTINCT ... IS NOT NULL` 查不到行），
+      于是"没有可计价的花费"被显示成"花了 0 元"——会被当成对账结论。
+
+    守两件事：别的 `views/` 文件不许再写一份金额格式化；`util.js` 那一份
+    必须真的被 `pipeline.js` 用上（不然扫描通过而行为没改）。
+    """
+    offenders = []
+    for f in list((FRONTEND / "js" / "views").glob("*.js")) + \
+            list((FRONTEND / "js" / "views").rglob("models/*.js")):
+        src = f.read_text()
+        lines = src.splitlines()
+        for n, line in enumerate(lines, 1):
+            m = re.search(r"function (money|formatMoney|fmtMoney)\s*\(", line)
+            if m:
+                # **转发包装不算第二份口径**：`asset-studio.js` 的 `fmtMoney`
+                # 整个函数体就是 `return formatMoney(...)`；`pipeline.js` 的
+                # `money()` 也只是"从数组里取币种、无币种念「—」"再转交。
+                # 判据取**整个函数体**（花括号配平到底），不是函数名也不是行数——
+                # 按行数取窗口会被注释长短影响，那是假判据。
+                depth, body_lines = 0, []
+                for ln in lines[n - 1:]:
+                    body_lines.append(ln)
+                    depth += ln.count("{") - ln.count("}")
+                    if depth <= 0 and len(body_lines) > 1:
+                        break
+                body = "\n".join(body_lines)
+                if re.search(r"return\s+formatMoney\s*\(", body):
+                    continue
+                offenders.append(f"{f.name}:{n} 又定义了一份金额格式化")
+            # 绕过 formatMoney 自己除 1e6 再定小数位，同样是第二份口径
+            elif re.search(r"/\s*1_?000_?000", line) and "toFixed" in line:
+                offenders.append(f"{f.name}:{n} 自己把 micros 换算成金额")
+    assert not offenders, "金额格式化只该有 util.js 那一份：" + "；".join(offenders)
+
+    pipeline = (FRONTEND / "js" / "views" / "pipeline.js").read_text()
+    assert "formatMoney(" in pipeline, \
+        "pipeline.js 的整季成本没有走 util.js 的 formatMoney()"
+    # 无币种必须念「—」而不是造一个 0：本地作业不按量计费。
+    util = (FRONTEND / "js" / "util.js").read_text()
+    assert "return '—'" in util, "formatMoney 丢了 micros 为 null 时的「—」"
+
+
 def test_样式表花括号配平():
     """app.css 必须括号配平，且不能出现"没有选择器的规则体"。
 
