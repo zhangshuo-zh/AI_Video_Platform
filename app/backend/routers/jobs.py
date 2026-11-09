@@ -5,7 +5,7 @@ POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `
 """
 import mimetypes
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status as http_status
 from fastapi.responses import FileResponse
 
 import access
@@ -22,7 +22,7 @@ from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut)
 from repositories.content import episodes
-from repositories.jobs import jobs, retry_reason
+from repositories.jobs import clamp_limit, jobs, retry_reason
 from repositories.projects import projects as project_repo
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -110,7 +110,7 @@ def list_jobs(response: Response,
               project_id: int | None = None, episode_id: int | None = None,
               shot_id: int | None = None, status: str | None = None,
               capability: str | None = None, execution_mode: str | None = None,
-              q: str | None = None, limit: int = 100,
+              q: str | None = None, limit: int = Query(100, ge=1),
               before_id: int | None = None,
               user=Depends(require_permission("job:read"))) -> list[JobOut]:
     """队列列表。episode_id／shot_id 是给创作中心分镜表用的窄筛选。
@@ -148,6 +148,14 @@ def list_jobs(response: Response,
               execution_mode=execution_mode,
               keyword=(q or "").strip()[:200] or None,
               episode_id=episode_id, shot_id=shot_id)
+    # **先把 limit 夹到仓储真正会用到的那个值**（2026-11-09 外部审查第 4 条）。
+    #
+    # `jobs.list()` 内部把 limit 夹在 200 以内，但下面判定"这页取满了没有"
+    # 用的是**原始** limit。于是 `?limit=500` 时：仓储返回 200 行，
+    # `200 >= 500` 为假 → 判定没取满 → 不查总数 → `X-Total-Count` 直接
+    # 报成 200。而库里其实有 300 条，界面上的"共 N 条"就少报了。
+    # 夹一次之后，两个地方用的是同一个数，分母才和列表同一口径。
+    limit = clamp_limit(limit)
     rows = jobs.list(ids, limit=limit, before_id=before_id, **kw)
     # 分母与列表走同一套筛选参数（kw 是同一份），不给「共 N」留第二种口径。
     # 只在这一页取满时才真算：没取满说明本来就到底了，多一次 COUNT 没有意义。

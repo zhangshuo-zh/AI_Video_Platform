@@ -25,6 +25,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -32,6 +33,10 @@ import safenet
 
 DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
 DEFAULT_WAN_KEY_ENV = "DASHSCOPE_API_KEY"
+
+# 供应商 task_id 的合法形状：字母数字下划线连字符，1..128。
+# 收窄到这个程度是因为它会被拼进带凭据的 URL（见 run_wan/_poll 里的注释）。
+_TASK_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _now_ms() -> int:
@@ -72,7 +77,22 @@ def _error_code(status: int | None, kind: str = "") -> str:
     return "provider_error"
 
 
+def _guard_url(url: str) -> None:
+    """带凭据出门之前，先过地址闸（2026-11-09 外部审查第 7 条）。
+
+    为什么放在 `_post_json` / `_get_json` 里面而不是各调用点：
+    这两个函数是**所有**带 `Authorization: Bearer <真密钥>` 请求的唯一入口
+    （提交、查询、轮询都走它们）。闸放在入口上，新增调用点自动受保护；
+    放在调用点上，下一个加调用点的人得先记得有这回事。
+
+    原来 `check_url` 只被 `_download` 调过——那条路径恰恰**不带**密钥
+    （签名 URL 不能带 Authorization），所以"唯一加了闸的地方是最不需要的"。
+    """
+    safenet.check_url(url)
+
+
 def _post_json(url: str, body: dict, headers: dict, timeout: float):
+    _guard_url(url)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -89,6 +109,7 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float):
 
 
 def _get_json(url: str, headers: dict, timeout: float):
+    _guard_url(url)
     req = urllib.request.Request(url, method="GET")
     for key, value in headers.items():
         req.add_header(key, value)
@@ -302,6 +323,16 @@ def _wan(request: dict, result: dict) -> int:
     task_id = str(output.get("task_id") or "")
     if not task_id:
         raise _ProviderError(_error_code(status), "创建任务后没有拿到 task_id")
+    # **task_id 是供应商给的外部数据，要当不可信输入处理**（2026-11-09 外部审查第 7 条）。
+    #
+    # 它会被拼进 `poll_url = base + f"/api/v1/tasks/{task_id}"`，而那条 URL
+    # 是**带 Authorization 出门**的。合法 task_id 只有字母数字下划线连字符，
+    # 所以白名单收得极窄；`quote(safe="")` 再兜一层，不让 `..`、`@`、`?`
+    # 之类改变 URL 的结构（`..` 能改路径，`@` 能改 host）。
+    if not _TASK_ID_RE.fullmatch(task_id):
+        raise _ProviderError("bad_task_id",
+                             f"供应商回的 task_id 形状不合法（{len(task_id)} 字符）")
+    task_id = urllib.parse.quote(task_id, safe="")
     result["request_id"] = task_id
     result["task_request_id"] = str(data.get("request_id") or "")
     result["task_status"] = "CREATED"

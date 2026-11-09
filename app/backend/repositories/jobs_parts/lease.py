@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
 from config import RESOURCE_CLASSES, WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE
 from db import get_conn
@@ -157,6 +158,9 @@ class JobsLeaseMixin:
         return {"failed": failed, "cancelled": cancelled, "needs_attention": attention}
 
 
+    # 上次清理久未心跳行的时间（monotonic 秒）。见 heartbeat 里的说明。
+    _last_prune = 0.0
+
     def heartbeat(self, worker_id: str, pid: int, current_job_id: int | None,
                   version: str, *, limits: dict | None = None,
                   resources: dict | None = None) -> None:
@@ -188,11 +192,21 @@ class JobsLeaseMixin:
                 (worker_id, pid, host, current_job_id, version,
                  limits_json, resources_json),
             )
-            # 面板只关心近几天的进程；删除久未心跳的行，不让表无限长
-            conn.execute(
-                """DELETE FROM worker_node
-                    WHERE heartbeat_at < datetime('now','localtime','-7 days')"""
-            )
+            # 面板只关心近几天的进程；删除久未心跳的行，不让表无限长。
+            #
+            # **但不必每次心跳都删**（2026-11-09 外部审查第 11 条）。
+            # 心跳 2 秒一次，这条 DELETE 于是每小时跑 1800 遍，而它要清的是
+            # "7 天没心跳"的行——正常情况下永远是 0 行，等于拿着写锁空转。
+            # 实测 heartbeat 2.556 ms/次。
+            # 改成一小时清一回：最多晚一小时看到旧行消失，没有任何界面
+            # 依赖"它必须在这一拍消失"。
+            now = time.monotonic()
+            if now - self._last_prune >= 3600:
+                self._last_prune = now
+                conn.execute(
+                    """DELETE FROM worker_node
+                        WHERE heartbeat_at < datetime('now','localtime','-7 days')"""
+                )
             conn.execute(
                 """INSERT INTO worker_state (id, worker_id, pid, started_at,
                                              heartbeat_at, current_job_id, version)

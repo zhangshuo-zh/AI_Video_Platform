@@ -227,9 +227,12 @@ def run_tests() -> tuple[int, str]:
     proc = subprocess.run(
         cmd, capture_output=True, text=True, cwd=BACKEND,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
-             # 与 CI 同一条规则：删除类与真采样靠环境取证，两边都跳过，
-             # 基线数字才不会"开发机 1043、runner 1046"地漂。
-             "FASTVIDEO_TEST_SKIP_ENV": "1",
+             # 这里原来强制设 `FASTVIDEO_TEST_SKIP_ENV=1`，理由是"与 CI 同一条
+             # 规则，基线数字才不会漂"。这一项已经去掉（2026-11-09 外部审查
+             # 第 9 条）：它和 CI workflow、conftest 是同一个开关的三处，
+             # 三处一起去掉之后，`delete_guard` 只按真实探测决定跳不跳，
+             # 删除类用例在这个进程里也会真跑——基线数字因此是"真跑出来的"，
+             # 不是"两边一样地少跑几条算出来的"。
              # 子解释器启动时 tempfile 要在系统临时目录里做"建了再删"的探测；
              # /tmp 只读或删除被宿主策略拦时，探测全失败会直接
              # "No usable temporary directory" 起不来。指到 basetemp 旁边
@@ -532,8 +535,25 @@ def main() -> None:
              # 「真浏览器验收（人工登记…）：」——后者是 v1.2 写作规范之后改的，
              # 括注里带冒号但不含读数，正则只取最后一个冒号之后的内容。
              "drill_browser": preserve_baseline_line(
-                 r"真浏览器验收(?:（[^）]*）)?：(.+)$")}
+                 r"真浏览器验收(?:（[^）]*）)?：(.+)$"),
+             # 探针是否降级（2026-11-09 外部审查第 8 条）。
+             #
+             # 原来 `probe_app()` 失败时把 `degraded` 写进它自己返回的 facts，
+             # 但**这里组装新 facts 时没带这一项**，于是这个事实在汇合处被丢掉；
+             # `--check` 分支也从不看它。实测过（故意把探针改成必然
+             # SystemExit(9)）：应用完全起不来，门禁仍打印
+             # 「四份说明书关键数字与基线一致」并且 exit=0。
+             # 一个会在应用挂掉时变绿的门禁比没有门禁更糟——
+             # 它给了"已验证"的错觉。
+             "degraded": probe.get("degraded", "")}
     if check:
+        # 探针降级时**拒绝判定**：这一趟根本没验证到应用，路由/表数全是
+        # 沿用基线的旧值，继续比下去只会得出"都对得上"。
+        # 降级只在生成模式允许（那时人工会看到那行 ⚠）。
+        if facts.get("degraded"):
+            print(f"✗ 探针降级，本次校验不可信，拒绝判定：{facts['degraded']}",
+                  file=sys.stderr)
+            raise SystemExit(1)
         # 目标机基准是"另一台机器上才量得出"的数：本机全绿不能替它签字。
         # 一条未跑时只告警（本机开发本来跑不了），但若有人据此标了
         # production_ready，就必须拦住——那是拿本机的绿灯给目标机背书。

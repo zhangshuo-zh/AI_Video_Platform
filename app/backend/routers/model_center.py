@@ -13,7 +13,7 @@
 import json
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 import adapters
 import cloud_probe
@@ -395,7 +395,7 @@ def save_policies(payload: list[ModelPolicyIn],
 
 
 @router.get("/config-changes")
-def list_config_changes(limit: int = 50,
+def list_config_changes(limit: int = Query(50, ge=1),
                         _=Depends(require_permission("system:config"))) -> dict:
     """选路配置的变更痕（0044）。最近改了什么：谁、什么时候、从什么改成什么。
 
@@ -616,7 +616,7 @@ def remove_engine(instance_id: int, confirm: str = "",
 
 
 @router.get("/engines/{instance_id}/probes")
-def list_engine_probes(instance_id: int, limit: int = 20,
+def list_engine_probes(instance_id: int, limit: int = Query(20, ge=1),
                        _=Depends(require_permission("system:config"))) -> dict:
     """这条实例的探测历史，最新在前。**只读，不触发探测**。
 

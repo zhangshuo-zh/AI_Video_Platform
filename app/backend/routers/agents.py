@@ -19,7 +19,7 @@
 `/agent/configs` 与 `/agent/tools` 里**不含密钥值**：只回"变量名＋有没有值"，
 与 `routers/model_center.py` 那三行同一条纪律。
 """
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 
 import access
 import agents
@@ -138,7 +138,7 @@ def create_run(payload: AgentRunIn,
 
 
 @router.get("/agent/runs")
-def list_runs(project_id: int, limit: int = 50,
+def list_runs(project_id: int, limit: int = Query(50, ge=1),
               user=Depends(require_permission("project:read"))) -> dict:
     access.ensure(user, project_id, "read")
     rows = agents.agent_runs.list_by_project(project_id, limit=max(1, min(limit, 200)))

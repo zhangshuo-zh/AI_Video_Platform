@@ -6,7 +6,7 @@
 import uuid
 from functools import wraps
 
-from fastapi import (APIRouter, Depends, File, HTTPException, UploadFile,
+from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
                      status as http_status)
 
 import asset_studio
@@ -720,7 +720,7 @@ def create_asset_generation(project_id: int, payload: AssetGenIn,
 @router.get("/projects/{project_id}/asset-generations", response_model=list[AssetGenOut])
 @studio_errors
 def list_asset_generations(project_id: int, target_asset_id: int | None = None,
-                           limit: int = 12,
+                           limit: int = Query(12, ge=1),
                            user=Depends(require_permission("job:read"))) -> list[AssetGenOut]:
     """这个项目（可指定某条资产）最近的资产生成作业。
 

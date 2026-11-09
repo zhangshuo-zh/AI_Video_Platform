@@ -79,10 +79,13 @@ jobs:
       - name: 全量测试
         # shell: bash 才有 pipefail——默认那层不置管道退出码，pytest 挂了会被 tee 盖成成功
         shell: bash
-        env:
-          # 与开发机同一条规则：删除类与 ps 采样靠真实环境取证，两边都跳过，
-          # 基线的 passed 数才不会随 runner 漂（详见 conftest.delete_guard）。
-          FASTVIDEO_TEST_SKIP_ENV: "1"
+        # 这里原来设了 FASTVIDEO_TEST_SKIP_ENV=1，用来"两边都跳过环境依赖用例，
+        # 基线的 passed 数才不会随 runner 漂"。问题是 ubuntu-latest 删得掉文件，
+        # 那 4 条要证的用例（删资产清图、脏清单不卡半套、删资产只清自己登记的图、
+        # 缺权重提前失败）因此从没在 CI 上真跑过——用"两边一样地不测"换稳定读数，
+        # 是把门禁做成了摆设（2026-11-09 外部审查第 9 条）。
+        # 现在只留 conftest.delete_guard 里那段真实探测：删不掉才跳过，
+        # 删得掉就必须跑。用例真的因环境跳过时，下面的基线门禁会红。
         run: python -m pytest -q | tee /tmp/pytest.log
 
       # 第二道门：四份说明书里的测试数／路由数／表数／迁移号，必须与这份代码现算一致。

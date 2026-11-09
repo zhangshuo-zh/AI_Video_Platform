@@ -245,7 +245,14 @@ def delete_guard(tmp_path):
         probe_dir.rmdir()
     except OSError as exc:
         pytest.skip(f"这个环境不允许删文件/目录（{exc}）；删除类用例无法取证")
-    if os.environ.get("FASTVIDEO_TEST_SKIP_ENV") == "1":
-        # CI 与开发机走同一条规则：这几条靠真实文件系统取证，
-        # 两边都跳过，基线的 passed 数才不会随 runner 漂。
-        pytest.skip("按 FASTVIDEO_TEST_SKIP_ENV 跳过环境依赖用例")
+    # **能删就真跑**（2026-11-09 外部审查第 9 条）。
+    #
+    # 这里原来还有一档 `if FASTVIDEO_TEST_SKIP_ENV == "1": pytest.skip(...)`，
+    # `.github/workflows/tests.yml` 把它设成 1，注释写的是"两边都跳过，
+    # 基线的 passed 数才不会随 runner 漂"。代价是这 4 条（删资产清图、
+    # 脏清单不卡半套、删资产只清自己登记的图、缺权重提前失败）
+    # **在 CI 上一次都没真跑过**——而它们要证的恰恰是"删完图还在不在"，
+    # 用一个"两边一样地不测"换来一个稳定的 passed 数，是把门禁做成了摆设。
+    #
+    # 上面那段探测才是唯一该有的判据：这个环境删不掉文件就跳过，
+    # 删得掉就必须跑。CI 是 ubuntu-latest，删得掉，所以现在会真跑。

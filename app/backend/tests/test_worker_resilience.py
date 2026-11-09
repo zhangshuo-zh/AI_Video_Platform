@@ -18,6 +18,7 @@ import time
 import pytest
 
 import worker
+from db import get_conn
 
 
 def test_锁冲突只跳过这一拍不抛异常():
@@ -71,3 +72,49 @@ def test_超时终止连孙进程一起收掉(tmp_path):
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_心跳不每次都清死节点(fresh_project, clean_queue):
+    """第 11 条：`worker_node` 的清理按小时节流，但**清理能力本身还在**。
+
+    心跳 2 秒一次，原来的实现每拍都跑一次
+    `DELETE FROM worker_node WHERE heartbeat_at < ...-7 days`——
+    而那张表里正常情况下就那么一两行、7 天前的永远是 0 行，
+    等于每两秒拿一次写锁空转（实测 heartbeat 2.556 ms/次）。
+
+    这里断言三件事，缺一条都不算修好：
+    ① 第一次心跳就把超期行清掉（不能"节流"成"永不清理"）；
+    ② 紧接着再心跳不清（节流窗口内不重复做无用功）；
+    ③ 窗口过去之后再心跳，照旧清。
+    """
+    from repositories.jobs import jobs as job_repo
+
+    def _dead(worker_id):
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO worker_node (worker_id, pid, host, heartbeat_at, version)
+                   VALUES (?, 1, 'h', datetime('now','localtime','-8 days'), 'v1')""",
+                (worker_id,))
+
+    def _alive(worker_id) -> bool:
+        with get_conn() as conn:
+            return conn.execute("SELECT 1 FROM worker_node WHERE worker_id = ?",
+                                (worker_id,)).fetchone() is not None
+
+    # ① 首次心跳（_last_prune 初始 0）应当清掉超期行
+    job_repo._last_prune = 0.0
+    _dead("drill-dead-1")
+    job_repo.heartbeat("w-alive", 4001, None, "v1")
+    assert not _alive("drill-dead-1"), "第一次心跳必须清掉超期节点"
+
+    # ② 节流窗口内：又冒出一条超期行，这一拍不该被清
+    import time as _time
+    _dead("drill-dead-2")
+    job_repo._last_prune = _time.monotonic()
+    job_repo.heartbeat("w-alive", 4001, None, "v1")
+    assert _alive("drill-dead-2"), "一小时之内不该重复清"
+
+    # ③ 越过窗口：照旧清
+    job_repo._last_prune = _time.monotonic() - 3601
+    job_repo.heartbeat("w-alive", 4001, None, "v1")
+    assert not _alive("drill-dead-2"), "过了一小时必须恢复清理"

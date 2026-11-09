@@ -58,6 +58,11 @@ class RunSpec:
     # 这时"预期产物"只能事后按模式找，不能假装我们预先知道文件名。
     # 空字符串＝仍按 `expected` 逐条要求存在。
     expected_glob: str = ""
+    # worker 起子进程时用**环境变量白名单**（见 worker._child_env），
+    # 这里声明"我这个 runner 额外需要哪几个变量名"。
+    # 云端 runner 用它放行 `key_env` 点名的那一个密钥——只放这一个，
+    # 不是把整个环境交出去。本地模型 runner 不需要，留空。
+    pass_env: tuple[str, ...] = ()
 
 def _need_runtime(probe) -> None:
     if probe.state != "ok":
@@ -167,26 +172,54 @@ def _job_dir_root(job_id) -> Path:
     return (JOBS_DIR / str(job_id)).resolve()
 
 
-def _is_platform_artifact(target: Path) -> bool:
-    """这个绝对路径是不是**平台自己产出来的作业产物**。
+def _is_platform_artifact(target: Path, job) -> bool:
+    """这个绝对路径是不是**本项目**的作业产物。
 
-    判据只有两条，都不查库：落在 `data/jobs/` 底下，且第一层目录名是作业号
-    （纯数字）。够挡住"界面随手填一个 /etc/passwd"，也够挡住有人往
-    `data/jobs/` 旁边丢一个目录再引用它。
+    分两步，第二步才查库：
 
-    为什么需要这第二档：产线会把上游关键帧的产物注入 `image` 参数
-    （`pipeline._upstream_image`），那个文件在**别的作业目录**里。原来只认
-    "本作业目录"，于是本机接上 mlx-video 之后，每个要条件图的 video 节点
-    都会在起跑前被判"条件图路径越出作业目录"——不是权限问题，是自己人
-    被自己的闸门挡住。跨项目读产物比读全盘文件低两个量级，而 W12 的资产
-    选择器接上之后这一档会再收一次（届时的判据是"这个 job_id 属于本项目"，
-    那要查库，不归这一层）。
+    1. **形状**：落在 `data/jobs/` 底下，且第一层目录名是作业号（纯数字）。
+       够挡住"界面随手填一个 /etc/passwd"，也够挡住有人往 `data/jobs/`
+       旁边丢一个目录再引用它。
+    2. **归属**（2026-11-09 外部审查第 2 条）：那个作业号**得属于本项目**。
+       原来只有第 1 步——于是任何人提交作业时把 `image` 填成
+       `data/jobs/<别人的作业号>/outputs/xx.png`，就能把**别人的**产物读进
+       自己的作业。跨项目读画稿、读未发布的成片，都是真实影响。
+       第 1 步的注释当初就写了"W12 的资产选择器接上之后这一档会再收一次
+       （届时的判据是'这个 job_id 属于本项目'，那要查库，不归这一层）"——
+       这次就是把它收掉。
+
+    为什么这一档必须放行"别的作业目录"：产线会把上游关键帧的产物注入
+    `image` 参数（`pipeline._upstream_image`），那个文件在**别的作业目录**里，
+    而且同一条产线的上下游一定在同一个项目里。所以判据是"项目对不对"，
+    不是"是不是本作业"。
+
+    查不到那个作业（被删了、号是编的）一律拒——**默认拒绝**才是安全的默认。
     """
     try:
         rel = target.relative_to(JOBS_DIR.resolve())
     except ValueError:
         return False
-    return bool(rel.parts) and rel.parts[0].isdigit()
+    if not rel.parts or not rel.parts[0].isdigit():
+        return False
+    # 就是本作业：不必查库
+    if int(rel.parts[0]) == int(job["id"]):
+        return True
+    # 别的作业：必须同项目
+    return _job_project_of(int(rel.parts[0])) == job.get("project_id")
+
+
+def _job_project_of(job_id: int) -> int | None:
+    """这个作业号属于哪个项目；查不到（被删了、号是编的）返回 None。
+
+    单独拆出来是为了能替身：`_is_platform_artifact` 的归属判据值得单测，
+    但为它拉一套数据库夹具不值当（`tests/test_runners.py` 全是纯单元测试）。
+    默认拒绝——查不到就是不属于。
+    """
+    from db import get_conn          # 延迟导入，避免模块级回环
+    with get_conn() as conn:
+        row = conn.execute("SELECT project_id FROM job WHERE id = ?",
+                           (job_id,)).fetchone()
+    return row["project_id"] if row is not None else None
 
 
 def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
@@ -207,7 +240,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
         # 相对路径只允许落在本作业目录里；resolve 之后再做一次边界比对，
         # 挡住 ../ 和符号链接绕出去。
         target = resolve_within(root, str(image_path))
-    if target is None or not (within(root, target) or _is_platform_artifact(target)):
+    if target is None or not (within(root, target) or _is_platform_artifact(target, job)):
         raise RunnerUnavailable("条件图路径越出作业目录")
     if not target.is_file():
         raise RunnerUnavailable(f"条件图不存在：{target.name}")
@@ -312,7 +345,8 @@ def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         meta={"adapter": "draw_things", "model": model_code, "endpoint": endpoint,
               "engine_model": status.values.get("model") or "",
               "request_path": str(request_path), "result_path": str(receipt),
-              "body": body})
+              "body": body},
+        pass_env=_secret_envs(request))
 
 
 
@@ -352,7 +386,8 @@ def _ollama(job, params: dict, outputs: Path, model: str) -> RunSpec:
         meta={"adapter": "ollama", "model": model, "endpoint": endpoint,
               "request_path": str(request_path), "result_path": str(receipt),
               "resident_models": status.values.get("models") or [],
-              "formatted": request.get("format") is not None})
+              "formatted": request.get("format") is not None},
+        pass_env=_secret_envs(request))
 
 # ---------- 音频两腿（VoxCPM2 配音 / ACE-Step 1.5 音乐）----------
 # 权重都走 mlx-community 的量化转换，不拉官方整包：
@@ -432,6 +467,29 @@ def _ace_step(job, params: dict, outputs: Path) -> RunSpec:
 
 
 
+def _secret_envs(request: dict) -> tuple[str, ...]:
+    """这个请求需要子进程看得见哪几个**变量名**（不是值）。
+
+    三个 runner（cloud / engine_http / llm）都是同一个设计：
+    请求 JSON 里只放变量名，值只存在进程环境里，由子进程自己 `os.environ.get`。
+    所以 worker 的白名单必须按名字放行——否则 `Authorization` 拼不出来，
+    调用会退化成 `secret_env_missing`。
+
+    为什么从 request 里读而不是写死：变量名是**每个引擎实例各自配置**的
+    （`engine_instance.shared_secret_env`），写死等于把实例配置架空。
+    """
+    names = []
+    for key in ("key_env", "secret_env"):
+        name = (request.get(key) or "").strip()
+        if name and name not in names:
+            names.append(name)
+    # 基址覆盖也是子进程要用的非密钥配置（`cloud_run` 里读）
+    for key in ("DEEPSEEK_BASE_URL", "ALIYUN_WAN_BASE_URL"):
+        if os.environ.get(key):
+            names.append(key)
+    return tuple(names)
+
+
 def _cloud(job, params: dict, outputs: Path, adapter) -> RunSpec:
     """云端：把一次调用写成请求 JSON，交给 cloud_run.py 子进程。
 
@@ -479,6 +537,9 @@ def _cloud(job, params: dict, outputs: Path, adapter) -> RunSpec:
     return RunSpec(
         runner=f"cloud:{adapter.code}", argv=argv, cwd=outputs,
         expected=[out], media=media,
+        # 云端 runner 要把 `key_env` 点名的那个密钥读出来拼 Authorization。
+        # 白名单模式下必须显式声明，否则子进程里根本看不到它。
+        pass_env=_secret_envs(request),
         meta={"adapter": adapter.code, "model": job["model_code"],
               "provider": adapter.code, "request_path": str(request_path),
               "result_path": str(result_path)})

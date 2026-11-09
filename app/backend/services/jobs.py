@@ -13,6 +13,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from models import JOB_STATUSES
 from repositories.content import assets, shots, variants
 from repositories.jobs import jobs as job_repo
+from repositories.jobs_parts.common import JobStateConflict as _RepoStateConflict
 from repositories.model_center import model_center as registration_repo
 
 from .errors import JobInvalid, NoRoute
@@ -458,16 +459,22 @@ def worker_status(user=None) -> dict:
     nodes = job_repo.workers(WORKER_ONLINE_SECONDS)
     by_resource = job_repo.queue_by_resource()
     if user is not None:
-        from access import ensure as _ensure
-        from fastapi import HTTPException as _HTTPException
-        visible = []
-        for row in health["running_jobs"]:
-            try:
-                _ensure(user, row["project_id"], "read")
-                visible.append(row)
-            except _HTTPException:
-                continue        # 看不见的项目连"它存在"都不说
-        health = {**health, "running_jobs": visible}
+        # **一次读出可见项目集，不再逐行判权限**（2026-11-09 外部审查第 10 条）。
+        #
+        # 原来是 `for row: ensure(user, row["project_id"], "read")`，每行一次
+        # （或两次）回库。这是顶栏小圆点接口，几秒一次；实测 16 条 running
+        # 时 10.67 ms，其中 8.43 ms 全花在这串逐行查询上——而判据只有
+        # "自己拥有的 ∪ 作为成员加入的"一条，一次就能读完。
+        #
+        # 无主作业（`project_id IS NULL`，0039 之后删项目会留下）按 `ensure`
+        # 的同一套纪律处理：只有管理员看得见，别人连"它存在"都不说。
+        from access import visible_project_ids as _visible
+        allowed = _visible(user)
+        if allowed is not None:
+            health = {**health, "running_jobs": [
+                row for row in health["running_jobs"]
+                if row["project_id"] in allowed]}
+        # allowed is None ＝ 管理员，全放行，health 原样保留
     age = None
     online = False
     heartbeat = ""
@@ -632,8 +639,13 @@ def reconcile_job(job_id: int, payload, user) -> dict:
         raise JobStateConflict("这条作业当前不是待核对状态")
     if payload.decision in ("succeeded", "failed") and payload.actual_cost_micros is None:
         raise JobStateConflict("确认结果前必须填实际金额；不确定就选「继续待核对」")
-    row = job_repo.reconcile(job_id, payload.decision, payload.actual_cost_micros,
-                             payload.note.strip(), user["id"])
+    try:
+        row = job_repo.reconcile(job_id, payload.decision, payload.actual_cost_micros,
+                                 payload.note.strip(), user["id"])
+    except _RepoStateConflict as exc:
+        # 后到者的决定没有写入。返回 409 而不是 200：界面上"我核过了"
+        # 和"其实别人先核了、我的决定没生效"必须是两件事。
+        raise JobStateConflict(str(exc)) from exc
     if row is None:
         raise JobMissing("作业不存在")
     return {"job": row, "message": {
@@ -659,11 +671,12 @@ def mark_job_attention(job_id: int, reason: str, user) -> dict:
         raise JobStateConflict("本地作业没有供应商账单可核对")
     if job["status"] not in ("succeeded", "failed"):
         raise JobStateConflict("只有已结束的成功或失败作业能改成待核对")
-    with get_conn() as conn:
-        conn.execute(
-            """UPDATE job SET status = 'needs_attention', attention_reason = ?,
-                      error_message = COALESCE(error_message, ?),
-                      updated_at = datetime('now','localtime')
-                WHERE id = ?""",
-            (reason[:500], f"人工标记待核对：{reason[:500]}", job_id))
+    # 状态写入走仓储的状态机（2026-11-09 外部审查第 3 条）。
+    # 原来这里是裸 UPDATE：不查转移、不带状态条件、不看 rowcount，
+    # 是集中状态表唯一没覆盖到的旁路。现在 `transaction()` 里读-断言-写，
+    # 并发下要么写成功要么明确冲突，不会把 running 的作业钉进终态。
+    try:
+        job_repo.mark_attention_by_user(job_id, reason)
+    except _RepoStateConflict as exc:
+        raise JobStateConflict(str(exc)) from exc
     return {"job": job_repo.get(job_id), "message": "已标记为待核对。"}

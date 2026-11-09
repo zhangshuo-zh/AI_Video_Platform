@@ -32,6 +32,30 @@ def is_manager(user) -> bool:
     return user_rank(user) >= 1
 
 
+def visible_project_ids(user) -> set[int] | None:
+    """这个人看得见的项目 id 集合；管理员返回 `None` 表示"全部"。
+
+    **一次查询取代逐行判权限**（2026-11-09 外部审查第 10 条）。
+    `worker_status()` 里有 `for row in health["running_jobs"]: ensure(...)`，
+    而 `ensure` 至少回库一次（管理员短路前也要先读 project 行），
+    于是这个"顶栏小圆点"接口的成本随正在跑的作业数线性涨——实测 16 条
+    running 时每次 10.67 ms，其中 8.43 ms 是这串逐行查询白花的。
+
+    判据与 `ensure(need="read")` 完全一致，改成一次读出来：
+    管理员全放行；否则"自己拥有的" ∪ "作为成员加入的"。
+    无主作业（`project_id IS NULL`）不在这里判——调用方按 `ensure` 的同一套
+    纪律自己处理（只有管理员看得见）。
+    """
+    if is_manager(user):
+        return None
+    with get_conn() as conn:
+        owned = {r["id"] for r in conn.execute(
+            "SELECT id FROM project WHERE owner_id = ?", (user["id"],))}
+        member = {r["project_id"] for r in conn.execute(
+            "SELECT project_id FROM project_member WHERE user_id = ?", (user["id"],))}
+    return owned | member
+
+
 def project_of(kind: str, target_id: int) -> int | None:
     with get_conn() as conn:
         row = conn.execute(_PROJECT_OF[kind], (target_id,)).fetchone()

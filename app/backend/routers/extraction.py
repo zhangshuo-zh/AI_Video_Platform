@@ -4,7 +4,8 @@
 再把候选按人读的形状回给前端。所有候选都必须带原文逐字证据；
 确认之前一个字节都不进 asset。
 """
-from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
+from fastapi import (APIRouter, Depends, HTTPException, Query, Response,
+                     status as http_status)
 
 import access
 import docai
@@ -84,7 +85,7 @@ def submit_extraction(project_id: int, payload: ExtractSubmitIn,
 
 
 @router.get("/projects/{project_id}/extract/runs", response_model=list[ExtractRunOut])
-def list_extractions(project_id: int, limit: int = 30,
+def list_extractions(project_id: int, limit: int = Query(30, ge=1),
                      user=Depends(require_permission("doc:read"))) -> list[ExtractRunOut]:
     access.ensure(user, project_id, "read")
     limit = max(1, min(int(limit), 100))

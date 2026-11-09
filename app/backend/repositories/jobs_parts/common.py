@@ -154,6 +154,20 @@ class JobOwnershipLost(RuntimeError):
 
 
 
+class JobStateConflict(RuntimeError):
+    """人工改状态时，读到的状态与写下去的那一刻不一致。
+
+    与 `JobOwnershipLost` 一对：那个是**worker 收尾**时发现作业已不归自己，
+    这个是**人在界面上**操作时发现状态已经变了。两者都不该静默成功——
+    界面上"我点了标记待核对"和"其实没生效"必须有区别，否则用户会以为
+    自己已经处置过这条作业。
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 def _require_owned(cur, job_id: int, worker_id: str, terminal: str) -> None:
     """终态 UPDATE 必须恰好命中一行；0 行＝这次收尾不再是它的了。"""
     if cur.rowcount != 1:

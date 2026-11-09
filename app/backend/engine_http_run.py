@@ -69,6 +69,19 @@ def main() -> int:
 
     url = endpoint + path
     started = time.perf_counter()
+    # **拼出来的 URL 也要过地址闸**（2026-11-09 外部审查第 7 条）。
+    #
+    # 原来只有 `cloud_run._download` 调 `check_url`，这条路径一次都没有：
+    # `endpoint` 来自实例配置、`path` 来自代码，单看都可信，但**拼起来的字符串**
+    # 才是真正要发出去的地址。`safenet.safe_urlopen` 只关重定向跟随、
+    # **不校验目标**，所以"用了 safe_urlopen"不等于"目标可信"。
+    # 这条请求会带 `Authorization: Bearer <sharedSecret>`，落错地方就是交密钥。
+    try:
+        safenet.check_url(url)
+    except safenet.UnsafeTarget as exc:
+        return _finish(receipt_path, ok=False, code="unsafe_engine_url",
+                       message=f"{url} 不可信：{exc}",
+                       latency_ms=int((time.perf_counter() - started) * 1000))
     try:
         req = Request(url, data=payload, headers=headers, method="POST")
         # 不跟随重定向：这条请求可能带 `Authorization: Bearer <真实 sharedSecret>`，

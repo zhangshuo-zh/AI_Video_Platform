@@ -36,6 +36,10 @@ def _fake_fastmetal(root: Path, name: str = "FastMetal-1.3B-QAD") -> Path:
 def _job(**overrides):
     base = {
         "id": 7,
+        # `_is_platform_artifact` 判归属时要用（2026-11-09 外部审查第 2 条）。
+        # 真实路径上 job 一律来自 `job_repo.get()`，是完整库行，这个字段必然在；
+        # 夹具过去只造了边界判定用得到的那几列。
+        "project_id": 1,
         "prompt_snapshot": '烟花 $HOME; rm -rf / -- "引号" $(echo x)',
         "capability": "video",
         "execution_mode": "local",
@@ -241,6 +245,10 @@ def test_mlx_video_认得产线注入的上游产物(tmp_path, monkeypatch):
     sibling.mkdir(parents=True, exist_ok=True)
     art = sibling / "keyframe.png"
     art.write_bytes(b"\x89PNG\r\n\x1a\n")
+    # 上游作业必须与本作业同项目（第 2 条加的归属判据）。产线的上下游本就
+    # 属于同一个项目，所以这一档照旧放行。查库那一跳用替身：本文件是纯
+    # 单元测试，不为它拉数据库夹具；归属判据本身见本文件末尾那条。
+    monkeypatch.setattr(runners, "_job_project_of", lambda job_id: 1)
     spec = runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
                          {"image": str(art)}, outputs)
     assert spec.argv[spec.argv.index("--image") + 1] == str(art.resolve())
@@ -290,3 +298,40 @@ def test_metrics_只挑摘要不搬整份(tmp_path):
     assert got["total_s"] == 12.5
     assert got["denoise_peak_gb"] == 2.0
     assert "model_root" not in got
+
+
+def test_别的项目的产物不能拿来当输入图(tmp_path, monkeypatch):
+    """第 2 条：`data/jobs/<作业号>/…` 的形状对了，**还得是同项目**的作业。
+
+    原来这一档只判形状（`data/jobs/` 下且第一层是纯数字），于是任何人提交
+    作业时把 `image` 填成别人作业的输出路径，就能把别人的产物读进自己的
+    作业——跨项目读画稿、读未发布的成片。这条测试把"归属"钉住：
+    同一个路径，同项目放行、跨项目拒绝。
+    """
+    _fake_mlx_home(tmp_path, monkeypatch)
+    outputs = tmp_path / "out"
+    outputs.mkdir()
+
+    sibling = config.JOBS_DIR / "42" / "outputs"
+    sibling.mkdir(parents=True, exist_ok=True)
+    art = sibling / "keyframe.png"
+    art.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    # ① 作业 42 属于项目 9，而本作业属于项目 1 → 跨项目，必须拒。
+    #    （`_job()` 默认 project_id=1、id=7）
+    monkeypatch.setattr(runners, "_job_project_of", lambda job_id: 9)
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": str(art)}, outputs)
+
+    # ② 同一路径，作业 42 属于本项目 → 放行（产线的正常形态）
+    monkeypatch.setattr(runners, "_job_project_of", lambda job_id: 1)
+    spec = runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                         {"image": str(art)}, outputs)
+    assert spec.argv[spec.argv.index("--image") + 1] == str(art.resolve())
+
+    # ③ 查不到那个作业（号是编的／已被删）一律拒——默认拒绝
+    monkeypatch.setattr(runners, "_job_project_of", lambda job_id: None)
+    with pytest.raises(runners.RunnerUnavailable):
+        runners.build(_job(provider_code="mlx-video", model_code="wan2.2-i2v-a14b"),
+                      {"image": str(art)}, outputs)

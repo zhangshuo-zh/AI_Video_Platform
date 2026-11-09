@@ -102,6 +102,56 @@ def worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
 
 
+# 允许传给模型子进程的环境变量：**白名单**，不是黑名单。
+#
+# 为什么白名单：黑名单永远漏。这里是第三方脚本，我们不知道它会读哪个变量，
+# 只能反过来明确"它确实需要哪些"。加新变量必须走这里，这本身就是一道review。
+_CHILD_ENV_PREFIXES = (
+    "FASTVIDEO_",      # 平台自己的开关：适配器路径、并发上限、缓存目录…
+    "HF_",             # huggingface 缓存/镜像/token 之外的都是路径类
+    "TRANSFORMERS_", "TORCH_", "CUDA_", "PYTORCH_", "MLX_", "OMP_", "MKL_",
+    "XDG_", "TMPDIR", "TEMP", "TMP",
+)
+_CHILD_ENV_EXACT = (
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL",
+    "PYTHONUNBUFFERED", "PYTHONPATH", "PYTHONHASHSEED",
+    "TZ", "TERM", "PWD",
+    # 代理：模型权重下载几乎一定走它们，漏了就是"内网根本拉不下来"
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+)
+# 这些名字虽然前缀匹配，但**是密钥**，必须单独挡掉。
+# `HF_TOKEN` 与 `HF_*` 同前缀，不单独处理就会被放行。
+_CHILD_ENV_DENY = (
+    "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+    "FASTVIDEO_ADMIN_PASSWORD", "FASTVIDEO_SECRET_KEY",
+    "FASTVIDEO_CLOUD_KEY",
+)
+
+
+def _child_env(spec) -> dict:
+    """给模型子进程准备环境变量：白名单 + 必要的放行。
+
+    第三方脚本需要 PATH/HOME/HF 缓存/代理这些**非密钥**信息才能跑；
+    它们不需要（也不该拿到）平台自己的口令与供应商密钥。
+    """
+    env = {}
+    for name, value in os.environ.items():
+        if name in _CHILD_ENV_DENY:
+            continue
+        if name in _CHILD_ENV_EXACT or name.startswith(_CHILD_ENV_PREFIXES):
+            env[name] = value
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    # 云端 runner 需要**一个**指定名字的密钥变量（`key_env` 是请求里给的变量名）。
+    # 这是唯一按需放行的通道：只给它点名的那一个，其余一律不给。
+    for extra in (getattr(spec, "pass_env", None) or ()):
+        if extra in _CHILD_ENV_DENY:
+            continue
+        if extra in os.environ:
+            env[extra] = os.environ[extra]
+    return env
+
+
 def _write(log, message: str) -> None:
     log.write(f"[{_now()}] {message}\n")
     log.flush()
@@ -579,10 +629,16 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     _write(log, "命令：" + json.dumps(_argv_for_record(spec.argv),
                                       ensure_ascii=False))
     _write(log, "工作目录：" + str(spec.cwd))
-    env = dict(os.environ)
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    # 子进程继承当前环境：HF 缓存、代理、FASTVIDEO_* 都靠它；
-    # 平台不额外注入任何密钥，日志里也只写 argv，不写 env。
+    env = _child_env(spec)
+    # 子进程**只拿它该拿的**（2026-11-09 外部审查第 6 条）。
+    #
+    # 原来这里是 `env = dict(os.environ)`，注释还写着"平台不额外注入任何密钥"——
+    # 事实正相反：`FASTVIDEO_ADMIN_PASSWORD`、`DASHSCOPE_API_KEY`、`HF_TOKEN`
+    # 全都会被这批第三方模型脚本继承。它们大多是 `huggingface_hub` 拉下来的
+    # 社区代码，任何一条 `print(os.environ)` 或异常回传都能把密钥带走，
+    # 而 `cloud_run.py` 那边花了很大力气定"密钥只按变量名读、值只放进程环境"
+    # 的边界——子进程全量继承把这一条整个抵消掉。日志里不写 env 救不了这个
+    # 漏洞：泄漏点在子进程自己的行为，不在我们的日志。
     try:
         proc = subprocess.Popen(
             spec.argv, cwd=str(spec.cwd), env=env,

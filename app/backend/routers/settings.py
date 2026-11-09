@@ -12,7 +12,7 @@ P0 又加了一件事：**把"环境齐"和"真跑过"分开显示**。健康状
 """
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 import adapters
 import engines
@@ -227,7 +227,7 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
 
 
 @router.get("/providers/validations", response_model=list[ValidationOut])
-def list_validations(response: Response, limit: int = 50,
+def list_validations(response: Response, limit: int = Query(50, ge=1),
                      before_id: int | None = None,
                      _=Depends(require_permission("system:config"))) -> list[ValidationOut]:
     """验证历史（一页）。只有管理员能看整份——detail 里会有本机路径与缺失项。
