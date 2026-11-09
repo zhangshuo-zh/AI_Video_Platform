@@ -105,6 +105,17 @@ cd app
 ./run.sh worker     # 独立进程；Ctrl+C 停
 ```
 
+日常开发嫌开两个窗口麻烦，可以一次起两个：
+
+```bash
+cd app
+./run.sh dev        # API + worker 一起起；dev 之后的参数只给 worker
+```
+
+`dev` 只是把两个进程在同一个终端里拉起来（worker 仍是独立进程，PID 分开记，
+`./run.sh stop` 照样一起停）。它**不接受 `--reload`**：uvicorn 重载会起壳进程再
+fork 工作进程，worker 挂在下面会变成没人认领的孤儿；要自动重载请分开跑。
+
 默认全局并发 1、每类 1（仍是「一次只跑一条」）。要并行可再开一个终端，并显式声明上限：
 
 ```bash
