@@ -2,7 +2,7 @@
 import views from './views/index.js';
 import { getParam, getSub, setParam, setSub } from './navstate.js';
 import { MODULES } from './modules.js';
-import { escapeHtml } from './util.js';
+import { escapeHtml, announce } from './util.js';
 import { applyPicks } from './pick.js';
 
 let currentId = null;
@@ -156,6 +156,15 @@ export async function renderView(id) {
 
   currentId = id;
   document.body.dataset.view = id;
+  // 换页要报一次：单页应用里地址变了、整块内容换了，读屏却可能一个字都不说，
+  // 人还以为按钮没生效。`app:go` 才是"人主动换页"的入口，同视图重绘不报——
+  // 保存一次就念一遍页面名，那是噪音。
+  if (!sameView) {
+    // 名字只从 MODULES 取：视图对象上没挂名字（那几个文件导出的是
+    // render/mount，不是导航元数据），侧栏、首页、命令面板读的也是它。
+    const label = MODULES.find((m) => m.id === id)?.label || id;
+    announce(`已进入${label}`);
+  }
   document.querySelectorAll('.nav-item').forEach((el) => {
     el.classList.toggle('on', el.dataset.v === id);
   });

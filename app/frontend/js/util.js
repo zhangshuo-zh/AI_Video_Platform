@@ -537,3 +537,48 @@ export function softFilter(root, apply, opts = {}) {
   });
 }
 
+
+/* ---------------- 读屏播报（aria-live） ----------------
+ * 2026-11-09 之前全站 `aria-live` 出现 0 次。视觉上一切正常，但读屏用户听到的
+ * 是一个**不会说话**的界面：点了保存、写回失败、切了一页、worker 掉线——
+ * 屏幕上这些都有变化，声轨上什么都没有。这不是"锦上添花"，是那部分人用不了。
+ *
+ * 放在 util.js 而不是 app.js：`announce` 是通用工具，router（切页面）与
+ * app（轻提示、worker 状态）都要用；放进 app.js 这个壳里，router 就得反向
+ * 依赖壳，那是不该有的方向。
+ *
+ * 只开一档 polite：不打断读屏正在念的句子。`role="alert"` 隐式 assertive，
+ * 全站没有一处"必须立刻打断人"的信息，先不滥用。
+ *
+ * 一个坑：同一节点上连写两次一模一样的文字，读屏往往一声不吭（文本没变化
+ * ＝没有变更事件）。所以先清空再写，并带一个零宽空格制造真实变更。
+ */
+let livePolite = null;
+let liveSeq = 0;
+
+function ensureLiveRegion() {
+  if (livePolite && document.body.contains(livePolite)) return livePolite;
+  livePolite = document.createElement('div');
+  livePolite.className = 'sr-only';
+  livePolite.id = 'live-polite';
+  livePolite.setAttribute('role', 'status');
+  livePolite.setAttribute('aria-live', 'polite');
+  livePolite.setAttribute('aria-atomic', 'true');
+  document.body.appendChild(livePolite);
+  return livePolite;
+}
+
+/** 播报一句给读屏听。`force` 用于"内容相同也要再说一遍"的场合。 */
+export function announce(text, force = false) {
+  const body = String(text || '').trim();
+  if (!body) return;
+  const host = ensureLiveRegion();
+  if (!force && host.dataset.text === body) return;   // 不重复念同一句
+  host.dataset.text = body;
+  liveSeq += 1;
+  host.textContent = '';            // 先清空：同文重复时读屏才会重新出声
+  requestAnimationFrame(() => {
+    // 零宽空格参与"内容指纹"但不被念出来，用来制造一次真实变更
+    host.textContent = body + (liveSeq % 2 ? '\u200b' : '\u200b\u200b');
+  });
+}

@@ -7,7 +7,7 @@ import { store } from './store.js';
 import { api } from './api.js';
 import { renderView, currentViewId } from './router.js';
 import { setParam, setSub } from './navstate.js';
-import { escapeHtml } from './util.js';
+import { escapeHtml, announce } from './util.js';
 import { applyPicks, restorePicks } from './pick.js';
 
 /* ---------------- worker 状态条 ---------------- */
@@ -20,6 +20,9 @@ import { applyPicks, restorePicks } from './pick.js';
  *
  * 读不到状态就保持「未接入」——不拿 0 冒充「队列空闲」。
  */
+let workerSpoken = null;      // 上一次播报过的 worker/队列口径
+let workerOnlineSpoken = null;
+
 function paintWorker() {
   const w = store.worker;
   const dot = document.getElementById('worker-dot');
@@ -41,6 +44,24 @@ function paintWorker() {
     // 队列那行的点：有活就亮，空闲就灰着。它与 worker 点说的不是一件事
     // （worker 在不在线 vs 队列有没有活），所以各用各的，不合并。
     if (queueDot) queueDot.className = 'dot ' + (busy ? 'live' : 'idle');
+
+    // 一句话口径：worker 在不在 + 队列几个等、几个跑。变化与否比这一串就够了。
+    const spoken = (online ? '在线' : '未接入') + '|' + q.queued + '|' + q.running;
+
+    // 读屏那边只播"变了"的那一下：这函数每 20 秒被轮询叫一次，
+    // 每轮都念一遍"队列 空闲"会把人烦到把读屏关掉——那比不播还糟。
+    // 首帧（workerSpoken 还是 null）也不播：页面刚打开就念一句
+    // "worker 在线"是噪音，这一行本来就写在侧栏上让人自己看。
+    if (workerSpoken !== null) {
+      if (online !== workerOnlineSpoken) {
+        announce(online ? '本地 worker 已连接' : '本地 worker 已断开', true);
+      } else if (workerSpoken !== spoken) {
+        // 队列数变了通常正是"有活开跑了"或"跑完了"，是人想知道的那一下
+        announce(busy ? `队列有活：等待 ${q.queued}，运行 ${q.running}` : '队列已空闲');
+      }
+    }
+    workerSpoken = spoken;
+    workerOnlineSpoken = online;
   }
 }
 
@@ -333,6 +354,13 @@ function toastTrim(host) {
   }
 }
 
+/** 读屏念轻提示时的语气前缀。
+ * 只念正文不行："上下文写回失败"和"已保存"在耳朵里必须是两种语气；
+ * 前缀就是屏幕上那条 3px 左边条的听觉对应物。 */
+function prefixOf(kind) {
+  return { err: '出错了：', warn: '提示：', ok: '完成：', info: '' }[kind] || '';
+}
+
 function toast(text, kind = 'info') {
   const body = String(text || '').trim();
   if (!body) return;
@@ -350,6 +378,10 @@ function toast(text, kind = 'info') {
     if (el.dataset.timer) clearTimeout(Number(el.dataset.timer));
     delete el.dataset.timer;
     if (k !== 'err') toastArmTimer(el);
+    // 合并了也要出声：屏幕上数字从 x1 变 x2，读屏若不说话，
+    // 用耳朵的人会以为只发生了一次。这里**强制**重播，
+    // 因为同文同义、普通去重会把它当重复吞掉。
+    announce(`${prefixOf(k)}${body}（第 ${n} 次）`, true);
     return;
   }
 
@@ -368,6 +400,9 @@ function toast(text, kind = 'info') {
   host.appendChild(el);
   toastTrim(host);
   if (k !== 'err') toastArmTimer(el);   // 失败不自动消失：人得有机会读完
+
+  // 读屏：轻提示是**新增信息**，得念出来。
+  announce(prefixOf(k) + body, k === 'err');   // 失败要压过正在念的内容，force 重播
 }
 
 /* ---------------- 登录闸门 ----------------

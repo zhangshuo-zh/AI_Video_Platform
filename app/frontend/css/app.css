@@ -244,6 +244,12 @@ body{
 ::-webkit-scrollbar-thumb:hover{background:var(--scroll-hi);background-clip:padding-box}
 
 /* 键盘可达性：只在 tab 出来的时候画环，鼠标点击不画 */
+/* 只给读屏看的文字：本机屏幕上看不见，读屏软件照读。
+   不能用 `display:none`/`visibility:hidden`——那两样读屏也一起跳过，
+   播报就白写了；也不能用 `opacity:0`（仍占位、可聚焦）。
+   1px 见方 + 裁掉，是各家无障碍库通行的做法。 */
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
 :focus-visible{outline:3px solid var(--ring);outline-offset:1px;border-radius:6px}
 
 /* ---------- 骨架 ---------- */
