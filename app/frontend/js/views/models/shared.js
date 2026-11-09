@@ -78,7 +78,7 @@ export const SUB_NEEDS = [
   { providers: true },
   { providers: true, validations: true, engines: true },
   { providers: true, policies: true },
-  { providers: true, worker: true, validations: true },
+  { providers: true, worker: true, validations: true, process: true },
 ];
 
 export function stateChip(state) {

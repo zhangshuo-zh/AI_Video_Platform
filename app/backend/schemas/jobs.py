@@ -267,6 +267,33 @@ class WorkerStatusOut(BaseModel):
     concurrency: dict = {}
 
 
+class WorkerProcessOut(BaseModel):
+    """worker 进程的启停状态（0048）。
+
+    **`is_supervisor` 恒为 False**，字段留在这是为了让界面有一处可读的明确声明：
+    这不是守护进程，崩了不会自动拉起。写成常量字段而不是省略，是因为省略之后
+    "没有这个字段"会被读成"后台大概会管吧"——那正是最坏的误解。
+    """
+    running: bool = False
+    pid: int | None = None
+    # PID 文件里有号但进程已不在（上次强杀/断电）：如实区分"残留"与"从未启动"
+    stale_pid: int | None = None
+    is_supervisor: bool = False
+    # 最近一次操作的回执（启动/停止的结果，含失败原因）
+    last_action: str = ""
+    log_path: str = ""
+
+
+class WorkerStartIn(BaseModel):
+    """从网页启动 worker 的参数。
+
+    并发上限留空＝跟随库里已保存的设置／命令行默认，与 `worker_limit` 那条
+    单例配置同源。这里再给一遍只是方便"起的时候顺便定"，不给就是不加参数。
+    """
+    max_global: int | None = Field(default=None, ge=0, le=64)
+    per: dict[str, int] | None = None
+
+
 class WorkerLimitIn(BaseModel):
     """网页上改并发上限的入参（0047）。
 

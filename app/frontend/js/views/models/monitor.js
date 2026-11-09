@@ -160,7 +160,7 @@ function liveCards() {
     </div>
   </div>
 
-  ${concurrencyCard()}`;
+  ${workerProcessCard()}${concurrencyCard()}`;
 }
 
 export function pageMonitor() {
@@ -210,6 +210,95 @@ function bindWorkerHistory(root) {
     // 只重画 live 两张卡，不动验证留痕（保住人翻到的页码）。
     const live = root.querySelector('#mc-live');
     if (live) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
+  });
+}
+
+
+/* ================= worker 进程启停（0048） ================= */
+/**
+ * 这张卡把"开终端敲 ./run.sh worker"收进界面，但**它不是守护进程**。
+ *
+ * 为什么这句话必须写在界面上：按钮存在会让人以为"崩了会自动拉起"，
+ * 而事实是没有 supervise——worker 挂了就得再点一次。这个错觉比没有
+ * 按钮更危险：没有按钮时人会去查进程，有按钮时人只会刷新页面等它。
+ *
+ * 状态一律**现读 /api/worker/process**（后端以 PID 文件 + kill -0 判），
+ * 不在前端记"我刚起过"——API 重启后内存没了而 worker 还活着，
+ * 记内存状态会让按钮显示"未启动"，人一按就起了第二个去抢显存。
+ */
+function workerProcessCard() {
+  const p = cache.workerProcess || {};
+  const running = !!p.running;
+  const pid = p.pid;
+  const stale = p.stale_pid;
+  const msg = p.last_action || '';
+
+  const status = running
+    ? `<span class="chip green">运行中</span>
+       <span class="hint">PID ${escapeHtml(String(pid))}</span>`
+    : (stale
+      ? `<span class="chip amber">未运行（残留 PID ${escapeHtml(String(stale))}）</span>`
+      : '<span class="chip gray">未运行</span>');
+
+  return `
+  <div class="card mb-card">
+    <div class="card-head"><h2>worker 进程</h2>
+      <span class="sub">从这里启停后台干活的进程；与 <code>./run.sh worker</code> 是同一个入口</span>
+      <span class="right">${status}</span>
+    </div>
+    <div class="card-body">
+      <p class="note flush">
+        <b>这是手动启停，不是守护进程。</b>API 重启不会带走它（它自己是一个独立会话），
+        但 worker 自己崩了也<strong>不会</strong>自动拉起——发现队列不动时，回这里看一眼、
+        再点一次启动。
+      </p>
+      <div class="row-actions" style="margin-top:10px">
+        ${running
+          ? '<button class="btn danger" id="mc-wp-stop">停止 worker</button>'
+          : '<button class="btn primary" id="mc-wp-start">启动 worker</button>'}
+        <span class="hint" id="mc-wp-msg">${escapeHtml(msg)}</span>
+      </div>
+      <p class="hint" style="margin-top:8px">
+        日志：<code>${escapeHtml(p.log_path || 'data/logs/worker.log')}</code>
+        （追加写，重启不丢上一次的输出）。
+      </p>
+    </div>
+  </div>`;
+}
+
+async function refreshWorkerProcess(root, action) {
+  const msg = root.querySelector('#mc-wp-msg');
+  const btn = root.querySelector('#mc-wp-start') || root.querySelector('#mc-wp-stop');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = action === 'start' ? '正在启动（等它写第一份心跳）…'
+                                                : '正在停止（先 SIGTERM 让它收尾）…';
+  try {
+    const out = action === 'start' ? await api.startWorker({})
+                                   : await api.stopWorker();
+    cache.workerProcess = out;
+    // 重画这两张卡：进程状态与并发评估都可能随着启停变。
+    const live = root.querySelector('#mc-live');
+    if (live) {
+      live.innerHTML = liveCards();
+      bindWorkerHistory(root);
+      bindWorkerProcess(root);
+      bindConcurrency(root);
+    }
+  } catch (err) {
+    // 409 = 已经在跑；400 = 起不来（会带原因）。两种都如实显示，
+    // 不把失败伪装成成功——界面说"成功"而队列不动是最坏的情况。
+    const text = String(err?.message || err || '');
+    if (msg) msg.textContent = text || '操作没成功。';
+    if (btn) btn.disabled = false;
+  }
+}
+
+function bindWorkerProcess(root) {
+  root.querySelector('#mc-wp-start')?.addEventListener('click', () => {
+    refreshWorkerProcess(root, 'start');
+  });
+  root.querySelector('#mc-wp-stop')?.addEventListener('click', () => {
+    refreshWorkerProcess(root, 'stop');
   });
 }
 
@@ -364,6 +453,7 @@ function bindConcurrency(root) {
 
 export function mountMonitor(root) {
   bindWorkerHistory(root);
+  bindWorkerProcess(root);
   bindConcurrency(root);
 
   // 验证历史翻页：再取一页**追加**到后面，而不是重载整页。

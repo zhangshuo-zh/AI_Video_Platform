@@ -207,6 +207,10 @@ ROUTES = [
     # 0047：并发设置。读是任何登录者都行（客观状态），写要 system:config ⇒ 403。
     ("GET", "/api/worker/concurrency", None, 200),
     ("PUT", "/api/worker/concurrency", {"global_max": 2}, 403),
+    # 0048：worker 进程启停。三个都要 system:config ⇒ editor 一律 403。
+    ("GET", "/api/worker/process", None, 403),
+    ("POST", "/api/worker/process/start", {}, 403),
+    ("POST", "/api/worker/process/stop", {}, 403),
     # ---------- 自动化漫剧产线（0026／阶段 B） ----------
     # 模板是全局的、只读，有 job:read 就能看 ⇒ editor（outsider）200。
     # 运行／节点一定挂项目：看不见那个项目就 404，连"这条运行存在"都不透露。

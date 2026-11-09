@@ -21,7 +21,8 @@ from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut,
-                    WorkerLimitIn, WorkerLimitOut)
+                    WorkerLimitIn, WorkerLimitOut,
+                    WorkerProcessOut, WorkerStartIn)
 from repositories.content import episodes
 from repositories.jobs import clamp_limit, jobs, retry_reason
 from repositories.projects import projects as project_repo
@@ -383,3 +384,62 @@ def put_worker_concurrency(payload: WorkerLimitIn,
         return WorkerLimitOut(**services.set_concurrency(payload, user))
     except services.JobInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------- worker 进程启停（0048） ----------
+# 三个接口，权限都走 system:config：启停进程是整台机器的操作，
+# 与并发上限同一性质。不新开权限点（18 个权限点保持原样，与 0047 同一条理由）。
+#
+# **这不是守护进程**：没有自动拉起、没有崩溃重启。按钮存在只为省掉"开终端敲命令"，
+# 界面必须把这句话写出来——详见 `worker_supervisor` 模块头。
+
+@router.get("/worker/process", response_model=WorkerProcessOut)
+def get_worker_process(user=Depends(require_permission("system:config"))
+                       ) -> WorkerProcessOut:
+    """worker 进程现在在不在。以 PID 文件 + 信号探测为准，不靠内存状态。
+
+    要 system:config 而不是"登录即可"：它与 `/worker/status` 不同——
+    后者是队列的客观状态（谁都能看），这个是**进程控制面**，
+    和并发设置同一个人群。
+    """
+    import worker_supervisor as sup
+    state = sup.current()
+    return WorkerProcessOut(**state, log_path=str(sup.WORKER_LOG))
+
+
+@router.post("/worker/process/start", response_model=WorkerProcessOut)
+def start_worker_process(payload: WorkerStartIn | None = None,
+                         user=Depends(require_permission("system:config"))
+                         ) -> WorkerProcessOut:
+    """起一个 worker。已在跑就 409，起不来就 400 并说明原因。
+
+    200 只代表"进程活着且写了心跳"——API 的 `ok` 与 HTTP 状态码在这里
+    必须同义，否则界面会显示"成功"而队列其实不动。
+    """
+    import worker_supervisor as sup
+    payload = payload or WorkerStartIn()
+    result = sup.start(max_global=payload.max_global, per=payload.per)
+    state = sup.current()
+    out = WorkerProcessOut(**state, last_action=result["message"],
+                           log_path=str(sup.WORKER_LOG))
+    if result["ok"]:
+        return out
+    # 已经有一个在跑 → 409（状态冲突，不是参数错）
+    if result.get("pid"):
+        raise HTTPException(status_code=409, detail=result["message"])
+    raise HTTPException(status_code=400, detail=result["message"])
+
+
+@router.post("/worker/process/stop", response_model=WorkerProcessOut)
+def stop_worker_process(user=Depends(require_permission("system:config"))
+                        ) -> WorkerProcessOut:
+    """停 worker。先 SIGTERM 让它自己收尾，8 秒不退再 SIGKILL。
+
+    停一个本来就没跑的不算错误（幂等）：界面刷新后重复点、两个人同时点，
+    都不该报红。
+    """
+    import worker_supervisor as sup
+    result = sup.stop()
+    state = sup.current()
+    return WorkerProcessOut(**state, last_action=result["message"],
+                            log_path=str(sup.WORKER_LOG))

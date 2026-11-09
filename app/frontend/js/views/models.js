@@ -58,12 +58,16 @@ async function loadAll(sub) {
     // 要现查请按页头的「检查引擎连接」或那一行的「探测」。
     const need = SUB_NEEDS[sub] || SUB_NEEDS[0];
     const [catalog, manifest] = await Promise.all([api.models(), api.providerManifest()]);
-    const [providers, policies, worker, validations, engines] = await Promise.all([
+    const [providers, policies, worker, validations, engines, workerProcess] = await Promise.all([
       need.providers ? api.providers() : null,
       need.policies ? api.modelPolicies() : null,
       need.worker ? api.workerStatus() : null,
       need.validations ? api.providerValidations(50) : null,
       need.engines ? api.engines() : null,
+      // 进程控制面：要 system:config 的人才有；403 时降级为 undefined
+      // （卡片自己会显示"未运行"，但按钮点了会报权限不足——那是真实情况，
+      //  不在前端假装成"没有这个功能"）。
+      need.process ? api.workerProcess().catch(() => null) : null,
     ]);
     // 兼容两种响应：后端给了 stats 就用它；万一部署的是老版本（没有这个键），
     // 再退回单独取一次——宁可多一次请求，也不能让顶部四数空着。
@@ -78,6 +82,7 @@ async function loadAll(sub) {
               providers: providers || cache.providers || [],
               policies: policies || cache.policies || { items: [], preference_labels: {}, no_auto_fallback: true },
               worker: worker || cache.worker || {},
+              workerProcess: workerProcess || cache.workerProcess || {},
               // 验证历史是分页读的（一页 + 总量），缓存里存整个对象而不是数组：
               // 只存数组会把总量丢掉，监控页就只能说"这里有 20 条"，说不出"共多少条"。
               validations: validations || cache.validations || { items: [], total: 0 },

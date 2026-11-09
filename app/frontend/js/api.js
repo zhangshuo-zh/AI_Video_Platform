@@ -166,6 +166,12 @@ export const api = {
   workerConcurrency: () => get('/api/worker/concurrency'),
   setWorkerConcurrency: (body) => send('PUT', '/api/worker/concurrency', body),
 
+  // worker 进程启停（0048）。这是**手动启停不是守护**——崩了不会自动拉起，
+  // 界面文案必须说出来（详见 worker_supervisor 模块头）。
+  workerProcess: () => get('/api/worker/process'),
+  startWorker: (body) => send('POST', '/api/worker/process/start', body || {}),
+  stopWorker: () => send('POST', '/api/worker/process/stop', {}),
+
   // 生成中心：队列、成本账、参数模板。
   // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
   // 队列要翻页，所以这个函数比别的多两件事：
