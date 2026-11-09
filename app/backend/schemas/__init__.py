@@ -88,7 +88,9 @@ from .extraction import (
 from .jobs import (
     JobEstimateIn, JobSubmitIn, JobOut, JobDetailOut, JobLogOut, JobArtifactOut,
     WorkerStatusOut, WorkerLimitIn, WorkerLimitOut,
-    WorkerProcessOut, WorkerStartIn,
+    WorkerProcessOut, WorkerStartIn, WorkerStopIn,
+    WorkerDaemonIn, WorkerDaemonOut,
+    NotificationOut, NotificationInboxOut, NotificationReadIn, NotificationReadOut,
     JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut
 )
 
@@ -324,6 +326,13 @@ __all__ = [
     "WorkerLimitOut",
     "WorkerProcessOut",
     "WorkerStartIn",
+    "WorkerStopIn",
+    "WorkerDaemonIn",
+    "WorkerDaemonOut",
+    "NotificationOut",
+    "NotificationInboxOut",
+    "NotificationReadIn",
+    "NotificationReadOut",
     "_digest",
     "asset_version",
     "profile_version",

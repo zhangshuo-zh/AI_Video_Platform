@@ -69,6 +69,7 @@ async function loadAll(sub) {
       //  不在前端假装成"没有这个功能"）。
       need.process ? api.workerProcess().catch(() => null) : null,
     ]);
+    const workerDaemon = need.process ? await api.workerDaemon().catch(() => null) : null;
     // 兼容两种响应：后端给了 stats 就用它；万一部署的是老版本（没有这个键），
     // 再退回单独取一次——宁可多一次请求，也不能让顶部四数空着。
     const stats = catalog.stats || await api.modelStats();
@@ -83,6 +84,7 @@ async function loadAll(sub) {
               policies: policies || cache.policies || { items: [], preference_labels: {}, no_auto_fallback: true },
               worker: worker || cache.worker || {},
               workerProcess: workerProcess || cache.workerProcess || {},
+              workerDaemon: workerDaemon || cache.workerDaemon || {},
               // 验证历史是分页读的（一页 + 总量），缓存里存整个对象而不是数组：
               // 只存数组会把总量丢掉，监控页就只能说"这里有 20 条"，说不出"共多少条"。
               validations: validations || cache.validations || { items: [], total: 0 },

@@ -22,7 +22,9 @@ from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut,
                     WorkerLimitIn, WorkerLimitOut,
-                    WorkerProcessOut, WorkerStartIn)
+                    WorkerProcessOut, WorkerStartIn, WorkerStopIn,
+                    WorkerDaemonIn, WorkerDaemonOut,
+                    NotificationInboxOut, NotificationReadIn, NotificationReadOut)
 from repositories.content import episodes
 from repositories.jobs import clamp_limit, jobs, retry_reason
 from repositories.projects import projects as project_repo
@@ -424,9 +426,9 @@ def start_worker_process(payload: WorkerStartIn | None = None,
                            log_path=str(sup.WORKER_LOG))
     if result["ok"]:
         return out
-    # 已经有一个在跑 → 409（状态冲突，不是参数错）
-    if result.get("pid"):
-        raise HTTPException(status_code=409, detail=result["message"])
+    # 400 而不是 409：0049 起"已经有一个在跑"不再是错误——多开是正常需求，
+    # 所以真正的失败只剩"起不来"（环境问题）。原来那条 409 分支随
+    # "已在跑就拒绝"的规矩一起删掉了，留着会让界面以为还有状态冲突要处理。
     raise HTTPException(status_code=400, detail=result["message"])
 
 
@@ -441,5 +443,95 @@ def stop_worker_process(user=Depends(require_permission("system:config"))
     import worker_supervisor as sup
     result = sup.stop()
     state = sup.current()
-    return WorkerProcessOut(**state, last_action=result["message"],
+    return WorkerProcessOut(**state,
+                            last_action="；".join(result["messages"]),
                             log_path=str(sup.WORKER_LOG))
+
+
+# ---------- 多开、守护与通知（0049） ----------
+# worker 进程控制面在 0048 有了单实例启停；0049 把它扩成"多开 + 守护"，
+# 并把状态变化通知给受影响的项目成员。
+
+@router.post("/worker/process/start-many", response_model=WorkerProcessOut)
+def start_many_workers(payload: WorkerStartIn | None = None,
+                       user=Depends(require_permission("system:config"))
+                       ) -> WorkerProcessOut:
+    """一次起 N 个 worker。`count` 缺省 1，上限 `worker_supervisor.MAX_WORKERS`。
+
+    与单实例的 `/start` 是同一个实现（内部按 count 循环），分成两个路由是
+    为了让"起一个"这个最常见的动作不需要传参数。
+    """
+    import worker_supervisor as sup
+    payload = payload or WorkerStartIn()
+    result = sup.start(max_global=payload.max_global, per=payload.per,
+                       count=int(payload.count or 1))
+    state = sup.current()
+    if result["ok"]:
+        return WorkerProcessOut(**state, last_action=result["message"],
+                                log_path=str(sup.WORKER_LOG))
+    raise HTTPException(status_code=400, detail=result["message"])
+
+
+@router.post("/worker/process/stop-one", response_model=WorkerProcessOut)
+def stop_one_worker(payload: WorkerStopIn,
+                    user=Depends(require_permission("system:config"))
+                    ) -> WorkerProcessOut:
+    """停**指定的那一个** worker。`pid` 必填。
+
+    `pid` 为 0 表示停全部——与 `/stop` 等价，留这条路是为了让界面只有一个
+    按钮时不必判断调哪个接口。
+    """
+    import worker_supervisor as sup
+    result = sup.stop(pid=int(payload.pid) if payload.pid else None)
+    state = sup.current()
+    return WorkerProcessOut(**state,
+                            last_action="；".join(result["messages"]),
+                            log_path=str(sup.WORKER_LOG))
+
+
+@router.get("/worker/daemon", response_model=WorkerDaemonOut)
+def get_worker_daemon(user=Depends(require_permission("system:config"))
+                      ) -> WorkerDaemonOut:
+    """守护状态：开没开、期望几个、在线几个、真的在守吗（`exposed`）。"""
+    import worker_daemon
+    return WorkerDaemonOut(**worker_daemon.check())
+
+
+@router.put("/worker/daemon", response_model=WorkerDaemonOut)
+def put_worker_daemon(payload: WorkerDaemonIn,
+                      user=Depends(require_permission("system:config"))
+                      ) -> WorkerDaemonOut:
+    """打开/关闭守护，并设定"期望在线几个"。
+
+    写配置之后**立刻起线程**（若刚打开）——不要求重启 API 才生效，
+    否则界面上点了开关却没反应，人会以为坏了。
+    """
+    import worker_daemon
+    saved = worker_daemon.save_config(enabled=payload.enabled,
+                                      desired=payload.desired)
+    if saved["enabled"]:
+        worker_daemon.start_thread()
+    return WorkerDaemonOut(**worker_daemon.check())
+
+
+@router.get("/notifications", response_model=NotificationInboxOut)
+def list_notifications(unread_only: bool = False, limit: int = Query(30, ge=1, le=100),
+                       user=Depends(require_user)) -> NotificationInboxOut:
+    """我的通知。任何登录者都能看自己的收件箱——收件人由服务端按
+    "点名的 + 所在项目的 + 管理员类"算，不由前端传。"""
+    import notifications
+    return NotificationInboxOut(**notifications.inbox(
+        user, limit=limit, unread_only=unread_only))
+
+
+@router.post("/notifications/read", response_model=NotificationReadOut)
+def mark_notifications_read(payload: NotificationReadIn,
+                            user=Depends(require_user)) -> NotificationReadOut:
+    """标记已读。`ids` 为空表示全部已读。"""
+    import notifications
+    if payload.ids:
+        count = notifications.mark_read(user, payload.ids)
+    else:
+        count = notifications.mark_all_read(user)
+    return NotificationReadOut(marked=count,
+                               unread=notifications.inbox(user)["unread"])

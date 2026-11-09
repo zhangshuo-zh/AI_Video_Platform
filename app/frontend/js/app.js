@@ -9,6 +9,7 @@ import { renderView, currentViewId } from './router.js';
 import { setParam, setSub } from './navstate.js';
 import { escapeHtml, announce } from './util.js';
 import { applyPicks, restorePicks } from './pick.js';
+import { mountNotifications } from './notifications.js';
 
 /* ---------------- worker 状态条 ---------------- */
 
@@ -735,6 +736,9 @@ async function startApp() {
 
 async function boot() {
   setupTheme();       // 要在问身份之前：未登录时能看见的只有闸门里那枚切换钮
+  // 通知铃铛（0049）：DOM 就绪就能挂；未登录时接口 401，refresh 内部 catch
+  // 掉、不显示角标——所以不必等身份回来。
+  mountNotifications();
   watchPicks();
   bindNav();
   setupProjPick();

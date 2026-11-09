@@ -228,17 +228,42 @@ function bindWorkerHistory(root) {
  */
 function workerProcessCard() {
   const p = cache.workerProcess || {};
-  const running = !!p.running;
-  const pid = p.pid;
-  const stale = p.stale_pid;
+  const d = cache.workerDaemon || {};
+  const pids = p.pids || [];
+  const count = p.count != null ? Number(p.count) : (pids.length || (p.running ? 1 : 0));
+  const stale = p.stale_pids || [];
   const msg = p.last_action || '';
 
-  const status = running
-    ? `<span class="chip green">运行中</span>
-       <span class="hint">PID ${escapeHtml(String(pid))}</span>`
-    : (stale
-      ? `<span class="chip amber">未运行（残留 PID ${escapeHtml(String(stale))}）</span>`
+  const status = count
+    ? `<span class="chip green">运行中 ${count} 个</span>
+       <span class="hint mono">PID ${escapeHtml(pids.join('、'))}</span>`
+    : (stale.length
+      ? `<span class="chip amber">未运行（残留 ${escapeHtml(stale.join('、'))}）</span>`
       : '<span class="chip gray">未运行</span>');
+
+  // 守护那块：**exposed 为真就要红着说**。守护配置里 enabled=true 但线程没在跑，
+  // 或连续失败已放弃——这三种情况下"有守护"这件事都不成立，
+  // 界面若只显示 enabled 就是在骗人。
+  const daemonOn = !!d.enabled;
+  const exposed = d.exposed !== false;
+  const daemonChip = !daemonOn
+    ? '<span class="chip gray">守护未开</span>'
+    : (exposed
+      ? '<span class="chip red">守护失效</span>'
+      : `<span class="chip green">守护中 · 期望 ${d.desired} 个</span>`);
+
+  const daemonLine = !daemonOn
+    ? '守护没开：worker 掉了要人手动点启动。'
+    : (exposed
+      ? `<b>守护配着但没在守</b>${d.thread_alive ? '' : '（看门狗线程没在跑）'}`
+        + (d.failures >= 3 ? `；连续 ${d.failures} 次没起来，已停止重试，等人工处理`
+                           : '') + '。'
+      : `守护每 ${d.check_interval_seconds || 15} 秒检查一次；在线 ${d.online}
+         不足 ${d.desired} 就自动补起。累计已补 ${d.recovered || 0} 次。`);
+
+  const actions = (d.actions || []).slice(0, 4).map((a) =>
+    `<li class="hint"><code>${escapeHtml(a.at)}</code> ${escapeHtml(a.action)}：${escapeHtml(a.detail)}</li>`
+  ).join('');
 
   return `
   <div class="card mb-card">
@@ -248,17 +273,50 @@ function workerProcessCard() {
     </div>
     <div class="card-body">
       <p class="note flush">
-        <b>这是手动启停，不是守护进程。</b>API 重启不会带走它（它自己是一个独立会话），
-        但 worker 自己崩了也<strong>不会</strong>自动拉起——发现队列不动时，回这里看一眼、
-        再点一次启动。
+        <b>API 重启不会带走它们</b>（每个都是独立会话）。但 worker 自己崩了
+        <strong>只有开了守护</strong>才会自动拉起。
       </p>
       <div class="row-actions" style="margin-top:10px">
-        ${running
-          ? '<button class="btn danger" id="mc-wp-stop">停止 worker</button>'
-          : '<button class="btn primary" id="mc-wp-start">启动 worker</button>'}
+        <label class="hint" style="display:flex;align-items:center;gap:6px">
+          启动
+          <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1"
+                 style="width:64px"> 个
+        </label>
+        <button class="btn primary" id="mc-wp-start">启动</button>
+        <button class="btn danger" id="mc-wp-stop">停止全部</button>
         <span class="hint" id="mc-wp-msg">${escapeHtml(msg)}</span>
       </div>
-      <p class="hint" style="margin-top:8px">
+      ${count ? `<div class="row-actions" style="margin-top:6px;flex-wrap:wrap">
+        ${pids.map((pid) => `<button class="btn xs" data-stop-pid="${pid}">
+          停止 PID ${escapeHtml(String(pid))}</button>`).join('')}
+      </div>` : ''}
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <div class="card-head" style="padding:0;border:0;margin-bottom:8px">
+          <h2 style="font-size:14px">守护（自动拉起）</h2>
+          <span class="right">${daemonChip}</span>
+        </div>
+        <p class="note flush">${daemonLine}</p>
+        <div class="row-actions" style="margin-top:8px">
+          <label class="hint" style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}> 开启守护
+          </label>
+          <label class="hint" style="display:flex;align-items:center;gap:6px">
+            期望在线
+            <input class="inp" type="number" id="mc-daemon-desired" min="0" max="8"
+                   value="${d.desired != null ? d.desired : 1}" style="width:64px"> 个
+          </label>
+          <button class="btn" id="mc-daemon-save">保存守护设置</button>
+          <span class="hint" id="mc-daemon-msg"></span>
+        </div>
+        <p class="hint" style="margin-top:8px">
+          <b>边界说清楚</b>：守护住在 API 进程里——<strong>API 自己挂了，守护也跟着停</strong>。
+          它能挡的是"worker 崩了"，不是"整台机器挂了"。
+        </p>
+        ${actions ? `<ul class="hint flush" style="margin-top:8px">${actions}</ul>` : ''}
+      </div>
+
+      <p class="hint" style="margin-top:10px">
         日志：<code>${escapeHtml(p.log_path || 'data/logs/worker.log')}</code>
         （追加写，重启不丢上一次的输出）。
       </p>
@@ -266,31 +324,60 @@ function workerProcessCard() {
   </div>`;
 }
 
-async function refreshWorkerProcess(root, action) {
+async function refreshWorkerProcess(root, action, payload) {
   const msg = root.querySelector('#mc-wp-msg');
-  const btn = root.querySelector('#mc-wp-start') || root.querySelector('#mc-wp-stop');
-  if (btn) btn.disabled = true;
-  if (msg) msg.textContent = action === 'start' ? '正在启动（等它写第一份心跳）…'
-                                                : '正在停止（先 SIGTERM 让它收尾）…';
+  if (msg) {
+    msg.textContent = action === 'start'
+      ? '正在启动（逐个等它写第一份心跳）…'
+      : '正在停止（先 SIGTERM 让它收尾）…';
+  }
+  root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid]')
+    .forEach((b) => { b.disabled = true; });
   try {
-    const out = action === 'start' ? await api.startWorker({})
-                                   : await api.stopWorker();
-    cache.workerProcess = out;
-    // 重画这两张卡：进程状态与并发评估都可能随着启停变。
-    const live = root.querySelector('#mc-live');
-    if (live) {
-      live.innerHTML = liveCards();
-      bindWorkerHistory(root);
-      bindWorkerProcess(root);
-      bindConcurrency(root);
+    let out;
+    if (action === 'start') {
+      const raw = root.querySelector('#mc-wp-count')?.value;
+      const count = Math.max(1, Math.min(8, Number(raw) || 1));
+      out = await api.startWorkers({ count });
+    } else if (action === 'stopOne') {
+      out = await api.stopOneWorker(payload.pid);
+    } else {
+      out = await api.stopWorker();
     }
+    cache.workerProcess = out;
+    repaintLive(root);
   } catch (err) {
-    // 409 = 已经在跑；400 = 起不来（会带原因）。两种都如实显示，
+    // 409 = 已经在跑；400 = 起不来（带原因）。都如实显示，
     // 不把失败伪装成成功——界面说"成功"而队列不动是最坏的情况。
     const text = String(err?.message || err || '');
     if (msg) msg.textContent = text || '操作没成功。';
-    if (btn) btn.disabled = false;
+    root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid]')
+      .forEach((b) => { b.disabled = false; });
   }
+}
+
+async function saveDaemon(root) {
+  const msg = root.querySelector('#mc-daemon-msg');
+  const enabled = !!root.querySelector('#mc-daemon-on')?.checked;
+  const desired = Math.max(0, Math.min(8, Number(
+    root.querySelector('#mc-daemon-desired')?.value) || 0));
+  if (msg) msg.textContent = '正在保存…';
+  try {
+    cache.workerDaemon = await api.setWorkerDaemon({ enabled, desired });
+    repaintLive(root);
+  } catch (err) {
+    if (msg) msg.textContent = String(err?.message || err || '保存失败。');
+  }
+}
+
+/** 重画 live 两张卡（进程、并发、守护都在这两张里），保留验证留痕不动。 */
+function repaintLive(root) {
+  const live = root.querySelector('#mc-live');
+  if (!live) return;
+  live.innerHTML = liveCards();
+  bindWorkerHistory(root);
+  bindWorkerProcess(root);
+  bindConcurrency(root);
 }
 
 function bindWorkerProcess(root) {
@@ -298,7 +385,19 @@ function bindWorkerProcess(root) {
     refreshWorkerProcess(root, 'start');
   });
   root.querySelector('#mc-wp-stop')?.addEventListener('click', () => {
-    refreshWorkerProcess(root, 'stop');
+    if (window.confirm('停掉全部 worker？正在跑的作业会被中断，'
+      + '靠租约回收成失败。')) {
+      refreshWorkerProcess(root, 'stop');
+    }
+  });
+  root.querySelectorAll('[data-stop-pid]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const pid = Number(btn.dataset.stopPid);
+      refreshWorkerProcess(root, 'stopOne', { pid });
+    });
+  });
+  root.querySelector('#mc-daemon-save')?.addEventListener('click', () => {
+    saveDaemon(root);
   });
 }
 

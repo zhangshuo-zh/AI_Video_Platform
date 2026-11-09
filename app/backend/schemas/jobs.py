@@ -276,6 +276,10 @@ class WorkerProcessOut(BaseModel):
     """
     running: bool = False
     pid: int | None = None
+    # 0049 多开：在跑几个、分别是哪些 pid、有没有残留登记
+    count: int = 0
+    pids: list[int] = []
+    stale_pids: list[int] = []
     # PID 文件里有号但进程已不在（上次强杀/断电）：如实区分"残留"与"从未启动"
     stale_pid: int | None = None
     is_supervisor: bool = False
@@ -292,6 +296,65 @@ class WorkerStartIn(BaseModel):
     """
     max_global: int | None = Field(default=None, ge=0, le=64)
     per: dict[str, int] | None = None
+    # 一次起几个（0049 多开）。上限由 worker_supervisor.MAX_WORKERS 兜，
+    # 这里不重复写死那个数——两处各写一份迟早不一致。
+    count: int = Field(default=1, ge=1, le=8)
+
+
+class WorkerStopIn(BaseModel):
+    """停哪一个。`pid` 为 0／缺省表示停全部。"""
+    pid: int = Field(default=0, ge=0)
+
+
+class WorkerDaemonIn(BaseModel):
+    """守护开关。`desired` 是"期望在线几个"，0 合法（守着但不许有）。"""
+    enabled: bool = False
+    desired: int = Field(default=1, ge=0, le=8)
+
+
+class WorkerDaemonOut(BaseModel):
+    """守护状态。`exposed` 是这里最该被读懂的一句：守护停了或已放弃重试时，
+    "有守护"这件事就不成立了——界面必须据此把话说清楚。"""
+    enabled: bool = False
+    desired: int = 1
+    online: int = 0
+    pids: list[int] = []
+    thread_alive: bool = False
+    failures: int = 0
+    recovered: int = 0
+    last_check: str | None = None
+    last_error: str = ""
+    started_at: str | None = None
+    actions: list[dict] = []
+    exposed: bool = True
+    check_interval_seconds: float = 15.0
+
+
+class NotificationOut(BaseModel):
+    id: int
+    kind: str
+    level: str
+    title: str
+    body: str = ""
+    link_page: str = ""
+    link_params: dict = {}
+    created_at: str
+    read: bool = False
+
+
+class NotificationInboxOut(BaseModel):
+    items: list[NotificationOut] = []
+    unread: int = 0
+
+
+class NotificationReadIn(BaseModel):
+    """`ids` 为空＝全部已读（顶栏那个「全部标为已读」）。"""
+    ids: list[int] = []
+
+
+class NotificationReadOut(BaseModel):
+    marked: int = 0
+    unread: int = 0
 
 
 class WorkerLimitIn(BaseModel):

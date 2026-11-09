@@ -37,9 +37,20 @@ from pathlib import Path
 from config import BASE_DIR
 
 # 与 `run.sh:18-22` 同一套路径。改这里必须同步改那边，否则两个入口各管各的
-# PID 文件，`./run.sh stop` 与网页按钮会互相看不见对方起的进程。
+# PID **目录**（0049，原来是单个 worker.pid）：一个 worker 一个文件。
+#
+# 为什么从单文件改成目录：多开时一个 grep 用的号放不下第二个进程。
+# 文件名是 pid（`<pid>.pid`），内容也写 pid——两者一致，运维时
+# `ls data/run/workers/` 就能数出有几个在跑，不用解析内容。
+#
+# 为兼容 `./run.sh stop`（它认的是 data/run/worker.pid），那边仍由
+# `run.sh` 自己维护；这里只管网页起的。**两边不互相看不见**靠的不是共用
+# 同一个文件，而是"都在同一台机器的进程表里"——`stop` 之外的操作都按
+# 实际进程判活，不靠文件。
 RUN_DIR = BASE_DIR / "data" / "run"
+PID_DIR = RUN_DIR / "workers"
 LOG_DIR = BASE_DIR / "data" / "logs"
+# 保留旧名字指向第一个 PID 文件的位置，仅为兼容可能存在的引用与测试。
 WORKER_PID = RUN_DIR / "worker.pid"
 WORKER_LOG = LOG_DIR / "worker.log"
 
@@ -90,33 +101,91 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def read_pid() -> int | None:
-    """读 PID 文件。文件不存在／空／写坏都返回 None（不猜）。"""
+def _pid_files() -> list[Path]:
+    """`PID_DIR` 下所有 `<pid>.pid`，按 pid 排序。目录不存在返回空表。"""
     try:
-        raw = WORKER_PID.read_text().strip()
+        return sorted(PID_DIR.glob("*.pid"),
+                      key=lambda f: int(f.stem) if f.stem.isdigit() else 0)
     except OSError:
-        return None
-    try:
-        pid = int(raw)
-    except ValueError:
-        return None
-    return pid if pid > 0 else None
+        return []
+
+
+def read_pid() -> int | None:
+    """第一个活着的 worker 的 pid（兼容只关心"有没有人干活"的调用方）。
+
+    多开之后"那一个 pid"不再有唯一答案，所以这里返回**任意一个活着的**：
+    真需要全部的地方用 `list_workers()`。返回 None 表示一个都没在跑。
+    """
+    for item in list_workers():
+        if item["alive"]:
+            return item["pid"]
+    return None
+
+
+def list_workers() -> list[dict]:
+    """这台机器上所有登记过的 worker：`[{pid, alive, stale}]`。
+
+    `stale=True` 表示 PID 文件还在但进程已经没了（上次强杀/崩溃留下的）。
+    这种情况**如实返回而不自动清**——调用方（看板）要能看到"有个号没清"，
+    悄悄删掉就等于把一次异常消失得无影无踪。
+    """
+    out = []
+    for path in _pid_files():
+        try:
+            pid = int(path.stem)
+        except ValueError:
+            continue
+        _reap(pid)
+        out.append({"pid": pid, "alive": _pid_alive(pid),
+                    "stale": not _pid_alive(pid)})
+    return out
 
 
 def current() -> dict:
-    """现在有没有 worker 在跑。**以 PID 文件 + kill -0 为准**，不靠内存里的状态。
+    """汇总：有几个 worker 在跑、分别是哪些 pid、有没有残留。
 
-    为什么不记"我起过"：API 重启后内存就没了，而 worker 还活着。那种情况下
-    按钮会显示"未启动"，人一按就起第二个——两个进程抢同一份显存。
+    **以 PID 目录 + 进程探测为准**，不靠内存里的状态——API 重启后内存没了而
+    worker 还活着，记内存会让界面显示"未启动"，人一按就起第二个。
     """
-    pid = read_pid()
-    alive = _pid_alive(pid) if pid else False
+    workers = list_workers()
+    live = [w for w in workers if w["alive"]]
+    stale = [w["pid"] for w in workers if w["stale"]]
     return {
-        "running": alive,
-        "pid": pid if alive else None,
-        # PID 文件存在但进程没了＝上次退出没清理，如实报出来，别当成"从未启动"
-        "stale_pid": pid if (pid and not alive) else None,
+        "running": bool(live),
+        "count": len(live),
+        "pids": [w["pid"] for w in live],
+        # 兼容单实例调用方（旧字段）
+        "pid": live[0]["pid"] if live else None,
+        "stale_pids": stale,
     }
+
+
+def _write_pid_file(pid: int) -> Path:
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    path = PID_DIR / f"{pid}.pid"
+    path.write_text(str(pid))
+    return path
+
+
+def _remove_pid_file(pid: int) -> None:
+    try:
+        (PID_DIR / f"{pid}.pid").unlink()
+    except OSError:
+        pass
+
+
+def clean_stale() -> list[int]:
+    """清掉所有"文件在、进程没了"的登记。返回清掉的 pid 列表。
+
+    只在**人明确要求**时调（界面上的"清理残留"），不在读取时自动清——
+    自动清会让"上次崩过"这件事不可见，而它正是排查的起点。
+    """
+    removed = []
+    for item in list_workers():
+        if item["stale"]:
+            _remove_pid_file(item["pid"])
+            removed.append(item["pid"])
+    return removed
 
 
 def _worker_env() -> dict[str, str]:
@@ -146,17 +215,37 @@ def _python_executable() -> str:
     return sys.executable
 
 
-def start(*, max_global: int | None = None, per: dict | None = None) -> dict:
-    """起一个 worker。已经在跑就拒绝（不重复起），起完等心跳确认。
+# 单机 worker 个数上限。为什么要有：每个 worker 占一份 Python 解释器 + 模型
+# 进程，开到 8 个在 16 GB 机器上必然 OOM。这不是业务限制，是防呆——
+# 与 `concurrency_plan` 的内存评估互补：那个算"每条作业要多少"，这个挡"别开太多"。
+MAX_WORKERS = 8
 
-    返回 `{ok, pid, message, ...}`：**`ok` 只在"进程活着"时为真**。
-    进程起来了但没写心跳，也返回 ok=False 并说清楚——那是环境问题
-    （缺运行时、迁移失败），不该显示成"启动成功"让人以为在干活。
+
+def start(*, max_global: int | None = None, per: dict | None = None,
+          count: int = 1) -> dict:
+    """起 `count` 个 worker（默认 1 个）。**逐个等心跳确认**，不是批量 fork 了事。
+
+    0049 起允许多开：原来"已经在跑就拒绝"是单实例时代的规矩，现在多开是
+    正常需求（`claim_next` 本来就靠 `BEGIN IMMEDIATE` 保证不重复领取）。
+    仍然拒绝的情况只剩两种：超过 `MAX_WORKERS`（防呆）、以及单个 worker
+    起不来（环境问题）。
+
+    返回 `{ok, pids, message, failed}`：`ok` 只在**全部**起来了才是真。
+    部分成功时 `pids` 给出真的那几个，`failed` 说清哪一步没成。
     """
-    state = current()
-    if state["running"]:
-        return {"ok": False, "pid": state["pid"],
-                "message": f"worker 已经在跑（PID {state['pid']}）；要重启请先停止"}
+    # **超出上限要拒绝，不能静默截断**（真踩到）：第一版写的是
+    # `min(count, MAX_WORKERS)`，于是 `start(count=99)` 被悄悄改成 8 个、
+    # 返回成功——人以为起了 99 个，实际只有 8 个在跑，而队列里的活永远干不完。
+    # 静默改需求比拒绝糟得多：拒绝会让人重新想一下，截断只会让人困惑。
+    count = int(count or 1)
+    if count < 1:
+        return {"ok": False, "pids": [], "failed": [],
+                "message": f"数量必须 ≥ 1，给的是 {count}"}
+    already = current()["count"]
+    if count > MAX_WORKERS or already + count > MAX_WORKERS:
+        return {"ok": False, "pids": [], "failed": [],
+                "message": f"已在跑 {already} 个、要求再起 {count} 个，"
+                           f"超过上限 {MAX_WORKERS}；这台机器的内存撑不住那么多"}
 
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -167,49 +256,72 @@ def start(*, max_global: int | None = None, per: dict | None = None) -> dict:
     for name, value in (per or {}).items():
         argv += [f"--max-{name}", str(int(value))]
 
-    # 日志追加写：与 `run.sh` 的 `tee -a` 同义，重启不丢上一次的输出。
-    log = open(WORKER_LOG, "ab")
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(BASE_DIR),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            env=_worker_env(),
-            # **孤儿防护**：新会话＝worker 成为独立进程组的组长。
-            # API 重启/退出时不会连带杀掉它；它也不会挂在 API 的进程组下面
-            # 被 `run.sh --reload` 那种壳进程带成孤儿。
-            start_new_session=True,
-            close_fds=True,
-        )
-    finally:
-        log.close()      # 父进程不必握着这个句柄；子进程已经继承了一份
+    pids: list[int] = []
+    failed: list[str] = []
+    for index in range(count):
+        # 日志追加写：与 `run.sh` 的 `tee -a` 同义，重启不丢上一次的输出。
+        # `open` 只在这一个循环体内驻留，避免多开时句柄堆积。
+        log = open(WORKER_LOG, "ab")
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(BASE_DIR),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=_worker_env(),
+                # **孤儿防护**：新会话＝worker 成为独立进程组的组长。
+                # API 重启/退出时不会连带杀掉它；也不会挂在 API 的进程组下面
+                # 被 `run.sh --reload` 那种壳进程带成孤儿。
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as exc:
+            failed.append(f"第 {index + 1} 个没能 fork：{exc}")
+            break
+        finally:
+            log.close()      # 父进程不必握着这个句柄；子进程已经继承了一份
 
-    _LAUNCHED[proc.pid] = proc
-    WORKER_PID.write_text(str(proc.pid))
+        _LAUNCHED[proc.pid] = proc
+        _write_pid_file(proc.pid)
 
-    # 等它写第一份心跳。worker 起来会先 migrate 再 heartbeat，
-    # 这段等待是"确认真的在干活"而不是"确认 fork 成功"。
-    deadline = time.monotonic() + START_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            code = proc.returncode
-            _cleanup_pid_if(proc.pid)
-            tail = _log_tail()
-            return {"ok": False, "pid": None,
-                    "message": f"worker 启动后立刻退出（退出码 {code}）"
-                               + (f"：{tail}" if tail else "")}
-        if _heartbeat_written_since(proc.pid):
-            return {"ok": True, "pid": proc.pid,
-                    "message": f"worker 已启动（PID {proc.pid}）"}
-        time.sleep(0.25)
+        # 等它写第一份心跳。worker 起来会先 migrate 再 heartbeat，
+        # 这段等待是"确认真的在干活"而不是"确认 fork 成功"。
+        ok = False
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                code = proc.returncode
+                _remove_pid_file(proc.pid)
+                tail = _log_tail()
+                failed.append(f"第 {index + 1} 个启动后立刻退出（退出码 {code}）"
+                              + (f"：{tail}" if tail else ""))
+                break
+            if _heartbeat_written_since(proc.pid):
+                ok = True
+                pids.append(proc.pid)
+                break
+            time.sleep(0.25)
+        else:
+            # 进程活着但没心跳：起来了却没登记，多半是环境/迁移问题。
+            # **不报成功**——那样人会以为在跑，而队列其实不动。
+            failed.append(
+                f"第 {index + 1} 个（PID {proc.pid}）进程起来了但 "
+                f"{START_TIMEOUT_SECONDS:.0f} 秒内没有写心跳；看 worker.log 尾部")
+        if not ok:
+            break       # 一个起不来就停手：环境问题多半对下一个也一样
 
-    # 进程活着但没心跳：起来了却没登记，多半是环境/迁移问题。
-    # **不报成功**——那样人会以为在跑，而队列其实不动。
-    return {"ok": False, "pid": proc.pid,
-            "message": f"worker 进程起来了（PID {proc.pid}）但 {START_TIMEOUT_SECONDS:.0f} 秒内"
-                       f"没有写心跳，可能环境有问题；看 {WORKER_LOG.name} 的尾部"}
+    if pids and not failed:
+        return {"ok": True, "pids": pids, "failed": [],
+                "message": (f"已启动 {len(pids)} 个 worker"
+                            + (f"（PID {'、'.join(map(str, pids))}）" if count > 1
+                               else f"（PID {pids[0]}）"))}
+    if pids:
+        return {"ok": False, "pids": pids, "failed": failed,
+                "message": f"只起来 {len(pids)} 个（PID {'、'.join(map(str, pids))}）；"
+                           + "；".join(failed)}
+    return {"ok": False, "pids": [], "failed": failed,
+            "message": "；".join(failed) or "一个都没起来"}
 
 
 def _heartbeat_written_since(pid: int) -> bool:
@@ -241,36 +353,27 @@ def _log_tail(lines: int = 6) -> str:
 
 
 def _cleanup_pid_if(pid: int) -> None:
-    """PID 文件里是 `pid` 才删——避免误删别人（另一次启动）写进去的号。"""
-    if read_pid() == pid:
-        try:
-            WORKER_PID.unlink()
-        except OSError:
-            pass
+    """删掉这个 pid 的登记文件。文件已不在也是成功（幂等）。"""
+    _remove_pid_file(pid)
 
 
-def stop(*, timeout: float = 8.0) -> dict:
-    """停 worker：先 SIGTERM（它自己会收尾、把当前作业状态写回去），
+def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
+    """停一个 worker：先 SIGTERM（它自己会收尾、把当前作业状态写回去），
     超时再 SIGKILL。与 `run.sh:39-68` 的 `stop_one` 同一套顺序与理由。
 
-    worker 装了信号处理（`worker.py:925-927` 的 STOP 标志），SIGTERM 会让它
-    跑完当前这一轮再退——所以给它 8 秒，不是 1 秒就强杀。
+    worker 装了信号处理（`worker.py` 的 STOP 标志），SIGTERM 会让它跑完当前
+    这一轮再退——所以给它 8 秒，不是 1 秒就强杀。
     """
-    state = current()
-    if not state["running"]:
-        # PID 文件残留（上次强杀/断电）也顺手清掉，别让它一直红着
-        if state["stale_pid"]:
-            _cleanup_pid_if(state["stale_pid"])
-            return {"ok": True, "pid": None,
-                    "message": f"没有 worker 在跑（清掉了上次残留的 PID {state['stale_pid']}）"}
-        return {"ok": True, "pid": None, "message": "没有 worker 在跑"}
+    _reap(pid)
+    if not _pid_alive(pid):
+        _cleanup_pid_if(pid)
+        return {"ok": True, "pid": pid, "message": f"PID {pid} 已不在，清掉了登记"}
 
-    pid = state["pid"]
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         _cleanup_pid_if(pid)
-        return {"ok": False, "pid": pid, "message": f"发 SIGTERM 失败：{exc}"}
+        return {"ok": False, "pid": pid, "message": f"给 PID {pid} 发 SIGTERM 失败：{exc}"}
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -288,5 +391,35 @@ def stop(*, timeout: float = 8.0) -> dict:
         pass
     _cleanup_pid_if(pid)
     return {"ok": True, "pid": pid,
-            "message": f"worker {timeout:.0f} 秒内没退，已强杀（PID {pid}）；"
+            "message": f"PID {pid} {timeout:.0f} 秒内没退，已强杀；"
                        f"它手上的作业会被下一轮 recover_stale 收掉"}
+
+
+def stop(*, timeout: float = 8.0, pid: int | None = None) -> dict:
+    """停 worker。给 `pid` 只停那一个；不给就停**全部**。
+
+    返回 `{ok, stopped, messages}`：`stopped` 是真的停掉的 pid 列表。
+    没有 worker 在跑也返回 ok=True（幂等）——界面刷新后重复点、两个人同时点，
+    都不该报红。
+    """
+    if pid is not None:
+        result = stop_one(pid, timeout=timeout)
+        return {"ok": result["ok"],
+                "stopped": [pid] if result["ok"] else [],
+                "messages": [result["message"]]}
+
+    workers = [w for w in list_workers() if w["alive"]]
+    stale = [w["pid"] for w in list_workers() if w["stale"]]
+    stopped: list[int] = []
+    messages: list[str] = []
+    for item in workers:
+        result = stop_one(item["pid"], timeout=timeout)
+        if result["ok"]:
+            stopped.append(item["pid"])
+        messages.append(result["message"])
+    for pid_ in stale:
+        _cleanup_pid_if(pid_)
+        messages.append(f"清掉了残留登记（PID {pid_}）")
+    if not messages:
+        messages.append("没有 worker 在跑")
+    return {"ok": True, "stopped": stopped, "messages": messages}

@@ -599,6 +599,33 @@ main{min-width:0;display:flex;flex-direction:column}
   box-shadow:var(--avatar-ring);
 }
 .avatar-wrap{position:relative}
+/* ---------- 通知铃铛（0049） ---------- */
+.bell-wrap{position:relative}
+.bell-btn{position:relative}
+/* 未读角标：绝对定位贴右上，比数字小一号；有未读才显示。
+   不用数字气泡（红底白字那种）——这一栏已经有太多小圆点了，
+   一个实心点足够说明"有东西"；具体几条在面板里说。 */
+.bell-dot{
+  position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:50%;
+  background:var(--bad);box-shadow:0 0 0 2px var(--bg);
+}
+.bell-dot[hidden]{display:none}
+.bell-menu{min-width:320px;max-height:min(70vh,420px)}
+.bell-item{
+  display:block;width:100%;text-align:left;padding:9px 10px;border-radius:8px;
+  border:0;background:transparent;color:var(--ink);cursor:pointer;font:inherit;
+}
+.bell-item:hover{background:var(--hover-strong)}
+.bell-item.unread{background:var(--chip-bg)}
+.bell-item .bt{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.bell-item .bt b{font-weight:600;font-size:13px}
+.bell-item .bd{font-size:12px;color:var(--ink-2);line-height:1.45}
+.bell-item .bm{font-size:11px;color:var(--ink-3);margin-top:3px}
+.bell-empty{padding:14px 10px;text-align:center;color:var(--ink-3);font-size:12px}
+.bell-foot{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:8px 10px 4px;border-top:1px solid var(--line);margin-top:4px;
+}
 
 /* 日/夜切换：图标用 SVG，不用"日""夜"汉字（汉字缩到 16px 就是一团）。
    常驻右上角，两套主题都要看得出来它是可点的——所以给它描边和底色，

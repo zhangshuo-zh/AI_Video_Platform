@@ -145,6 +145,17 @@ def create_app() -> FastAPI:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     # 静态前端必须最后挂，否则 /api 会被通配吃掉
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
+    # worker 守护线程（0049）：**默认不守**，只有 `data/run/daemon.json` 里
+    # `enabled` 为真时才真去补进程。这里无条件起线程是因为"能开关"本身要生效：
+    # 线程空转一轮只读一个小 JSON，代价远小于"改了开关要重启 API"。
+    # 守护的边界见 `worker_daemon` 模块头：**API 挂了它也就停了**。
+    try:
+        import worker_daemon
+        worker_daemon.start_thread()
+    except Exception:
+        # 一句守护起不来不该让整个 API 起不来——它是增强项，不是必需项。
+        pass
     return app
 
 

@@ -211,6 +211,14 @@ ROUTES = [
     ("GET", "/api/worker/process", None, 403),
     ("POST", "/api/worker/process/start", {}, 403),
     ("POST", "/api/worker/process/stop", {}, 403),
+    # 0049：多开、守护与通知。启停守护要 system:config（403）；
+    # 通知是"我的收件箱"，任何登录者 200。
+    ("POST", "/api/worker/process/start-many", {"count": 1}, 403),
+    ("POST", "/api/worker/process/stop-one", {"pid": 1}, 403),
+    ("GET", "/api/worker/daemon", None, 403),
+    ("PUT", "/api/worker/daemon", {"enabled": False, "desired": 1}, 403),
+    ("GET", "/api/notifications", None, 200),
+    ("POST", "/api/notifications/read", {"ids": []}, 200),
     # ---------- 自动化漫剧产线（0026／阶段 B） ----------
     # 模板是全局的、只读，有 job:read 就能看 ⇒ editor（outsider）200。
     # 运行／节点一定挂项目：看不见那个项目就 404，连"这条运行存在"都不透露。

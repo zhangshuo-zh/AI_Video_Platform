@@ -172,6 +172,16 @@ export const api = {
   startWorker: (body) => send('POST', '/api/worker/process/start', body || {}),
   stopWorker: () => send('POST', '/api/worker/process/stop', {}),
 
+  // 0049 多开与守护。startWorkers 的 count 体是「一次起几个」。
+  startWorkers: (body) => send('POST', '/api/worker/process/start-many', body || {}),
+  stopOneWorker: (pid) => send('POST', '/api/worker/process/stop-one', { pid: pid || 0 }),
+  workerDaemon: () => get('/api/worker/daemon'),
+  setWorkerDaemon: (body) => send('PUT', '/api/worker/daemon', body),
+
+  // 站内通知（0049）。收件人由服务端按「点名的 + 所在项目的 + 管理员类」算。
+  notifications: (unreadOnly) => get('/api/notifications' + (unreadOnly ? '?unread_only=true' : '')),
+  markNotificationsRead: (ids) => send('POST', '/api/notifications/read', { ids: ids || [] }),
+
   // 生成中心：队列、成本账、参数模板。
   // 状态可以逗号分隔（"进行中"＝三个状态一起看），其余筛选空值就不带。
   // 队列要翻页，所以这个函数比别的多两件事：

@@ -29,6 +29,7 @@ def sup(tmp_path, monkeypatch):
     import worker_supervisor as module
     monkeypatch.setattr(module, "RUN_DIR", tmp_path / "run")
     monkeypatch.setattr(module, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(module, "PID_DIR", tmp_path / "run" / "workers")
     monkeypatch.setattr(module, "WORKER_PID", tmp_path / "run" / "worker.pid")
     monkeypatch.setattr(module, "WORKER_LOG", tmp_path / "logs" / "worker.log")
     module._LAUNCHED.clear()
@@ -53,8 +54,8 @@ def _spawn_sleeper(sup, seconds: float = 30.0):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     sup._LAUNCHED[proc.pid] = proc
-    sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
-    sup.WORKER_PID.write_text(str(proc.pid))
+    sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+    (sup.PID_DIR / f"{proc.pid}.pid").write_text(str(proc.pid))
     return proc
 
 
@@ -124,8 +125,8 @@ class TestLiveness:
         result = sup.stop()
         elapsed = time.monotonic() - started
         assert result["ok"] is True
-        assert "已强杀" not in result["message"], (
-            f"优雅退出被报成强杀：{result['message']}")
+        assert not any("已强杀" in m for m in result["messages"]), (
+            f"优雅退出被报成强杀：{result['messages']}")
         assert elapsed < 5, f"停一个立刻响应的进程花了 {elapsed:.1f} 秒，说明判活没及时"
 
     def test_别人起的进程用_kill_判活(self, sup):
@@ -152,21 +153,22 @@ class TestPidFile:
     def test_没有文件时报未运行(self, sup):
         state = sup.current()
         assert state["running"] is False
-        assert state["pid"] is None
-        assert state["stale_pid"] is None
+        assert state["count"] == 0
+        assert state["pids"] == []
+        assert state["stale_pids"] == []
 
     def test_残留_PID_要如实报出来(self, sup):
         """上次强杀/断电留下的号不该被说成"从未启动"——那会掩盖异常。"""
-        sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
-        sup.WORKER_PID.write_text("999999")
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        (sup.PID_DIR / "999999.pid").write_text("999999")
         state = sup.current()
         assert state["running"] is False
-        assert state["stale_pid"] == 999999
+        assert 999999 in state["stale_pids"]
 
     def test_写坏的_PID_文件当没有(self, sup):
         """文件里是垃圾就返回 None，不要把 int() 异常抛到界面上。"""
-        sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
-        sup.WORKER_PID.write_text("not-a-number")
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        (sup.PID_DIR / "abc.pid").write_text("not-a-number")
         assert sup.read_pid() is None
         assert sup.current()["running"] is False
 
@@ -174,26 +176,27 @@ class TestPidFile:
 class TestStartStop:
     """启停语义。"""
 
-    def test_已经在跑时启动要被拒(self, sup):
-        """连点两次、或两个人都按，都不该起第二个——两个进程抢同一份显存。"""
-        _spawn_sleeper(sup)
-        result = sup.start()
+    def test_超过上限才被拒(self, sup):
+        """0049 起多开是合法需求（`claim_next` 靠 BEGIN IMMEDIATE 保证不重复领取），
+        所以"已经有在跑"不再是错误；仍然要挡的是**开太多**——
+        8 个以上的解释器加模型进程在 16 GB 机器上必然 OOM。"""
+        result = sup.start(count=sup.MAX_WORKERS + 1)
         assert result["ok"] is False
-        assert "已经在跑" in result["message"]
+        assert "上限" in result["message"]
 
     def test_停止是幂等的(self, sup):
         """停一个本来就没跑的不算错误：刷新后重复点不该报红。"""
         result = sup.stop()
         assert result["ok"] is True
-        assert "没有 worker 在跑" in result["message"]
+        assert any("没有 worker 在跑" in m for m in result["messages"])
 
     def test_停止会清掉残留_PID(self, sup):
-        sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
-        sup.WORKER_PID.write_text("999999")
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        (sup.PID_DIR / "999999.pid").write_text("999999")
         result = sup.stop()
         assert result["ok"] is True
-        assert "残留" in result["message"]
-        assert not sup.WORKER_PID.exists(), "残留的 PID 文件该被清掉"
+        assert any("残留" in m for m in result["messages"])
+        assert not (sup.PID_DIR / "999999.pid").exists(), "残留的 PID 文件该被清掉"
 
     def test_停止先_SIGTERM_不直接强杀(self, sup):
         """真 worker 装了信号处理，SIGTERM 会让它跑完当前这一轮再退。
@@ -201,8 +204,8 @@ class TestStartStop:
         proc = _spawn_sleeper(sup, 30)
         result = sup.stop()
         assert result["ok"] is True
-        assert "已强杀" not in result["message"], (
-            f"sleep 收到 SIGTERM 立刻退，不该走到强杀：{result['message']}")
+        assert not any("已强杀" in m for m in result["messages"]), (
+            f"sleep 收到 SIGTERM 立刻退，不该走到强杀：{result['messages']}")
         assert proc.poll() is not None
 
     def test_起不来的_worker_要说原因(self, sup, monkeypatch):
@@ -212,7 +215,7 @@ class TestStartStop:
         monkeypatch.setattr(sup, "_heartbeat_written_since", lambda pid: False)
         proc = _spawn_sleeper(sup, 30)
         # 把 PID 文件清掉，让 start() 认为可以起
-        sup.WORKER_PID.unlink()
+        (sup.PID_DIR / f"{proc.pid}.pid").unlink()
         # 这次的 start 会真起 worker.py（它连的是临时库，能起来但没心跳判断被我们
         # 强制为 False）——所以必然走超时分支
         result = sup.start()
@@ -238,7 +241,7 @@ class TestStartStop:
             # 用真 worker.py 起（要真的走 start() 的那条 Popen 分支）
             sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
             if sup.WORKER_PID.exists():
-                sup.WORKER_PID.unlink()
+                (sup.PID_DIR / f"{proc.pid}.pid").unlink()
             import worker_supervisor as module
             # 心跳判据在临时库里会等满超时；这里只关心进程组，把等待缩到最短
             original = module._heartbeat_written_since
@@ -249,7 +252,7 @@ class TestStartStop:
             finally:
                 module._heartbeat_written_since = original
             assert result["ok"] is True, result
-            pid = result["pid"]
+            pid = result["pids"][0]
             try:
                 out = subprocess.run(["ps", "-o", "pgid=,sess=", "-p", str(pid)],
                                      capture_output=True, text=True, timeout=5)
