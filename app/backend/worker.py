@@ -927,17 +927,20 @@ def _install_signals() -> None:
     signal.signal(signal.SIGTERM, _stop)
 
 
-def _limits_from_args(args) -> dict:
-    """CLI 覆盖项 → 领取用的上限。没在命令行给的类沿用配置文件默认值。
+def _limits_from_args(args) -> tuple[dict, dict]:
+    """CLI 覆盖项 → (领取用的上限, 哪些项是命令行显式给的)。
 
     默认仍是全局 1／每类 1：并发是 operator 明确抬上限并多开进程才发生的事，
     不会因为升级代码就悄悄在 16GB 机器上同时跑两条视频。
 
-    返回值里 `explicit` 记下"哪些项是命令行显式给的"——每轮从库里读网页设置时，
-    这些项不许被库里的值顶掉（见 `_limits_for_round`）。
+    **`explicit` 单独返回，不塞进 limits 里**（2026-11-09 实测踩到）：
+    `_limits_for_round` 的结果会被 `jobs.heartbeat(limits=...)` 用
+    `json.dumps` 写进 `worker_node.limits_json`，而 `explicit["per"]` 是个
+    set——"Object of type set is not JSON serializable"，心跳当场炸。
+    它是"这次怎么定的"过程信息，不该混进"上限是多少"这个结果里。
     """
     per = {}
-    explicit_per = set()
+    explicit_per: set[str] = set()
     for name in RESOURCE_CLASSES:
         value = getattr(args, f"max_{name}", None)
         if value is not None:
@@ -945,12 +948,12 @@ def _limits_from_args(args) -> dict:
             explicit_per.add(name)
     global_max = (args.max_global if args.max_global is not None
                   else WORKER_MAX_GLOBAL)
-    return {"global": max(0, int(global_max)), "per": per,
-            "explicit": {"global": args.max_global is not None,
-                         "per": explicit_per}}
+    limits = {"global": max(0, int(global_max)), "per": per}
+    explicit = {"global": args.max_global is not None, "per": explicit_per}
+    return limits, explicit
 
 
-def _limits_for_round(cli_limits: dict) -> dict:
+def _limits_for_round(cli_limits: dict, explicit: dict | None = None) -> dict:
     """这一轮领取该用哪套上限：命令行显式给的 > 网页设的 > 进程默认。
 
     为什么要每轮读一次库而不是启动时读一次：网页上改完期望"下一轮就生效"，
@@ -960,6 +963,9 @@ def _limits_for_round(cli_limits: dict) -> dict:
     **命令行优先**是硬规矩：`./run.sh worker --max-global 2` 是 operator 当下
     对着这台机器下的指令，不该被网页上一周前设的旧值悄悄盖掉。反过来若命令行
     没给，网页设过就用网页的——这正是"能在网页上改"这件事本身。
+
+    返回值**只含 global／per 两个键**，能直接 `json.dumps`——心跳要把它写进
+    `worker_node.limits_json`。`explicit` 是入参不是出参（see `_limits_from_args`）。
     """
     try:
         from repositories import worker_limit
@@ -969,19 +975,19 @@ def _limits_for_round(cli_limits: dict) -> dict:
         # 这里绝不能抛——一句配置读不到不该让队列停摆。
         saved = None
     if not saved:
-        return cli_limits
+        return {"global": cli_limits.get("global"),
+                "per": dict(cli_limits.get("per") or {})}
 
-    out = dict(cli_limits)
-    explicit = cli_limits.get("explicit") or {}
+    explicit = explicit or {}
+    out_global = cli_limits.get("global")
     if not explicit.get("global") and saved.get("global") is not None:
-        out["global"] = max(0, int(saved["global"]))
+        out_global = max(0, int(saved["global"]))
     per = dict(cli_limits.get("per") or {})
     explicit_per = explicit.get("per") or set()
     for name, value in (saved.get("per") or {}).items():
         if name in RESOURCE_CLASSES and name not in explicit_per:
             per[name] = max(0, int(value))
-    out["per"] = per
-    return out
+    return {"global": out_global, "per": per}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -999,7 +1005,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signals()
     wid = worker_id()
-    cli_limits = _limits_from_args(args)
+    cli_limits, cli_explicit = _limits_from_args(args)
     # **库要先补到最新**（2026-11-08，P1）。
     # 原来只有 `main.create_app()` 里调 `migrate()`，于是"只跑 worker 不跑 API"
     # （`./run.sh worker`，或批处理机）在全新库上会直接崩：下面那句
@@ -1013,7 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
     # 并发上限放在 migrate 之后读：0047 的 `worker_limit` 表要等迁移建出来，
     # 在它之前读会撞"no such table"（虽然 `_limits_for_round` 兜住了不抛，
     # 但那样启动横幅会显示成默认值，与人设的值不符——横幅是第一眼证据）。
-    limits = _limits_for_round(cli_limits)
+    limits = _limits_for_round(cli_limits, cli_explicit)
     recovered = jobs.recover_stale()
     if recovered["failed"] or recovered["cancelled"]:
         print(f"启动恢复：failed={recovered['failed']} cancelled={recovered['cancelled']}")
@@ -1063,7 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
         # 每轮重新算一次上限：网页上改完，下一轮就该按新值领活。
         # 放在 try 里是因为它要读库——读不到就用上一轮的值，不该让队列停。
         try:
-            limits = _limits_for_round(cli_limits)
+            limits = _limits_for_round(cli_limits, cli_explicit)
         except Exception as exc:
             print(f"[并发] 这一轮读配置失败，沿用上一轮：{type(exc).__name__}: {exc}")
         did = None

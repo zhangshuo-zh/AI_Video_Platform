@@ -153,9 +153,9 @@ class TestPriority:
         from repositories import worker_limit
         worker_limit.save(global_max=8, per={})
         import worker
-        cli = {"global": 2, "per": {},
-               "explicit": {"global": True, "per": set()}}
-        out = worker._limits_for_round(cli)
+        out = worker._limits_for_round(
+            {"global": 2, "per": {}},
+            {"global": True, "per": set()})
         assert out["global"] == 2, f"命令行给了 2，实得 {out['global']}"
 
     def test_命令行没给就用网页的值(self, tmp_path, monkeypatch):
@@ -166,11 +166,33 @@ class TestPriority:
         from repositories import worker_limit
         worker_limit.save(global_max=3, per={"video": 2})
         import worker
-        cli = {"global": 1, "per": {},
-               "explicit": {"global": False, "per": set()}}
-        out = worker._limits_for_round(cli)
+        out = worker._limits_for_round(
+            {"global": 1, "per": {}},
+            {"global": False, "per": set()})
         assert out["global"] == 3
         assert out["per"]["video"] == 2
+
+    def test_上限字典必须能直接_json_序列化(self, tmp_path, monkeypatch):
+        """`_limits_for_round` 的返回值会被心跳 `json.dumps` 写进
+        `worker_node.limits_json`——里面只要有一个 set 就当场
+        "Object of type set is not JSON serializable"，心跳炸掉。
+
+        这是真踩到的：第一版把 `explicit`（含 set）塞进 limits 一起返回，
+        `./run.sh worker --once` 直接抛 TypeError。所以这条钉两件事：
+        返回体只有 global／per，且真的能 dumps。
+        """
+        monkeypatch.setenv("FASTVIDEO_DB", str(tmp_path / "t.db"))
+        from migrate import migrate
+        migrate(verbose=False)
+        from repositories import worker_limit
+        worker_limit.save(global_max=5, per={"video": 2})
+        import json
+        import worker
+        out = worker._limits_for_round(
+            {"global": 1, "per": {}},
+            {"global": False, "per": set()})
+        assert set(out) == {"global", "per"}, f"多余的键会被写进库：{sorted(out)}"
+        json.dumps(out)          # 不抛就算过
 
     def test_每类可以各管各的(self, tmp_path, monkeypatch):
         """网页设 video=2、命令行给 image=3 → 两个都要在。
@@ -181,9 +203,9 @@ class TestPriority:
         from repositories import worker_limit
         worker_limit.save(global_max=4, per={"video": 2})
         import worker
-        cli = {"global": 1, "per": {"image": 3},
-               "explicit": {"global": False, "per": {"image"}}}
-        out = worker._limits_for_round(cli)
+        out = worker._limits_for_round(
+            {"global": 1, "per": {"image": 3}},
+            {"global": False, "per": {"image"}})
         assert out["per"]["image"] == 3, "命令行显式给的 image 必须保住"
         assert out["per"]["video"] == 2, "网页设的 video 也要在"
 
