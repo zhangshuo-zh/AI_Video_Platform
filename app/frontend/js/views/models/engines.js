@@ -411,6 +411,13 @@ export function openProbeResults(payload, cloudRows) {
   const items = inst.items || [];
   const service = new Set(inst.service_engines || []);
   const cloud = Array.isArray(cloudRows) ? cloudRows : [];
+  // `cloud` 为空有两种完全不同的原因，不许用同一句话糊过去：
+  //   · 这个后端根本不返回 `cloud` 键（服务没重启到带 cloud_probe 的那一版）——
+  //     那是部署问题，必须说出来，否则人以为"云端都好好的、只是没显示"。
+  //     真出过一次：前端与磁盘源码都含云端段，跑着的进程还是旧代码，
+  //     结果窗安安静静少了一整段，底部却照旧宣称"真去网关发了一次 GET"。
+  //   · 返回了空数组——云端一家都没登记，那是正常的"没有可查对象"。
+  const cloudMissing = cloudRows === undefined || cloudRows === null || !Array.isArray(cloudRows);
 
   const rowsNow = items.map((it) => {
     const name = it.display_name || it.engine_label || it.engine_code;
@@ -497,7 +504,14 @@ export function openProbeResults(payload, cloudRows) {
         <b>云端 ${cloud.length} 家：现查过供应商网关。</b>
         这里只回答"路通不通、钥匙被不被接受"，<b>不等于那一档模型能用</b>；
         「没配密钥」「无可探端点」两档没发出请求，是配置层面的事实，不是网络故障。</p>`
-    : '';
+    : cloudMissing
+      ? `<p class="note" style="margin:14px 0 10px">
+          <span class="chip red">没查</span>
+          <b>这一轮没拿到云端结论：后端没有返回 <code>cloud</code> 段。</b>
+          说明跑着的服务不是带云端现查的那一版（改了后端代码要重启进程，
+          uvicorn 这里没开 reload）。<b>云端那几家有没有登记、路通不通，这一屏都没查</b>——
+          别把"没显示"当成"都是好的"。</p>`
+      : '';
   const cloudBody = cloud.length
     ? `<div class="table-wrap"><table><thead><tr>
         <th>云端引擎</th><th>探测目标</th><th>状态</th>
@@ -518,8 +532,8 @@ export function openProbeResults(payload, cloudRows) {
           这一屏是<b>刚刚这一轮</b>的现查结论。本机实例用的是每台实例自己的端点，
           列表档超时 0.8 秒，服务半死时可能被判成不通，要问到底请到
           「引擎管理」点那一行的<b>探测</b>（5 秒档），那边还留着历史。
-          云端引擎这一轮<b>真去供应商网关发了一次 GET</b>（5 秒档）：探的是
-          "路通不通、钥匙对不对"，没配密钥或没登记端点的不会发出请求。
+          ${cloud.length ? `云端引擎这一轮<b>真去供应商网关发了一次 GET</b>（5 秒档）：探的是
+          "路通不通、钥匙对不对"，没配密钥或没登记端点的不会发出请求。` : ''}
           两类都不等于那一档模型可用——可用要过验证那几关。</p>
       </div>
       <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>

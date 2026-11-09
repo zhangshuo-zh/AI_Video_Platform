@@ -21,6 +21,7 @@ prepare_backend_db 会复制现役库，那些登记与心跳是人一点点点�
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -834,6 +835,60 @@ def main():
         check("旧口径「云端只查密钥变量在不在」的说明已改掉",
               '密钥变量在不在' not in txt,
               "现在写明云端真发了 GET")
+        # 2026-11-09：真出过一次"静默少一段"。当时磁盘源码与静态 JS 都含云端段，
+        # 但**跑着的进程还是旧代码**（uvicorn 没开 reload），`POST /api/models/probe`
+        # 的返回体里根本没有 `cloud` 键；前端 `payload.cloud || []` 拿到 undefined
+        # 就渲染成空数组，结果窗安安静静少了整段云端表格，底部却照旧宣称
+        # "云端引擎这一轮真去供应商网关发了一次 GET"。人只会以为"云端没问题"。
+        # 所以两个方向都要钉：
+        #   · 没拿到 cloud 段 → 必须明说"没查"，不许沉默；
+        #   · 拿到了 cloud 段 → 不许出现"没拿到"这句话（否则变成永远绿的断言）。
+        # 直接调函数是因为门禁自己起的后端一定是新版，造不出缺键那个状态；
+        # 只有把 undefined 递进去才能到那个分支。
+        direct = str(P.eval_js(cdp, """(async () => {
+          const m = await import('/js/views/models/engines.js');
+          const out = {};
+          // 页面上此刻已经有一个真跑出来的结果窗；`find` 会先命中它，
+          // 于是读到的是"本次现查 2 台"而不是我构造的那一份。必须先清场。
+          const wipe = () => [...document.querySelectorAll('.modal')]
+            .filter(x => x.textContent.includes('引擎连接检查'))
+            .forEach(x => x.remove());
+          const grab = () => {
+            const el = [...document.querySelectorAll('.modal')]
+              .find(x => x.textContent.includes('引擎连接检查'));
+            return el ? el.textContent.replace(/\\s+/g, ' ') : 'NO_MODAL';
+          };
+          // 缺键：模拟旧进程（payload 里没有 cloud）
+          wipe();
+          m.openProbeResults({items: [], service_engines: []}, undefined);
+          out.missing = grab();
+          wipe();
+          // 有键：正常两行云端结论
+          m.openProbeResults({items: [], service_engines: []},
+            [{provider: 'deepseek', label: 'DeepSeek', state: 'no_key',
+              detail: '没配密钥', capability: 'text'},
+             {provider: 'wan', label: '通义万相', state: 'no_endpoint',
+              detail: '没端点', capability: 'video'}]);
+          out.present = grab();
+          wipe();
+          return JSON.stringify(out);
+        })()"""))
+        try:
+            d = json.loads(direct) if direct and not str(direct).startswith('ERR:') else {}
+        except Exception:
+            d = {}
+        miss_txt = d.get('missing', '')
+        pres_txt = d.get('present', '')
+        check("后端没回 cloud 段时，结果窗必须明说「没查」而不是沉默",
+              '没拿到云端结论' in miss_txt and '都没查' in miss_txt,
+              f"{'已明说' if '没拿到云端结论' in miss_txt else '静默省略'} / {miss_txt[:90]}")
+        check("拿到 cloud 段时不许出现「没拿到」那句话（防永远绿）",
+              '云端 2 家' in pres_txt and '没拿到云端结论' not in pres_txt,
+              f"2 家档 {'正常' if '云端 2 家' in pres_txt else pres_txt[:90]}")
+        check("缺 cloud 段时底部不再宣称「真去网关发了一次 GET」",
+              '真去供应商网关发了一次 GET' not in miss_txt
+              and '真去供应商网关发了一次 GET' in pres_txt,
+              "无云端结论时那段话必须收起来，有结论时才说")
         # 出网的是后端，不是浏览器：页面资源日志里不许出现假网关端口的直连。
         gw_port = str(gateway.server_address[1])
         page_hits = [u for u in P.eval_js(cdp, "performance.getEntriesByType('resource')"
