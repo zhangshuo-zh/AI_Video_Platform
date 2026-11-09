@@ -284,7 +284,7 @@ function workerProcessCard() {
         </label>
         <button class="btn primary" id="mc-wp-start">启动</button>
         <button class="btn danger" id="mc-wp-stop">停止全部</button>
-        <span class="hint" id="mc-wp-msg">${escapeHtml(msg)}</span>
+        <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
       </div>
       ${count ? `<div class="row-actions" style="margin-top:6px;flex-wrap:wrap">
         ${pids.map((pid) => `<button class="btn xs" data-stop-pid="${pid}">
@@ -307,7 +307,7 @@ function workerProcessCard() {
                    value="${d.desired != null ? d.desired : 1}" style="width:64px"> 个
           </label>
           <button class="btn" id="mc-daemon-save">保存守护设置</button>
-          <span class="hint" id="mc-daemon-msg"></span>
+          <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg')}</span>
         </div>
         <p class="hint" style="margin-top:8px">
           <b>边界说清楚</b>：守护住在 API 进程里——<strong>API 自己挂了，守护也跟着停</strong>。
@@ -325,12 +325,9 @@ function workerProcessCard() {
 }
 
 async function refreshWorkerProcess(root, action, payload) {
-  const msg = root.querySelector('#mc-wp-msg');
-  if (msg) {
-    msg.textContent = action === 'start'
-      ? '正在启动（逐个等它写第一份心跳）…'
-      : '正在停止（先 SIGTERM 让它收尾）…';
-  }
+  setMsg(root, 'mc-wp-msg', action === 'start'
+    ? '正在启动（逐个等它写第一份心跳）…'
+    : '正在停止（先 SIGTERM 让它收尾）…');
   root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid]')
     .forEach((b) => { b.disabled = true; });
   try {
@@ -349,24 +346,20 @@ async function refreshWorkerProcess(root, action, payload) {
   } catch (err) {
     // 409 = 已经在跑；400 = 起不来（带原因）。都如实显示，
     // 不把失败伪装成成功——界面说"成功"而队列不动是最坏的情况。
-    const text = String(err?.message || err || '');
-    if (msg) msg.textContent = text || '操作没成功。';
-    root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid]')
-      .forEach((b) => { b.disabled = false; });
+    setMsg(root, 'mc-wp-msg', escapeHtml(String(err?.message || err || '操作没成功。')));
   }
 }
 
 async function saveDaemon(root) {
-  const msg = root.querySelector('#mc-daemon-msg');
   const enabled = !!root.querySelector('#mc-daemon-on')?.checked;
   const desired = Math.max(0, Math.min(8, Number(
     root.querySelector('#mc-daemon-desired')?.value) || 0));
-  if (msg) msg.textContent = '正在保存…';
+  setMsg(root, 'mc-daemon-msg', '正在保存…');
   try {
     cache.workerDaemon = await api.setWorkerDaemon({ enabled, desired });
     repaintLive(root);
   } catch (err) {
-    if (msg) msg.textContent = String(err?.message || err || '保存失败。');
+    setMsg(root, 'mc-daemon-msg', escapeHtml(String(err?.message || err || '保存失败。')));
   }
 }
 
@@ -384,11 +377,14 @@ function bindWorkerProcess(root) {
   root.querySelector('#mc-wp-start')?.addEventListener('click', () => {
     refreshWorkerProcess(root, 'start');
   });
+  // **不弹确认框**（2026-11-10 自查改的）。两条理由：
+  //  1. 全仓 `window.confirm` 用量是 0——项目自己的确认一律走自绘 `.modal`
+  //     （projects.js / asset-detail.js 那几处）。孤零零一个原生弹窗风格完全不搭。
+  //  2. 停止 worker 不是"不可撤销"的破坏性操作：正在跑的作业靠租约回收、
+  //     重启 worker 就能继续。项目里"取消作业""退出登录"也都不确认。
+  // 危险感交给按钮本身（`btn danger`）与回执那句话，不靠一个多余的弹窗。
   root.querySelector('#mc-wp-stop')?.addEventListener('click', () => {
-    if (window.confirm('停掉全部 worker？正在跑的作业会被中断，'
-      + '靠租约回收成失败。')) {
-      refreshWorkerProcess(root, 'stop');
-    }
+    refreshWorkerProcess(root, 'stop');
   });
   root.querySelectorAll('[data-stop-pid]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -491,7 +487,7 @@ function concurrencyCard() {
       </p>
       <div class="row-actions" style="margin-top:10px">
         <button class="btn" id="mc-conc-save">保存并发设置</button>
-        <span class="hint" id="mc-conc-msg"></span>
+        <span class="hint" id="mc-conc-msg">${hintOf('mc-conc-msg')}</span>
       </div>
     </div>
   </div>`;
@@ -514,39 +510,90 @@ function readConcurrencyForm(root) {
   return { global_max: read('mc-conc-global'), per };
 }
 
+/** **每次写提示前重新查一次元素，不要缓存引用**（2026-11-10 实测踩到）。
+ *
+ *  根因：`app:refresh`（worker 状态每 20 秒一轮、启停/保存之后也会发）
+ *  会让整个视图重绘，`#mc-conc-msg` 这个 <span> 被换成一个新节点。
+ *  而 `await` 之前抓的旧引用此时已经脱离 DOM——往里写字符串，写的是一个
+ *  游离节点，屏幕上什么都不会变。
+ *  实测现象：点击保存后提示区始终为空、按钮又恢复成可点，看起来像"没反应"。
+ *  两次查询之间几乎不可能再插入一次重绘（这一句是同步执行的），所以就地查最稳。
+ */
+/** 读回上一次写的提示（重绘后仍要显示）。空字符串＝没有提示。
+ *  `cache.hints` 只存这几个短句，不做清空——它们本来就是"最近一次操作的结果"，
+ *  下次操作会覆盖掉。 */
+function hintOf(id) {
+  const v = (cache.hints || {})[id];
+  return v ? String(v) : '';
+}
+
+
+function setMsg(root, id, html) {
+  // 同时写进 cache：`app:refresh`（worker 状态 20 秒一轮）会重绘整个 live 区，
+  // 只写 DOM 的话那句话会在几百毫秒内被冲掉——实测就是这样（写进去了、然后就没了）。
+  // 重绘时由卡片自己从 cache 读回来（见 workerProcessCard/concurrencyCard）。
+  cache.hints = { ...(cache.hints || {}), [id]: html };
+  const el = root.querySelector(`#${id}`);
+  if (el) el.innerHTML = html;
+  return el;
+}
+
 async function saveConcurrency(root, payload, acknowledgeRisk) {
-  const msg = root.querySelector('#mc-conc-msg');
   const btn = root.querySelector('#mc-conc-save');
   if (btn) btn.disabled = true;
   try {
     const body = { ...payload, acknowledge_risk: !!acknowledgeRisk };
     const out = await api.setWorkerConcurrency(body);
-    if (msg) {
-      msg.textContent = out?.assessment?.verdict === 'safe'
-        ? '已保存；worker 下一轮按新值领活。'
-        : `已保存（${out?.assessment?.sentence || ''}）`;
-    }
+    // await 之后必须重新查（见 setMsg 的注释）
+    setMsg(root, 'mc-conc-msg', out?.assessment?.verdict === 'safe'
+      ? '已保存；worker 下一轮按新值领活。'
+      : `已保存（${out?.assessment?.sentence || ''}）`);
   } catch (err) {
     const text = String(err?.message || err || '');
     // 后端把"会溢出，要确认"做成了 400 + 那句话。这里**不猜**该不该继续：
     // 判断这句话是不是那道闸，用 confirm 让人再决定一次，而不是静默重试。
+    // **危险档的二次确认不用 `window.confirm`**（2026-11-10 自查）。
+    // 这里改成"把后端原话摆出来 + 给一个明确的再次保存按钮"：
+    // 原生弹窗风格与全站不一致（全仓用量 0），而且它会把那段带数字的说明
+    // 挤成一行小字。现在改成在按钮旁边就地显示，人能读完整句再决定。
     if (/内存溢出风险/.test(text) && !acknowledgeRisk) {
-      if (window.confirm(`${text}\n\n仍要保存吗？`)) {
-        await saveConcurrency(root, payload, true);
-        return;
-      }
-      if (msg) msg.textContent = '已取消，没有保存。';
+      // **不在这里给按钮绑事件**（2026-11-10 实测踩到）：这行 innerHTML 之后
+      // 可能紧跟一次 `app:refresh` 重绘，刚绑的监听会跟着旧节点一起被丢掉，
+      // 于是"点了没反应、后端也没存"。改成把待确认的 payload 挂到 cache，
+      // 由 `bindConcurrency` 里那条**委托监听**统一处理（它绑在容器上，
+      // 重绘不影响）。
+      cache.pendingConcurrency = { payload, text };
+      setMsg(root, 'mc-conc-msg',
+        `${escapeHtml(text)} <button class="btn xs danger" `
+        + `id="mc-conc-force">我知道风险，仍要保存</button>`);
       return;
     }
-    if (msg) msg.textContent = text || '没保存成功。';
+    setMsg(root, 'mc-conc-msg', escapeHtml(text || '没保存成功。'));
   } finally {
-    if (btn) btn.disabled = false;
+    // 按钮同理：重绘之后旧引用已脱离 DOM，`btn.disabled` 改的是死对象。
+    // 重新查一次，否则失败后按钮会一直停用（除非正好又重绘过）。
+    const live = root.querySelector('#mc-conc-save');
+    if (live) live.disabled = false;
   }
 }
 
 function bindConcurrency(root) {
   root.querySelector('#mc-conc-save')?.addEventListener('click', () => {
     saveConcurrency(root, readConcurrencyForm(root), false);
+  });
+  // **委托**处理"我知道风险，仍要保存"：这个按钮是 setMsg 动态生成的，
+  // 而且它生成后随时可能被 `app:refresh` 重绘替换掉。直接绑在按钮上会随旧
+  // 节点一起消失（实测：点了没反应、后端 global_max 仍是 None）。
+  // 绑在不会重建的容器上（`#mc-live` 的外层 root）就没有这个问题。
+  // 先解掉上一次绑的（repaintLive 会重复调本函数），避免同一次点击触发多遍。
+  if (root.__concDelegated) return;
+  root.__concDelegated = true;
+  root.addEventListener('click', (e) => {
+    if (!e.target.closest('#mc-conc-force')) return;
+    const pending = cache.pendingConcurrency;
+    if (!pending) return;
+    cache.pendingConcurrency = null;
+    saveConcurrency(root, pending.payload, true);
   });
 }
 

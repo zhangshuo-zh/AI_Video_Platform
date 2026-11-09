@@ -601,7 +601,13 @@ main{min-width:0;display:flex;flex-direction:column}
 .avatar-wrap{position:relative}
 /* ---------- 通知铃铛（0049） ---------- */
 .bell-wrap{position:relative}
+/* 铃铛沿用 .theme-btn 的尺寸与配色（同一栏里的按钮该长一样），
+   但补一条 focus 态：键盘 Tab 到它时不能没有任何指示。 */
 .bell-btn{position:relative}
+.bell-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 有未读时让铃铛比主题切换稍微显眼一点：它不是"设一次就不动"的开关，
+   而是"有事要你看"。只动颜色不动尺寸，免得那一栏左右跳。 */
+.bell-btn .has-unread{color:var(--accent)}
 /* 未读角标：绝对定位贴右上，比数字小一号；有未读才显示。
    不用数字气泡（红底白字那种）——这一栏已经有太多小圆点了，
    一个实心点足够说明"有东西"；具体几条在面板里说。 */
@@ -610,17 +616,40 @@ main{min-width:0;display:flex;flex-direction:column}
   background:var(--bad);box-shadow:0 0 0 2px var(--bg);
 }
 .bell-dot[hidden]{display:none}
-.bell-menu{min-width:320px;max-height:min(70vh,420px)}
+/* 通知面板宽度。**`min-width` 撑不住时就地换行，不用 `width` 写死**：
+   2026-11-10 实测，一条没有空格的长标题（英文模型名/URL/文件名）会把面板从
+   320px 撑到 740px——`min-width` 只是下限，内容宽了就跟着宽。
+   现在 min/max 一起给，配合下面的 `word-break`，长内容换行而不是撑宽。 */
+.bell-menu{
+  min-width:320px;max-width:min(380px,calc(100vw - 32px));
+  max-height:min(70vh,420px);
+}
 .bell-item{
   display:block;width:100%;text-align:left;padding:9px 10px;border-radius:8px;
   border:0;background:transparent;color:var(--ink);cursor:pointer;font:inherit;
+  transition:background var(--fast) var(--ease);
 }
 .bell-item:hover{background:var(--hover-strong)}
+/* 键盘焦点要看得见：面板里是一串 <button>，只给 hover 态等于键盘用户没有指示。
+   与项目其它可点元素同一套（outline 用 accent，不另造色）。 */
+.bell-item:focus-visible{
+  outline:2px solid var(--accent);outline-offset:-2px;
+}
 .bell-item.unread{background:var(--chip-bg)}
-.bell-item .bt{display:flex;align-items:center;gap:6px;margin-bottom:2px}
-.bell-item .bt b{font-weight:600;font-size:13px}
-.bell-item .bd{font-size:12px;color:var(--ink-2);line-height:1.45}
+/* `align-items:flex-start` + 允许 b 换行：徽章是定宽小片，标题长时它要留在
+   第一行顶部，不能跟着文字居中飘到中间 */
+.bell-item .bt{display:flex;align-items:flex-start;gap:6px;margin-bottom:2px}
+.bell-item .bt b{
+  font-weight:600;font-size:13px;
+  word-break:break-word;overflow-wrap:anywhere;
+}
+.bell-item .bd{
+  font-size:12px;color:var(--ink-2);line-height:1.45;
+  word-break:break-word;overflow-wrap:anywhere;
+}
 .bell-item .bm{font-size:11px;color:var(--ink-3);margin-top:3px}
+/* 徽章不许被压扁：flex 子项默认会缩，缩到 0 就看不见了 */
+.bell-item .bt .chip{flex:none}
 .bell-empty{padding:14px 10px;text-align:center;color:var(--ink-3);font-size:12px}
 .bell-foot{
   display:flex;justify-content:space-between;align-items:center;gap:8px;

@@ -383,3 +383,58 @@ class TestOfflineNotice:
         _insert_project(uniq, owner_id=uniq)
         _insert_queued_job(uniq, status="running")
         assert uniq not in worker_notice.queued_by_project()
+
+
+class TestOptimizations:
+    """审查后补的两条优化，各钉一个"不做就白费"的点。"""
+
+    def test_没有掉线通知时不发_DELETE(self, env, uniq, monkeypatch):
+        """`resolve_offline` 原来无条件 `DELETE FROM notification`，而它挂在
+        守护线程里每 15 秒跑一次——worker 正常时永远是 0 行，等于每 15 秒
+        拿一次写锁空转（`heartbeat` 里那条 prune 为同样的事被优化过）。
+
+        **判据是"有没有走到那条 DELETE"**。前两版都没抓住变异：
+          * v1 用 `total_changes()`：影响 0 行的 DELETE 不增加计数，测不出来；
+          * v2 挂 `set_trace_callback`：`resolve_offline` 内部自己开连接，
+            外部那条挂的 trace 抓不到它的语句。
+        现在改成**在 `get_conn` 这一层包一层**：模块拿到的每条连接都装 trace，
+        这样无论它在哪儿开连接都记录得到。
+        """
+        import contextlib
+        import worker_notice
+        import db as db_module
+        from db import get_conn
+
+        statements: list[str] = []
+
+        @contextlib.contextmanager
+        def traced_conn():
+            with get_conn() as conn:
+                conn.set_trace_callback(lambda sql: statements.append(sql))
+                yield conn
+
+        # 清干净，让判断真的走到"不该删"那一支
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+
+        monkeypatch.setattr(worker_notice, "get_conn", traced_conn)
+        cleared = worker_notice.resolve_offline()
+
+        writes = [q for q in statements
+                  if q.lstrip().upper().startswith(("DELETE", "INSERT", "UPDATE"))]
+        assert cleared == 0
+        assert not writes, f"没有通知却执行了写语句：{writes}"
+
+    def test_通知表有_audience_索引(self, env):
+        """收件箱那条 SQL 的 WHERE 是 `audience = ?` 的 OR 组合，
+        0049 的两条索引（created_at、kind 打头）都用不上。
+        没有 (audience, id DESC) 就是每次拉通知全表扫，
+        而这是每个登录者每 20 秒都打的接口。
+        """
+        from db import get_conn
+        with get_conn() as conn:
+            names = {r["name"] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='notification'")}
+        assert "idx_notification_audience" in names, (
+            f"缺 audience 索引，实有：{sorted(names)}")

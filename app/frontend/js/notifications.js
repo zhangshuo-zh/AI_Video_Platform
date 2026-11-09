@@ -15,30 +15,47 @@
  */
 import { api } from './api.js';
 import { escapeHtml } from './util.js';
+import { setSub } from './navstate.js';
+import { MODULES } from './modules.js';
 
 const POLL_MS = 20000;      // 20 秒一轮，与 worker 心跳同量级；不追实时
 let timer = null;
 let items = [];
 
-/** 通知落到哪一页。`link_page` 与 `modules.js` 的 id 一致，`link_params`
- *  里的 `sub` 是该页的二级子页名（与 `views/<page>.js` 的 SUBS 对得上）。 */
+/** 通知落到哪一页。
+ *
+ *  三个约定（2026-11-10 自查时改的，原来那条跳转**丢了子页**）：
+ *
+ *  1. `link_page` 与 `modules.js` 的 id 一致（服务端只存页面 id，不存 URL——
+ *     端口与域名会变，路径不会）。
+ *  2. `link_params.sub` 是**子页名**（人读的），而路由里的子页是**下标**：
+ *     `#models/3` 才是运行监控。名字→下标要在这里换一次，因为 `MODULES`
+ *     是前端才知道的东西，服务端不该存数字（它一改顺序就全错）。
+ *  3. 只设 hash 不够：视图靠 `navstate.setSub()` 决定画哪一屏。
+ *     不调它，页面会停在第一个子页——这正是第一版的表现（点"worker 掉线"
+ *     落到了「模型仓库」而不是「运行监控」）。
+ */
 function navigate(item) {
   const page = item.link_page || 'overview';
-  const sub = (item.link_params || {}).sub || '';
-  // 用 hash 路由：`#<page>`，子页由视图自己按 `SUBS` 下标钳位。
-  // 这里**不拼完整 URL**——端口/域名会变，路径不会（服务端也只存页面 id）。
-  window.location.hash = sub ? `${page}` : page;
-  // 子页切换：模块页监听这个事件（见 `models.js` 的 SUBS 处理）。
-  if (sub) {
-    window.dispatchEvent(new CustomEvent('page:sub', {
-      detail: { page, sub },
-    }));
+  const subName = (item.link_params || {}).sub || '';
+  if (subName) {
+    const mod = MODULES.find((m) => m.id === page);
+    const index = (mod?.subs || []).indexOf(subName);
+    if (index >= 0) setSub(page, index);
   }
+  // **必须走 `app:go` 事件，不能只改 `location.hash`**（2026-11-10 实测踩到）：
+  // 直接写 hash 只会改地址栏，`renderView()` 不会跑——页面停在原处。
+  // 实测那次的表现是：地址变成 #models 了，而侧栏高亮还在「资产库」、
+  // 主标题还是「生成中心」，即"地址跳了、页面没动"。
+  // `app:go` 是项目里"人主动换页"的唯一入口（app.js:753 接到 goView），
+  // 与 asset-detail / writing 那几处跳转用的是同一条路。
+  window.dispatchEvent(new CustomEvent('app:go', { detail: page }));
 }
 
 function render(menu, dot) {
   const unread = items.filter((x) => !x.read).length;
   if (dot) dot.hidden = unread === 0;
+  paintUnreadTone(unread);
 
   if (!items.length) {
     menu.innerHTML = '<div class="bell-empty">没有通知</div>';
@@ -69,12 +86,35 @@ async function refresh(dot, menu) {
     const payload = await api.notifications();
     items = payload?.items || [];
     if (menu) render(menu, dot);
-    else if (dot) dot.hidden = (payload?.unread || 0) === 0;
+    else {
+      const unread = payload?.unread || 0;
+      if (dot) dot.hidden = unread === 0;
+      paintUnreadTone(unread);
+    }
   } catch {
     // 拉不到就不显示角标：宁可静默，也不要用一个假的未读数骗人去点。
     if (dot) dot.hidden = true;
+    paintUnreadTone(0);
   }
 }
+
+/** 有未读时给铃铛换个色（`.has-unread`）。只改颜色不改尺寸——
+ *  那一栏左右都有间距，宽度一变会跳。 */
+function paintUnreadTone(unread) {
+  const btn = document.getElementById('bell-btn');
+  if (btn) btn.classList.toggle('has-unread', unread > 0);
+}
+
+
+/** 收起菜单并同步 aria。三处调用（点外面、Esc、点条目）共用一份，
+ *  免得漏掉 `aria-expanded` 让读屏软件以为它还开着。 */
+function closeMenu() {
+  const btn = document.getElementById('bell-btn');
+  const menu = document.getElementById('bell-menu');
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
 
 export function mountNotifications() {
   const btn = document.getElementById('bell-btn');
@@ -100,8 +140,7 @@ export function mountNotifications() {
     if (readAll) {
       try {
         await api.markNotificationsRead([]);     // 空 ids＝全部已读
-        menu.hidden = true;
-        btn.setAttribute('aria-expanded', 'false');
+        closeMenu();
         await refresh(dot, null);
       } catch { /* 失败就保持原样，下次刷新重试 */ }
       return;
@@ -110,8 +149,7 @@ export function mountNotifications() {
     if (!row) return;
     const id = Number(row.dataset.id);
     const item = items.find((x) => x.id === id);
-    menu.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
+    closeMenu();
     try {
       if (item && !item.read) await api.markNotificationsRead([id]);
     } catch { /* 跳转优先于标记 */ }
@@ -122,8 +160,17 @@ export function mountNotifications() {
   // 点外面收起（与顶栏其它菜单同一套行为）
   document.addEventListener('click', (e) => {
     if (!menu.hidden && !menu.contains(e.target) && !btn.contains(e.target)) {
-      menu.hidden = true;
-      btn.setAttribute('aria-expanded', 'false');
+      closeMenu();
+    }
+  });
+
+  // **Esc 关闭**（2026-11-10 自查补的）：顶栏的项目菜单、集菜单、用户菜单
+  // 三个都支持 Esc（见 app.js 的 closeProjMenu/closeEpMenu 与 bindUserMenu），
+  // 只有这一处漏了——键盘用户点开之后没有退路。同一套外壳就该有同一套行为。
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) {
+      closeMenu();
+      btn.focus();          // 焦点还给铃铛，否则会掉到 body 上
     }
   });
 

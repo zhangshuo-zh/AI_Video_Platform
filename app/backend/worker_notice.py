@@ -85,6 +85,23 @@ def resolve_offline() -> int:
     下一次真掉线挡在门外，那是"该响的时候不响"。
     """
     import notifications
+
+    # **先看有没有，再决定删不删**（2026-11-10 自查）。
+    # 原来这段无条件跑一条 `DELETE FROM notification WHERE kind='worker_offline'`，
+    # 而它挂在守护线程的 `_notify_state` 里、每 15 秒执行一次——worker 正常在跑时
+    # 这条 DELETE 永远是 0 行，等于每 15 秒拿一次写锁空转。
+    # `heartbeat` 里那条 prune 也是为同样的事被优化过（见 lease.py 的注释），
+    # 这里犯的是同一个错。先 SELECT 一次（读不挡写），没有就直接返回。
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM notification WHERE kind = 'worker_offline'"
+            ).fetchone()
+        if not row or not row["n"]:
+            return 0
+    except Exception:
+        return 0
+
     cleared = 0
     for project_id in list(queued_by_project()):
         cleared += notifications.resolve(
@@ -92,6 +109,7 @@ def resolve_offline() -> int:
             audience=f"project:{project_id}",
             dedupe_key=f"{DEDUPE_PREFIX}:{project_id}")
     # 项目后来没活了也别留着旧通知：把库里所有未结的掉线条目一并清掉。
+    # 走到这里说明确实有条目（上面 COUNT 过），所以这条 DELETE 不是空转。
     try:
         with get_conn() as conn:
             cur = conn.execute(
