@@ -11,6 +11,25 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _收摊(app):
+    """本模块提交的作业一律收尾。
+
+    `seeded` fixture 的注释里写着这条约定（conftest.py:128-135）：排队作业会被
+    后面的用例当成"活"领走，而 model_center 的 `_succeeded_cloud_job` 断言
+    "claim_next 领到的必须是我刚建的那条"。我这几条用例提交了十几条 mock 作业
+    却不收尾，于是它们抢在别人前面被领走——单独跑绿、全套红，红的地方离
+    出错的地方隔了三个文件。
+    """
+    yield
+    from db import get_conn
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status = 'cancelled',
+                      finished_at = datetime('now','localtime'),
+                      error_code = 'paging_test_cleanup'
+                WHERE status IN ('queued','starting','running','cancel_requested')""")
+
 def _submit(c, project_id, prompt="翻页测试", **kw):
     body = {
         "project_id": project_id, "capability": "video", "prompt": prompt,
@@ -77,14 +96,20 @@ def test_分母与当前筛选同口径(as_role, seeded, clean_queue):
     assert total == len(c.get(f"/api/jobs?project_id={pid}&limit=200").json())
     assert total > 1, "本用例要有超过一页的数据，否则分母断言是空的"
 
-    # 换一个筛选，分母必须跟着变
-    # text 能力在用例里一条都没有提交，所以分母必须是 0——
-    # 这一条比"分母 > 0"更能证明它真的跟着筛选走，而不是一直回项目总数。
+    # 换一个筛选，分母必须跟着变。
+    # 这里**不能用「text 能力一条都没有」当预期**：seeded 是会话级项目，
+    # 别的用例会往同一个项目里提交 text 作业，于是「恰好为 0」只在单跑时成立
+    # （单独跑绿、全套红就是踩的这个）。自己提交一条，问它有几条——
+    # 得到 1 比得到 0 更有说服力：分母真的在数这一种能力，而不是回项目总数。
+    text_id = _submit(c, pid, prompt="口径-text", capability="text")
     r2 = c.get(f"/api/jobs?project_id={pid}&limit=1&capability=text")
     assert r2.status_code == 200, r2.text
     total_text = int(r2.headers["X-Total-Count"])
-    assert total_text == 0
-    assert total_text < total
+    listed = [row["id"] for row in
+              c.get(f"/api/jobs?project_id={pid}&limit=200&capability=text").json()]
+    assert total_text == len(listed), f"分母 {total_text} 与列表 {len(listed)} 不同口径"
+    assert text_id in listed, "刚提交的 text 作业没进列表"
+    assert total_text < total, "分母没跟着能力筛选变小"
 
     # 关键字筛选也必须是同口径
     r3 = c.get(f"/api/jobs?project_id={pid}&limit=1&q=口径-3")

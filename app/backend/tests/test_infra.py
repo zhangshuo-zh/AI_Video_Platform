@@ -722,8 +722,17 @@ def test_队列行数超过一页时说出真实总数():
     assert "narrowed" in src, (
         "没拦住「有额外筛选时不许报总数」：total_jobs 只按项目过滤，"
         "搜索时的 total 是项目总数、shown 是搜索结果，会给出假分母")
-    # 反向：队列请求必须真的带 limit（口径的另一半；改了这里这条判断就该重写）
-    assert "limit: 100" in src, "队列请求的 limit 变了，这条测试的读法要跟着改"
+    # 反向：队列请求必须真的带分页参数（口径的另一半；改了这里这条判断就该重写）
+    # 原来这里钉的是字符串 "limit: 100"。加了翻页之后队列请求改由 PAGE_SIZE
+    # 驱动并带 before_id，于是这条判断按它自己的要求重写：不再盯某个字面量，
+    # 而是盯"请求带了页长、翻页带游标、取回的是带 total 的响应"。
+    assert "const PAGE_SIZE" in src, "队列的页长不是常量，翻页条算不出还剩几条"
+    assert "limit: PAGE_SIZE" in src, "队列请求没带页长"
+    assert "before_id: last.id" in src, (
+        "翻页没带游标：要么翻不动，要么用 offset 会在轮询期间重复出行")
+    assert "X-Total-Count" in (
+        Path(__file__).resolve().parents[2] / "frontend" / "js" / "api.js"
+    ).read_text(), "前端没读 X-Total-Count，分母只能靠 state.jobs.length 猜"
 
 
 def test_样式表花括号配平():
