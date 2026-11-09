@@ -137,7 +137,11 @@ def env_check(row, created_by: int | None, health: dict | None = None) -> dict:
     回答。传进来就用它，不传仍走 `adapters.health()`（其余五档的老路径一字未改）。
     """
     if health is None:
-        health = adapters.health(row)
+        # 环境检查是**人点了按钮**才走的显式动作（`POST /api/settings/validations`
+        # 与模型中心的「环境检查」），所以这里显式要连一次服务型引擎。
+        # `adapters.health()` 的默认值是 False（2026-11-09 翻面）——
+        # "要不要出网"从此是调用点自己写出来的，不再是默认行为。
+        health = adapters.health(row, probe_service=True)
     adapter = health.get("adapter") or {}
     record = repo.record({
         "capability": row["capability"], "backend": row["backend"],

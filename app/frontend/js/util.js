@@ -21,7 +21,15 @@ export async function run(label, fn) {
     // 闸门由 api.js 的统一出口挂出来（app.js 接 app:unauthorized），
     // 这里只把"没做成"告诉调用方，别让人对着一个过期会话反复点确认。
     if (err && err.status === 401) return false;
-    alert(`${label}失败：${err.message}`);
+    // 用全站那条轻提示，不用原生 `alert`：
+    // `alert` 是**阻塞**的模态，会打断当前操作、也抢走焦点（键盘用户尤其难受），
+    // 而且在真浏览器验收里是唯一会卡住脚本的调用——一条"写回失败"的提示
+    // 不值得让人先点一下确定才能继续。
+    // `app:toast` 是既有约定（`store.js:129`、`shot-workbench.js:336` 都在派），
+    // 由 `app.js:641` 接住渲染成右下角那条。`util.js` 不 import `app.js`——
+    // 那是壳，反向依赖会把工具模块和应用壳绑死。
+    window.dispatchEvent(new CustomEvent('app:toast', {
+      detail: { text: `${label}失败：${err.message}` } }));
     return false;
   }
 }

@@ -13,7 +13,16 @@
   `agents.tick()` 在本脚本进程里调，与 worker 调的是同一个函数。
   "真模型算出的计划"不靠这条浏览器验收冒充，它记在交付报告里。
 
-用法：python3 tools/agents_browser_check.py
+用法：`app/backend/.venv/bin/python tools/agents_browser_check.py`
+
+**必须用后端 venv 的解释器**，不能用系统 `python3`：本脚本为了走"真队列之外的
+路径"，要在**本进程里** `import agents`（`seed_scene()` 里那句），而 `agents`
+一路 import 到 `access.py` → fastapi。系统 python 没装后端依赖，照
+`python3 tools/...` 跑会在建场景时就 ModuleNotFoundError，43 项一项也跑不到。
+
+（2026-11-09 修正：原来这里写的就是 `python3 tools/agents_browser_check.py`，
+照着做的结果必然是那个报错。同目录的 `make_release_baseline.py` 早就写对了
+——它的用法行给的就是 venv 路径，是这一份漏了。）
 """
 from __future__ import annotations
 
@@ -39,6 +48,17 @@ window.addEventListener('error', (e) => window.__agErrors.push(String(e.message)
 window.addEventListener('unhandledrejection', (e) =>
     window.__agErrors.push('promise: ' + String(e.reason)));
 """
+
+
+def _require_backend_deps() -> None:
+    """早失败：依赖不在，先说清楚该用哪个解释器，别等人看到一路 traceback。"""
+    try:
+        import fastapi  # noqa: F401
+    except ModuleNotFoundError:
+        sys.exit(
+            "本脚本要在后端 venv 里跑（它 import 真后端模块）：\n"
+            f"  {H.backend_python(BACKEND)} tools/agents_browser_check.py\n"
+            "用系统 python3 会缺 fastapi，一项验收也跑不到。")
 
 
 def api_post(path, token, data=None):
@@ -176,6 +196,7 @@ def go(cdp, url):
 
 
 def main():
+    _require_backend_deps()
     prepare_env()
     token, admin = mint_admin_session()
     scene = seed_scene(admin)

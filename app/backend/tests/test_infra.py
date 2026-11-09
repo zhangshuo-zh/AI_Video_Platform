@@ -279,17 +279,34 @@ def test_业务视图不直接拼_url():
     assert not offenders, f"这些视图绕过了 api.js：{offenders}"
 
 
-def test_alert_只有_util_一处():
-    """统一错误出口的守门人：有人新写 alert 就会红，逼他走 run()。
+def test_前端一个阻塞式原生弹窗都不许有():
+    """`alert`／`confirm`／`prompt` 全站为零。
 
-    不写行号——util.js 加几个函数行号就飘了，那种断言只会制造无谓的改动。
+    历史：这条原来叫 `test_alert_只有_util_一处`，断言是
+    `set(hits) == {"util.js"}`——当时 `util.run()` 里留着全站唯一那条 `alert`，
+    它作为"统一错误出口"被容忍。2026-11-09 把那条也换了：
+    `run()` 是**调用最频繁**的错误出口（"写回失败""删除失败"都走它），
+    于是每一次失败都弹一次原生框。原生弹窗有三个具体坏处，不是审美问题：
+    它**阻塞**脚本（真浏览器验收里唯一能把脚本挂住的调用）、抢走焦点
+    （键盘用户要先去点一下才算处理完）、样式与两套主题脱节。
+
+    现在两条路各有归宿：危险操作确认走 `util.confirmDanger()`，
+    一句话反馈派 `app:toast` 事件（`app.js:641` 接住渲染成右下角那条）。
+    所以判据从"只许一处"收紧成"一处都不许"，并且**反向验**：
+    `util.run()` 真的把失败说出去了，而不是删掉 alert 就什么都不说。
     """
     hits = []
     for f in (FRONTEND / "js").rglob("*.js"):
-        for line in f.read_text().split("\n"):
-            if re.search(r"(?<![\w.])alert\s*\(", line) and not line.strip().startswith("//"):
-                hits.append(f.name)
-    assert set(hits) == {"util.js"}, f"alert 出现在不该出现的地方：{sorted(set(hits))}"
+        for n, line in enumerate(f.read_text().split("\n"), 1):
+            code = line.split("//", 1)[0]
+            if code.lstrip().startswith("*"):
+                continue
+            if re.search(r"(?<![\w.$])(alert|confirm|prompt)\s*\(", code):
+                hits.append(f"{f.name}:{n}")
+    assert not hits, f"前端还留着阻塞式原生弹窗（走 confirmDanger() 或 app:toast）：{hits}"
+    # 反向：删掉 alert 必须接上说明，不许静默
+    util_src = (FRONTEND / "js" / "util.js").read_text()
+    assert "app:toast" in util_src, "util.run() 删掉 alert 后没接上 app:toast"
 
 
 def test_危险确认不再用原生_confirm():
@@ -680,6 +697,33 @@ def test_金额格式化只有util一处写法():
     # 无币种必须念「—」而不是造一个 0：本地作业不按量计费。
     util = (FRONTEND / "js" / "util.js").read_text()
     assert "return '—'" in util, "formatMoney 丢了 micros 为 null 时的「—」"
+
+
+def test_队列行数超过一页时说出真实总数():
+    """「当前筛选」那个数字是**这一页的行数**，不是总数——超过一页必须补真数。
+
+    队列请求带着 `limit: 100`（`generate.js:562`），后端默认也是 100
+    （`routers/jobs.py:112`）。作业多于 100 条时，那个读数会停在 100，
+    看起来像"总共就这些"——恰好是在最需要知道积压多少的时候骗人。
+
+    `total_jobs` 一直是后端算好的（`jobs_parts/cost.py:59` 的 `COUNT(*)`，
+    与翻页无关，`test_cost.py:142` 已经钉住它的口径），前端却一处都没读。
+    这条守的不是"字段存在"，是"超过一页时要把它说出来"。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[2]
+           / "frontend" / "js" / "views" / "generate.js").read_text()
+    # 正向：必须读 total_jobs，并且是拿它跟本页行数比
+    assert "costs?.total_jobs" in src, "「当前筛选」没读 total_jobs，超过一页时会骗人"
+    assert "total > shown" in src, "读到了 total_jobs 但没拿它跟本页行数比"
+    # 口径闸：total_jobs 只按项目过滤，不知道 q/status/capability/mode。
+    # 有额外筛选时两者不是一回事，"共 N" 会变成假分母——那种情况必须不显示。
+    assert "narrowed" in src, (
+        "没拦住「有额外筛选时不许报总数」：total_jobs 只按项目过滤，"
+        "搜索时的 total 是项目总数、shown 是搜索结果，会给出假分母")
+    # 反向：队列请求必须真的带 limit（口径的另一半；改了这里这条判断就该重写）
+    assert "limit: 100" in src, "队列请求的 limit 变了，这条测试的读法要跟着改"
 
 
 def test_样式表花括号配平():

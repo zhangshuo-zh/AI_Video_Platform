@@ -197,10 +197,23 @@ function statsHtml() {
   const costs = state.costs;
   const pending = (costs?.currencies || []).reduce((n, c) => n + c.pending, 0);
   const unpriced = costs?.unpriced_jobs || 0;
+  // 「当前筛选」只是**这一页拿到的行数**，队列请求带着 limit 100（`generate.js:562`）。
+  // 作业超过 100 条时，那个数字会停在 100 而看起来像"总共就这些"——
+  // 正是在最需要知道"积压了多少"的时候骗人。补上真数就能分开"就这些"和"还有"。
+  //
+  // 但 `total_jobs` **只按项目过滤**（`jobs_parts/cost.py` 的 `cost_summary`
+  // 走的是 `_scope(project_ids)`），它不知道 `q`／`status`／`capability`／`mode`。
+  // 所以一旦有额外筛选，两者口径就不是一回事（"共 N" 会变成项目总数，
+  // 而显示的是搜索结果），那种情况下宁可不显示，也不能给假分母。
+  const shown = state.jobs.length;
+  const total = Number(costs?.total_jobs) || 0;
+  const narrowed = Boolean(state.q || state.status || state.capability || state.mode);
+  const totalNote = (!narrowed && total > shown)
+    ? ` <i class="t-desc">／共 ${total}</i>` : '';
   return `
     <span class="gen-stat"><b>${q.queued}</b> 等待</span>
     <span class="gen-stat"><b>${q.running}</b> 运行</span>
-    <span class="gen-stat"><b>${state.jobs.length}</b> 当前筛选</span>
+    <span class="gen-stat"><b>${state.jobs.length}</b> 当前筛选${totalNote}</span>
     <span class="gen-stat"><b>${pending}</b> 笔待核对</span>
     <span class="gen-stat"><b>${machineTime(costs?.local?.elapsed_ms)}</b> 本地机时</span>
     ${unpriced ? `<span class="chip amber">${unpriced} 笔云端作业没记价</span>` : ''}`;

@@ -725,17 +725,25 @@ def validate_mock_params(params) -> list[str]:
     return errors
 
 
-def health(row, *, probe_service: bool = True,
+def health(row, *, probe_service: bool = False,
            probe_timeout: float | None = None) -> dict:
     """实时健康：不加载权重；除服务型引擎那一族外不发请求（例外见下面第三段）。
+
+    `probe_service` 默认 **False**（2026-11-09 翻面，原为 True）。
+
+    为什么翻面：默认 True 时，**忘记传参就是出网**——十来个调用点里任何一个
+    漏传，打开一页就顺带扫一遍网，而"漏传"这种错误不会有人发现（页面只是慢）。
+    默认 False 之后语义反过来：默认安全，要现查的人**必须自己写出来**。
+    这也让"读接口不出网、探测走显式入口"从一条要靠人记住的规矩
+    变成函数的默认行为。
 
     四种状态分开，是因为人要做的事不同：
     unconfigured＝先选 provider；unregistered＝清单没这个 provider（不要硬填）；
     missing＝该配的东西没配；unknown＝平台检查不了，需要人去确认。
 
     **唯一的例外是服务型引擎**（Draw Things／Ollama 这一类）：它们的真相在
-    "端点连不连得上"，只能发一次 HTTP 才答得出。那一次网络请求可以显式关掉
-    （`probe_service=False`），此时返回 `unknown` 并把"该怎么现查"写进 detail。
+    "端点连不连得上"，只能发一次 HTTP 才答得出。那一次网络请求现在要**显式要**
+    （`probe_service=True`），否则返回 `unknown` 并把"该怎么现查"写进 detail。
     为什么要这个开关：列表接口（模型仓库、目录、场景候选）一次要拼几十行，
     里面每一行都去连一次服务，等于"打开一页"变成"打开一页顺带扫一遍网"——
     一台卡住的服务就能把整页拖到超时。读接口不出网，探测走显式入口

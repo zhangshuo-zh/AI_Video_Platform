@@ -1,28 +1,37 @@
-"""读路径出网的**登记债**（2026-11-09 体检发现，本轮不修，只钉住）。
+"""读路径不出网的**守城河**（原为债务台账，2026-11-09 已还清）。
 
-`adapters.health()` 的默认值是 `probe_service: bool = True`（adapters.py:728），
-于是每一个忘记传参的调用点都默认出网。模型仓库那一族在 2026-11-07 已经收口
-（`GET /api/models` 走 `probe_service=False`，由 test_model_center 的
-「目录读路径不出网」守着），但同一把尺子量不到的地方还有一片：
+## 这条测试守什么
 
-    GET /api/providers            routers/settings.py:53（_row_out）
-    GET /api/providers/available  routers/settings.py:104
-    GET /api/agent/configs        agents.py:548
-    GET /api/precheck/*           precheck.py:225（三个端点共用）
+"打开一页不出网"：列表／配置这类读接口不许替用户去连服务型引擎
+（`SERVICE_ENGINES`：draw_things／ollama）。要现查必须由人点按钮，
+走显式入口（`POST /api/models/probe`、`POST /api/engines/{id}/probe`、
+「环境检查」）。
 
-它们都没有传 `probe_service=False`，服务型引擎那一格每次打开页面都真发 HTTP
-（超时走 0.8 秒列表档，而 engines.py:181 对短超时结果**不写缓存**，所以连
-15 秒 TTL 都不享受）。`agents.py` 文件头那句"本文件一次都不发 HTTP"因此
-与代码矛盾——矛盾本身由这条测试说明，修代码之前不改那句注释。
+## 历史：这里原本是登记债，而且登记本身是坏的
 
-为什么这轮不动它：正确修法是**把默认翻成 False**、让显式动作方
-（validate/probe 那两条路由）主动传 True——这会一次改变十几个调用点的行为，
-必须先把上面每一族的界面表现核对一遍（"设置页那一格从此显示 probe_deferred"
-是不是人要的），属于要单独规划的批次，不是体检顺带能安全合入的量。
+2026-11-09 体检时 `adapters.health()` 的默认值是 `probe_service=True`，
+于是**忘记传参就是出网**。当时把它登记成三条 `xfail(strict=True)` 的债，
+理由是"翻默认值会动十几个调用点，要单独规划"。
 
-机制说明：`xfail(strict=True)` 是**债务台账**——现在它如实记红（XPASS 不会
-静默发生）；将来把默认翻过来、这些读路径真不出网了，测试转绿会让 XPASS
-报错，提醒来把这条标记摘掉。摘掉后这条就该并进 test_model_center 那支护城河。
+还债时发现那三条登记**一条都没真跑过**，两个毛病叠在一起：
+
+1. fixture 写的是 `as_admin`，而 conftest 里根本没有这个 fixture
+   （只有 `as_role` 工厂）。于是 pytest 在 **setup 阶段**就报错，
+   `xfail(strict=True)` 把 setup 错误也记成"预期的失败"——
+   报出来是 XFAIL，看着像"如实地红着"，实际一条断言都没执行。
+2. `test_智能体配置读路径不出网` 借 `draw_things_slot` 当靶子，
+   但 `/api/agent/configs` 读的是 `text` 能力行，那个 fixture 改的是 `image`。
+   靶子不在被测路径上——即使 fixture 修好、默认值没翻，它也照样绿。
+
+两条合起来的教训：**`xfail` 会吞掉 setup 错误**，所以"台账里有几条红的"
+不等于"那几条真的在被验证"。还债时必须先用 `--runxfail` 让它们真的跑一遍。
+
+## 现在
+
+`adapters.health()` 默认已翻成 `False`（默认安全，要现查必须自己写
+`probe_service=True`），显式动作方（`validations.env_check`）已显式传 True。
+这三条不再是 xfail，是正常护栏；把默认值翻回 True，三条都会红
+（已反向验证：`draw_things` ×2、`ollama` ×1）。
 """
 import pytest
 
@@ -56,28 +65,67 @@ def draw_things_slot(app, provider_state):
     yield
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "A1 债：/api/providers* 等读路径仍走 adapters.health 的默认 "
-    "probe_service=True，每次打开页面真发 HTTP。修法是翻默认值+显式动作传 True，"
-    "见本文件头。转绿时记得摘掉本标记并并入目录侧的出网守卫。"))
-def test_提供商列表读路径不出网(as_admin, draw_things_slot, monkeypatch):
+@pytest.fixture
+def ollama_slot(app, provider_state):
+    """把 **text/local** 槽位指到 ollama 并启用。
+
+    2026-11-09 补：`test_智能体配置读路径不出网` 原来借 `draw_things_slot`
+    当靶子，但 `/api/agent/configs` 读的是 `text` 能力行，而那个 fixture 改的是
+    `image`。靶子不在被测路径上，于是**默认值翻面前它也照样绿**——
+    一条证明不了任何东西的登记。改成用 `text/local` 真正的服务型引擎
+    （`SERVICE_ENGINES` 里的 `ollama`，`adapters.py:335`）当靶子。
+
+    `provider_state` 负责用完还原。
+    """
+    from db import get_conn
+
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE provider_config
+                  SET provider = 'ollama', model = 'qwen2.5:14b',
+                      enabled = 1
+                WHERE capability = 'text' AND backend = 'local'""")
+    yield
+
+
+def test_提供商列表读路径不出网(as_role, draw_things_slot, monkeypatch):
     calls = []
     _spy_probe(monkeypatch, calls)
-    assert as_admin.get("/api/providers").status_code == 200
+    assert as_role("admin").get("/api/providers").status_code == 200
     assert calls == [], f"读路径替连了 {len(calls)} 次网：{calls}"
 
 
-@pytest.mark.xfail(strict=True, reason="A1 债，同上（提交弹窗那一页）")
-def test_可用槽位读路径不出网(as_admin, draw_things_slot, monkeypatch):
+def test_可用槽位读路径不出网(as_role, draw_things_slot, monkeypatch):
     calls = []
     _spy_probe(monkeypatch, calls)
-    assert as_admin.get("/api/providers/available").status_code == 200
+    assert as_role("admin").get("/api/providers/available").status_code == 200
     assert calls == [], f"读路径替连了 {len(calls)} 次网：{calls}"
 
 
-@pytest.mark.xfail(strict=True, reason="A1 债，同上（agents.py 文件头那句承诺）")
-def test_智能体配置读路径不出网(as_admin, draw_things_slot, monkeypatch):
+def test_智能体配置读路径不出网(as_role, ollama_slot, monkeypatch):
     calls = []
     _spy_probe(monkeypatch, calls)
-    assert as_admin.get("/api/agent/configs").status_code == 200
+    assert as_role("admin").get("/api/agent/configs").status_code == 200
     assert calls == [], f"读路径替连了 {len(calls)} 次网：{calls}"
+
+def test_预检不发请求(app, seeded, draw_things_slot, monkeypatch):
+    """`precheck.py` 文件头第 1 条纪律："**只读、确定性**。不发请求、不加载模型"。
+
+    这条纪律在 2026-11-09 之前是假的：`precheck.py:225` 直接调
+    `adapters.health(route["row"])`，而当时的默认值是 `probe_service=True`——
+    人打开预检弹窗就等于让平台替他连一次服务型引擎，而且预检会被界面
+    "每次打开弹窗时跑一遍"（文件头原话）。默认翻面后这条才成立。
+
+    与上面三条不同，这里用 `seeded` 里真实的镜：预检会把内容、资产、模型、
+    环境、费用、资源六类各查一遍，是"读路径"里最重的一条。
+    """
+    import precheck
+
+    calls = []
+    _spy_probe(monkeypatch, calls)
+    # 必须显式要 `image` 并让 `draw_things_slot` 把那个槽位指到服务型引擎：
+    # 不加靶子的话预检拿到的是"没配"，一个请求都不发，这条测试就永远绿
+    # ——第一版就是这样假绿的，翻回默认值也照样过。
+    out = precheck.shot_precheck(seeded["shot_id"], capability="image")
+    assert isinstance(out.get("items"), list) and out["items"], "预检没跑出结论"
+    assert calls == [], f"预检替连了 {len(calls)} 次网：{calls}"
