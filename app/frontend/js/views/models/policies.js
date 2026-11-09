@@ -40,10 +40,21 @@ export function policyStateChip(p) {
 }
 export function pagePolicies() {
   const items = cache.policies.items;
+  // 候选不只给名字：把「这一档现在能不能用、是不是云端」直接写在 option 上。
+  // 原来选 DeepSeek/Wan（云端·需确认）或 Draw Things（当前缺东西）时下拉里看不出，
+  // 要开「看候选」弹窗才知道——人在下拉里就做了选择，提示却藏在另一层。
+  // 状态译名读后端 status_labels（不自拼），云端按登记 backend 判（remote 自建不算云端计费）。
   const candidatesOf = (capability) => cache.catalog.items
     .filter((i) => i.capability === capability && i.registered)
-    .map((i) => `<option value="${escapeHtml(i.provider)}|${escapeHtml(i.model_code)}">
-        ${escapeHtml(i.display_name || i.model_label || i.model_code)}</option>`).join('');
+    .map((i) => {
+      const name = i.display_name || i.model_label || i.model_code;
+      const marks = [];
+      if (i.status !== 'available') marks.push(cache.catalog.status_labels[i.status] || i.status);
+      if (i.backend === 'cloud') marks.push('云端 · 需确认计费');
+      const suffix = marks.length ? `（${marks.join(' · ')}）` : '';
+      return `<option value="${escapeHtml(i.provider)}|${escapeHtml(i.model_code)}">${
+        escapeHtml(name + suffix)}</option>`;
+    }).join('');
 
   /* 必需能力从只读 chip 放开成勾选：《使用说明书》§5.4 本来就教人
      "把这一项从「必需」降下来"，服务端 save_policies 也一直在写 required_json——
@@ -194,6 +205,3 @@ export function mountPolicies(root) {
         这一屏只回答"谁可能行"；要真用它，请在发起弹窗里显式选，或在能力轨把它设为默认。</p>`;
   }));
 }
-
-/* 页头的"检查引擎连接"用一条轻提示代替弹窗：整批检查是 10 个 POST，
-   结果本身已经写进各行的健康列，不需要再弹一层。 */

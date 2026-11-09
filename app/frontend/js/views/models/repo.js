@@ -15,7 +15,7 @@ import { REG_SOURCES, unitLabel } from '../../enums.js';
 import {
   SUBS, cache, stateChip, healthChip, manifestAxis, adapterOf, manifestProviders,
   sourceLabels, sourceLabel, overviewCard, fillPicks, pickedModel,
-  pendingFilter, setPendingFilter, setViewFilter,
+  pendingFilter, setPendingFilter, setViewFilter, setupValidationModal,
 } from './shared.js';
 
 /* ================= 工作区 0 · 模型仓库 ================= */
@@ -214,10 +214,19 @@ export function mountRepo(root) {
   setViewFilter(jumpFilter);
   apply();
 
+  // 验证弹窗与引擎页共用一套控制器（shared.setupValidationModal）。仓库页没有
+  // 后端那份槽位摘要，提交成功后直接整页刷新（状态徽章会跟着变），弹窗随之关闭。
+  const val = setupValidationModal(root, {
+    afterSubmit: async () => {
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+      return { keepOpen: false };
+    },
+  });
+
   root.querySelectorAll('[data-detail]').forEach((b) => b.addEventListener('click', () => {
     const it = findItem(b.dataset.detail);
     if (!it) return;
-    openDetail(root, it);
+    openDetail(root, it, val);
   }));
   root.querySelectorAll('[data-register]').forEach((b) => b.addEventListener('click', () => {
     const it = findItem(b.dataset.register);
@@ -227,7 +236,7 @@ export function mountRepo(root) {
   // 行内只留「详情」与「登记」两个入口。
 }
 
-export function openDetail(root, it) {
+export function openDetail(root, it, val) {
   root.querySelector('#mc-detail-title').textContent =
     `${it.display_name || it.model_label || it.model_code} · ${it.provider}/${it.model_code}`;
   const params = (it.params || []).map((p) => {
@@ -269,6 +278,7 @@ export function openDetail(root, it) {
   } else {
     acts.innerHTML = `
       <button class="btn" data-act-check="${it.registration_id}">环境检查</button>
+      <button class="btn" data-act-val>验证记录</button>
       <button class="btn" data-act-edit="${it.registration_id}">编辑登记</button>
       <button class="btn danger" data-act-remove="${it.registration_id}">撤登记…</button>`;
   }
@@ -278,6 +288,21 @@ export function openDetail(root, it) {
     const ok = await run('检查', () => api.checkModel(Number(e.target.dataset.actCheck)));
     e.target.disabled = false;
     if (ok) { close(); window.dispatchEvent(new CustomEvent('app:refresh')); }
+  });
+  // 验证记录：先关详情面板再开验证弹窗，避免两层 modal 叠着。target 不带 validation
+  // （仓库没有后端那份槽位摘要），改带 statusMeta——用后端算好的状态徽章顶替
+  // 「生产可用」那一格，判定不前端重算；五类最新留痕由控制器从历史里取。
+  acts.querySelector('[data-act-val]')?.addEventListener('click', () => {
+    if (!val) return;
+    close();
+    val.open({
+      capability: it.capability, backend: it.backend,
+      provider: it.provider, model: it.model_code,
+      capability_label: cache.catalog.capabilities[it.capability] || it.capability,
+      backend_label: sourceLabel(it.source),
+      statusMeta: `${statusChip(it, cache.catalog.status_labels)}
+        <span class="hint">这一档当前状态由服务端判定；下方列出它自己的验证留痕。</span>`,
+    });
   });
   acts.querySelector('[data-act-edit]')?.addEventListener('click', () => {
     close(); openForm(it.registration_id, it);

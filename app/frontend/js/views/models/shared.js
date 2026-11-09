@@ -434,3 +434,169 @@ export function alertNotify(text) {
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 2600);
 }
+
+/* ================= 验证记录弹窗（引擎页与模型仓库共用） =================
+ * 原来这套控制器（摘要、留痕表、提交）只住在 engines.js 的 mountEngines 闭包里，
+ * 模型仓库详情看得见状态却没有「验证记录」入口——要从一个模型记 real_call，
+ * 得绕去引擎管理找对应能力轨。抽到 shared 后两页各调一次 setupValidationModal，
+ * 弹窗 DOM（#val-modal）本就是四个子页共用的那一份。
+ *
+ * 一条边界贯穿：**「生产可用」绝不前端重算**。引擎页传后端算好的 slot.validation；
+ * 仓库页没有那份摘要，就传后端算好的状态徽章（statusMeta）顶上，五类最新留痕从
+ * 历史记录里取来只是"摆记录"，不是判定。判定规则只有一份（validations.summary_for）。
+ */
+const VAL_KINDS = ['env_check', 'mock', 'real_call', 'target_machine', 'artifact_review'];
+
+/** 五类 provenance 摘要 ＋ 一句口径。metaLine 由调用方给（引擎＝生产可用徽章，
+ *  仓库＝后端状态徽章），这里不自己拼判定。 */
+export function summaryHtml(v, metaLine) {
+  const rows = VAL_KINDS.map((k) => {
+    const item = v?.[k] || {};
+    const at = item.at ? String(item.at).slice(0, 16) : '—';
+    const job = item.job_id ? ` · 作业 #${item.job_id}` : '';
+    return `<div class="kv"><dt>${escapeHtml(VAL_KIND_LABEL[k])}</dt>
+      <dd>${stateChip(item.state || 'never')}
+        <span class="t-dim">${escapeHtml(at)}${escapeHtml(job)}</span>
+        ${item.detail ? `<span class="t-desc">${escapeHtml(item.detail)}</span>` : ''}</dd></div>`;
+  }).join('');
+  return `<div class="kv-grid">${rows}</div><p class="modal-meta">${metaLine}</p>`;
+}
+
+/** 验证留痕表。引擎页弹窗与仓库页弹窗共用，不再各抄一份。 */
+export function valListHtml(records) {
+  if (!records.length) return '<p class="hint">这一档还没有验证记录。</p>';
+  return `<div class="table-wrap"><table><thead><tr>
+    <th>出处</th><th>结果</th><th>作业</th><th>说明</th><th>登记人</th><th>时间</th>
+    </tr></thead><tbody>${records.map((r) => `<tr>
+      <td><span class="chip plain">${escapeHtml(r.kind_label || VAL_KIND_LABEL[r.kind] || r.kind)}</span></td>
+      <td>${stateChip(r.state)}</td>
+      <td>${r.job_id ? `#${r.job_id}` : '—'}</td>
+      <td><span class="t-desc">${escapeHtml(r.detail || '')}</span></td>
+      <td>${escapeHtml(r.created_by_name || '—')}</td>
+      <td class="t-dim">${escapeHtml(String(r.created_at || '').slice(0, 16))}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+/** 没有后端摘要时（仓库页），从留痕里取每类最新一条摆出来。records 按新到旧，
+ *  find 第一条即最新。这只是摆记录，production_ready 那种判定不从这里推。 */
+function summaryFromRecords(records) {
+  const v = {};
+  for (const k of VAL_KINDS) {
+    const rec = (records || []).find((r) => r.kind === k);
+    v[k] = rec ? { state: rec.state, at: rec.created_at, detail: rec.detail, job_id: rec.job_id }
+               : { state: 'never', at: '', detail: '没有记录' };
+  }
+  return v;
+}
+
+/** 摘要下面那句口径：引擎页用后端 production_ready，仓库页用调用方给的状态徽章。 */
+function readyMeta(target) {
+  if (target.statusMeta) return target.statusMeta;
+  const v = target.validation || {};
+  return `${v.production_ready ? '<span class="chip green">生产可用</span>'
+                              : '<span class="chip gray">未达生产可用</span>'}
+    ${v.target_machine_ready ? '<span class="chip green">目标机已验证</span>' : ''}
+    <span class="hint">生产可用＝环境齐＋真实调用过＋产物验收通过，由服务端判定；界面不自己拼。</span>`;
+}
+
+/**
+ * 绑好 #val-modal 并返回 { open(target) }。target 至少带
+ * capability/backend/provider/model 与两个 label；引擎页另带 validation（后端摘要）
+ * 与 id，仓库页另带 statusMeta（后端状态徽章）。hooks.afterSubmit(target) 在提交成功
+ * 后调用：返回 { validation?, statusMeta?, keepOpen:true } 就刷新弹窗留着，
+ * 返回 { keepOpen:false }（仓库页派 app:refresh）就关掉弹窗。
+ * 三个常驻按钮用 onclick 赋值（重绑不叠加），与引擎页原来的纪律一致。
+ */
+export function setupValidationModal(root, hooks) {
+  const modal = root.querySelector('#val-modal');
+  let current = null;
+
+  const syncPassedRow = () => {
+    const isReview = root.querySelector('#val-kind').value === 'artifact_review';
+    root.querySelector('#val-passed-label').hidden = !isReview;
+    root.querySelector('#val-passed').hidden = !isReview;
+  };
+  // 按四元组筛：仓库页同一 provider 可能登记多档，必须连 model 一起对上，
+  // 不然会把别的档的留痕摆到这一档名下。
+  const filterRecords = (all, t) => all.filter((r) =>
+    r.capability === t.capability && r.backend === t.backend
+    && r.provider === t.provider && (!t.model || r.model === t.model));
+
+  async function paintHistory(t) {
+    root.querySelector('#val-list').innerHTML = '<p class="hint">正在读验证历史……</p>';
+    try {
+      const { items: all } = await api.providerValidations(100);
+      const records = filterRecords(all, t);
+      root.querySelector('#val-list').innerHTML = valListHtml(records);
+      return records;
+    } catch (err) {
+      root.querySelector('#val-list').innerHTML =
+        `<p class="t-bad">验证历史读不到：${escapeHtml(err.message)}</p>`;
+      return null;
+    }
+  }
+  function paintSummary(t, records) {
+    const v = t.validation || summaryFromRecords(records);
+    root.querySelector('#val-summary').innerHTML = summaryHtml(v, readyMeta(t));
+  }
+
+  async function open(t) {
+    current = t;
+    modal.hidden = false;
+    root.querySelector('#val-title').textContent =
+      `验证记录 · ${t.capability_label} · ${t.backend_label}`;
+    root.querySelector('#val-job').value = '';
+    root.querySelector('#val-kind').value = 'real_call';
+    root.querySelector('#val-detail').value = '';
+    root.querySelector('#val-paid').checked = false;
+    root.querySelector('#val-error').textContent = '';
+    syncPassedRow();
+    // 有后端摘要（引擎页）先摆上；没有（仓库页）等留痕回来再拼。
+    if (t.validation) paintSummary(t, null);
+    else root.querySelector('#val-summary').innerHTML = '<p class="hint">正在读这一档的验证摘要……</p>';
+    const records = await paintHistory(t);
+    if (!t.validation) paintSummary(t, records);
+    root.querySelector('#val-job').focus();
+  }
+
+  async function submit() {
+    const errEl = root.querySelector('#val-error');
+    errEl.textContent = '';
+    if (!current) return;
+    const jobId = Number(root.querySelector('#val-job').value);
+    if (!jobId) { errEl.textContent = '填一条已成功的作业号。'; return; }
+    const kind = root.querySelector('#val-kind').value;
+    const body = {
+      capability: current.capability, backend: current.backend,
+      provider: current.provider, model: current.model,
+      kind, job_id: jobId,
+      paid_confirmed: root.querySelector('#val-paid').checked,
+      detail: root.querySelector('#val-detail').value.trim(),
+    };
+    if (kind === 'artifact_review') body.passed = root.querySelector('#val-passed').value === 'pass';
+    const btn = root.querySelector('#val-submit');
+    btn.disabled = true;
+    try {
+      await api.validateJob(jobId, body);
+      const res = await hooks.afterSubmit(current);
+      if (res && res.keepOpen) {
+        current = { ...current, validation: res.validation, statusMeta: res.statusMeta };
+        const records = await paintHistory(current);
+        paintSummary(current, records);
+        root.querySelector('#val-job').value = '';
+        root.querySelector('#val-detail').value = '';
+      } else {
+        modal.hidden = true;
+      }
+    } catch (err) {
+      errEl.textContent = err.message || '登记失败';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  root.querySelector('#val-close').onclick = () => { modal.hidden = true; };
+  root.querySelector('#val-submit').onclick = submit;
+  root.querySelector('#val-kind').onchange = syncPassedRow;
+  return { open };
+}

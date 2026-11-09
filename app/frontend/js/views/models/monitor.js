@@ -14,7 +14,7 @@ import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.
 import { REG_SOURCES, unitLabel } from '../../enums.js';
 import {
   SUBS, cache, stateChip, healthChip, manifestAxis, adapterOf, manifestProviders,
-  sourceLabels, sourceLabel, overviewCard, alertNotify,
+  sourceLabels, sourceLabel, overviewCard, alertNotify, HISTORY_PAGE,
   showWorkerHistory, toggleWorkerHistory,
 } from './shared.js';
 
@@ -25,9 +25,27 @@ import {
  * Job 才是执行事实的唯一出口（系统设计 §1 不变量 2），
  * 这里再攒一份就必然长出两套状态。
  */
-/** 验证历史一页多少条。与后端 `GET /api/providers/validations` 的默认一页对齐，
- *  但**不要**把它当成"历史总数"：总量来自响应头 `X-Total-Count`。 */
-const HISTORY_PAGE = 50;
+
+/* 作用域轮询的计时器。与生成中心同一套守卫（generate.js:1879）：
+   模块级持有、mount 先清旧、alive() 判锚点还在不在——切走子页时路由替换
+   #view-root，锚点 isConnected 变 false，计时器自己清掉，不会叠出第二条。
+   为什么不用全站那条 20s 轮询：它只刷顶栏 chip（app.js paintWorker），
+   监控页的队列表与告警它一概不动——名为"运行监控"却是切页那一刻的快照。 */
+let pollTimer = null;
+const POLL_MS = 5000;
+
+/** 验证历史的一条行。首屏渲染与「更早」追加共用这一份——原来两处各抄了一遍
+ *  同一段行 HTML，改一处忘另一处，翻到第二页列就错位。 */
+function valRow(v) {
+  return `<tr>
+    <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
+    <td>${stateChip(v.state)}</td>
+    <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
+    <td>${v.job_id ? '#' + v.job_id : '—'}</td>
+    <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
+    <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
+  </tr>`;
+}
 
 /**
  * 验证历史的翻页条。
@@ -50,11 +68,16 @@ export function validationPager() {
     + `${older ? '<button class="btn xs" id="mc-val-older">更早的</button>' : ''}`;
 }
 
-export function pageMonitor() {
+/**
+ * 队列与 worker ＋ 告警两张卡。轮询只重画这两张（数据来自 worker/status，
+ * 是真会随时间变的那部分）；模型维度与验证留痕不跟着每 5 秒重画——
+ * 前者只在登记/验证时才变，后者一重画就把人刚翻到的页码 reset 回第一页。
+ * 每次调用都现读 cache.worker，所以轮询更新缓存后重画即是新数。
+ */
+function liveCards() {
   const w = cache.worker || {};
   const q = w.queue || {};
   const byRes = q.by_resource || {};
-  const s = cache.stats;
 
   const resChips = (n) => {
     const r = n.resources || {};
@@ -77,8 +100,7 @@ export function pageMonitor() {
   // 连续开发攒下的死行既不影响队列、也不该每天占着面板让人分辨哪条是真的在干活。
   const allNodes = w.workers || [];
   const liveNodes = allNodes.filter((n) => n.online);
-  const deadNodes = allNodes.filter((n) => !n.online);
-  const historyCount = w.history_count != null ? Number(w.history_count) : deadNodes.length;
+  const historyCount = w.history_count != null ? Number(w.history_count) : allNodes.filter((n) => !n.online).length;
   const shownNodes = showWorkerHistory ? allNodes : liveNodes;
   const workers = shownNodes.map(nodeRow).join('');
   const historyLine = historyCount ? `
@@ -136,7 +158,13 @@ export function pageMonitor() {
       ${alerts ? `<ul class="hint flush" >${alerts}</ul>`
               : '<p class="note flush" >现在没有告警。</p>'}
     </div>
-  </div>
+  </div>`;
+}
+
+export function pageMonitor() {
+  const s = cache.stats;
+  return `
+  <div id="mc-live">${liveCards()}</div>
 
   <div class="card mb-card" >
     <div class="card-head"><h2>模型维度</h2>
@@ -160,14 +188,8 @@ export function pageMonitor() {
       <span class="right">${validationPager()}</span></div>
     <div class="table-wrap"><table>
       <thead><tr><th>出处</th><th>结果</th><th>槽位</th><th>作业</th><th>说明</th><th>时间</th></tr></thead>
-      <tbody id="mc-val-rows">${(cache.validations?.items || []).map((v) => `<tr>
-        <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
-        <td>${stateChip(v.state)}</td>
-        <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
-        <td>${v.job_id ? '#' + v.job_id : '—'}</td>
-        <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
-        <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
+      <tbody id="mc-val-rows">${(cache.validations?.items || []).map(valRow).join('')
+        || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
       <p class="note flush" >这一页是**一页**：接口一次最多回 ${HISTORY_PAGE} 条，
@@ -177,15 +199,20 @@ export function pageMonitor() {
   </div>`;
 }
 
-/* ================= 工作区 2 交互 ================= */
-export function mountMonitor(root) {
-  // 折叠/展开离线进程。走 app:refresh 重画整页（与引擎页展开同一条件：
-  // 只有重画才能让页内切换器与表体同一轮更新），展开状态存在模块变量里，
-  // 所以轮询不会把人刚点开的那段又折回去。
+/* ================= 工作区 3 交互 ================= */
+/** 离线进程折叠按钮：轮询重画 #mc-live 后也要重绑，所以单独抽出来。
+ *  展开状态存在 shared 的模块变量里，重画不会把人刚点开的那段折回去。 */
+function bindWorkerHistory(root) {
   root.querySelector('#mc-worker-history')?.addEventListener('click', () => {
     toggleWorkerHistory();
-    window.dispatchEvent(new CustomEvent('app:refresh'));
+    // 只重画 live 两张卡，不动验证留痕（保住人翻到的页码）。
+    const live = root.querySelector('#mc-live');
+    if (live) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
   });
+}
+
+export function mountMonitor(root) {
+  bindWorkerHistory(root);
 
   // 验证历史翻页：再取一页**追加**到后面，而不是重载整页。
   // 重载整页会把上面 worker 表、告警、模型维度一起重画，而人想看的就是这一张表；
@@ -212,14 +239,7 @@ export function mountMonitor(root) {
       if (tbody) {
         const empty = tbody.querySelector('td.hint')?.closest('tr');
         if (empty) empty.remove();          // 第一页为空的占位行，来了数据就撤
-        tbody.insertAdjacentHTML('beforeend', fresh.map((v) => `<tr>
-          <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
-          <td>${stateChip(v.state)}</td>
-          <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
-          <td>${v.job_id ? '#' + v.job_id : '—'}</td>
-          <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
-          <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
-        </tr>`).join(''));
+        tbody.insertAdjacentHTML('beforeend', fresh.map(valRow).join(''));
         const pager = btn.closest('.right');
         if (pager) pager.outerHTML = `<span class="right">${validationPager()}</span>`;
       } else {
@@ -231,4 +251,21 @@ export function mountMonitor(root) {
       alertNotify(`更早的验证记录读不到：${err.message}`);
     }
   });
+
+  // 作用域轮询：只刷队列与告警（liveCards），不碰验证留痕的页码。
+  // 锚点取 #mc-live：切走子页时路由替换 #view-root，它 isConnected 变 false，
+  // 下一拍自己清掉。mount 先清旧计时器，避免同屏重 mount 叠出多条。
+  if (pollTimer) clearInterval(pollTimer);
+  const anchor = root.querySelector('#mc-live');
+  const alive = () => anchor.isConnected && (getSub('models') === 3);
+  pollTimer = setInterval(async () => {
+    if (!alive()) { clearInterval(pollTimer); pollTimer = null; return; }
+    // 页面不可见时不发：后台标签页没有"让人知道"的对象（与全站轮询同一纪律）。
+    if (document.hidden) return;
+    try {
+      cache.worker = await api.workerStatus();
+      const live = root.querySelector('#mc-live');
+      if (live && alive()) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
+    } catch { /* 轮询读不到就保持上一帧，下一拍再试；不打断人 */ }
+  }, POLL_MS);
 }

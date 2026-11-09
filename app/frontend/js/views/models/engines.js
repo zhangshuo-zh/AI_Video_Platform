@@ -16,6 +16,7 @@ import {
   SUBS, cache, stateChip, healthChip, manifestAxis, adapterOf, manifestProviders,
   sourceLabels, sourceLabel, overviewCard, alertNotify, VAL_STATE, HISTORY_PAGE,
   resolveSeq, bumpResolveSeq, showWorkerHistory, toggleWorkerHistory,
+  setupValidationModal,
 } from './shared.js';
 
 /* ================= 工作区 1 · 引擎管理 ================= */
@@ -798,108 +799,15 @@ export function mountEngines(root) {
     return fresh;
   }
 
-  function summaryHtml(v) {
-    const kinds = ['env_check', 'mock', 'real_call', 'target_machine', 'artifact_review'];
-    const rows = kinds.map((k) => {
-      const item = v?.[k] || {};
-      const at = item.at ? String(item.at).slice(0, 16) : '—';
-      const job = item.job_id ? ` · 作业 #${item.job_id}` : '';
-      return `<div class="kv"><dt>${escapeHtml(VAL_KIND_LABEL[k])}</dt>
-        <dd>${stateChip(item.state || 'never')}
-          <span class="t-dim">${escapeHtml(at)}${escapeHtml(job)}</span>
-          ${item.detail ? `<span class="t-desc">${escapeHtml(item.detail)}</span>` : ''}</dd></div>`;
-    }).join('');
-    const ready = v?.production_ready
-      ? '<span class="chip green">生产可用</span>'
-      : '<span class="chip gray">未达生产可用</span>';
-    const target = v?.target_machine_ready ? '<span class="chip green">目标机已验证</span>' : '';
-    return `<div class="kv-grid">${rows}</div>
-      <p class="modal-meta">${ready} ${target}
-        <span class="hint">生产可用＝环境齐＋真实调用过＋产物验收通过，由服务端判定；界面不自己拼。</span></p>`;
-  }
-
-  function valListHtml(records) {
-    if (!records.length) return '<p class="hint">这一轨还没有验证记录。</p>';
-    return `<div class="table-wrap"><table><thead><tr>
-      <th>出处</th><th>结果</th><th>作业</th><th>说明</th><th>登记人</th><th>时间</th>
-      </tr></thead><tbody>${records.map((r) => `<tr>
-        <td><span class="chip plain">${escapeHtml(r.kind_label || VAL_KIND_LABEL[r.kind] || r.kind)}</span></td>
-        <td>${stateChip(r.state)}</td>
-        <td>${r.job_id ? `#${r.job_id}` : '—'}</td>
-        <td><span class="t-desc">${escapeHtml(r.detail || '')}</span></td>
-        <td>${escapeHtml(r.created_by_name || '—')}</td>
-        <td class="t-dim">${escapeHtml(String(r.created_at || '').slice(0, 16))}</td>
-      </tr>`).join('')}</tbody></table></div>`;
-  }
-
-  const valModal = root.querySelector('#val-modal');
-  let valSlot = null;
-
-  async function openValModal(slot) {
-    valSlot = slot;
-    valModal.hidden = false;
-    root.querySelector('#val-title').textContent =
-      `验证记录 · ${slot.capability_label} · ${slot.backend_label}`;
-    root.querySelector('#val-summary').innerHTML = summaryHtml(slot.validation);
-    root.querySelector('#val-job').value = '';
-    root.querySelector('#val-kind').value = 'real_call';
-    root.querySelector('#val-detail').value = '';
-    root.querySelector('#val-paid').checked = false;
-    root.querySelector('#val-error').textContent = '';
-    syncPassedRow();
-    root.querySelector('#val-list').innerHTML = '<p class="hint">正在读验证历史……</p>';
-    try {
-      const { items: all } = await api.providerValidations(100);
-      root.querySelector('#val-list').innerHTML = valListHtml(all.filter((r) =>
-        r.capability === slot.capability && r.backend === slot.backend
-        && r.provider === slot.provider));
-    } catch (err) {
-      root.querySelector('#val-list').innerHTML =
-        `<p class="t-bad">验证历史读不到：${escapeHtml(err.message)}</p>`;
-    }
-    root.querySelector('#val-job').focus();
-  }
-
-  function syncPassedRow() {
-    const isReview = root.querySelector('#val-kind').value === 'artifact_review';
-    root.querySelector('#val-passed-label').hidden = !isReview;
-    root.querySelector('#val-passed').hidden = !isReview;
-  }
-
-  async function submitValidation() {
-    const errEl = root.querySelector('#val-error');
-    errEl.textContent = '';
-    if (!valSlot) return;
-    const jobId = Number(root.querySelector('#val-job').value);
-    if (!jobId) { errEl.textContent = '填一条已成功的作业号。'; return; }
-    const kind = root.querySelector('#val-kind').value;
-    const body = {
-      capability: valSlot.capability, backend: valSlot.backend,
-      provider: valSlot.provider, model: valSlot.model,
-      kind, job_id: jobId,
-      paid_confirmed: root.querySelector('#val-paid').checked,
-      detail: root.querySelector('#val-detail').value.trim(),
-    };
-    if (kind === 'artifact_review') body.passed = root.querySelector('#val-passed').value === 'pass';
-    const btn = root.querySelector('#val-submit');
-    btn.disabled = true;
-    try {
-      await api.validateJob(jobId, body);
+  // 验证弹窗控制器抽到了 shared.js（模型仓库详情也要用它）。引擎页提交后
+  // 回读最新十行（顺带重画健康/验证列），把这一槽的新摘要接回弹窗、留着不关。
+  const val = setupValidationModal(root, {
+    afterSubmit: async (target) => {
       const fresh = await reloadRows();
-      valSlot = fresh.find((r) => r.id === valSlot.id) || valSlot;
-      root.querySelector('#val-summary').innerHTML = summaryHtml(valSlot.validation);
-      const { items: all } = await api.providerValidations(100);
-      root.querySelector('#val-list').innerHTML = valListHtml(all.filter((r) =>
-        r.capability === valSlot.capability && r.backend === valSlot.backend
-        && r.provider === valSlot.provider));
-      root.querySelector('#val-job').value = '';
-      root.querySelector('#val-detail').value = '';
-    } catch (err) {
-      errEl.textContent = err.message || '登记失败';
-    } finally {
-      btn.disabled = false;
-    }
-  }
+      const slot = fresh.find((r) => r.id === target.id) || target;
+      return { validation: slot.validation, keepOpen: true };
+    },
+  });
 
   // 重画验证列后要重绑，所以用 onclick 赋值而不是 addEventListener（不叠监听器）
   function bindValidationActions(scope) {
@@ -919,17 +827,12 @@ export function mountEngines(root) {
     scope.querySelectorAll('[data-val-history]').forEach((btn) => {
       btn.onclick = () => {
         const slot = rowsCache.find((r) => String(r.id) === btn.dataset.valHistory);
-        if (slot) openValModal(slot);
+        if (slot) val.open(slot);
       };
     });
   }
 
   bindValidationActions(root);
-  root.querySelector('#val-close').addEventListener('click', () => { valModal.hidden = true; });
-  root.querySelector('#val-submit').addEventListener('click', submitValidation);
-  root.querySelector('#val-kind').addEventListener('change', syncPassedRow);
-
-  mountEngineInstances(root);
 }
 
 /* ================= 工作区 1b 交互 · 引擎实例 ================= */
