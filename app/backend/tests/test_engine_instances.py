@@ -24,7 +24,6 @@ import pytest
 
 import adapters
 import engine_http_run
-import safenet
 import engines
 import runners
 import services
