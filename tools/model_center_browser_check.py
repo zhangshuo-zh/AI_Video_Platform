@@ -69,6 +69,12 @@ def mint_admin_session() -> str:
     token, token_hash = new_session_token()
     expires = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
     sessions.create(token_hash, row["id"], expires)
+    # CI 干净库的 superadmin 由 bootstrap 建出来时带 must_change_password=True，
+    # deps.py 那道「改密前只放行 me/password/logout」的闸门会把业务接口全 403。
+    # 这是一次性验收副本库（不是生产），清掉标志让验收走到真页面；production
+    # 验收复用本函数，一并修好。生产建号仍保留强制改密，不受影响。
+    with get_conn() as conn:
+        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE id = ?", (row["id"],))
     return token
 
 
