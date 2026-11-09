@@ -193,15 +193,91 @@ function focusables(modal) {
     .filter((el) => el.offsetParent !== null || el === document.activeElement);
 }
 
-function trapTab(modal) {
+/**
+ * 把"有弹窗开着"这件事同步到 DOM：开着就把背景锁上，关完就摘掉。
+ *
+ * 顺序上以**最后打开的那个**为准（全站逻辑都是"最上面那层接键盘"）。
+ * 用 `hasAttribute` 而不是布尔缓存：`hidden` 可能被任何调用点直接改，
+ * 观察器是唯一真相，缓存迟早和 DOM 走散。
+ */
+function syncModalInert() {
+  const open = [...document.querySelectorAll('.modal')].filter((m) => !m.hidden);
+  const app = document.querySelector('.app');
+  if (!app) return;
+  // 不能简单锁 `.app`：有些弹窗就写在视图模板里（#mc-form 在 .app 内部），
+  // 锁 .app 会把它自己一起锁死——焦点进不去、按钮点不动，看着像弹窗坏了。
+  // 反过来说也不能把祖先链全解锁，那等于没锁。
+  //
+  // 正确的做法是逐层走：从 body 往下，凡是**不在弹窗祖先链上**的兄弟都锁上。
+  // inert 作用于整棵子树，所以锁住兄弟就足够了，弹窗那条链一个不动。
+  const keep = new Set();
+  for (const m of open) {
+    for (let el = m; el && el !== document.body; el = el.parentElement) keep.add(el);
+  }
+  // 这几样必须留在 inert 外面：toast 与读屏播报区是说给人听的通道，
+  // 弹窗开着的时候它们照样要有声音——把播报一起锁掉，等于让读屏用户
+  // 在弹窗期间彻底失去反馈。
+  const KEEP_ALIVE = '.toast-host, #live-polite, .sr-only';
+  const lockThese = (el) => {
+    for (const child of el.children) {
+      // 走到弹窗本身：**到底为止**。它自己不能锁（那会把弹窗内容一起锁死，
+      // 焦点进不去、按钮点不动），也不能再往它子层走——里面全是弹窗自己的
+      // 东西。之前这里只判了 keep.has 就继续递归，结果 .modal-box 被当成了
+      // 兄弟锁住，弹窗看着开着却整个失灵。
+      if (child.classList.contains('modal')) continue;
+      if (keep.has(child)) { lockThese(child); continue; }
+      if (child.matches(KEEP_ALIVE)) continue;
+      if (!child.hasAttribute('inert')) child.setAttribute('inert', '');
+      child.dataset.inertByModal = '1';
+    }
+  };
+  if (open.length) {
+    lockThese(document.body);
+  } else {
+    // 全关了就只撤我们加的那些，别人（视图自己）加的 inert 不碰
+    for (const el of document.querySelectorAll('[data-inert-by-modal]')) {
+      el.removeAttribute('inert');
+      delete el.dataset.inertByModal;
+    }
+  }
+  // 顺带给开着的弹窗补上语义：模板里写了一半，剩下的一半不该靠人记。
+  // role/aria-modal 是"这是对话框"的唯一机器可读信号，缺了读屏会把弹窗
+  // 当成页面上又一段普通内容念过去。
+  for (const m of open) {
+    if (m.getAttribute('role') !== 'dialog') m.setAttribute('role', 'dialog');
+    if (m.getAttribute('aria-modal') !== 'true') m.setAttribute('aria-modal', 'true');
+    if (!m.hasAttribute('aria-labelledby') && !m.hasAttribute('aria-label')) {
+      const head = m.querySelector('.modal-head');
+      if (head) {
+        if (!head.id) head.id = 'modal-head-' + (headSeq += 1);
+        m.setAttribute('aria-labelledby', head.id);
+      }
+    }
+  }
+}
+
+let headSeq = 0;
+
+/**
+ * Tab 循环。**只在环绕的那两步接管**，中间一律交给浏览器。
+ *
+ * 原来这里是「聚焦在首元素就送去末元素、在末元素就送去首元素」，不看方向——
+ * 弹窗里有五个按钮时，人在第一个上按 Tab 会直接跳到第五个，第二三四永远
+ * 摸不到；按 Shift+Tab 又跳回第五个。看着像「陷阱生效了」，其实键盘已经坏了。
+ * 现在只处理两个越界：Tab 在末元素 → 回首个；Shift+Tab 在首元素 → 去末个。
+ * 其余情况直接返回、让浏览器按自己的顺序走，那才是对的顺序。
+ */
+function trapTab(modal, back) {
   const list = focusables(modal);
   if (!list.length) return;
   const first = list[0];
   const last = list[list.length - 1];
   const active = document.activeElement;
-  if (!modal.contains(active)) { first.focus(); return; }
-  if (active === last) { last.blur(); first.focus(); }
-  else if (active === first) { first.blur(); last.focus(); }
+  // 焦点还在弹窗外（刚打开、或人在外面点过一下）：先收进来
+  if (!modal.contains(active)) { (back ? last : first).focus(); return; }
+  if (back && active === first) last.focus();
+  else if (!back && active === last) first.focus();
+  // 中间的元素：什么都不做，浏览器自己会走到下一个
 }
 
 
@@ -300,6 +376,19 @@ export function bindModalDismiss(modal, close) {
   }
   if (escBound) return;
   escBound = true;
+  // 弹窗一打开，底下的侧栏和正文仍然可点、可 Tab 进去——键盘用户会从弹窗
+  // 直接掉到背后的页面里，鼠标用户则会误点到被遮住的东西。`inert` 是浏览器
+  // 原生那一层：既挪出 Tab 序列，也吃掉指针事件，还让读屏只看见弹窗。
+  //
+  // 锁的范围见 syncModalInert：不是整块 `.app`，而是弹窗祖先链之外的兄弟——
+  // 因为有些弹窗（#mc-form、#job-modal）本来就写在 `.app` 里。
+  //
+  // 用观察器跟着 `hidden` 走，而不是要求每个调用点补一句——全库 126 处直接写
+  // `modal.hidden = true`，逐个改不现实，漏一个就是一个能 Tab 出去的弹窗。
+  new MutationObserver(syncModalInert).observe(document.body, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'],
+  });
+  syncModalInert();
   document.addEventListener('keydown', (e) => {
     const open = [...document.querySelectorAll('.modal:not([hidden])')];
     if (!open.length) return;
@@ -309,7 +398,7 @@ export function bindModalDismiss(modal, close) {
       if (fn) { e.preventDefault(); fn(); }
       return;
     }
-    if (e.key === 'Tab') trapTab(top);
+    if (e.key === 'Tab') trapTab(top, e.shiftKey);
   }, true);
 }
 
