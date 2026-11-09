@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, subChipRow } from '../util.js';
+import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl, subChipRow } from '../util.js';
 import { JOB_ACTIVE, jobTone, publicStatus, validationText } from '../validation.js';
 import { unitLabel } from '../enums.js';
 import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './asset-workspaces.js';
@@ -475,8 +475,8 @@ function candidatesHtml(d) {
   const canSave = d.targetId > 0;
   const grid = items.map((a, i) => `
       <figure class="as-cand">
-        <img src="/api/jobs/${cand.job_id}/artifacts/${i}" alt="候选 ${i + 1}"
-             data-preview-img="/api/jobs/${cand.job_id}/artifacts/${i}"
+        <img src="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}" alt="候选 ${i + 1}"
+             data-preview-img="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}"
              ${a.exists ? '' : 'style="opacity:.35"'}>
         <figcaption>
           <span class="t-dim">#${i + 1}${a.exists ? ` · ${Math.round((a.size || 0) / 1024)}KB`
@@ -587,9 +587,9 @@ function variantPanel(d) {
           </div>
         </div>` : ''}
       ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((p) => `
-        <figure class="ad-img"><img src="/files/${p}" alt="${escapeHtml(v.name)} 的图"
-          data-preview-img="/files/${p}">
-          <figcaption><button class="btn xs danger" data-rm-vimg="${v.id}|${p}">删这张</button></figcaption>
+        <figure class="ad-img"><img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(v.name)} 的图"
+          data-preview-img="${escapeHtml(`/files/${p}`)}">
+          <figcaption><button class="btn xs danger" data-vid="${escapeHtml(v.id)}" data-path="${escapeHtml(p)}">删这张</button></figcaption>
         </figure>`).join('')}</div>`
         : '<p class="t-desc">这个形态还没有图。生成候选后在图下面选「形态：这个名字」再存入。</p>'}
     </div>`;
@@ -1194,11 +1194,17 @@ function bindLive(root, d) {
       refresh();
     });
   });
-  root.querySelectorAll('[data-rm-vimg]').forEach((btn) => {
+  root.querySelectorAll('[data-vid][data-path]').forEach((btn) => {
     if (btn.dataset.bound) return;          // 同上：形态卡不在 patch 的槽里，节点不换
     btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
-      const [vid, path] = btn.dataset.rmVimg.split('|');
+      // 原来这里读的是 `data-rm-vimg` 里用 `|` 拼起来的 `vid|path` 再 split。
+      // 复合字段的毛病是路径里**只要出现一个 `|`** 就被切成两段——路径来自后端
+      // 生成的 UUID 文件名，眼下不含 `|`，但这等于「靠上游不变量维持正确性」；
+      // 而且 `|` 不是任何规范里的分隔符，读代码的人得先去查生成端才知道能切。
+      // 拆成两个属性后，split 这一步连同它的隐含契约一起没了。
+      const vid = btn.dataset.vid;
+      const path = btn.dataset.path;
       if (!(await confirmDanger({
         title: '删掉这张形态图',
         body: `路径 ${escapeHtml(path)} 会从这个形态的清单里摘掉，盘上那份文件也一起删。`
@@ -1234,7 +1240,12 @@ function bindLive(root, d) {
   root.querySelectorAll('[data-preview-img]').forEach((img) => {
     if (img.dataset.bound) return;          // 候选区会被重画（新节点照绑），形态区不会（防累加）
     img.dataset.bound = '1';
-    img.addEventListener('click', () => window.open(img.dataset.previewImg, '_blank'));
+    // dataset 读回来的是解转义后的值，交给 window.open 之前必须再过一次
+    // 同源白名单（util.safeOpenUrl 是唯一出处，别在视图里另写一份）。
+    img.addEventListener('click', () => {
+      const url = safeOpenUrl(img.dataset.previewImg);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    });
   });
   // 冲突横条住在 #as-notice 里，每 tick 被 put() 重画一次——所以它的关闭钮也只能
   // 在这里绑。绑在 mount() 里等于"有作业在飞时冲突条关不掉"（本轮修的第二条）。

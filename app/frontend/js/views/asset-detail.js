@@ -1,6 +1,6 @@
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, escapeHtml, formatMoney, run } from '../util.js';
+import { bindModalDismiss, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
 import { jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
 import { closeDetail } from '../router.js';
@@ -189,8 +189,8 @@ export async function renderDetail(id) {
                     <span class="t-dim">${v.image_count} 图${v.source_job_id ? ` · 来源作业 #${v.source_job_id}` : ''}</span></div>
                   ${v.prompt ? `<p class="t-desc">${escapeHtml(v.prompt)}</p>` : ''}
                   ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((ip) => `
-                    <figure class="ad-img"><img src="/files/${ip}" alt="${escapeHtml(v.name)} 的图"
-                      data-preview="/files/${ip}"></figure>`).join('')}</div>`
+                    <figure class="ad-img"><img src="${escapeHtml(`/files/${ip}`)}" alt="${escapeHtml(v.name)} 的图"
+                      data-preview="${escapeHtml(`/files/${ip}`)}"></figure>`).join('')}</div>`
                     : '<p class="t-dim">这个形态还没有图。</p>'}
                 </div>`).join('')
                 : '<p class="t-dim">还没有形态。服饰、视角、形态各存各的图，'
@@ -221,11 +221,11 @@ export async function renderDetail(id) {
               <div class="ad-imgs">
                 ${a.ref_images.map((p, i) => `
                   <figure class="ad-img${i === 0 ? ' cover' : ''}">
-                    <img src="/files/${p}" alt="参考图 ${i + 1}" data-preview="/files/${p}">
+                    <img src="${escapeHtml(`/files/${p}`)}" alt="参考图 ${i + 1}" data-preview="${escapeHtml(`/files/${p}`)}">
                     <figcaption>
                       ${i === 0 ? '<span class="chip blue">封面</span>'
-                        : (canEdit ? `<button class="btn xs" data-cover="${p}">设为封面</button>` : '')}
-                      ${canEdit ? `<button class="btn xs danger" data-rm-img="${p}">删除</button>` : ''}
+                        : (canEdit ? `<button class="btn xs" data-cover="${escapeHtml(p)}">设为封面</button>` : '')}
+                      ${canEdit ? `<button class="btn xs danger" data-rm-img="${escapeHtml(p)}">删除</button>` : ''}
                     </figcaption>
                   </figure>`).join('')
                   || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，'
@@ -316,7 +316,17 @@ export function mountDetail(root, id) {
   const a = cache.asset;
 
   root.querySelectorAll('[data-preview]').forEach((img) => {
-    img.addEventListener('click', () => window.open(img.dataset.preview, '_blank'));
+    // 打开前先验一遍同源白名单：`dataset` 读回来的已经是**解转义后**的字符串，
+    // 上面那层 escapeHtml 保护的是 HTML 结构，不是这里的跳转目标。
+    // 只放行本站 /files/ 与 /api/——这两条是后端给的图片/产物路径；
+    // 其余一律不跳（含 javascript:、data:、外站），免得一个被污染的路径变成
+    // 「点图执行一段脚本」或把人带去钓鱼页。
+    // noopener,noreferrer：新窗口不能通过 window.opener 反向操作本页，
+    // 也不把本站地址放进 Referer 带给第三方。
+    img.addEventListener('click', () => {
+      const url = safeOpenUrl(img.dataset.preview);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    });
   });
 
   // 跳创作中心并定位到那一集：只留一个"下一次进去看哪一集"的提示，

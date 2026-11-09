@@ -28,8 +28,12 @@ export async function run(label, fn) {
     // `app:toast` 是既有约定（`store.js:129`、`shot-workbench.js:336` 都在派），
     // 由 `app.js:641` 接住渲染成右下角那条。`util.js` 不 import `app.js`——
     // 那是壳，反向依赖会把工具模块和应用壳绑死。
+    // whyHint 补那句「为什么」：403 是权限、404 是看不见，光一个状态码
+    // 让人对着「失败：（403）」猜。errorBox／errorLine 早就用了它，
+    // 只有这条 toast 路一直只说 err.message —— 而全站绝大多数操作的失败
+    // 提示正是从这条路出去的，等于最常用的那条路一直缺这半句。
     window.dispatchEvent(new CustomEvent('app:toast', {
-      detail: { text: `${label}失败：${err.message}`, kind: 'err' } }));
+      detail: { text: `${label}失败：${err.message}${whyHint(err)}`, kind: 'err' } }));
     return false;
   }
 }
@@ -50,6 +54,29 @@ export function formatMoney(micros, currency) {
   return sign + amount.toLocaleString('zh-CN', {
     minimumFractionDigits: digits, maximumFractionDigits: digits,
   });
+}
+
+/**
+ * 「点开原图/产物」唯一的安全出口。
+ *
+ * 只放行同源、且路径落在 /files/ 或 /api/ 下的地址，其余返回 null。
+ * 为什么不是「转义一下就行」：转义防的是拼进 HTML 属性的引号被截断，
+ * 而这里的值是从 dataset 读回来后**直接交给 window.open** 的跳转目标，
+ * 转义对 `javascript:` 这种协议一点作用都没有。
+ *
+ * 放在 util 里而不是各视图各写一份：白名单这种东西一旦有两份，
+ * 迟早只改一处，另一处就成了后门。
+ */
+export function safeOpenUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ''), location.origin);
+  } catch {
+    return null;
+  }
+  if (u.origin !== location.origin) return null;
+  if (!(u.pathname.startsWith('/files/') || u.pathname.startsWith('/api/'))) return null;
+  return u.href;
 }
 
 /** 403/404 补一句"为什么"，不让人对着一个状态码猜。 */
@@ -95,6 +122,18 @@ let dangerResolve = null;
  */
 export function confirmDanger({ title = '确认操作', body = '', okText = '确定',
                                 danger = true } = {}) {
+  // **弹窗已经开着**：这一次直接取消，绝不覆盖 dangerResolve。
+  //
+  // 原来下面是无条件 `dangerResolve = resolve`，而弹窗只在第一次调用时才
+  // createElement 并 append —— 第二次调用改的是**同一个**弹窗，把第一个
+  // Promise 的 resolve 顶掉、且此后没有任何代码还会去调它。那一条 `await`
+  // 永不 settle，发起它的按钮就永远停在 disabled。
+  // 真实触发路径：连点两个删除；或一个确认框还开着时，某处轮询回来的异步
+  // 分支也要确认一次。两者都不是理论构造。
+  // 这里选「这一次直接返回 false」而不是排队：危险操作被吞掉是安全的方向；
+  // 而且排队会让两个框的内容与顺序对不上，人看到的是「点了没反应、然后又
+  // 跳出来一个框」，比干脆没响应更难受。
+  if (dangerHost && !dangerHost.hidden) return Promise.resolve(false);
   return new Promise((resolve) => {
     if (!dangerHost) {
       dangerHost = document.createElement('div');

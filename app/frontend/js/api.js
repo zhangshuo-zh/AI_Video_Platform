@@ -13,7 +13,14 @@ async function toJson(res) {
     // 原来只有启动那一次会认 401，之后每个操作都只弹一句"失败：未登录"，
     // 既没地方重登、也解释不了为什么突然干不了活。
     // 登录接口自己的 401 是"口令错了"，不能拿它去挂过期闸门。
-    if (res.status === 401 && !/\/api\/auth\/(login|password)$/.test(res.url || '')) {
+    // 登录接口自己的 401 是「口令错了」，不能拿它去挂过期闸门。
+    //
+    // 原来这里靠 `/\/api\/auth\/(login|password)$/.test(res.url)` 认端点——
+    // 而 `res.url` 是**解析后的绝对 URL**，带上查询串（`?next=/models`）或以
+    // 重定向形式回来（末尾多个 `/`）时正则都不匹配，于是「口令错」被当成
+    // 「会话过期」，人看到的是重新登录的闸门，而不是「口令错了」。
+    // 现在由调用方在 init 上打个显式标记，不再从 URL 反推意图。
+    if (res.status === 401 && !(res.__authEndpoint)) {
       window.dispatchEvent(new CustomEvent('app:unauthorized'));
     }
     throw err;
@@ -38,21 +45,82 @@ async function toJson(res) {
  *
  * **对外签名一个字都没变**：api.xxx(...) 的调用方（十几个视图）不用改。
  */
-const send = (method, url, body) => {
+/* ------------------------------------------------------------ 超时与取消
+ *
+ * 这个文件原来一次 `fetch` 都没有超时。后端一旦 hang（进程卡死、SQLite 被
+ * 长事务锁住、反向代理没回），Promise 就永不 settle：按钮的 `disabled` 不复位、
+ * 三处轮询僵在「在飞」状态、`run()` 的 catch 也永远等不到。人看到的是
+ * 「点了没反应」，刷新页面才好——而刷新并不解决后端 hang，只是重来一次。
+ *
+ * 统一挂一个 15 秒上限。选 15 秒：本机这台机器上的接口正常都在 1 秒内，
+ * 最慢的整季排产、产物清单也在几秒；超过 15 秒基本等于「这次不会有结果了」，
+ * 再等只是延长人以为它在干活的时间。
+ *
+ * 超时抛出的 Error 带 `status = 0`：0 不是一个真实 HTTP 状态码，用它表示
+ * 「根本没拿到响应」。这样 `run()` 照旧走同一条出口弹提示，视图里那些
+ * `if (err.status === 403)` 也不会把超时误当成权限问题。
+ */
+const TIMEOUT_MS = 15_000;
+
+/** 给一次请求挂上超时；调用方自己传了 signal 就以调用方为准（它可能还要取消）。 */
+function withTimeout(init = {}) {
+  if (init.signal) return init;
+  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    return { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) };
+  }
+  // 老内核没有 AbortSignal.timeout：降级成手搓的 AbortController。
+  // 不求优雅，只求「一定会 settle」这一条性质在所有浏览器上都成立。
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  return { ...init, signal: ctl.signal };
+}
+
+/**
+ * fetch + 超时 + 把中断翻译成一句人话。所有请求（含裸 fetch 的那几处）都过它。
+ *
+ * `opts.authEndpoint`：这个端点返回的 401 表示「口令错了」而不是「会话过期」。
+ * 由调用方显式声明，不从 URL 反推——见 toJson 里那段注释。
+ */
+async function request(url, init, opts) {
+  // 信号是调用方带进来的 ⇒ 中断是它自己的决定（换项目要作废旧请求之类），
+  // 不该被包成「请求超时」；只有我们自己加的那个信号才代表超时。
+  const callerSignal = !!(init && init.signal);
+  let res;
+  try {
+    res = await fetch(url, withTimeout(init));
+  } catch (err) {
+    if (!callerSignal && err
+        && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      const out = new Error('请求超时（15 秒没有响应），后端可能卡住了');
+      out.status = 0;
+      throw out;
+    }
+    throw err;
+  }
+  // 标记挂在这次 Response 实例上，只给 toJson 认；不进响应体、不污染全局。
+  if (opts && opts.authEndpoint) res.__authEndpoint = true;
+  return res;
+}
+
+const send = (method, url, body, opts) => {
   const init = { method };
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(body);
   }
-  return fetch(url, init).then(toJson);
+  return request(url, init, opts).then(toJson);
 };
-const get = (url) => fetch(url).then(toJson);
+const get = (url) => request(url).then(toJson);
+// 登录类端点：它们的 401 是「口令错了」，要显式告诉 toJson 别挂过期闸门
+const AUTH_ENDPOINT = { authEndpoint: true };
 
 export const api = {
   me: () => get('/api/auth/me'),
-  login: (username, password) => send('POST', '/api/auth/login', { username, password }),
+  login: (username, password) => send('POST', '/api/auth/login',
+    { username, password }, AUTH_ENDPOINT),
   logout: () => send('POST', '/api/auth/logout'),
-  changePassword: (oldPassword, newPassword) => send('POST', '/api/auth/password', { old_password: oldPassword, new_password: newPassword }),
+  changePassword: (oldPassword, newPassword) => send('POST', '/api/auth/password',
+    { old_password: oldPassword, new_password: newPassword }, AUTH_ENDPOINT),
   // status：'active' 在产 / 'archived' 已归档 / 'all' 全部（默认）。
   // 项目中心要在那三者之间切，所以一次捞全再由页面筛；顶栏下拉只认在产。
   projects: (status = 'all') => get(`/api/projects?status=${encodeURIComponent(status)}`),
@@ -103,7 +171,7 @@ export const api = {
   jobs: async (params = {}) => {
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v != null)));
-    const res = await fetch(`/api/jobs?${qs}`);
+    const res = await request(`/api/jobs?${qs}`);
     const items = await toJson(res);
     return { items, total: Number(res.headers.get('X-Total-Count') || 0) };
   },
@@ -152,7 +220,7 @@ export const api = {
     if (beforeId) qs.set('before_id', String(beforeId));
     // 这一条**不能走 get()**：它要读完响应头再走 toJson，
     // 而 get() 已经把 body 解析成对象返回了（headers 拿不到）。
-    const res = await fetch(`/api/providers/validations?${qs}`);
+    const res = await request(`/api/providers/validations?${qs}`);
     const items = await toJson(res);
     return { items, total: Number(res.headers.get('X-Total-Count') || 0) };
   },
@@ -322,7 +390,7 @@ export const api = {
     const form = new FormData();
     form.append('file', file);
     // 走裸 fetch：FormData 不能被 JSON.stringify（send 是 JSON 那条路的）。
-    return fetch(`/api/projects/${pid}/composition-subtitles`, { method: 'POST', body: form })
+    return request(`/api/projects/${pid}/composition-subtitles`, { method: 'POST', body: form })
       .then(toJson);
   },
   deleteCompositionSubtitle: (pid, path) => send('DELETE', `/api/projects/${pid}/composition-subtitles?path=${encodeURIComponent(path)}`),
@@ -367,7 +435,7 @@ export const api = {
     const form = new FormData();
     form.append('file', file);
     // 同上：multipart 不走 send。
-    return fetch(`/api/assets/${id}/images`, { method: 'POST', body: form }).then(toJson);
+    return request(`/api/assets/${id}/images`, { method: 'POST', body: form }).then(toJson);
   },
   deleteAssetImage: (id, path) => send('DELETE', `/api/assets/${id}/images?path=${encodeURIComponent(path)}`),
 

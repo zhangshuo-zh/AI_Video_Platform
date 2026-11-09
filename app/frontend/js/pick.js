@@ -21,6 +21,65 @@ function closeActive() {
   active = null;
 }
 
+/**
+ * 自绘下拉的键盘操作。抽成一个函数，四处（项目/集/命令面板/本控件）共用——
+ * 原来只有鼠标与 Escape：方向键不动、Home/End 不动、Enter 不选，键盘用户
+ * 打开浮层之后只能再 Escape 回去，等于这个控件对他不可用。
+ *
+ * 约定（与原生 <select> 和 ARIA listbox 一致）：
+ *   ↓/↑        在可选项之间移动（跳过 disabled），到头不循环；
+ *   Home/End   第一项／最后一项；
+ *   Enter/空格  选当前高亮项并关闭；
+ *   Escape     关闭并不选（调用方已经处理，这里不重复）；
+ *   Tab        关闭（焦点照常走，不拦）。
+ *
+ * `items` 是本次可见的选项数组，`index` 是当前高亮下标，`onMove(i)` / `onPick(i)`
+ * 由调用方实现——这个助手只负责「按了哪个键该干什么」，不碰 DOM 结构。
+ * 返回 true 表示这个键已被消费，调用方不必再处理。
+ */
+export function listboxKeys(e, items, index, onMove, onPick) {
+  const n = items.length;
+  if (!n) return false;
+  // nextEnabled：从 start 起朝 dir 找下一个可选项，不循环（到头返回 -1）
+  const nextEnabled = (start, dir) => {
+    for (let i = start; i >= 0 && i < n; i += dir) {
+      if (!items[i].disabled) return i;
+    }
+    return -1;
+  };
+  switch (e.key) {
+    case 'ArrowDown': {
+      const i = nextEnabled(index < 0 ? 0 : index + 1, 1);
+      if (i >= 0) onMove(i);
+      return true;
+    }
+    case 'ArrowUp': {
+      const i = nextEnabled(index < 0 ? n - 1 : index - 1, -1);
+      if (i >= 0) onMove(i);
+      return true;
+    }
+    case 'Home': {
+      const i = nextEnabled(0, 1);
+      if (i >= 0) onMove(i);
+      return true;
+    }
+    case 'End': {
+      const i = nextEnabled(n - 1, -1);
+      if (i >= 0) onMove(i);
+      return true;
+    }
+    case 'Enter':
+    case ' ': {
+      if (index >= 0 && !items[index].disabled) onPick(index);
+      return true;
+    }
+    case 'Tab':
+      return false;   // 让焦点照常走，浮层由调用方的 closeActive 收
+    default:
+      return false;
+  }
+}
+
 // 点外面、滚动、改窗口大小都收起：浮层用 position:fixed，页面一动就会错位。
 document.addEventListener('click', (e) => {
   if (!active) return;
@@ -73,10 +132,15 @@ export function enhanceSelect(sel) {
   wrap.appendChild(list);
 
   const paint = () => {
+    // 高亮项要用 id 被 aria-activedescendant 指认（键盘移动时读屏要念出来）；
+    // aria-selected 只标「已选中的值」，aria-activedescendant 标「复选框中此刻
+    // 停在哪一项」，两者不是一个概念，不能互相顶替。
+    const hi = active && active.sel === sel ? active.index : -1;
     list.innerHTML = [...sel.options].map((o, i) => (
-      `<button type="button" role="option" class="fv-pick-opt${o.selected ? ' on' : ''}"`
+      `<button type="button" role="option" id="fv-pick-opt-${i}" class="fv-pick-opt${o.selected ? ' on' : ''}${i === hi ? ' hi' : ''}"`
       + ` data-i="${i}"${o.disabled ? ' disabled' : ''}`
-      + `${o.selected ? ' aria-selected="true"' : ''}>${escapeHtml(o.textContent)}</button>`
+      + `${o.selected ? ' aria-selected="true"' : ''}`
+      + `${i === hi ? ' aria-current="true"' : ''}>${escapeHtml(o.textContent)}</button>`
     )).join('') || '<span class="fv-pick-none">没有可选项</span>';
   };
 
@@ -130,7 +194,7 @@ export function enhanceSelect(sel) {
     list.style.top = (h > below && r.top > h + 8)
       ? `${Math.round(r.top - h - 4)}px`
       : `${Math.round(r.bottom + 4)}px`;
-    active = { sel, btn, list, wrap };
+    active = { sel, btn, list, wrap, index: sel.selectedIndex };
   };
 
   btn.addEventListener('click', open);
@@ -143,7 +207,28 @@ export function enhanceSelect(sel) {
     closeActive();
     sync();
   });
-  sel.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActive(); });
+  // 原生 select 被藏起来了（视觉上），但它仍持有焦点，键盘事件先到这里。
+  // 用 listboxKeys 处理方向键/Home/End/Enter，Escape 与 Tab 仍走原来的收起。
+  // 注意：只有浮层开着时才接管方向键，否则会抢走原生 select 自己的选择行为。
+  sel.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeActive(); return; }
+    if (!active || active.sel !== sel) return;
+    const opts = [...sel.options];
+    listboxKeys(e, opts, active.index,
+      (i) => {
+        active.index = i;
+        paint();
+        active.list.querySelector(`[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
+        sel.setAttribute('aria-activedescendant', `fv-pick-opt-${i}`);
+      },
+      (i) => {
+        sel.selectedIndex = i;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        closeActive();
+        sync();
+        btn.focus();
+      });
+  });
 
   // options 重建、值被程序化改写、禁用/隐藏切换都要让按钮跟上。
   //

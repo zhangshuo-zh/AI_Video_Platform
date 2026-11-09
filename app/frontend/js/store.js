@@ -4,6 +4,9 @@
  */
 import { api } from './api.js';
 
+// 换项目的序号：每次 select() 加一，在飞的旧链靠它判断自己是否已经作废
+let selectSeq = 0;
+
 export const store = {
   projects: [],
   currentId: null,
@@ -107,12 +110,19 @@ export const store = {
     return this;
   },
 
-  async loadEpisodes(pid) {
+  /**
+   * 拉某个项目的集清单。`alive` 是个可选的「这次还作数吗」判断：
+   * 换项目后旧请求回来时，#select 会传一个 `seq === selectSeq` 的闭包进来，
+   * 对不上就**一个字都不写**——包括失败时的置空（那是最容易盖掉新数据的一步）。
+   */
+  async loadEpisodes(pid, alive) {
+    const ok = () => (typeof alive === 'function' ? alive() : true);
     if (!pid) { this.episodes = []; this.currentEpisodeId = null; return []; }
     try {
-      this.episodes = await api.episodes(pid);
+      const out = await api.episodes(pid);
+      if (ok()) this.episodes = out;
     } catch {
-      this.episodes = [];
+      if (ok()) this.episodes = [];
     }
     return this.episodes;
   },
@@ -132,6 +142,17 @@ export const store = {
   },
 
   select(id) {
+    // 换项目＝换项目的所有并发请求作废。
+    //
+    // 原来三条链（setContext / loadEpisodes / openProject）各跑各的、回来就无条件
+    // 写回状态。A→B 连点时，A 的 episodes 若比 B 晚回来，就会把 B 的集列表盖掉；
+    // 服务端上下文也可能被 A 的 setContext 抢在 B 后面写进去。界面上就是
+    // 「顶栏写着 B、集下拉里是 A 的集」，而且没有任何报错——只能刷新。
+    //
+    // 用一个单调递增的序号：每条链落地前对一次，对不上就整个放弃（连 refresh
+    // 也不派，否则会用旧数据重绘一次新页面）。
+    const seq = ++selectSeq;
+    const alive = () => seq === selectSeq;
     this.currentId = id;
     // 换项目＝换上下文：当前集必须清空，否则会拿旧项目的集去算新项目的进度
     this.episodes = [];
@@ -139,14 +160,23 @@ export const store = {
     // 先立刻重绘：切项目这件事不该等网络
     window.dispatchEvent(new CustomEvent('app:refresh'));
     if (!id) return;
-    api.setContext(id, null).catch(() => {});
-    this.loadEpisodes(id).then(() => window.dispatchEvent(new CustomEvent('app:refresh')));
+    // setContext 失败不再静默吞掉：它和 selectEpisode 是同一件事（都是写服务端
+    // 上下文），那边失败会回滚 + 提示，这里至少要说一句，否则「选了项目但没记住」
+    // 这个事实只能靠人下次刷新时自己发现。
+    api.setContext(id, null).catch(() => {
+      if (!alive()) return;
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: '这个项目没记住：上下文写回失败，可能是项目已不可见',
+          kind: 'err' } }));
+    });
+    this.loadEpisodes(id, alive)
+      .then(() => { if (alive()) window.dispatchEvent(new CustomEvent('app:refresh')); });
     // 上报"打开过"只为让列表下次按最近使用排序，失败也不吭声。
     // 但 v0.62 起"最后打开"成了界面上看得见的一列：只写库不回读，
     // 人点完一行看到的还是破折号，等于界面在说谎 ⇒ 成功后静默回读一次再重绘。
     // 项目几十个、2—5 个人用，多一个 GET 换界面自洽，值。
-    api.openProject(id).then(() => this.load())
-      .then(() => window.dispatchEvent(new CustomEvent('app:refresh')))
+    api.openProject(id).then(() => (alive() ? this.load() : this))
+      .then(() => { if (alive()) window.dispatchEvent(new CustomEvent('app:refresh')); })
       .catch(() => {});
   },
 };

@@ -244,9 +244,9 @@ export default {
         </div>
         <blockquote class="ex-quote">${escapeHtml(f.quote || '')}</blockquote>
         ${canSign ? `<div class="row" style="gap:6px;margin-top:6px">
-          <button class="btn sm" data-sign="approved" data-anchor="${f.anchor}">通过</button>
-          <button class="btn sm" data-sign="returned" data-anchor="${f.anchor}">退回</button>
-          <button class="btn sm danger" data-sign="rejected" data-anchor="${f.anchor}">驳回</button>
+          <button class="btn sm" data-sign="approved" data-anchor="${escapeHtml(f.anchor)}">通过</button>
+          <button class="btn sm" data-sign="returned" data-anchor="${escapeHtml(f.anchor)}">退回</button>
+          <button class="btn sm danger" data-sign="rejected" data-anchor="${escapeHtml(f.anchor)}">驳回</button>
         </div>` : ''}
         ${signed?.note ? `<p class="t-desc">备注：${escapeHtml(signed.note)}</p>` : ''}
       </div>`;
