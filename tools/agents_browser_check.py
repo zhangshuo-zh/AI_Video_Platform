@@ -145,6 +145,21 @@ def seed_scene(admin):
     from repositories.content import episodes as episode_repo
     from repositories.projects import projects as project_repo
 
+    # CI 干净库的 provider_config 是空的（本地库早已配成 deepseek，所以本地一直绿）。
+    # 智能体算计划走 resolve_provider("text")，而 0014 只把 image/video/tts/music
+    # 归位成本地默认，**text 按设计只有云端一条路线**（0003 种子 text/cloud=默认）。
+    # 不填这一格，发起弹窗的预检就回「文本的云端档还没填 provider/模型」，
+    # 两条"念出会走哪条轨／没勾确认被拒"的检查必然红。这里补上最小可解析的一档。
+    # 只写配置、不发请求：验收测的是提交前的读与拒，不需要真钥匙。
+    from repositories.providers import providers as provider_repo
+    text_cloud = provider_repo.slot("text", "cloud")
+    if text_cloud is not None:
+        provider_repo.replace_many([{
+            "id": text_cloud["id"], "provider": "deepseek", "model": "deepseek-flash",
+            "enabled": 1, "is_default": 1, "key_env": "",
+            "notes": "浏览器验收种子：让发起弹窗能解析出路线",
+        }])
+
     pid = project_repo.create("智能体验收_副本", "", [], admin["id"])["id"]
     eid = episode_repo.create(pid, "第 1 集")["id"]
     plan = [
