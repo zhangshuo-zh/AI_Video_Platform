@@ -748,6 +748,18 @@ def import_generated_image(asset_id: int, payload: AssetImageImportIn,
                            user=Depends(require_permission("asset:write"))
                            ) -> AssetImageImportOut:
     asset = _asset_for(asset_id, user, "write")
+    # 作业也必须是自己**看得见**的（2026-11-10 审计修的真 bug）。
+    #
+    # 原来这里只判了"资产归你"，没判 `payload.job_id` 那条作业归谁：
+    # 于是拿别人项目里一条成功图像作业的 id，就能把它的产物字节复制进自己的
+    # 资产，再用 `/files/...` 下载出来——跨项目读取他人产物（实测两份字节完全相同）。
+    # 同一模块的 `generation_view`（`asset_studio.py:646-648`）与
+    # `services/doc_ai.py` 的 `_ai_job_for_doc` 都有这道门，唯独这条导入路径漏了。
+    #
+    # 口径与 `routers/jobs.py:33-39` 的 `_load` 等价：作业不存在 → 404「作业不存在」；
+    # 存在但项目不可见 → 404「项目不存在」。看不见一律 404，不因为行还在就告诉
+    # 对方"这行存在，只是你不配看"。
+    ensure_by("job", payload.job_id, user, "read", "作业")
     # 一个事务：形态的图清单与资产的 ref_images 都是读-改-写，
     # BEGIN IMMEDIATE 保证两个人同时存图不会互相覆盖那份 JSON
     with transaction():

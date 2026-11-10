@@ -427,3 +427,81 @@ def test_路由表与本表条数对齐(app):
     norm = lambda s: re.sub(r"\{[^}]+\}", "{}", s)
     a, b = {(m, norm(p)) for m, p in business}, {(m, norm(p)) for m, p in tabled}
     assert a == b, f"表里缺：{sorted(a - b)}；表里多：{sorted(b - a)}"
+
+
+# ---------------------------------------------------------------- 交叉组合
+# 上面那张表只覆盖「路径里**所有** id 都是别人的」这一种形态：`ids` 全部指向
+# editor 名下的那个项目，outsider 一进来先撞 `ensure(project_id)` 就 404 了，
+# 后面的 `{e}` `{j}` 到底有没有单独校验**永远不会被执行到**。
+#
+# 2026-11-10 的审计正是从这条缝里挖出两个真越权（都实测复现过）：
+#   · `POST /api/assets/{a}/generated-images` 只判"资产归你"，不判 `job_id`
+#     归谁——拿别人项目里一条成功图像作业，产物字节会被复制进自己的资产再下载
+#     （两份 cmp 完全相同）；
+#   · `GET /api/projects/{p}/precheck` 与 `/composition-precheck` 只判项目可见，
+#     `episode_id` 原样下传，「自己的 p + 别人的 e」回 200 并按别人的集把各项
+#     算完——"这一集不属于该项目"只是最后一条 blocking 文案，数据早就出去了。
+#
+# 所以这里补**交叉**用例：p / a 用 editor 自己看得见的，e / j 用别人的。
+
+@pytest.fixture(scope="module")
+def foreign(people):
+    """outsider 名下的项目 + 一集 + 一条成功图像作业（editor 全都看不见）。"""
+    import uuid
+
+    from repositories.content import assets as asset_repo
+    from repositories.content import episodes as episode_repo
+    from repositories.jobs import jobs as job_repo
+    from repositories.projects import projects as project_repo
+
+    oid = people["outsider"]["id"]
+    pid = project_repo.create(f"别人的项目_{uuid.uuid4().hex[:6]}", "", [], oid)["id"]
+    eid = episode_repo.create(pid, "别人的第 1 集")["id"]
+    job = job_repo.create({
+        "project_id": pid, "episode_id": eid, "shot_id": None,
+        "capability": "image", "kind": "image", "execution_mode": "local",
+        "provider_code": "mock", "model_code": "mock-1", "adapter_version": "mock",
+        "prompt_snapshot": "交叉组合用", "params": {}, "input_refs": [],
+        "created_by": oid,
+    })
+    aid = asset_repo.create(pid, "character", f"别人的角色_{uuid.uuid4().hex[:6]}",
+                            "", "", [])["id"]
+    return {"project_id": pid, "episode_id": eid, "job_id": job["id"], "asset_id": aid}
+
+
+def test_交叉组合_自己的项目配别人的集必须404(as_role, seeded, foreign):
+    """/precheck 与 /composition-precheck：p 是自己的，episode_id 是别人的。
+
+    修之前两条都回 200，并且是按**别人的集**把镜头数、音画缺口那些项算完的。
+    """
+    c = as_role("editor")                     # editor 看得见 seeded，看不见 foreign
+    mine, theirs = seeded["project_id"], foreign["episode_id"]
+    assert c.get(f"/api/projects/{mine}/summary").status_code == 200, "前提：自己的项目要看得见"
+    assert c.get(f"/api/projects/{theirs}").status_code == 404, "前提：别人的项目要看不见"
+
+    r = c.get(f"/api/projects/{mine}/precheck?episode_id={theirs}")
+    assert r.status_code == 404, f"整集预检把别人项目的结构算出来了：{r.text[:120]}"
+
+    r = c.get(f"/api/projects/{mine}/composition-precheck?episode_id={theirs}")
+    assert r.status_code == 404, f"合成预检把别人项目的结构算出来了：{r.text[:120]}"
+
+
+def test_交叉组合_自己的资产配别人的作业必须404(as_role, seeded, foreign):
+    """`POST /assets/{a}/generated-images`：a 是自己的，job_id 是别人的。
+
+    修之前回 200：别人项目作业的产物字节被复制进自己的资产，
+    再用 `/files/...` 就能下载出来——跨项目读取他人产物。
+    """
+    c = as_role("editor")
+    r = c.post(f"/api/assets/{seeded['asset_id']}/generated-images",
+               json={"job_id": foreign["job_id"], "artifact_index": 0})
+    assert r.status_code == 404, (
+        f"能把别人作业的产物导进自己的资产：{r.status_code} {r.text[:160]}")
+
+
+def test_交叉组合_自己的资产配别人的资产也得404(as_role, seeded, foreign):
+    """反方向：资产是别人的，job 是自己的——同一道门不能只装一半。"""
+    c = as_role("editor")
+    r = c.post(f"/api/assets/{foreign['asset_id']}/generated-images",
+               json={"job_id": seeded["job_id"], "artifact_index": 0})
+    assert r.status_code == 404, f"别人的资产挡住了吗：{r.status_code} {r.text[:120]}"

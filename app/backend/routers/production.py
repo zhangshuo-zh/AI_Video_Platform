@@ -125,6 +125,16 @@ def episode_precheck_api(project_id: int, episode_id: int,
                          user=Depends(require_permission("job:read"))) -> dict:
     """整集预检。产线发起弹窗用的就是这一份，不再自己拼一遍。"""
     access.ensure(user, project_id, "read")
+    # `episode_id` 必须真属于这个项目（2026-11-10 审计修的真 bug）。
+    #
+    # 原来只判了 `project_id` 可见就把 `episode_id` 原样传给下层，于是
+    # 「自己可见的 p + 别人的 e」能拿到 200：下层 `precheck.episode_precheck`
+    # 第一句就 `shots.list_by_episode(episode_id)` 按别人的集算完了 1/2/6/7/8…
+    # 各项，「这一集不属于该项目」只是最后一条 blocking 文案——数据早就出去了。
+    # 拿自己的 p 配上遍历 e，能扫出全平台每一集的镜头数等结构信息。
+    #
+    # 走 `ensure_by` 让"别人的集"回 404，与"别人的项目回 404"同一条纪律。
+    access.ensure_by("episode", episode_id, user, "read", "集")
     return precheck.episode_precheck(project_id, episode_id, template_id)
 
 
@@ -134,6 +144,9 @@ def composition_precheck_api(project_id: int, episode_id: int,
                              user=Depends(require_permission("job:read"))) -> dict:
     """合成前预检（11 项）。点「新建成片」之前先跑它，阻塞项直接定位到镜。"""
     access.ensure(user, project_id, "read")
+    # 同上：这一条更宽——下层 `composition_precheck` 会先按别人的集算出
+    # 11 项里的 10 项才轮到归属检查。
+    access.ensure_by("episode", episode_id, user, "read", "集")
     return precheck.composition_precheck(project_id, episode_id,
                                          subtitle_path=subtitle_path)
 
