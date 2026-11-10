@@ -44,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 
 import adapters
+import cloud_run
 import jobfiles
 import agents
 from migrate import migrate
@@ -149,6 +150,28 @@ def _child_env(spec) -> dict:
             continue
         if extra in os.environ:
             env[extra] = os.environ[extra]
+            continue
+        # 环境里没有 → 从库里的密文**现解**，这一次调用现用（2026-11-11）。
+        #
+        # 为什么在这里解而不是让 cloud_run.py 自己查库：cloud_run 是独立子进程，
+        # 模块头写死"不碰数据库、不认识 Job"，那条边界是它可测试、可重放的前提
+        # （只认一份请求 JSON 快照）。破它比"多解一次密"的代价大得多。
+        # 也不缓存到 os.environ：那是**跨作业残留**，会让 A 作业用的密钥
+        # 悄悄留在进程里给 B 作业看见。
+        try:
+            import secret_store
+            value, _source = secret_store.resolve(extra)
+            if value:
+                env[extra] = value
+        except Exception:
+            # 解不开（KEK 换了/库被改）：**这里不加变量，也不打印原因**。
+            # 为什么不打日志：本函数没有 log 句柄，而为了打一行字去改它的
+            # 签名会把 12 个调用点全牵动；更关键的是**解密失败的证据在别处
+            # 更准确**——`runners._cloud` 的 `key_present` 已能认出"库里有"，
+            # 于是作业会带着"缺密钥"的信息失败，`secret_store.resolve`
+            # 在 API 侧的探测会报 `InvalidTag`。两处都能查，不必在这里留第三份。
+            # 静默的只是"本函数没补这个变量"，不是"把故障吞掉"。
+            continue
     return env
 
 
@@ -874,16 +897,60 @@ def process(job, wid: str, limits: dict | None = None) -> None:
             if receipt:
                 extra["provider"] = receipt
             cancel_request_id = receipt.get("request_id")
-            if _cloud_uncertain(job, "cancelled_unconfirmed", cancel_request_id):
-                _write(log, "状态：needs_attention（取消，但供应商任务可能已建立）")
+            # **向供应商发起取消**（2026-11-10，B12）。
+            #
+            # 原来这里只 `_terminate(proc)` 杀掉本地子进程，供应商那边任务照跑
+            # 照计费——本地记成 cancelled，钱照扣，而且界面上看不出这件事。
+            # 现在拿 task_id 去调供应商的 cancel 接口，并把结论落在 resources
+            # 与日志里。**结论必须如实三种**，不能一律说"已取消"：
+            #   cancelled=True              真取消了，不会再计费
+            #   reason="running"            已在跑，供应商不收取消（400）
+            #   reason=<别的原因>           没配置/网络/形状不对，结果未知
+            # 后两种都算"钱可能已经花了"，所以仍走 needs_attention 那条路，
+            # 只是文案与 reason 分开写，让人一眼看出差在哪。
+            supplier_cancel = {}
+            if cancel_request_id:
+                # 密钥变量名从 `spec.pass_env` 取：那正是父进程放行给这个
+                # 云端子进程的那一个（`runners._secret_envs`），比从回执里猜可靠。
+                # base_url 不传，让 `cancel_task` 走它自己的环境读取
+                # （`ALIYUN_WAN_BASE_URL`），与 `_wan()` 用同一个来源。
+                _key_envs = [e for e in (spec.pass_env or ())
+                             if e.endswith(("_API_KEY", "_KEY", "_TOKEN"))]
+                supplier_cancel = cloud_run.cancel_task(
+                    provider=str((job.get("provider_code") or "")),
+                    request_id=str(cancel_request_id),
+                    key_env=(_key_envs[0] if _key_envs else ""))
+                extra["supplier_cancel"] = supplier_cancel
+                _write(log, "供应商取消：" + json.dumps(
+                    {k: supplier_cancel.get(k) for k in
+                     ("cancelled", "reason", "http_status")},
+                    ensure_ascii=False))
+            supplier_cancelled = bool(supplier_cancel.get("cancelled"))
+            if (not supplier_cancelled) and _cloud_uncertain(
+                    job, "cancelled_unconfirmed", cancel_request_id):
+                reason = str(supplier_cancel.get("reason") or "")
+                if reason == "running":
+                    _write(log, "状态：needs_attention（取消，但供应商任务已在运行，取消不了）")
+                    detail = ("供应商那边任务已经开跑，接口只允许取消排队中的任务；"
+                              "这一笔很可能已经计费，请核对账单后再决定是否重试或补录。")
+                elif reason:
+                    _write(log, f"状态：needs_attention（取消，供应商取消没成功：{reason}）")
+                    detail = ("供应商取消请求没成功（" + reason + "）；"
+                              "任务结果未知，这一笔可能已经计费，请核对账单。")
+                else:
+                    _write(log, "状态：needs_attention（取消，但供应商任务可能已建立）")
+                    detail = ("供应商任务可能已建立，请先核对账单再决定是否重试"
+                              "（没有拿到可取消的任务号，无法代你撤销）。")
                 jobs.needs_attention(
                     job["id"], wid, "cancelled_unconfirmed",
-                    f"{exc}；供应商任务可能已建立，请先核对账单再决定是否重试。",
+                    f"{exc}；{detail}",
                     "用户在云端调用已建立后取消",
                     jobfiles.relative(log_path), None, elapsed,
                     resources=_resources(cpu_start, elapsed, child_cpu_start, extra=extra),
                     provider_request_id=cancel_request_id)
             else:
+                if supplier_cancelled:
+                    _write(log, "状态：cancelled（已向供应商撤销，不会再计费）")
                 _write(log, f"状态：cancelled（{exc}）")
                 jobs.cancelled(job["id"], wid, str(exc),
                                jobfiles.relative(log_path), elapsed,

@@ -50,6 +50,24 @@ class _Handler(BaseHTTPRequestHandler):
         scenario = self.server.scenario
         auth = self.headers.get("Authorization") or ""
 
+        # 取消异步任务（2026-11-10，B12）：`POST /api/v1/tasks/{id}/cancel`。
+        # 真实接口只接受 PENDING 状态的任务，这里按 scenario 模拟两种答复。
+        if self.path.startswith("/api/v1/tasks/") and self.path.endswith("/cancel"):
+            if scenario == "cancel_running":
+                # 任务已经开跑：阿里云返回 400 UnsupportedOperation
+                self._json(400, {"code": "UnsupportedOperation",
+                                 "message": "Failed to cancel the task. "
+                                            "Confirm that the task is in PENDING status."})
+                return
+            if scenario == "cancel_401":
+                self._json(401, {"code": "InvalidApiKey",
+                                 "message": "bad key " + SECRET})
+                return
+            # 默认：取消成功。真实成功响应是**一个裸 JSON 字符串**（request id），
+            # 不是对象——照实现，否则解析差异会把这条测试变成假绿。
+            self._send(200, json.dumps("45ac7f13-cancel-ok").encode("utf-8"))
+            return
+
         if self.path.endswith("/chat/completions"):
             if scenario == "deepseek_ok":
                 if auth != f"Bearer {SECRET}":
@@ -492,3 +510,101 @@ def test_云端重试继承执行方式与计价(provider_state, clean_queue, fr
     assert again["billable_status"] == "pending_reconciliation"
     assert again["provider_request_id"] is None
     job_repo.request_cancel(again["id"])
+
+
+# ---------------------------------------------------------------- 取消异步任务（B12）
+#
+# 2026-11-10 裁决：原来点「取消」只改本地状态，供应商那边任务照跑照计费。
+# 现在 worker 在 `except Cancelled` 里拿 task_id 去调供应商的 cancel 接口。
+# 这一组钉住三种结论可区分——**尤其不能把"取消不了"说成"已取消"**。
+
+def test_取消_wan_排队中的任务会真的发请求(monkeypatch, mock_api):
+    """PENDING 的任务能取消：发出 POST .../cancel，且带 Bearer。"""
+    import cloud_run
+    monkeypatch.setenv("ALIYUN_WAN_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET)
+
+    out = cloud_run.cancel_task(provider="wan", request_id="a8532587-x",
+                                key_env="DASHSCOPE_API_KEY")
+
+    assert out["cancelled"] is True, out
+    assert out["http_status"] == 200
+    calls = [(m, p) for m, p, _h, _b in mock_api.calls]
+    assert ("POST", "/api/v1/tasks/a8532587-x/cancel") in calls, calls
+    headers = [h for m, p, h, _b in mock_api.calls if p.endswith("/cancel")][0]
+    assert headers.get("Authorization") == f"Bearer {SECRET}"
+
+
+def test_取消_任务已在跑时如实说取消不了(monkeypatch, mock_api):
+    """400 UnsupportedOperation → `cancelled=False` 且 reason 是 `running`。
+
+    这条是本组最要紧的一条：真实接口**只允许取消排队中的任务**。
+    如果实现把 400 也当成"取消了"，界面上就会写"已撤销、不会再计费"，
+    而钱其实正在花——那正是本轮在修的那类假话。
+    """
+    import cloud_run
+    monkeypatch.setenv("ALIYUN_WAN_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET)
+    mock_api.scenario = "cancel_running"
+
+    out = cloud_run.cancel_task(provider="wan", request_id="b1111111-y",
+                                key_env="DASHSCOPE_API_KEY")
+
+    assert out["cancelled"] is False, out
+    assert out["reason"] == "running", (
+        f"任务已经在跑却没被单独标出来，worker 分不清「取消不了」和「没配好」：{out}")
+    assert out["http_status"] == 400
+
+
+def test_取消_401_时把密钥抹掉(monkeypatch, mock_api):
+    """供应商回显里带密钥片段 → 落盘结论里不能有它。"""
+    import cloud_run
+    monkeypatch.setenv("ALIYUN_WAN_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET)
+    mock_api.scenario = "cancel_401"
+
+    out = cloud_run.cancel_task(provider="wan", request_id="c2222222-z",
+                                key_env="DASHSCOPE_API_KEY")
+
+    assert out["cancelled"] is False
+    assert SECRET not in json.dumps(out, ensure_ascii=False), out
+
+
+def test_取消_task_id_形状不合法就不发请求(monkeypatch, mock_api):
+    """`task_id` 是供应商给的外部数据，会被拼进**带凭据的 URL**。
+
+    `../../`、`@evil.com` 这类能改路径或改 host。白名单不过就一个请求都不发——
+    "先发出去再说"在这里等于把 Bearer 送到别人家。
+    """
+    import cloud_run
+    monkeypatch.setenv("ALIYUN_WAN_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET)
+    before = len(mock_api.calls)
+
+    for bad in ("../../evil", "a@evil.com", "a/b", "x" * 200, ""):
+        out = cloud_run.cancel_task(provider="wan", request_id=bad,
+                                    key_env="DASHSCOPE_API_KEY")
+        assert out["cancelled"] is False
+        assert out["reason"] == "bad_task_id", (bad, out)
+    assert len(mock_api.calls) == before, "形状不合法的 task_id 也发请求了"
+
+
+def test_取消_没有_base_url_或密钥时明确说原因(monkeypatch):
+    """缺配置要说清缺哪一样，不能笼统报"取消失败"。"""
+    import cloud_run
+    monkeypatch.delenv("ALIYUN_WAN_BASE_URL", raising=False)
+    out = cloud_run.cancel_task(provider="wan", request_id="d3333333-a")
+    assert out["cancelled"] is False and out["reason"] == "missing_base_url", out
+
+    monkeypatch.setenv("ALIYUN_WAN_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    out = cloud_run.cancel_task(provider="wan", request_id="d3333333-a")
+    assert out["cancelled"] is False and out["reason"] == "missing_key", out
+
+
+def test_取消_对同步的_deepseek_说没有这回事(monkeypatch):
+    """deepseek 是同步调用，没有异步任务可取消。如实说，不假装成功。"""
+    import cloud_run
+    out = cloud_run.cancel_task(provider="deepseek", request_id="whatever")
+    assert out["cancelled"] is False
+    assert out["reason"] == "unsupported_provider", out

@@ -372,6 +372,78 @@ def _wan(request: dict, result: dict) -> int:
     return 0
 
 
+def cancel_task(*, provider: str, request_id: str, key_env: str = "",
+                base_url: str = "", timeout: float = 15.0) -> dict:
+    """向供应商请求取消一个异步任务。返回可落盘的结论 dict，不抛异常。
+
+    **为什么这件事只能由父进程做**（2026-11-10 加）：执行中的
+    `cloud_run.py` 是个子进程，它正在 `_wan()` 的轮询循环里 `time.sleep`，
+    没有任何途径把它"叫停去打个电话"。worker 收到 `cancel_requested` 时
+    原来只做一件事：`_terminate(proc)`——**杀掉本地进程**。供应商那边的任务
+    照跑照计费，钱白花。取消动作必须由还活着的父进程（worker）发起。
+
+    接口事实（阿里云 Model Studio，2026-10-27 版文档）：
+        POST {base}/api/v1/tasks/{task_id}/cancel
+        Authorization: Bearer <key>
+        **只对 `PENDING`（排队未开始）的任务有效**；任务一旦 `RUNNING`，
+        返回 400 `UnsupportedOperation`。所以这个函数的三态必须是可区分的：
+
+        * `{"cancelled": True}`  —— 真取消了，不会再计费
+        * `{"cancelled": False, "reason": "running"}` —— 已经在跑，取消不了
+        * `{"cancelled": False, "reason": "..."}` —— 调用失败/没配置
+
+    调用方（`worker.py`）按 reason 决定文案与是否挂「待核对」，**不能
+    把"取消不了"说成"已取消"**——那正好是本轮在修的那类假话。
+
+    安全：`request_id` 是供应商给的外部数据，会被拼进**带凭据的 URL**，
+    所以先过与 `_wan` 同一个白名单（`_TASK_ID_RE`）+ quote。
+    """
+    out: dict = {"provider": provider, "task_id": request_id,
+                 "cancelled": False, "reason": "", "http_status": None}
+    if provider != "wan":
+        # deepseek 是同步调用，没有异步任务可取消；别的 provider 也还没有
+        # 取消接口可用。如实说"没有"比假装成功好。
+        out["reason"] = "unsupported_provider"
+        return out
+    if not _TASK_ID_RE.fullmatch(str(request_id or "")):
+        out["reason"] = "bad_task_id"
+        return out
+    base = (base_url or os.environ.get("ALIYUN_WAN_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        out["reason"] = "missing_base_url"
+        return out
+    secret = os.environ.get(key_env or DEFAULT_WAN_KEY_ENV, "")
+    if not secret:
+        out["reason"] = "missing_key"
+        return out
+
+    task_id = urllib.parse.quote(request_id, safe="")
+    url = base + f"/api/v1/tasks/{task_id}/cancel"
+    try:
+        _guard_url(url)
+        req = urllib.request.Request(url, data=b"", method="POST")
+        req.add_header("Authorization", f"Bearer {secret}")
+        with safenet.safe_urlopen(req, timeout=timeout) as resp:
+            out["http_status"] = resp.status
+            resp.read()
+        out["cancelled"] = True
+        return out
+    except urllib.error.HTTPError as exc:
+        status, extra, message = _http_error(exc, secret)
+        out["http_status"] = status
+        code = str(extra.get("code") or "")
+        out["reason"] = message
+        # 400 UnsupportedOperation = 任务已经不在 PENDING 了。单独标出来，
+        # 因为它是**最常撞的**一种，且语义明确（已经在跑，改不了）。
+        if status == 400 and ("UnsupportedOperation" in code
+                              or "PENDING" in message):
+            out["reason"] = "running"
+        return out
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        out["reason"] = _redact(f"{type(exc).__name__}: {exc}", secret)
+        return out
+
+
 class _ProviderError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
