@@ -100,6 +100,42 @@ def resolve(*, kind: str, audience: str, dedupe_key: str) -> int:
         return cur.rowcount
 
 
+# 通知保留天数。为什么要有上限：这张表**只增不减**——`worker_daemon` 类
+# 每次补起/失败各记一条，worker 每天崩 5 次就是 1825 条/年；而收件箱只取最近
+# 30 条，留下的旧行既没人看、又让 COUNT(*) 未读越来越慢。
+# 7 天与 `worker_node` 的 prune 同一个口径（lease.py 那条 DELETE），
+# 运维上「一周前的通知还值不值得看」有一个统一答案。
+NOTIFICATION_KEEP_DAYS = 7
+
+# 上次清理的时间（monotonic 秒）。**不每轮都删**：`worker_node` 那条 prune
+# 就是为同样的事被优化过（心跳 2 秒一次、每小时才清一遍），这里同一条道理——
+# 清理要清的是"7 天前"，每 15 秒跑一遍永远是 0 行，等于拿写锁空转。
+_last_prune = 0.0
+
+
+def prune(force: bool = False) -> int:
+    """删掉超过保留期的通知。返回删了几条。
+
+    **已读表靠外键 CASCADE 跟着删**（0049 建表时写的 `ON DELETE CASCADE`），
+    所以不用手动清 `notification_read`。
+    """
+    global _last_prune
+    import time
+    now = time.monotonic()
+    if not force and now - _last_prune < 3600:
+        return 0
+    _last_prune = now
+    try:
+        with get_conn() as conn:
+            cur = conn.execute(
+                f"""DELETE FROM notification
+                     WHERE created_at < datetime('now','localtime','-{NOTIFICATION_KEEP_DAYS} days')"""
+            )
+            return cur.rowcount
+    except Exception:
+        return 0
+
+
 def _valid_audience(audience: str) -> bool:
     if audience == "config_admins":
         return True

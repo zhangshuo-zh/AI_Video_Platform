@@ -513,3 +513,64 @@ class TestP0Regressions:
             if worker.poll() is None:
                 worker.kill()
             worker.wait()
+
+
+class TestNotificationPrune:
+    """表只增不减的治理（2026-11-10 复核提出）。
+
+    `worker_daemon` 类每次补起/失败各记一条，而只有 `worker_offline` 会被
+    `resolve_offline` 清掉——worker 每天崩 5 次就是 1825 条/年，收件箱只取
+    最近 30 条，旧行全是垃圾而且让未读 COUNT(*) 越来越慢。
+    """
+
+    def test_超期通知会被删(self, env, uniq):
+        import notifications
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience, created_at)
+                   VALUES ('worker_daemon','warn','旧','config_admins',
+                           datetime('now','localtime','-10 days'))""")
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience)
+                   VALUES ('worker_daemon','warn','新','config_admins')""")
+        removed = notifications.prune(force=True)
+        assert removed == 1, f"该只删那条 10 天前的，实删 {removed}"
+        with get_conn() as conn:
+            titles = [r["title"] for r in conn.execute("SELECT title FROM notification")]
+        assert titles == ["新"], f"留下的应是新的那条，实得 {titles}"
+
+    def test_已读行跟着级联删(self, env, uniq):
+        """`notification_read` 靠 0049 建的 `ON DELETE CASCADE` 跟着走，
+        不用手动清——但得验它真的生效（外键约束在 SQLite 上要 `PRAGMA
+        foreign_keys` 打开才管用）。"""
+        import notifications
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience, created_at)
+                   VALUES ('worker_daemon','warn','旧','config_admins',
+                           datetime('now','localtime','-10 days'))""")
+            nid = conn.execute("SELECT id FROM notification").fetchone()["id"]
+            conn.execute("INSERT OR IGNORE INTO notification_read (notification_id,user_id) VALUES (?,999)", (nid,))
+        notifications.prune(force=True)
+        with get_conn() as conn:
+            left = conn.execute(
+                "SELECT COUNT(*) AS n FROM notification_read WHERE notification_id=?",
+                (nid,)).fetchone()["n"]
+        assert left == 0, "父行删了，已读行该被级联删掉"
+
+    def test_不强制时不会每次都删(self, env, uniq):
+        """每小时最多一次——放在每 15 秒的路径上不能变成写放大。
+        `worker_node` 那条 prune 就是为同样的事被优化过。"""
+        import notifications
+        notifications.prune(force=True)          # 把计时器拨到现在
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience, created_at)
+                   VALUES ('worker_daemon','warn','旧','config_admins',
+                           datetime('now','localtime','-10 days'))""")
+        assert notifications.prune() == 0, "刚跑过就又不该再删"

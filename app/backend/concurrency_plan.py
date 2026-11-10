@@ -149,20 +149,50 @@ def assess(*, limits: dict | None, rows: list[dict] | None = None,
     # 每类各自的峰值占用（同一类内部取最大值而不是平均：并发时同时跑的两条
     # 都在峰值附近最坏，平均会把尖峰抹平）
     peak_by_class = {k: round(max(v) / MB) for k, v in samples.items()}
+
+    # **估算口径修正（2026-11-10 复核）**：原来的算法是
+    #     for cls: need += peak[cls] * (per.get(cls) or global_max)
+    # 也就是"每一类都能各自占满 global_max 条"。这是错的：
+    # `claim_next` 的并发语义是**总数**受 `global` 约束（见 lease.py 里
+    # `if sum(active.values()) >= max_global: return None`），
+    # 各类上限只是在该总数之下再分层限制。逐类各乘 global 会把上限放大
+    # 「资源类数」倍——本机 16 GB、4 类有样本，实测高估 **1.9 倍**，
+    # 后果是把本来放得下的配置判成"会溢出"（global=3 真实最坏 6.0 GB，
+    # 旧算法算成 11.5 GB → 直接报 over）。这种"狼来了"式的告警，
+    # 人会学会一路点"我知道风险"，真危险时就不看了。
+    #
+    # 正确的上界：**总数不超过 global_max，且每类不超过自己的上限**。
+    # 最坏情况是"把名额全给最贵的那一类"（因为各类之间争的是同一个总数），
+    # 所以按单价从高到低贪心填满 global_max 个名额，得到的是真上界。
+    # 某类被显式设成 0 就是"这类不接活"，名额根本不经过它。
     need_mb = 0
     detail: list[dict] = []
+    capacity = max(0, int(global_max))
+    candidates = []
     for cls in RESOURCE_CLASSES:
-        slot_cap = per.get(cls, global_max)     # 没显式给该类，就按全局上限估
-        if slot_cap <= 0:
-            continue
         unit = peak_by_class.get(cls)
         if unit is None:
             continue
-        slots_mb = unit * slot_cap
+        # 这类最多能占几个名额：显式上限（含 0）优先，否则就是全局上限
+        slots = int(per[cls]) if cls in per else capacity
+        if slots <= 0:
+            continue
+        candidates.append((unit, cls, slots))
+
+    # 贵的那类先占名额——最坏情况就是这么发生的
+    for unit, cls, slots in sorted(candidates, reverse=True):
+        if capacity <= 0:
+            break
+        take = min(slots, capacity)
+        if take <= 0:
+            continue
+        slots_mb = unit * take
         need_mb += slots_mb
-        detail.append({"class": cls, "slots": slot_cap,
+        capacity -= take
+        detail.append({"class": cls, "slots": take,
                        "unit_peak_mb": unit, "sum_mb": slots_mb,
-                       "samples": len(samples.get(cls, []))})
+                       "samples": len(samples.get(cls, [])),
+                       "declared_cap": slots})
 
     need_mb = round(need_mb * SAFETY_RATIO) if detail else 0
     available_mb = max(0, total - reserved_mb) if total else 0

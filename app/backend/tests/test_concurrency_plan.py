@@ -300,3 +300,66 @@ class TestService:
         over = next(a for a in status["alerts"]
                     if a["code"] == "concurrency_over_memory")
         assert over["level"] == "bad"
+
+
+class TestGlobalCapSemantics:
+    """`global` 是**总数**上限，不是"每类各一份"。
+
+    这条补的是一个真 bug（2026-11-10 复核）：旧公式是
+        for cls: need += peak[cls] * (per.get(cls) or global_max)
+    每类都各乘一遍 global，把上限放大「资源类数」倍。实测 16 GB 机器上高估 1.9 倍，
+    把本来放得下的 global=3（真实最坏 6.0 GB）算成 11.5 GB 判 over。
+
+    **旧测试为什么没抓住**：它们都只用单一资源类的样本，那时"逐类各乘"与
+    "贪心填满总数"结果相同。要抓住这个 bug，样本必须**同时含贵和便宜的多类**。
+    """
+
+    def test_多类样本时按总数而不是逐类各乘(self):
+        """两类样本（贵的 video、便宜的 text），global=2。
+
+        正确口径：2 个名额全给最贵的 video = 2×2038。
+        旧的错误口径：video 2×2038 + text 2×28 —— 把名额算了两遍。
+        """
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2038 * 1024),
+                _row("text", "deepseek", 28 * 1024)]
+        out = cp.assess(limits={"global": 2, "per": {}}, rows=rows, total_mb=16384)
+        # 2 × 2038 × 1.15 = 4687.4 → 4687
+        assert out["estimated_need_mb"] == 4687, (
+            f"应只算 2 个名额（全给最贵的 video），实得 {out['estimated_need_mb']}")
+        # detail 之和必须等于总量（不存在"名额被重复分配"）
+        assigned = sum(d["slots"] for d in out["detail"])
+        assert assigned == 2, f"分配的名额数应等于 global，实得 {assigned}"
+
+    def test_三类样本时名额不被放大(self):
+        """三类时放大倍数最明显：旧公式会是 3 倍于正确值附近。"""
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024),
+                _row("image", "mflux", 1400 * 1024),
+                _row("text", "deepseek", 25 * 1024)]
+        out = cp.assess(limits={"global": 3, "per": {}}, rows=rows, total_mb=32768)
+        # 3 个名额全给 video：3 × 2000 × 1.15 = 6900
+        assert out["estimated_need_mb"] == 6900
+        assert sum(d["slots"] for d in out["detail"]) == 3
+
+    def test_显式每类上限要真被尊重(self):
+        """`per={video:1}` 时 video 只占 1 个名额，剩下的给次贵的那类。
+        这条防的是"为了修总数 bug 而把 per 忽略掉"。"""
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024),
+                _row("image", "mflux", 1400 * 1024)]
+        out = cp.assess(limits={"global": 4, "per": {"video": 1}},
+                        rows=rows, total_mb=32768)
+        by = {d["class"]: d for d in out["detail"]}
+        assert by["video"]["slots"] == 1, "声明的 video=1 没被尊重"
+        assert by["image"]["slots"] == 3, "剩下的名额该给 image"
+
+    def test_某类设_0_表示不接活_不占名额(self):
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024),
+                _row("image", "mflux", 1400 * 1024)]
+        out = cp.assess(limits={"global": 2, "per": {"video": 0}},
+                        rows=rows, total_mb=32768)
+        by = {d["class"]: d for d in out["detail"]}
+        assert "video" not in by, "video=0 表示这一类不接活，不该出现在占用里"
+        assert by["image"]["slots"] == 2

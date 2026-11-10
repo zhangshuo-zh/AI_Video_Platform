@@ -146,6 +146,15 @@ def _tick() -> None:
     # 守护关闭时 `_tick()` 后通知表 0 条，而队列里确实有 1 条在等。
     _notify_state(online)
 
+    # 清理过期通知。**与"守不守"无关**（同 `_notify_state` 的理由：表是这张表，
+    # 增长不增长跟守护开没开没关系）。`prune()` 自己每小时最多真跑一次，
+    # 所以放在这条每 15 秒的路径上不会变成写放大。
+    try:
+        import notifications
+        notifications.prune()
+    except Exception:
+        pass
+
     if not cfg["enabled"]:
         return                       # 守护关着：到此为止，不自动拉起
 
