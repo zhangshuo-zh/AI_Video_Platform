@@ -363,3 +363,64 @@ class TestGlobalCapSemantics:
         by = {d["class"]: d for d in out["detail"]}
         assert "video" not in by, "video=0 表示这一类不接活，不该出现在占用里"
         assert by["image"]["slots"] == 2
+
+
+class TestGlobalZeroSaysTheTruth:
+    """全局上限设成 0 时，评估必须说"这个值把并发关掉了"，不能说"没样本"。
+
+    2026-11-10 审计修的真 bug。`detail` 为空有**两个**完全不同的原因：
+      · 真的没有样本；
+      · `capacity = max(0, int(global_max))` 为 0，贪心循环一次都不走。
+    旧代码把两者合成一句「这台机器还没跑过任何带内存读数的作业」，
+    于是明明有样本也被说成没跑过。
+
+    可达性不是理论：`set_concurrency` 只拒**负数**（`services/jobs.py:486-490`），
+    `global_max=0` 存得进去。而 `claim_next` 那句
+    `if sum(active.values()) >= max_global: return None` 意味着 0 = **永不再领作业**，
+    队列会一直堆着。界面却让人"去跑几条作业再回来看"，把人支到完全错的方向。
+    """
+
+    def test_上限为0但有样本时必须说是上限本身关掉了(self):
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024),
+                _row("image", "mflux", 1400 * 1024)]
+        out = cp.assess(limits={"global": 0, "per": {}}, rows=rows,
+                        total_mb=16384)
+        # 前提：样本确实进来了（否则这条测试退化成"没样本"那条，什么也证明不了）
+        assert out["peak_by_class_mb"], "样本应当被收集到"
+        assert out["verdict"] == "unknown"
+        assert "上限" in out["sentence"] and "0" in out["sentence"], (
+            f"没把真正的原因说出来：{out['sentence']}")
+        assert "还没跑过" not in out["sentence"], (
+            f"有样本却谎称没跑过作业：{out['sentence']}")
+
+    def test_上限为0时basis不能说没有样本(self):
+        """`basis` 原来拿 `detail` 当"有没有样本"的代理，同样是假话。"""
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024)]
+        out = cp.assess(limits={"global": 0, "per": {}}, rows=rows,
+                        total_mb=16384)
+        assert "没有样本" not in out["basis"], (
+            f"basis 与 peak_by_class 自相矛盾：{out['basis']}")
+
+    def test_真的没样本时那句老话术要留着(self):
+        """配对用例：不能把"上限 0"改对之后，把真没样本那种也一并改掉。
+
+        少了这一条，"无条件说上限是 0"这种写法也能让上面两条绿。
+        """
+        import concurrency_plan as cp
+        out = cp.assess(limits={"global": 2, "per": {}}, rows=[],
+                        total_mb=16384)
+        assert out["verdict"] == "unknown"
+        assert "还没跑过" in out["sentence"], (
+            f"真没样本时该说没样本：{out['sentence']}")
+        assert out["basis"] == "没有样本，只能按默认值说话"
+
+    def test_正常上限不受这次改动影响(self):
+        """另一方向：global=2 + 有样本，仍要给出 safe/tight/over 的正常判断。"""
+        import concurrency_plan as cp
+        rows = [_row("video", "fastmetal", 2000 * 1024)]
+        out = cp.assess(limits={"global": 2, "per": {}}, rows=rows,
+                        total_mb=16384)
+        assert out["verdict"] in ("safe", "tight", "over"), out["verdict"]
+        assert len(out["detail"]) == 1

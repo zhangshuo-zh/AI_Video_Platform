@@ -145,6 +145,31 @@ class JobsLeaseMixin:
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount
+            # **`cancel_requested` 也要走那条"云端可能已计费"的保护**（2026-11-10 自查）。
+            #
+            # 原来只有 `starting/running` 那条带 `provider_request_id` 保护，
+            # `cancel_requested` 一律收成 `cancelled`。但这两个分支面对的是
+            # 同一件事实：作业已经拿到供应商请求 ID，钱可能已经花了。
+            # 「用户点过取消」并不能让供应商那边撤销——取消只是**本地意愿**，
+            # `cancel_job()` 的注释也写着跑着的作业只记意愿、模型不响应中断。
+            #
+            # 后果不是少一条记录：`cancelled` 在 `RETRYABLE` 里，界面上直接给出
+            # 「重试」，一键就再调一次供应商 → 重复扣费。而 `needs_attention`
+            # 会要求先核对账本。这正是上面那段 docstring 的规则，之前只落了一半。
+            attention_cancelled = conn.execute(
+                """UPDATE job SET status = 'needs_attention',
+                          error_code = 'worker_lost',
+                          error_message = '取消请求还没生效、worker 就退出了，且供应商任务可能已建立；请先核对账单。',
+                          attention_reason = 'worker 中断，云端调用结果未知',
+                          finished_at = datetime('now','localtime'),
+                          lease_until = NULL, worker_id = NULL,
+                          updated_at = datetime('now','localtime')
+                    WHERE status = 'cancel_requested'
+                      AND execution_mode = 'cloud'
+                      AND provider_request_id IS NOT NULL
+                      AND (lease_until IS NULL
+                           OR lease_until < datetime('now','localtime'))"""
+            ).rowcount
             cancelled = conn.execute(
                 """UPDATE job SET status = 'cancelled', error_code = 'cancelled',
                           error_message = '取消请求时 worker 已退出',
@@ -155,7 +180,8 @@ class JobsLeaseMixin:
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount
-        return {"failed": failed, "cancelled": cancelled, "needs_attention": attention}
+        return {"failed": failed, "cancelled": cancelled,
+                "needs_attention": attention + attention_cancelled}
 
 
     # 上次清理久未心跳行的时间（monotonic 秒）。见 heartbeat 里的说明。

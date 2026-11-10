@@ -199,9 +199,30 @@ def assess(*, limits: dict | None, rows: list[dict] | None = None,
     headroom_mb = available_mb - need_mb if total and detail else None
 
     if not detail:
-        verdict = "unknown"
-        sentence = ("这台机器还没跑过任何带内存读数的作业，估不出并发要多少；"
-                    "先按默认上限跑一条，再回来看这里")
+        # **这里必须把"没有样本"和"上限就是 0"分开说**（2026-11-10 审计修的真 bug）。
+        #
+        # 上面那句「还没跑过任何带内存读数的作业」原来是无条件说的，可 `detail`
+        # 为空其实有两种完全不同的原因：贪心循环的名额来自
+        # `capacity = max(0, int(global_max))`，全局上限设成 0 时循环一次都不走，
+        # 于是**明明有样本**也会被说成"这台机器没跑过作业"——实测：
+        # `assess(limits={"global": 0, "per": {"video": 2}}, rows=<3 条 video 样本>)`
+        # 返回 `verdict=unknown`、`basis="没有样本"`，而 `peak_by_class_mb` 里
+        # 清楚记着 video 的峰值 1953 MB。
+        #
+        # 这句假话不是措辞问题：`set_concurrency` 只拒负数（`:486-490`），
+        # `global_max=0` 存得进去；存进去之后界面说"没有样本、估不出来"，
+        # 人就会去找样本、去跑几条作业试试，而真实情况是
+        # `claim_next` 那句 `if sum(active.values()) >= max_global: return None`
+        # ——**0 就是永不再领任何作业**，队列会一直堆着。
+        if int(global_max) <= 0:
+            verdict = "unknown"
+            sentence = ("全局并发上限现在是 0：worker 一条作业都不会领，"
+                        "队列会一直堆着。这不是估不出来，是这个值本身把并发关掉了；"
+                        "要让活跑起来就得把它设成 ≥ 1")
+        else:
+            verdict = "unknown"
+            sentence = ("这台机器还没跑过任何带内存读数的作业，估不出并发要多少；"
+                        "先按默认上限跑一条，再回来看这里")
     elif not total:
         verdict = "unknown"
         sentence = "读不到本机物理内存，估不出上限合不合适"
@@ -237,8 +258,10 @@ def assess(*, limits: dict | None, rows: list[dict] | None = None,
         "worst_class_mb": worst_mb,
         "detail": detail,
         "running_now": running_now or {},
+        # 判"有没有样本"要看 `peak_by_class`，不能拿 `detail` 当代理：
+        # detail 为空还可能是"上限为 0，名额根本没经过任何一类"（见上面那段）。
         "basis": ("按这台机器最近成功作业的实测内存峰值推算"
-                  if detail else "没有样本，只能按默认值说话"),
+                  if peak_by_class else "没有样本，只能按默认值说话"),
     }
 
 

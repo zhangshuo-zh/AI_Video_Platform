@@ -192,6 +192,57 @@ def test_recover_stale_云端无请求ID算failed(fresh_project, clean_queue):
     assert job_repo.get(row["id"])["status"] == "failed"
 
 
+def test_recover_stale_取消了但云端有请求ID也必须挂待核对(fresh_project, clean_queue):
+    """`cancel_requested` 和 `running` 面对同一件事实：钱可能已经花了。
+
+    2026-11-10 自查发现的缺口：`recover_stale` 里只有 `starting/running` 那条
+    带 `provider_request_id` 保护，`cancel_requested` 一律收成 `cancelled`。
+    而「用户点过取消」**并不能让供应商撤销**——取消只是本地意愿
+    （见 `cancel_job()`：「跑着的只记下意愿」，模型不响应中断）。
+    于是那条作业可能已在供应商那边建了任务、甚至已计费，却被记成 `cancelled`；
+    而 `cancelled` 在 `RETRYABLE` 里，界面直接给「重试」，一键就是第二次调用。
+    修法是让它和 `running` 走同一条保护分支。
+    """
+    pid = fresh_project("editor")
+    job = _cloud_job(pid, status_via="attention", request_id="req-cancel-keep")
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status='cancel_requested',
+                      provider_request_id='req-cancel-keep',
+                      lease_until=datetime('now','localtime','-1 hour'),
+                      worker_id='ghost' WHERE id=?""", (job["id"],))
+    job_repo.recover_stale()
+    done = job_repo.get(job["id"])
+    assert done["status"] == "needs_attention", (
+        f"取消了但云端已有请求 ID，收成了 {done['status']}；"
+        f"cancelled 可直接重试，会导致重复扣费")
+    assert done["error_code"] == "worker_lost"
+
+
+def test_recover_stale_取消且云端无请求ID仍正常取消(fresh_project, clean_queue):
+    """反向钉子：没拿到请求 ID 就说明供应商一次都没被调到，这笔钱不该进账。
+
+    这条防的是"为了让上一条绿，索性把所有 cancel_requested 都判待核对"——
+    那会把正常的取消变成一堆需要人核对的垃圾。
+    """
+    pid = fresh_project("editor")
+    row = job_repo.create({
+        "project_id": pid, "capability": "text", "kind": "text",
+        "execution_mode": "cloud", "provider_code": "deepseek", "model_code": "m",
+        "adapter_version": "t", "prompt_snapshot": "x", "params": {}, "input_refs": [],
+    })
+    job_repo.claim_next("att-worker", 60)
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE job SET status='cancel_requested', provider_request_id=NULL,
+                      lease_until=datetime('now','localtime','-1 hour'),
+                      worker_id='ghost' WHERE id=?""", (row["id"],))
+    job_repo.recover_stale()
+    done = job_repo.get(row["id"])
+    assert done["status"] == "cancelled"
+    assert done["error_code"] == "cancelled"
+
+
 # ---------- retry-preview：重试前把账摆给人看 ----------
 
 def test_retry_preview_云端提示可能再计费(fresh_project, clean_queue):
