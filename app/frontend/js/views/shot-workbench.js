@@ -115,6 +115,34 @@ function refsBlock(d) {
   <h3 class="drawer-h">形态</h3>${vs}`;
 }
 
+/** 音频这条腿"现在到底能不能出声"——按后端给的三个事实说，不硬编码。
+ *
+ *  这里曾经写死"配音与音乐今天只能登记，不能真出声……执行器还没接线"。
+ *  那句话在 2026-11-05 早于配音接线（`runners._voxcpm`），接线之后它就成了
+ *  对用户说的假话：明明能提交配音，界面还在说不能。更麻烦的是没人会去试，
+ *  所以这种"把能用的说成不能用"能活很久。
+ *
+ *  `runner_wired` 由服务端问 `runners.has_branch()` 得到（`production._audio_wired`），
+ *  前端只负责把它翻译成人话——两边不各写一份真相。
+ */
+function audioWiringNote(engines) {
+  const tts = engines?.tts || {};
+  const music = engines?.music || {};
+  const ok = (e) => Boolean(e.provider) && Boolean(e.runner_wired);
+  if (ok(tts) && ok(music)) {
+    return `<b>配音与音乐都能提交执行。</b>口型（Rhubarb）仍未接入，这一页不给口型按钮。`;
+  }
+  if (ok(tts)) {
+    return `<b>配音能提交执行</b>（默认轨 ${escapeHtml(tts.provider)}）；
+      音乐这一格${music.provider ? '执行器没有这一条分支' : '默认轨还没配'}，暂时只能登记素材。
+      口型（Rhubarb）未接入。`;
+  }
+  if (tts.provider) {
+    return `<b>配音默认轨配了，但执行器没有这一条分支</b>，只能登记素材。口型（Rhubarb）未接入。`;
+  }
+  return `<b>音频执行这一腿还没接线</b>：能登记台词与素材归属，暂时不能真出声。口型（Rhubarb）也未接入。`;
+}
+
 function audioBlock(d) {
   const clips = d.audio.clips;
   const engines = d.audio.engines;
@@ -128,9 +156,7 @@ function audioBlock(d) {
       <td class="hint">${c.duration_ms ? Math.round(c.duration_ms / 100) / 10 + 's' : '—'}</td></tr>`).join('')}
     </tbody></table></div>` : '<p class="hint">这一镜还没有台词／旁白素材。</p>';
   return `
-  <p class="note"><b>配音与音乐今天只能登记，不能真出声。</b>
-    ${escapeHtml(engines.tts.label)}：${engines.tts.provider ? `默认轨 ${escapeHtml(engines.tts.provider)}（${escapeHtml(engines.tts.health.detail)}）` : '默认轨没配'}；
-    执行器还没接线，所以这一页不给"提交配音"的按钮。口型（Rhubarb）同样未接入。</p>
+  <p class="note">${audioWiringNote(engines)}</p>
   <p><button class="btn xs" data-goto='{"module":"audio","sub":0}'>去音频中心登记素材</button></p>
   ${rows}`;
 }

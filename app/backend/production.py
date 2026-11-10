@@ -13,10 +13,16 @@
 2. **数字只有一个出处**。镜头数走 `shot_gaps()`，视频数走 `job_status_by_shot()`，
    签字数走 `unsigned_succeeded_videos()`，成片走 `composition_delivery()`；
    这里不重抄任何一条 SQL 口径，也不自己数 `len(list)` 之外的东西。
-3. **没接线的东西不许给动作**。配音／音乐的执行器在 `runners.build()` 里没有分支，
-   口型的 Rhubarb 也没接。所以"音频制作"这一阶段的状态可以是"需要处理"，
-   但 `entry.action` 一律为空，并且 `note` 直接写"执行引擎尚未接入"——
-   给一个点了必失败的按钮，比不写这一阶段更糟。
+3. **没接线的东西不许给动作**，但**先要问清楚"现在接没接"**。
+   `runners.build()` 里配音（`_voxcpm`）与音乐（`_ace_step`）**都已有分支**，
+   口型的 Rhubarb 没接。所以"没接线"这句话不能写死——它要由 `_audio_wired()`
+   现算（清单里有没有这一 capability 的适配器、默认轨解析不解析得出、
+   `runners.has_branch()` 有没有这一条），`note` 跟着那个结果说话。
+   曾经这里硬编码"执行引擎尚未接入"，配音接线之后它就成了一句对用户的假话：
+   明明能提交，界面还在劝人"只能登记台账"。**给一个点了必失败的按钮很糟，
+   但把能用的功能说成不能用，一样糟**——而且更难被发现，因为没人会去试。
+   `entry.action` 仍然一律为空：这一阶段不给"提交配音"这类动作，
+   那是音频页自己的事。
 """
 from __future__ import annotations
 
@@ -97,6 +103,43 @@ def _audio_wired() -> dict:
     return out
 
 
+def _audio_stage_note(wired: dict) -> str:
+    """项目看板「音频制作」那一格该说的话——由 `_audio_wired()` 的三处事实现算。
+
+    为什么单独成一个函数：这句话原来是在 `episode_board()` 里硬编码的常量
+    「执行引擎尚未接入，只能登记台账」。硬编码的当前状态陈述一旦过时，
+    就是一句**对用户说的假话**，而且没人会去试，所以能活很久——它确实活了
+    两天多（2026-11-05 09:39 写下，当天 10:37 配音腿就接线了）。
+
+    抽出来的另一个理由是**可测**：`episode_board()` 要建项目、集、镜头才能走到
+    这一句，与"这句话说得对不对"完全无关；单独成函数之后，
+    `test_项目看板的音频那句也必须现算不能写死` 直接喂三档事实就能验。
+
+    四档，按"哪一处先坏"排：
+      * 配音 provider 与分支都在 → 能出声；音乐那一格另外说（缺默认轨／缺分支）；
+      * 只有 provider、没有分支 → 配了但跑不了，明说缺分支；
+      * provider 都没有 → 只能登记台账。
+    """
+    tts = wired.get("tts") or {}
+    music = wired.get("music") or {}
+    tts_ok = bool(tts.get("provider")) and bool(tts.get("runner_wired"))
+    music_ok = bool(music.get("provider")) and bool(music.get("runner_wired"))
+    if tts_ok:
+        if music_ok:
+            return "配音可提交并真出声；音乐也能提交"
+        missing = ("默认轨还没配" if not music.get("provider")
+                   else "执行器没有这一条分支")
+        return f"配音可提交并真出声；音乐这一类{missing}"
+    if tts.get("provider"):
+        return "配音默认轨配了，但执行器没有这一条分支"
+    # 三处都空：这时"未接入"是现算出来的结论，不是写死的常量——
+    # 反向测试 `test_两条腿都没接线时那句才说未接入` 钉着这一句必须还在，
+    # 免得有人把上面几条修完之后顺手把这里也改成永远沉默。
+    if not tts.get("runner_wired") and not music.get("runner_wired"):
+        return "配音/音乐执行引擎尚未接入，音频段只能先登记台账"
+    return "配音默认轨还没配，音频段只能先登记台账"
+
+
 def audio_status_view() -> dict:
     """音频这一腿的真实能力表（任务书 §6.1 第五阶段、§15 P1「音频能力状态透明化」）。
 
@@ -156,7 +199,11 @@ def audio_status_view() -> dict:
         "note": ("四类里有 " + str(len(ready)) + " 类已经能提交执行" if ready else
                  "今天音频这一腿没有一类能真正执行：能登记台词与素材归属，"
                  "但配音／音乐／音效／口型的执行都还没接线。"
-                 "所以这几页不给「提交」按钮——给了就是让人点一次失败一次。"),
+                 "所以这几页不给「提交」按钮——给了就是让人点一次失败一次。")
+        # `ready` 为空只说明「没有一类能提交」：可能是默认轨没配、health 不 ok，
+        # 也可能是执行没接线（见上面 `can_submit` 的三个条件）。上面那句兜底
+        # 把三种情况一并说成"执行还没接线"，是沿用旧口径的措辞，别当成现算结论；
+        # 逐类的真实缺口在每行 `missing` / `why` 里，看那两列才不会误判。
     }
 
 
@@ -247,11 +294,16 @@ def episode_board(project_id: int, episode_id: int) -> dict:
               f"{'，' + str(running) + ' 条在队列里' if running else ''}"
               if total_shots else "先有分镜再生成")))
 
-    # 6) 音频制作：台账能记，执行没接线——状态照实说，动作一律不给
+    # 6) 音频制作：这一句必须由 `_audio_wired()` 三处事实现算，不能写死。
+    #
+    # 曾经这里是硬编码的"执行引擎尚未接入，只能登记台账"——它在 2026-11-05 09:39
+    # 写下来时是对的，但当天 10:37 配音腿就接线了（`runners._voxcpm`），音乐腿
+    # 也有分支（`runners._ace_step`）。于是这句话变成了一句**对用户说的假话**：
+    # 明明能提交配音，界面却在劝他"只能登记台账"。同一屏的 `audio_status_view()`
+    # 早就按事实算了（配音 can_submit=True、音乐因默认轨没配而 False），
+    # 只有这条 note 还停在旧世界——**一个函数里两种口径**正是最坏的那种不一致。
     audio_total = sum(sum(v.values()) for v in audio.values())
-    audio_note = "执行引擎尚未接入，只能登记台账"
-    if not audio_wired["tts"]["provider"]:
-        audio_note = "配音默认轨还没配；且执行器未接线"
+    audio_note = _audio_stage_note(audio_wired)
     stages.append(_stage(
         "audio",
         status=NEEDS if (no_dialogue or audio_total == 0) else PENDING,
@@ -700,6 +752,8 @@ def shot_workbench(shot_id: int) -> dict:
         "audio_ok": all(c["status"] == "ready" for c in clips) if clips else True,
         "audio_note": ("" if not clips else
                        f"{sum(1 for c in clips if c['status'] != 'ready')} 条素材未就绪"),
+        # 这一句只在**两条腿都没有分支**时才该出现；有分支就不该再说"未接入"，
+        # 剩下的缺口（比如音乐默认轨没配）由 `audio_note` 那一格分开说。
         "engine_note": ("配音/音乐执行引擎尚未接入，音频段只能登记台账"
                         if not any(v["runner_wired"] for v in audio_wired.values()) else ""),
         "blockers": blockers,

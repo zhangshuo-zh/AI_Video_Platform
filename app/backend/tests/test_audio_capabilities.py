@@ -70,6 +70,47 @@ def test_只接一半时给的是提醒不是可提交(client, monkeypatch):
     assert "默认轨" in row["why"]
 
 
+def test_项目看板的音频那句也必须现算不能写死(client, monkeypatch):
+    """E5 那次修复的回归钉：`episode_board()` 的 `audio_note` 曾经是硬编码
+    「执行引擎尚未接入，只能登记台账」。
+
+    它写下时（2026-11-05 09:39）是对的，但当天 10:37 配音腿就接线了
+    （`runners._voxcpm`）。于是同一屏里 `audio_status_view()` 如实说"配音能提交"，
+    而 `episode_board()` 还在说"没接线"——**一个模块两种口径**。
+
+    这里把 `_audio_wired()` 拨成"配音接了、音乐没配"，要求那句话跟着变。
+    只断言"不含未接入"不够：把整句删空也能过；所以同时要求它说出
+    配音能提交、且点出音乐缺的是默认轨。
+    """
+    monkeypatch.setattr(production, "_audio_wired", lambda: {
+        "tts": {"label": "配音", "provider": "voxcpm2",
+                "health": {"state": "ok", "detail": "运行时齐"},
+                "runner_wired": True},
+        "music": {"label": "音乐", "provider": "",
+                  "health": {"state": "unconfigured", "detail": "默认轨没配"},
+                  "runner_wired": False},
+    })
+    # 直接问那句话的生成逻辑，不建一整集（建集要多张表与权限，与这条判据无关）
+    note = production._audio_stage_note(production._audio_wired())
+    assert "尚未接入" not in note, f"配音已接线，这句话是假的：{note}"
+    assert "配音可提交" in note, note
+    assert "音乐" in note and "默认轨" in note, note
+
+
+def test_两条腿都没接线时那句才说未接入(client, monkeypatch):
+    """反向：真没接线时仍要如实说"未接入"，不能被上一条修成永远沉默。"""
+    monkeypatch.setattr(production, "_audio_wired", lambda: {
+        "tts": {"label": "配音", "provider": "",
+                "health": {"state": "unconfigured", "detail": "默认轨没配"},
+                "runner_wired": False},
+        "music": {"label": "音乐", "provider": "",
+                  "health": {"state": "unconfigured", "detail": "默认轨没配"},
+                  "runner_wired": False},
+    })
+    note = production._audio_stage_note(production._audio_wired())
+    assert "尚未接入" in note, note
+
+
 def test_能力表不含项目内容任何登录用户都能读(as_role):
     """这一页只说平台能力，所以不需要 project_id，也不许带出任何项目字段。
 
