@@ -175,16 +175,8 @@ def inbox(user, *, limit: int = 30, unread_only: bool = False) -> dict:
     limit = max(1, min(int(limit), 100))
 
     # 这个人的可见范围：点名的 + 所在项目的 + （有权限时）管理员类。
-    audience_clauses = ["n.audience = ?"]
-    params: list = [f"user:{uid}"]
-    project_ids = _my_project_ids(uid)
-    for pid in project_ids:
-        audience_clauses.append("n.audience = ?")
-        params.append(f"project:{pid}")
-    if _is_config_admin(user):
-        audience_clauses.append("n.audience = 'config_admins'")
-    where = "(" + " OR ".join(audience_clauses) + ")"
-
+    # **与 `mark_all_read` 共用一份**，理由见 `_visible_clause` 的注释。
+    where, params = _visible_clause(user, uid)
     with get_conn() as conn:
         rows = conn.execute(
             f"""SELECT n.*, (r.user_id IS NOT NULL) AS is_read
@@ -255,26 +247,79 @@ def _is_config_admin(user) -> bool:
 
 
 def mark_read(user, notification_ids: list[int]) -> int:
-    """把若干条标记为已读。返回真的新标了几条（重复标不算）。"""
+    """把若干条标记为已读。返回真的新标了几条（重复标不算）。
+
+    **只能标自己看得见的那几条**（2026-11-10 复核修的真空洞）。
+    原来的实现拿到 id 就直接 `INSERT INTO notification_read`，不校验可见性——
+    于是任何人 `POST /api/notifications/read {"ids":[1,2,3,...]}` 顺着 id 遍历
+    就能把**全站**通知标成已读（包括别人的项目、管理员类的）。
+
+    后果最阴的一种：用户 A 现在看不到"项目 5 掉线"（他还不是成员），
+    却把它标成了已读；等他后来加入项目 5，那条通知带着"已读"出现，
+    未读数不增加——**他永远不知道自己错过了什么**。
+
+    修法：只对"当前可见"的 id 落库。判据就是 `_visible_clause`——
+    与 `inbox` / `mark_all_read` 同一份，三处口径必须一致。
+    不可见的 id 静默跳过（不回错）：前端可能拿一份稍旧的列表来标，
+    那时退回 403 会让整个"点开即已读"链路断掉，而跳过它没有副作用。
+    """
     uid = _user_id(user)
     if not uid:
         return 0
     ids = [int(i) for i in (notification_ids or []) if str(i).isdigit()]
     if not ids:
         return 0
-    count = 0
+    where, params = _visible_clause(user, uid)
+    marks = ",".join("?" for _ in ids)
     with get_conn() as conn:
-        for nid in ids:
-            # INSERT OR IGNORE：同一条标两次不报错、也不重复计数
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO notification_read
-                       (notification_id, user_id) VALUES (?, ?)""",
-                (nid, uid))
-            count += cur.rowcount
-    return count
+        # 一条 INSERT ... SELECT 落库：`WHERE id IN (…)` 之外再套可见性条件，
+        # 不可见的行在 SELECT 阶段就不出现，`rowcount` 自然是"真标了几条"。
+        cur = conn.execute(
+            f"""INSERT OR IGNORE INTO notification_read (notification_id, user_id)
+                SELECT n.id, ? FROM notification n
+                 WHERE n.id IN ({marks}) AND {where}""",
+            [uid] + ids + params)
+        return cur.rowcount
 
 
 def mark_all_read(user) -> int:
-    """把这个人当前看得见的未读全标已读。"""
-    payload = inbox(user, limit=100, unread_only=True)
-    return mark_read(user, [item["id"] for item in payload["items"]])
+    """把这个人当前看得见的未读**全部**标已读。返回标了几条。
+
+    **不能用 `inbox(limit=100)` 取列表再标**（原来的写法，真缺陷）：
+    `inbox` 的 `limit` 被钳在 100，所以未读超过 100 条时只标掉前 100 条，
+    剩下的一直留着——而界面上这个按钮叫「全部已读」，点完角标还在，
+    人会以为按钮坏了。实测：150 条未读 → 标掉 100 → 还剩 50。
+
+    改成一条 `INSERT ... SELECT` 直接落库：
+      * 可见范围复用与 `inbox` 完全相同的 `_visible_clause()`，
+        两边口径必须一致，否则会出现"角标显示 3、点全部已读还剩 2"。
+      * `INSERT OR IGNORE` 让已读的跳过，`rowcount` 就是新增的条数。
+      * 不设上限——"全部"就该是全部。
+    """
+    uid = _user_id(user)
+    if not uid:
+        return 0
+    where, params = _visible_clause(user, uid)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"""INSERT OR IGNORE INTO notification_read (notification_id, user_id)
+                SELECT n.id, ? FROM notification n WHERE {where}""",
+            [uid] + params)
+        return cur.rowcount
+
+
+def _visible_clause(user, uid: int) -> tuple[str, list]:
+    """这个人能看见哪些通知：`(WHERE 片段, 参数)`。
+
+    `inbox()` 与 `mark_all_read()` **必须共用这一份**——两处各写一遍的话，
+    任何一处后来改了范围（比如多支持一种 audience），另一处就会悄悄不一致，
+    表现为"角标数着 3 条、点全部已读还剩 2 条"这种查不出原因的怪现象。
+    """
+    clauses = ["n.audience = ?"]
+    params: list = [f"user:{uid}"]
+    for pid in _my_project_ids(uid):
+        clauses.append("n.audience = ?")
+        params.append(f"project:{pid}")
+    if _is_config_admin(user):
+        clauses.append("n.audience = 'config_admins'")
+    return "(" + " OR ".join(clauses) + ")", params

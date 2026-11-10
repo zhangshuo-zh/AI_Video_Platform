@@ -141,7 +141,11 @@ export function mountNotifications() {
       try {
         await api.markNotificationsRead([]);     // 空 ids＝全部已读
         closeMenu();
-        await refresh(dot, null);
+        // **要把 menu 一起传**：原来传 `null` 等于"只更新角标、不重绘列表"，
+        // 于是菜单 DOM 里还留着"3 条未读"和 3 个 .unread 条目。
+        // 菜单此刻已关、用户看不见，但只要在 refresh 的 await 落地前重新打开，
+        // 就会看到那个过期状态（实测能稳定复现）。重绘一次就没有这个窗口了。
+        await refresh(dot, menu);
       } catch { /* 失败就保持原样，下次刷新重试 */ }
       return;
     }
@@ -154,7 +158,9 @@ export function mountNotifications() {
       if (item && !item.read) await api.markNotificationsRead([id]);
     } catch { /* 跳转优先于标记 */ }
     if (item) navigate(item);
-    refresh(dot, null);
+    // 同上：传 menu，让列表里那一条立刻变成已读态。
+    // 这里不 await——跳转已经发生，不该让新页面的首屏等这次刷新。
+    refresh(dot, menu);
   });
 
   // 点外面收起（与顶栏其它菜单同一套行为）

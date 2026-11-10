@@ -636,3 +636,109 @@ class TestStartRace:
             f"并发 start 突破了上限：{total} > {sup.MAX_WORKERS}"
             f"（forked={forked}）")
         assert sum(1 for r in results if r["ok"]) <= 1, "两个并发都报成功"
+
+
+class TestReadLoop:
+    """已读闭环：`mark_all_read` 必须真的标完**全部**可见未读。
+
+    原实现是 `inbox(user, limit=100, unread_only=True)` 再逐条 mark——
+    而 `inbox` 的 `limit` 被钳在 100，所以未读超过 100 条时只标掉前 100，
+    剩下的永久留着。界面按钮叫「全部已读」，点完角标还在，人会以为按钮坏了。
+    实测：150 条未读 → 标掉 100 → 还剩 50。
+    """
+
+    def _seed(self, uid: int, n: int, audience: str | None = None) -> None:
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+            for i in range(n):
+                conn.execute(
+                    """INSERT INTO notification (kind, level, title, audience)
+                       VALUES ('job_failed','warn',?,?)""",
+                    (f"n{i}", audience or f"user:{uid}"))
+
+    def test_超过一百条也全部标完(self, env, uniq):
+        import notifications
+        uid = uniq
+        _ensure_user(uid)
+        self._seed(uid, 150)
+        user = {"id": uid, "username": f"u{uid}", "is_superuser": 0}
+
+        assert notifications.inbox(user)["unread"] == 150
+        marked = notifications.mark_all_read(user)
+        assert marked == 150, f"该标 150 条，实标 {marked}"
+        assert notifications.inbox(user)["unread"] == 0, "还剩未读，角标清不掉"
+
+    def test_重复点全部已读是幂等的(self, env, uniq):
+        import notifications
+        uid = uniq
+        _ensure_user(uid)
+        self._seed(uid, 5)
+        user = {"id": uid, "username": f"u{uid}", "is_superuser": 0}
+        assert notifications.mark_all_read(user) == 5
+        assert notifications.mark_all_read(user) == 0, "第二次不该再标"
+        assert notifications.inbox(user)["unread"] == 0
+
+    def test_看不见的通知不会被标掉(self, env, uniq):
+        """范围必须与 `inbox` 一致：别人的通知不能被"全部已读"顺手标掉，
+        否则那个人本该看到的未读会消失。"""
+        import notifications
+        from db import get_conn
+        uid = uniq
+        _ensure_user(uid)
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience)
+                   VALUES ('job_failed','warn','我的',?)""", (f"user:{uid}",))
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience)
+                   VALUES ('job_failed','warn','别人的','user:999999')""")
+        user = {"id": uid, "username": f"u{uid}", "is_superuser": 0}
+        assert notifications.mark_all_read(user) == 1
+        assert notifications.inbox(user)["unread"] == 0
+        # 别人那条仍然未读（用别人的身份看）
+        other = {"id": 999999, "username": "other", "is_superuser": 0}
+        assert notifications.inbox(other)["unread"] == 1, "把别人的通知标掉了"
+
+    def test_不能盲标看不见的通知(self, env, uniq):
+        """`mark_read` 必须校验可见性。
+
+        原实现拿到 id 就直接插 `notification_read`，不校验——于是顺着 id
+        遍历就能把**全站**通知标成已读（别人的项目、管理员类的）。
+
+        最阴的后果：用户还看不到"项目 X 掉线"，却把它标成了已读；
+        等他后来加入项目 X，那条通知带着"已读"出现、未读数不增加，
+        **他永远不知道自己错过了什么**。
+        """
+        import notifications
+        from db import get_conn
+        uid = uniq
+        other = uniq + 700000
+        _ensure_user(uid)
+        _ensure_user(other)
+        proj = other + 1
+        _insert_project(proj, other)      # 参数顺序是 (项目 id, 属主 id)
+        with get_conn() as conn:
+            conn.execute("DELETE FROM notification")
+            conn.execute(
+                """INSERT INTO notification (kind, level, title, audience)
+                   VALUES ('worker_offline','warn','项目掉线',?)""",
+                (f"project:{proj}",))
+            nid = conn.execute("SELECT id FROM notification").fetchone()["id"]
+
+        user = {"id": uid, "username": f"u{uid}", "is_superuser": 0}
+        # 还不是成员 → 看不见 → 不许标
+        assert notifications.inbox(user)["unread"] == 0
+        assert notifications.mark_read(user, [nid]) == 0, "盲标不可见的通知成功了"
+
+        # 加入项目后必须仍是未读——这是这个 bug 最要命的地方
+        from db import get_conn as gc
+        with gc() as conn:
+            conn.execute(
+                "INSERT INTO project_member (project_id, user_id) VALUES (?,?)",
+                (proj, uid))
+        assert notifications.inbox(user)["unread"] == 1, (
+            "加入项目后那条通知已经变成已读——用户会永久错过它")
+        assert notifications.mark_read(user, [nid]) == 1, "可见后应该能标"
+        assert notifications.mark_read(user, [nid]) == 0, "重复标不该计数"
