@@ -76,6 +76,8 @@ def doc_ai_options(doc, operation: str, scope: str, start: int, end: int,
         "max_tokens": info["max_tokens"],
         "chars": len(part["text"]),
         "estimated_quantity": quantity,
+        # 数量是估算，口径随报价一起下发（见 `docai.estimate_meta` 的注释）
+        **docai.estimate_meta(),
         "health_state": route["health_state"],
         "health_detail": route["health_detail"],
         "hint": info["hint"],

@@ -206,6 +206,25 @@ def build_prompt(operation: str, title: str, content: str,
     return prompt, params
 
 
+# 估算口径的说明文案。**必须随报价一起下发**，由服务端说了算（2026-11-10，F11）。
+#
+# 为什么这不算"多此一举的文案"：`estimate_quantity` 把"输入字数 + 输出上限"
+# 直接当成 token 数用（中文一字≈一 token 是常见的粗口径，但不是真实分词结果），
+# 而界面上写的是「预计费用 <具体金额>」。用户看到一个精确到分位的数字，
+# 很自然会把它当成"就是这么多"——实际结算按供应商回执的真实 usage 走，
+# 两者会差。差额留在脑子里是信任问题，写在界面上就只是一句说明。
+#
+# 服务端下发而不是前端写死：这句口径与 `estimate_quantity` 的算法是一体的，
+# 算法改了文案得跟着改；放前端就是第二份真相，迟早分叉。
+ESTIMATE_KIND = "approximate"
+ESTIMATE_NOTE = "按「输入字数 + 输出上限」粗算，不是真实分词结果；实际以供应商账单为准"
+
+
+def estimate_meta() -> dict:
+    """报价里那两格"这个数字有多可信"。所有下发 estimate 的地方都带上它。"""
+    return {"estimate_kind": ESTIMATE_KIND, "estimate_note": ESTIMATE_NOTE}
+
+
 def estimate_quantity(chars: int, max_tokens: int) -> float:
     """按“输入字数 + 输出上限”估算百万 token 数，向上取到 0.001。
 

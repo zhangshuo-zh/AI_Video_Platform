@@ -58,6 +58,10 @@ def extraction_options(project_id: int, doc_id: int,
         "unit": price.unit, "unit_price_micros": price.amount_micros,
         "currency": price.currency, "source": price.source,
         "estimated_quantity": extraction.estimate_quantity(len(data["content"])),
+        # 同样是估算，口径与文档 AI 那处共用一份（`docai.estimate_meta`）：
+        # 两处都写着「预计费用」，若一处说了"这是估算"、另一处不说，
+        # 用户在两个弹窗里看到的可信度就不一样了。
+        **docai.estimate_meta(),
         "prompt_version": extraction.PROMPT_VERSION,
         "health_state": route["health_state"], "health_detail": route["health_detail"],
         "kinds": [{"code": k, "label": extraction.KIND_LABELS[k]} for k in ITEM_KINDS],

@@ -419,3 +419,40 @@ def test_选中文字找不到就拒(as_role, text_ai, fresh_project):
     resp = client.post(f"/api/documents/{row['id']}/ai-jobs", json=body)
     assert resp.status_code == 422
     assert "不在当前正文里" in resp.json()["detail"]
+
+
+def test_报价必须随带估算口径(as_role, text_ai, fresh_project):
+    """两份报价都要说明"这个数字是估算"（2026-11-10 裁定，F11）。
+
+    为什么这条值得单独立：`estimate_quantity` 把「输入字数 + 输出上限」
+    直接当 token 数用（`docai.py` 里那个函数），而界面写的是「预计费用 ¥0.xx」。
+    一个精确到分位的数字很容易被当成"就是这么多"，实际结算按供应商回执的
+    `usage` 走，两者会差。口径由**服务端下发**而不是前端写死：
+    它跟算法是一体的，算法改了文案得跟着改。
+
+    判据三条（缺一条都会让界面重新开始说半句话）：
+      A `estimate_kind` 必须是 `approximate`（不是 exact 就不能写得像精确值）；
+      B `estimate_note` 不能是空字符串——空就等于"没说"；
+      C 两处报价口径必须一致，否则同一个用户在两个弹窗里看到两种可信度。
+    """
+    row, content = _make_doc(fresh_project)
+    client = as_role("editor")
+
+    r1 = client.get(f"/api/documents/{row['id']}/ai-options",
+                    params={"operation": "polish", "scope": "document"})
+    assert r1.status_code == 200, r1.text
+    o1 = r1.json()
+
+    r2 = client.get(f"/api/projects/{row['project_id']}/extract/options",
+                    params={"doc_id": row["id"]})
+    assert r2.status_code == 200, r2.text
+    o2 = r2.json()
+
+    for name, o in (("文档 AI 报价", o1), ("文本抽取报价", o2)):
+        assert o.get("estimate_kind") == docai.ESTIMATE_KIND, (
+            f"{name} 的 estimate_kind 不对：{o.get('estimate_kind')!r}")
+        assert o.get("estimate_note"), (
+            f"{name} 没下发 estimate_note —— 界面上「预计费用 ¥0.xx」"
+            f"就变成了一句没有限定的断言")
+    assert o1["estimate_note"] == o2["estimate_note"], (
+        "两处报价的估算口径不一致，同一用户在两个弹窗里会看到两种可信度")

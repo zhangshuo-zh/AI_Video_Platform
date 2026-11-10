@@ -117,6 +117,11 @@ class DocAiOptionsOut(BaseModel):
     max_tokens: int
     chars: int
     estimated_quantity: float
+    # 这个数量有多可信（2026-11-10，F11）。`estimate_kind` 目前只有一个取值
+    # `approximate`——它存在是为了让"这是估算"成为**接口事实**而不是前端措辞，
+    # 哪天有了真实分词就能改成 `exact` 而不动前端。`estimate_note` 是给人看的那句。
+    estimate_kind: str = "approximate"
+    estimate_note: str = ""
     health_state: str
     health_detail: str
     hint: str
