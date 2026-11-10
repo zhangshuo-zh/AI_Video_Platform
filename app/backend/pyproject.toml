@@ -49,3 +49,27 @@ testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
 ]
+
+# ---------------- mypy（2026-11-10 补，渐进式） ----------------
+#
+# 为什么只查这两处：全仓 2.3 万行后端代码此前没有任何类型检查，直接全量开
+# 是上万个错误，只能靠一堆 `ignore_errors` 白名单压下去——**那就变成
+# "装上了但什么都没查"的摆设**。本仓已经踩过一次同类：`ruff` 不在 venv 里时，
+# `test_测试里不再引用未定义的变量名` 一直 `pytest.skip`，装上前从未真跑过。
+# 所以起点选 `schemas/`（边界层，全是 pydantic 模型，注解本来就全）与
+# `db.py`（连接管理，126 行），今天就是**真绿**的，不给自己留欠账。
+#
+# `follow_imports = silent` 是关键：schemas 会 import 到 repositories/services，
+# 打开跟随会把别处的存量错误全算到这次检查头上（实测 11 个错误、4 个文件，
+# 全在被 import 的模块里）。silent 表示"跟随但**不报**它们的错误"——
+# 仍会读那些模块的注解来做类型推断，只是不为它们记账。
+[tool.mypy]
+python_version = "3.12"
+files = ["schemas", "db.py"]
+follow_imports = "silent"
+ignore_missing_imports = true
+# 不要求"每个函数都必须有注解"：这是渐进式，先守住已有的注解别写错。
+# 哪天要收紧，改 `disallow_untyped_defs = true` 并单开一轮补注解。
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true

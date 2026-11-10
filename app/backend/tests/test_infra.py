@@ -6,6 +6,8 @@
 import ast
 import re
 import uuid
+
+import pytest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -1050,6 +1052,13 @@ def test_视图里的_window_监听必须成对解绑():
     views = Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
     allowed = {
         "projects.js": "行菜单的 scroll/resize 由 armRowMenu 挂、disarmRowMenu 解",
+        # `visibilitychange` 只在 `document` 上派发，**不冒泡到普通元素**，
+        # 所以除了 document 没有别处可挂（挂 root 收不到）。成对解绑已实现：
+        # 模块级 `visHandler` 记住这一次挂的闭包，下次 mount 开头先
+        # `removeEventListener` 再重新挂。这里不能靠 `root.isConnected` 兜底——
+        # `root` 是 `#view-root`，换页时它仍在 body 里，那个判断永远为真。
+        "generate.js": "回前台补一拍的 visibilitychange，挂 document（不冒泡），"
+                       "由模块级 visHandler 在下次 mount 开头成对解绑",
     }
 
     offenders = []
@@ -1167,3 +1176,235 @@ def test_可点的重试按钮都必须接上线():
         + "\n要么绑上（本仓做法：mount 顶层用复数 querySelectorAll，"
           "异步换节点的在渲染后立刻绑新节点），"
           "要么确认这里不该给重试、显式传 `false`")
+
+
+def test_云端提交必须入口即置busy否则连点会双份计费():
+    """`generate.js` 的 `submitJob` 必须在**任何 await 之前**挡住第二次点击。
+
+    2026-11-10 审计实测的真 bug：原来 `btn.disabled = true` 写在
+    `await api.precheckShot(...)` **之后**（原 :1575，改后见文件），也就是
+    从点击到按钮变灰之间隔着一整趟网络往返。窗口期内连点两下，两趟都跑到底，
+    于是 `api.submitJob` 被调用两次——而这条路径正是「云端要勾选确认按供应商
+    计费」的那条，**重复提交就是重复花钱**。本地轨重复提交只是多一条废作业。
+
+    这条是浏览器行为，后端测试摸不到（它整个活在点击与网络往返之间），
+    所以只能在这里做源码结构检查。判据三条，缺一条就漏一类真 bug：
+
+      A **入口置位**：函数体里第一个 `await` 之前必须出现 busy 守卫与置位。
+        只把 `disabled` 提前到 `await` 前还不够——按钮还没变灰的那一下点击
+        仍然排进了事件队列，变量守卫才是硬的。
+      B **提前返回有兜底**：函数里有多处 `return`（没选项目、没写提示词、
+        没有槽位、云端数量/单价/来源没填、没勾确认、预检阻塞，共 6 处）。
+        任一提前 return 若不复位 busy，这个弹窗的提交按钮就**永久变灰**，
+        人只能刷新整页。所以必须有 `finally` 复位。
+      C **不能只靠按钮 disabled**：`disabled` 在同一次事件循环里挡不住已经
+        排队的第二个 handler，必须有一个模块级布尔位。
+    """
+    raw = (FRONTEND / "js" / "views" / "generate.js").read_text(encoding="utf-8")
+    # **必须先去掉注释行**：上面那段说明里就写着 `if (submitBusy) return;` 这几个
+    # 字符，不去注释的话断言会被自己的注释满足（这条测试第一版就是这么假绿的）。
+    # 置空而不删行，报出来的行号才和文件一致。
+    src = "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                    for l in raw.splitlines())
+    start = src.index("async function submitJob()")
+    # 函数到下一个同缩进 `}` 为止（下一行以 `    }` 开头）
+    body_lines = []
+    for line in src[start:].split("\n")[1:]:
+        if line == "    }":
+            body_lines.append(line)
+            break
+        body_lines.append(line)
+    body = "\n".join(body_lines)
+    assert "api.submitJob" in body, "定位错了函数？submitJob 里没有 api.submitJob"
+
+    first_await = body.find("await ")
+    assert first_await > 0, "submitJob 里没有 await？"
+    head = body[:first_await]
+
+    # A：入口守卫 + 置位都在第一个 await 之前
+    assert re.search(r"if\s*\(\s*submitBusy\s*\)\s*return\s*;", head), (
+        "submitJob 的第一个 await 之前没有 `if (submitBusy) return` —— "
+        "从点击到按钮变灰之间的第二下点击会再提交一条作业；"
+        "云端那条路径重复提交＝重复计费")
+    assert re.search(r"submitBusy\s*=\s*true", head), (
+        "submitJob 没有在第一个 await 之前把 busy 置 true")
+
+    # B：提前 return 必须有 finally 兜底
+    assert "finally" in body, (
+        "submitJob 里有多处提前 return，却没有 finally 复位 busy —— "
+        "任何一条校验不通过（没选项目、没写提示词…）都会让提交按钮永久变灰")
+    tail = body[body.rindex("finally"):]
+    assert re.search(r"submitBusy\s*=\s*false", tail), (
+        "finally 里没有把 submitBusy 复位")
+
+    # C：模块级声明（放在 mountMonitor 的作用域里，与 drawerBusy 同层）
+    assert re.search(r"let\s+submitBusy\s*=\s*false", src), (
+        "submitBusy 没有模块级声明，运行时会 ReferenceError")
+
+
+def test_轮询必须让开后台标签页并成对解绑():
+    """三个轮询点都不能在人看不见的时候照跑，且挂 document 的要能解绑。
+
+    2026-11-10 审计：`monitor.js:642` 与 `app.js:797` 早有 `document.hidden`
+    判断（注释写着「与全站轮询同一纪律」），但 `generate.js` 的 3 秒队列轮询
+    与 `notifications.js` 的角标轮询**都没有**——人切到别的标签页干活时照跑，
+    而屏幕上没有"让人知道"的对象。generate.js 一轮还是三个请求
+    （队列＋成本账＋worker 状态）。
+
+    判据分三段，各自防一种退化：
+      A 每个轮询回调里必须有 `document.hidden` 提前 return；
+      B 跳过后必须**补一拍**（否则切回来看到的是离开那一刻的旧队列），
+        且补拍挂在 `visibilitychange` 上；
+      C 挂 document 的监听必须成对解绑——`#view-root` 换页时仍在 body 里，
+        `isConnected` 挡不住，只能靠 removeEventListener。
+    """
+    js = FRONTEND / "js"
+    gen = (js / "views" / "generate.js").read_text(encoding="utf-8")
+    notif = (js / "notifications.js").read_text(encoding="utf-8")
+
+    def code_of(text: str) -> str:
+        return "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                         for l in text.splitlines())
+
+    gen_code, notif_code = code_of(gen), code_of(notif)
+
+    # A：两处轮询都要让开
+    assert re.search(r"if\s*\(\s*document\.hidden\s*\)\s*return", gen_code), (
+        "generate.js 的轮询没有 `document.hidden` 判断，后台标签页照跑三个请求")
+    assert re.search(r"if\s*\(\s*document\.hidden\s*\)\s*return", notif_code), (
+        "notifications.js 的角标轮询没有 `document.hidden` 判断")
+
+    # B：回前台补一拍
+    assert "visibilitychange" in gen_code, (
+        "generate.js 只是跳过、没有回前台补一拍——人切回来看到的是旧队列")
+    assert re.search(r"addEventListener\(\s*['\"]visibilitychange['\"]", gen_code)
+
+    # C：成对解绑（记下闭包 → 下次 mount 先 remove 再 add）
+    assert re.search(r"removeEventListener\(\s*['\"]visibilitychange['\"]",
+                     gen_code), (
+        "generate.js 挂了 visibilitychange 却不解绑：`#view-root` 换页后仍在 "
+        "body 里，isConnected 挡不住，切十个来回会叠十份监听")
+
+
+def test_抽屉重画必须保住_details_展开态():
+    """抽屉每 3 秒整块重绘，展开着的 `<details>` 会被缩回去。
+
+    2026-11-10 审计实测：`loadDrawer()` 里 `drawerBody.innerHTML = drawerHtml(...)`，
+    而抽屉里的「实际命令（argv 数组…）」正是 `<details class="cmd-details">`
+    （`commandHtml`）。展开态住在 DOM 属性里，整块换掉就没了——人刚点开的那一节
+    每 3 秒自动缩回去，作业跑得越久（本地视频几分钟）越像界面抽风。
+
+    判据：重绘前把 `details` 的 `open` 下标记下来，画完按下标恢复。
+    纯文本扫描（前端没有 JS 测试框架），但足以钉住"有没有这段恢复逻辑"。
+    """
+    gen = (FRONTEND / "js" / "views" / "generate.js").read_text(encoding="utf-8")
+    code = "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                     for l in gen.splitlines())
+    idx = code.index("drawerBody.innerHTML = drawerHtml(")
+    before = code[max(0, idx - 900):idx]
+    after = code[idx:idx + 700]
+    assert "querySelectorAll('details')" in before or 'querySelectorAll("details")' in before, (
+        "重画抽屉之前没有记下哪些 details 是展开的")
+    assert re.search(r"\.open\s*=\s*true", after), (
+        "重画抽屉之后没有恢复 details 的展开态")
+
+
+def test_通知角标轮询不要拉全量正文():
+    """菜单关着时只要未读数，不必把 30 条正文拉回来。
+
+    2026-11-10 审计：角标用的是 `payload.unread`——服务端独立那条 COUNT 查询
+    （`notifications.py:190-196`），与 `items` 长度无关。菜单关着的每一轮轮询把
+    30 条正文拉回来、赋值给 `items`、然后没人看，下一次又被覆盖。
+    `api.notifications(true)` 走 `unread_only=true`，`unread` 仍是全量未读数，
+    角标口径不变。
+
+    但**只在菜单关着时省**：菜单开着必须拉全量，否则已读通知会从眼前消失
+    （`:166` 点条目后 `:175` 还要 `items.find` 找到那一条）。判据钉住这个方向。
+    """
+    notif = (FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8")
+    code = "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                     for l in notif.splitlines())
+    assert re.search(r"api\.notifications\(\s*!\s*menu\s*\)", code), (
+        "菜单关着时没有走 unread_only，仍在拉全量正文")
+    assert "payload?.unread" in code, (
+        "角标没有读服务端独立返回的 unread 字段")
+
+
+def test_资产类型中文名只有一份且与后端一致():
+    """同一个 `character` 在资产这两屏必须都叫「角色」。
+
+    2026-11-10 裁决时的实测冲突：服务端权威 `schemas/enums.py` 的
+    `ASSET_KINDS` 写的是「角色」，`assets.js`／`writing.js`／`asset-detail.js`
+    也都是「角色」，唯独 `asset-studio.js` 与 `asset-triage.js` 自己写了一份
+    「人物」。同一件东西在「资产创作」和「资产库」里叫两个名字，人对着两屏
+    会以为不是一类。
+
+    注意判据只扫**资产类型**这一层，不是把全仓的「人物」都判死：
+    「人物档案」是 `character_profile`（后端 `ASSET_GEN_OPERATIONS` 叫
+    「人物文字设定」）——那是 asset 的附属文本，不是资产类型，沿用自己说法是对的。
+    所以这里锚的是 `{ character: '…' }` / `['character', '…']` 这种**类型映射**，
+    扫不到自然语言里正常使用"人物"的地方。
+    """
+    import schemas.enums as backend_enums
+
+    js = (FRONTEND / "js" / "enums.js").read_text(encoding="utf-8")
+    table = _js_object_literal(js, "ASSET_KIND_LABELS =")
+    assert table == {k: f"'{v}'" for k, v in backend_enums.ASSET_KINDS.items()}, (
+        f"ASSET_KIND_LABELS 与后端 ASSET_KINDS 不一致："
+        f"前端 {table}／后端 {backend_enums.ASSET_KINDS}")
+
+    # 视图里不许再自己写一份资产类型译名（抄一份就又会分叉）
+    offenders = []
+    views = FRONTEND / "js" / "views"
+    for f in list(views.glob("*.js")) + list(views.rglob("models/*.js")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip().startswith(("//", "*", "/*")):
+                continue
+            if re.search(r"\{[^}]*\bcharacter\s*:\s*'[^']*[一-鿿]", line) or \
+               re.search(r"\[\s*'character'\s*,\s*'[^']*[一-鿿]", line):
+                offenders.append(f"{f.name}:{n}: {line.strip()[:70]}")
+    assert not offenders, (
+        "这些行又本地写了一份资产类型译名，改成从 `enums.js` 的 "
+        "ASSET_KIND_LABELS 取：\n  " + "\n  ".join(offenders))
+
+
+def test_mypy_门禁真的在检查而不是空转():
+    """mypy 是渐进式的，范围只有 `schemas/` 与 `db.py`——但必须**真的在查**。
+
+    2026-11-10 加这一层时踩过的同类风险的现实版本：本仓 `ruff` 那条
+    `test_测试里不再引用未定义的变量名` 在 venv 没有 ruff 时一直
+    `pytest.skip`，装上前从未真跑过（装上后立刻抓到一条既有的 F821）。
+    静态检查最容易变成"配好了、看着绿、其实什么都没查"。
+
+    所以这条做两件事，缺一条都可能是空转：
+      A **配置范围是写死的**：`files` 必须正好覆盖 schemas 与 db.py，
+        不能被人悄悄改成 `files = []` 或挪到别的目录（挪走＝不查）；
+      B **拿一个真错误去试**：临时写一个类型错误进 schemas/，mypy 必须报出来。
+        这才是"它在检查"的证据，而不是"它退出了 0"。
+    """
+    import subprocess
+    import sys
+
+    root = BACKEND          # app/backend：pyproject.toml 与 schemas/ 都在这
+    conf = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.mypy]" in conf, "pyproject.toml 里没有 [tool.mypy] 段"
+    mypy_cfg = conf[conf.index("[tool.mypy]"):]
+    assert 'files = ["schemas", "db.py"]' in mypy_cfg, (
+        f"mypy 的检查范围被改了，必须仍是 schemas 与 db.py：{mypy_cfg[:200]}")
+
+    # B：探针。写进 schemas/ 再删掉——用 try/finally 保证不留下文件
+    probe = root / "schemas" / "_mypy_probe_tmp.py"
+    try:
+        probe.write_text('x: int = "这明明是字符串"\n', encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-m", "mypy"],
+            cwd=root, capture_output=True, text=True, timeout=300)
+        if proc.returncode == 1 and "No module named mypy" in proc.stderr:
+            pytest.skip("这台机器没装 mypy（开发依赖，见 requirements-dev.txt）")
+        assert proc.returncode != 0, (
+            "往 schemas/ 里塞了一个类型错误，mypy 仍然退出 0 —— "
+            "这层门禁在空转（要么没扫到，要么配置把错误吞了）")
+        assert "_mypy_probe_tmp.py" in (proc.stdout + proc.stderr), (
+            f"mypy 报了错但不是探针文件，说明它没在查 schemas/：{proc.stdout[:300]}")
+    finally:
+        probe.unlink(missing_ok=True)

@@ -56,6 +56,12 @@ jobs:
       - name: 静态检查（ruff）
         run: python -m ruff check --output-format=github .
 
+      # 类型检查：范围只有 `schemas/` 与 `db.py`（见 pyproject.toml 的
+      # `[tool.mypy]`）。**不做全量**——全量是上万个错误，只能靠白名单压成
+      # "装上了但什么都没查"。这两处今天就是真绿的，所以这一步红了一定是真问题。
+      - name: 类型检查（mypy）
+        run: python -m mypy
+
       # 合成与产线的成片节点要真跑 FFmpeg 造产物、真合成、真验时长。
       # runner 默认不带 ffmpeg，所以这两条自 v0.93 起在 CI 上一直红、在开发机上一直绿
       # ——红得"合理"反而把门禁本身废掉了：谁都不再看那条红线。
