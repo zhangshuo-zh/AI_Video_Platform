@@ -83,7 +83,19 @@ function render(menu, dot) {
 
 async function refresh(dot, menu) {
   try {
-    const payload = await api.notifications();
+    // 菜单关着时**只要未读数**，不必把整页通知正文拉回来（2026-11-10 审计）。
+    //
+    // 角标用的是 `payload.unread`——服务端独立那条 COUNT 查询给的
+    // （`notifications.py:190-196`），跟 `items` 的长度无关。也就是说
+    // 菜单关着的每一轮轮询，`items` 那 30 条正文是**纯废流量**：拉回来
+    // 赋值给 `items`，然后没人看，下一次又被覆盖。
+    // `unread_only=true` 时 `items` 只剩未读（通常 0—几条），`unread`
+    // 仍是全量未读数，角标口径不变。
+    //
+    // 只在这个方向省：菜单**开着**时必须拉全量（人要看已读的那些），
+    // 不能因为"反正角标只要计数"就把打开的列表缩成未读——那样已读通知
+    // 会从眼前消失。
+    const payload = await api.notifications(!menu);
     items = payload?.items || [];
     if (menu) render(menu, dot);
     else {
@@ -182,7 +194,13 @@ export function mountNotifications() {
 
   // 轮询：卸载时由调用方 stopNotifications 清掉，避免切页后还在跑
   stopNotifications();
-  timer = setInterval(() => refresh(dot, menu.hidden ? null : menu), POLL_MS);
+  timer = setInterval(() => {
+    // 后台标签页不发（2026-11-10 审计，与 `monitor.js:642`／`app.js:797`
+    // 同一纪律）。原来这条轮询**不看 `document.hidden`**：人在别的标签页
+    // 干活时它照跑，而屏幕上没有"让人知道"的对象。
+    if (document.hidden) return;
+    refresh(dot, menu.hidden ? null : menu);
+  }, POLL_MS);
 }
 
 export function stopNotifications() {

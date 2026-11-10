@@ -515,6 +515,11 @@ export default {
     let openJobId = null;
     let editingProfile = null;
     let drawerBusy = false;
+    // 提交中标志：挡住"从点击到按钮变灰"之间的第二下点击（云端重复计费）。
+    // 与 `drawerBusy` 同层，都是这个视图的互斥位。
+    let submitBusy = false;
+    // 上一次挂到 document 上的 visibilitychange 闭包（用来成对解绑，见下面轮询段）
+    let visHandler = null;
     let profileProjectId = null;
     let refreshing = false;
     let pendingRefresh = false;   // "在飞期间又有人要过一次数据"，一轮结束补发
@@ -881,7 +886,28 @@ export default {
         root.querySelector('#gen-drawer-sub').innerHTML =
           `${statusChip(job.status, job.status_label, true)}
            <span class="t-dim">${escapeHtml(job.capability_label)} · ${escapeHtml(job.provider_code)}/${escapeHtml(job.model_code)}</span>`;
+        // **重画前记住哪些 `<details>` 是展开的，画完恢复**（2026-11-10 审计）。
+        //
+        // 抽屉每 3 秒跟着队列刷新一次（`paint()` 之后那句 `loadDrawer`），
+        // 每次都是整块 `innerHTML = drawerHtml(...)`。而抽屉里的
+        // 「实际命令（argv 数组…）」（`commandHtml` 的 `<details class="cmd-details">`）
+        // 是**展开态住在 DOM 属性里**的——整块换掉，人就看着自己刚点开的那一节
+        // 每 3 秒自动缩回去。作业跑得越久（本地视频要几分钟）越像界面抽风。
+        //
+        // 只恢复展开态、不做签名比对：抽屉里没有输入框（只有 `<pre>` 与
+        // `<details>`），所以"重画会不会冲掉用户正在输入的东西"这个更麻烦的
+        // 问题在这里不存在；而签名比对要保证不漏字段（`elapsed_ms`、
+        // `running_seconds` 这类每拍都变的），漏一个就变成"该更新的时候不更新"，
+        // 那是比多做一次重画更坏的 bug。用**下标**做键：详情面板每拍结构一致。
+        const openDetails = [...drawerBody.querySelectorAll('details')]
+          .map((d, i) => (d.open ? i : -1)).filter((i) => i >= 0);
         drawerBody.innerHTML = drawerHtml(job, logs, arts, diag);
+        if (openDetails.length) {
+          const again = drawerBody.querySelectorAll('details');
+          for (const i of openDetails) {
+            if (again[i]) again[i].open = true;
+          }
+        }
         if (keepScroll) drawerBody.scrollTop = scroll;
       } catch (err) {
         if (openJobId === id) drawerBody.innerHTML = errorBox('作业详情', err, false);
@@ -1495,96 +1521,118 @@ export default {
     }
 
     async function submitJob() {
-      const errEl = root.querySelector('#jm-error');
-      errEl.textContent = '';
-      const projectId = Number(root.querySelector('#jm-project').value);
-      const capability = root.querySelector('#jm-capability').value;
-      const mode = root.querySelector('#jm-mode').value;
-      const prompt = root.querySelector('#jm-prompt').value.trim();
-      if (!projectId) { errEl.textContent = '先选一个项目。'; return; }
-      if (!prompt) { errEl.textContent = '提示词不能为空。'; return; }
+      // **入口就置 busy，不是等预检回来才 disabled**（2026-11-10 审计修的真 bug）。
+      //
+      // 原来 `btn.disabled = true` 在下面 `await api.precheckShot(...)` **之后**，
+      // 也就是从点击到按钮变灰之间隔着一整趟网络往返。窗口期内连点两下，
+      // 两趟都跑到底：两次 `api.submitJob`，云端就是**两条计费作业**——
+      // 而这里恰恰是"云端要勾选确认按供应商计费"的那条路径，重复提交＝重复花钱。
+      // 本地轨重复提交只是多一条没用的作业，云端轨是钱。
+      //
+      // `submitBusy` 是模块变量而不是按钮属性：`paint()` 每 3 秒重画队列，
+      // 按钮本身不会重建（它在弹窗里，弹窗不在重画范围内），但用变量更稳——
+      // 也顺手挡住"按钮还没禁用但事件已经排在队列里"的第二下。
+      // 形状照 `writing.js` 的 `applyAi`（入口 `if (ai.busy) return; ai.busy = true;`）。
+      if (submitBusy) return;
+      submitBusy = true;
+      const submitBtn = root.querySelector('#jm-submit');
+      if (submitBtn) submitBtn.disabled = true;
+      try {
+        const errEl = root.querySelector('#jm-error');
+        errEl.textContent = '';
+        const projectId = Number(root.querySelector('#jm-project').value);
+        const capability = root.querySelector('#jm-capability').value;
+        const mode = root.querySelector('#jm-mode').value;
+        const prompt = root.querySelector('#jm-prompt').value.trim();
+        if (!projectId) { errEl.textContent = '先选一个项目。'; return; }
+        if (!prompt) { errEl.textContent = '提示词不能为空。'; return; }
 
-      const body = {
-        project_id: projectId, capability, prompt,
-        params: readParams(), input_refs: [],
-      };
-      if (linked?.episodeId) body.episode_id = linked.episodeId;
-      if (linked?.shotId) body.shot_id = linked.shotId;
-      if (mode !== 'default') {
-        const option = selectedOption();
-        if (!option) { errEl.textContent = '这一轨没有可用槽位。'; return; }
-        body.execution_mode = mode;
-        body.provider_code = option.provider;
-        body.model_code = option.model;
-        // 健康不是门禁：本地权重没装也能提交，worker 会以 adapter_not_ready 失败，
-        // 这条失败比"界面上不让点"更容易查——但要把话说在前面。
-        if (option.health_state !== 'ok') {
-          root.querySelector('#jm-hint').textContent =
-            `提醒：这个槽位当前是「${HEALTH_LABEL[option.health_state] || option.health_state}」——${option.health_detail}`;
-        }
-      }
-
-      if (isCloud()) {
-        const rawPrice = root.querySelector('#jm-price').value.trim();
-        const qty = Number(root.querySelector('#jm-qty').value);
-        const price = Number(rawPrice);
-        const source = root.querySelector('#jm-source').value.trim();
-        if (!(qty > 0) || rawPrice === '' || !(price >= 0) || !source) {
-          errEl.textContent = '云端作业要填数量、单价和价格来源。';
-          return;
-        }
-        if (!root.querySelector('#jm-confirm').checked) {
-          errEl.textContent = '请先勾选确认按供应商计费。';
-          return;
-        }
-        body.estimate = {
-          quantity: qty, unit: root.querySelector('#jm-unit').value,
-          unit_price_micros: Math.round(price * 1_000_000),
-          currency: root.querySelector('#jm-currency').value,
-          source,
+        const body = {
+          project_id: projectId, capability, prompt,
+          params: readParams(), input_refs: [],
         };
-        body.user_confirmed_cloud = true;
-      }
+        if (linked?.episodeId) body.episode_id = linked.episodeId;
+        if (linked?.shotId) body.shot_id = linked.shotId;
+        if (mode !== 'default') {
+          const option = selectedOption();
+          if (!option) { errEl.textContent = '这一轨没有可用槽位。'; return; }
+          body.execution_mode = mode;
+          body.provider_code = option.provider;
+          body.model_code = option.model;
+          // 健康不是门禁：本地权重没装也能提交，worker 会以 adapter_not_ready 失败，
+          // 这条失败比"界面上不让点"更容易查——但要把话说在前面。
+          if (option.health_state !== 'ok') {
+            root.querySelector('#jm-hint').textContent =
+              `提醒：这个槽位当前是「${HEALTH_LABEL[option.health_state] || option.health_state}」——${option.health_detail}`;
+          }
+        }
 
-      // 0037：提交前跑一次统一预检（有镜头才跑——纯文本/资产生成没有"这一镜"可查）。
-      // 规则只有一份：`precheck.py` 用的就是 `resolve_provider`／`validate_params`／
-      // `health` 这些服务端原判据，所以这里拦下的，提交也一定拦；这里放行的，
-      // 提交不会再因为同一类原因失败。警告不拦人，只把话说在前面。
-      if (linked?.shotId) {
-        try {
-          const q = { capability };
-          if (mode === 'local' || mode === 'cloud') q.execution_mode = mode;
-          if (isCloud()) q.confirmed_cloud = 'true';
-          const check = await api.precheckShot(linked.shotId, q);
-          const blockers = (check.items || []).filter((i) => i.level === '阻塞');
-          if (blockers.length) {
-            errEl.textContent = '预检阻塞：' + blockers.map((b) => b.text).join('；');
+        if (isCloud()) {
+          const rawPrice = root.querySelector('#jm-price').value.trim();
+          const qty = Number(root.querySelector('#jm-qty').value);
+          const price = Number(rawPrice);
+          const source = root.querySelector('#jm-source').value.trim();
+          if (!(qty > 0) || rawPrice === '' || !(price >= 0) || !source) {
+            errEl.textContent = '云端作业要填数量、单价和价格来源。';
             return;
           }
-          const warns = (check.items || []).filter((i) => i.level === '警告');
-          if (warns.length) {
-            root.querySelector('#jm-hint').textContent =
-              '预检提醒：' + warns.map((w) => w.text).join('；');
+          if (!root.querySelector('#jm-confirm').checked) {
+            errEl.textContent = '请先勾选确认按供应商计费。';
+            return;
           }
-        } catch (err) {
-          // 预检自己读不到时不拦提交：提交路径上还有同一套服务端判据兜底，
-          // 为了"检查工具坏了"就把人锁在门外是另一种不公平
-          root.querySelector('#jm-hint').textContent =
-            `预检没跑成（${err.message || '未知错误'}），仍会由服务端在提交时把关。`;
+          body.estimate = {
+            quantity: qty, unit: root.querySelector('#jm-unit').value,
+            unit_price_micros: Math.round(price * 1_000_000),
+            currency: root.querySelector('#jm-currency').value,
+            source,
+          };
+          body.user_confirmed_cloud = true;
         }
-      }
 
-      const btn = root.querySelector('#jm-submit');
-      btn.disabled = true;
-      try {
-        const job = await api.submitJob(body);
-        closeJobModal();
-        await refresh();
-        openDrawer(job.id);
-      } catch (err) {
-        errEl.textContent = err.message || '提交失败';
+        // 0037：提交前跑一次统一预检（有镜头才跑——纯文本/资产生成没有"这一镜"可查）。
+        // 规则只有一份：`precheck.py` 用的就是 `resolve_provider`／`validate_params`／
+        // `health` 这些服务端原判据，所以这里拦下的，提交也一定拦；这里放行的，
+        // 提交不会再因为同一类原因失败。警告不拦人，只把话说在前面。
+        if (linked?.shotId) {
+          try {
+            const q = { capability };
+            if (mode === 'local' || mode === 'cloud') q.execution_mode = mode;
+            if (isCloud()) q.confirmed_cloud = 'true';
+            const check = await api.precheckShot(linked.shotId, q);
+            const blockers = (check.items || []).filter((i) => i.level === '阻塞');
+            if (blockers.length) {
+              errEl.textContent = '预检阻塞：' + blockers.map((b) => b.text).join('；');
+              return;
+            }
+            const warns = (check.items || []).filter((i) => i.level === '警告');
+            if (warns.length) {
+              root.querySelector('#jm-hint').textContent =
+                '预检提醒：' + warns.map((w) => w.text).join('；');
+            }
+          } catch (err) {
+            // 预检自己读不到时不拦提交：提交路径上还有同一套服务端判据兜底，
+            // 为了"检查工具坏了"就把人锁在门外是另一种不公平
+            root.querySelector('#jm-hint').textContent =
+              `预检没跑成（${err.message || '未知错误'}），仍会由服务端在提交时把关。`;
+          }
+        }
+
+        // 按钮在这里**已经**灰了（入口处），不必再 disabled 一次。
+        try {
+          const job = await api.submitJob(body);
+          closeJobModal();
+          await refresh();
+          openDrawer(job.id);
+        } catch (err) {
+          errEl.textContent = err.message || '提交失败';
+        }
       } finally {
-        btn.disabled = false;
+        // **必须在这里复位**：上面有 6 处提前 return（没选项目、没写提示词、
+        // 没有可用槽位、云端数量/单价/来源没填、没勾确认、预检阻塞），
+        // 任何一条把 busy 留在 true，这个弹窗的提交按钮就**永久变灰**，
+        // 人只能刷新整页才能再提交一次。外层 try/finally 就是为这个兜的。
+        submitBusy = false;
+        if (submitBtn) submitBtn.disabled = false;
       }
     }
 
@@ -2017,7 +2065,35 @@ export default {
       if (!alive()) { clearInterval(pollTimer); pollTimer = null; return; }
       // 弹窗开着时用户正在填，不重画列表；抽屉开着时只更新抬头
       if (!jobModal.hidden || !profileModal.hidden || !reconcileModal.hidden) return;
+      // 标签页在后台时不发请求（2026-11-10 审计补的纪律，与 `monitor.js:642`
+      // 和 `app.js:797` 同一套）。这里原来是**无条件**每 3 秒一发，一轮三请求
+      // （队列＋成本账＋worker 状态）；人切到别的标签页干活时，这些请求
+      // 照跑不误，而屏幕上没有"让人知道"的对象。
+      //
+      // 注意浏览器对后台定时器的节流是**另一个**变量（Chrome 对隐藏标签页
+      // 最低 1 次/分钟），所以这条改动的收益不是"省掉全部后台请求"，
+      // 而是"隐藏期间不再有请求"，二者实测频率见设计稿修订行。
+      if (document.hidden) return;
       refresh({ quiet: true });
     }, 3000);
+
+    // 回到前台补一拍：光跳过不够——人切回来时看到的是**离开那一刻**的队列，
+    // 而作业可能已经跑完了。补这一下才让"回来看到的就是现在"。
+    // 只在标签页重新可见时触发，不额外加轮询。
+    // `visibilitychange` 只在 `document` 上派发，**不冒泡到普通元素**，
+    // 所以只能挂 document。但 `router.js:147` 每次切页都重跑 `mount()`，
+    // 挂 document 的监听不随视图回收——切十个来回就叠十份，一次切标签页
+    // 触发十轮 `refresh()`。这里**成对解绑**：模块级变量记住这一次挂的那个
+    // 闭包，下次 mount 开头先解掉上一份（`test_视图里的_window_监听必须成对解绑`
+    // 这条门禁就是为这种情形立的，它抓到了这一处，按它的要求改成解绑而不是
+    // 靠 `isConnected` 兜——`root` 是 `#view-root`，换页时它仍在 body 里，
+    // `isConnected` 永远为真，挡不住）。
+    if (visHandler) document.removeEventListener('visibilitychange', visHandler);
+    visHandler = () => {
+      if (!alive() || document.hidden) return;
+      if (!jobModal.hidden || !profileModal.hidden || !reconcileModal.hidden) return;
+      refresh({ quiet: true });
+    };
+    document.addEventListener('visibilitychange', visHandler);
   },
 };

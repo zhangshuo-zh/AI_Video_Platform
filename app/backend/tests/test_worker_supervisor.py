@@ -242,7 +242,15 @@ class TestStartStop:
             # 用真 worker.py 起（要真的走 start() 的那条 Popen 分支）
             sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
             if sup.WORKER_PID.exists():
-                (sup.PID_DIR / f"{proc.pid}.pid").unlink()
+                # 这里原来写的是 `(sup.PID_DIR / f"{proc.pid}.pid").unlink()`——
+                # `proc` 在这个作用域**根本没有定义**（ruff F821 抓到的既有缺陷）。
+                # 夹具每次都把 `RUN_DIR` 指到全新的 `tmp_path`，所以
+                # `WORKER_PID.exists()` 恒为假、这行从未执行过，`NameError` 一直
+                # 藏着。哪天有人复用这个夹具、或把 RUN_DIR 指到真实 `data/run`，
+                # 这里就会以 NameError 失败，而失败信息指向一句"文件清理"，
+                # 跟真正要测的进程组归属毫无关系。
+                # 意图是"清掉可能残留的旧 worker 登记"，删的就是 `WORKER_PID`。
+                sup.WORKER_PID.unlink()
             import worker_supervisor as module
             # 心跳判据在临时库里会等满超时；这里只关心进程组，把等待缩到最短
             original = module._heartbeat_written_since
