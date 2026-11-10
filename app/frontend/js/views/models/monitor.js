@@ -606,39 +606,29 @@ export function mountMonitor(root) {
   // 重载整页会把上面 worker 表、告警、模型维度一起重画，而人想看的就是这一张表；
   // 走 app:refresh 还会让刚展开的 worker 历史折回去（那是模块变量，会被覆盖）。
   // 追加只动两张东西：表体（追加行）与翻页条（条数与"还有没有更早的"）。
-  root.querySelector('#mc-val-older')?.addEventListener('click', async (e) => {
-    const items = cache.validations?.items || [];
-    const last = items[items.length - 1];
-    if (!last) return;
-    const btn = e.target;
-    btn.disabled = true;
-    try {
-      const page = await api.providerValidations(HISTORY_PAGE, last.id);
-      const fresh = page.items.filter((v) => !items.some((old) => old.id === v.id));
-      cache.validations = {
-        // 按 id 去重后追加：翻页期间若有人刚写了一条新记录，游标法仍然不会
-        // 把重复行带进来；这里再兜一次底，保证表格里不会出现两行同一个 id。
-        items: items.concat(fresh),
-        total: page.total || cache.validations.total,
-      };
-      cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1 };
-
-      const tbody = root.querySelector('#mc-val-rows');
-      if (tbody) {
-        const empty = tbody.querySelector('td.hint')?.closest('tr');
-        if (empty) empty.remove();          // 第一页为空的占位行，来了数据就撤
-        tbody.insertAdjacentHTML('beforeend', fresh.map(valRow).join(''));
-        const pager = btn.closest('.right');
-        if (pager) pager.outerHTML = `<span class="right">${validationPager()}</span>`;
-      } else {
-        // 表不在了（人切了子页又切回来正好赶上响应）：退回整页重绘兜底
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-      }
-    } catch (err) {
-      btn.disabled = false;
-      alertNotify(`更早的验证记录读不到：${err.message}`);
-    }
-  });
+  // 具体的点击处理见下面 root 上的委托与 `loadOlderValidations()`。
+  // **翻页按钮必须用委托**（2026-11-10 自查修的真 bug）。
+  //
+  // 上面那个 `pager.outerHTML = …` 把整条 `<span class="right">` 换成了新节点，
+  // 新生成的 `#mc-val-older` 是**另一个元素**，原来绑在旧元素上的监听随它一起
+  // 消失。于是第一次翻页成功之后，第二次点「更早的」完全没有反应——
+  // 不发请求、不 disabled、控制台也不报错，验证记录永远只能看两页，
+  // 而"第 201 条之后读不到"正是这个翻页条存在的理由（见 validationPager 注释）。
+  //
+  // 与 `bindConcurrency` 同一处理：绑在不会因翻页而重建的容器上，并用
+  // `__valOlderDelegated` 挡住重复 mount 叠出的多份监听（root 是持久的
+  // `#view-root`，`mountMonitor` 每次进这一页都会再调一遍）。
+  // 注意这里**不能用 `return` 早退**：`mountMonitor` 后面还有轮询初始化，
+  // 早退会让重进这一页时整块轮询不再挂上（那是更严重的问题）。
+  if (!root.__valOlderDelegated) {
+    root.__valOlderDelegated = true;
+    root.addEventListener('click', async (e) => {
+      const btn = e.target.closest('#mc-val-older');
+      if (!btn || btn.disabled) return;
+      if (!(cache.validations?.items || []).length) return;
+      await loadOlderValidations(root, btn);
+    });
+  }
 
   // 作用域轮询：只刷队列与告警（liveCards），不碰验证留痕的页码。
   // 锚点取 #mc-live：切走子页时路由替换 #view-root，它 isConnected 变 false，
@@ -656,4 +646,31 @@ export function mountMonitor(root) {
       if (live && alive()) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
     } catch { /* 轮询读不到就保持上一帧，下一拍再试；不打断人 */ }
   }, POLL_MS);
+}
+
+/** 取更早一页验证记录并**追加**到表后。委托与首次绑定共用这一段。 */
+async function loadOlderValidations(root, btn) {
+  const items = cache.validations?.items || [];
+  const last = items[items.length - 1];
+  if (!last) return;
+  btn.disabled = true;
+  try {
+    const page = await api.providerValidations(HISTORY_PAGE, last.id);
+    const fresh = page.items.filter((v) => !items.some((old) => old.id === v.id));
+    cache.validations = { items: items.concat(fresh),
+                          total: page.total || cache.validations.total };
+    cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1 };
+    const tbody = root.querySelector('#mc-val-rows');
+    if (!tbody) { window.dispatchEvent(new CustomEvent('app:refresh')); return; }
+    const empty = tbody.querySelector('td.hint')?.closest('tr');
+    if (empty) empty.remove();
+    tbody.insertAdjacentHTML('beforeend', fresh.map(valRow).join(''));
+    const pager = btn.closest('.right');
+    if (pager) {   // 换掉整条翻页条后，按钮是新节点——委托仍在 root 上，所以还能点
+      pager.outerHTML = `<span class="right">${validationPager()}</span>`;
+    }
+  } catch (err) {
+    btn.disabled = false;
+    alertNotify(`更早的验证记录读不到：${err.message}`);
+  }
 }
