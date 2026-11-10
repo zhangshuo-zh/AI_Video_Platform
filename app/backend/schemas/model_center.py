@@ -142,3 +142,116 @@ class AgentRunIn(BaseModel):
     # 有效期：人批的是"接下来这段时间内允许执行这一批参数"，不是永久授权。
     # 上下界与 0041 的 CHECK 同一条，改这里必须一起改那边
     approval_valid_seconds: int = Field(default=86400, ge=60, le=604800)
+
+
+# ---------- 本地运行时路径（0051） ----------
+
+class RuntimePathItem(BaseModel):
+    """一项运行时路径的三份值：环境里的、网页存的、当前实际生效的。
+
+    三份都要给，是因为这个功能最容易被误解的地方就是"我改了为什么没生效"：
+      * `env_value` 有值 → `locked=True`，页面改不动（环境变量优先）；
+      * `saved_value` 与 `effective` 不一致 → worker 还没重启。
+    少给任何一份，人就得自己去猜是哪一种。
+    """
+    env_name: str
+    label: str
+    hint: str
+    env_value: str | None = None
+    saved_value: str | None = None
+    effective: str | None = None
+    # env / web / default —— 值从哪来。页面按它决定要不要显示"被环境占住"
+    source: str = "default"
+    locked: bool = False
+    # runtime 探测结果：ok / missing / unknown（与 adapters.health 同一套词）
+    state: str = "unknown"
+    detail: str = ""
+
+
+class RuntimePathsOut(BaseModel):
+    items: list[RuntimePathItem] = []
+    # 保存之后置 True：worker 拿的是启动那一刻的环境快照，改完必须重启才生效
+    worker_needs_restart: bool = False
+    note: str = ""
+
+
+class RuntimePathIn(BaseModel):
+    """保存一项路径。空串＝清除覆盖（回到跟随环境变量或内置默认）。"""
+    path: str = Field(default="", max_length=1000)
+
+
+# ---------- 云端密钥的指纹与连通性（2026-11-11） ----------
+
+class SecretItem(BaseModel):
+    """一把云端密钥的**指纹**——能确认是哪一把，推不回原值。
+
+    三个字段各有各的必要性，少一个就答不全"这台机器上配的是什么"：
+      * `fingerprint` sha256 前 8 位：对着供应商后台比对；
+      * `length` 长度：复制粘贴多一个换行／少几个字符时能一眼看出；
+      * `preview` 只露公开家族标记（`sk-` 这类）+ 指纹，**不含值的任何随机段**。
+    """
+    env_name: str
+    provider: str
+    label: str
+    present: bool = False
+    length: int = 0
+    fingerprint: str = ""
+    preview: str = ""
+
+
+class SecretsOut(BaseModel):
+    items: list[SecretItem] = []
+    note: str = ""
+
+
+class SecretProbeOut(BaseModel):
+    """点「测试连接」的结论。`state` 词表与 `cloud_probe` 一致：
+    ok／no_key／no_endpoint／auth／insufficient_balance／rate_limit／…"""
+    provider: str
+    label: str
+    state: str
+    detail: str
+    key_env: str = ""
+    has_key: bool = False
+
+
+# ---------- 密钥的密文存储（0052，2026-11-11） ----------
+
+class SecretValueIn(BaseModel):
+    """保存密钥的请求体。**明文只在这个入参里存在一次**，落库前就变密文。
+
+    刻意不给默认值：空串在语义上是"清除"还是"存一个空密钥"必须由路由
+    明确判掉（清除走 DELETE），这里不做兜底。
+    """
+    value: str
+
+
+class SecretValueOut(BaseModel):
+    """一把密钥的**显示态**：任何时候都不含明文。
+
+    `source` 三档回答的是"当前生效的是哪一份"，这是排查的第一步：
+      * `env`  —— 环境变量里有，库里的（若有）不生效；
+      * `db`   —— 库里解出来用；
+      * `none` —— 两处都没有。
+    """
+    env_name: str
+    present: bool = False
+    source: str = "none"          # env / db / none
+    fingerprint: str = ""
+    length: int = 0
+    preview: str = ""
+    updated_at: str | None = None
+    updated_by: int | None = None
+    note: str = ""
+
+
+class SecretValuesOut(BaseModel):
+    """`kek_ready` 是界面判断"能不能配"的唯一依据。
+
+    没有 KEK 时整个功能不可用——不是"能存但存的是明文"，而是**明说不可用**，
+    免得人以为配上了。
+    """
+    items: list[SecretValueOut] = []
+    kek_ready: bool = False
+    kek_env: str = ""
+    note: str = ""

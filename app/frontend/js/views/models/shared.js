@@ -76,7 +76,13 @@ export let cache = { catalog: null, manifest: null, providers: null, policies: n
  */
 export const SUB_NEEDS = [
   { providers: true },
-  { providers: true, validations: true, engines: true },
+  // 子页 1（引擎管理）读运行时路径：两者是同一件事的两半——
+  // "用哪一档引擎"与"这一档的权重在哪"，分开两屏人会来回切。
+  // **注意别放到子页 0**：那一页是模型仓库（`pageRepo`），运行时路径的卡
+  // 在 `pageEngines` 里，放错了数据取了但没人渲染（实测就是踩到了这个：
+  // 卡片 0 行、接口明明回 10 项）。
+  { providers: true, validations: true, engines: true, runtimePaths: true,
+    secretValues: true },
   { providers: true, policies: true },
   { providers: true, worker: true, validations: true, process: true },
 ];

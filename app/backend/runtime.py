@@ -25,7 +25,31 @@ import config  # 只读 RIFE_MODEL_VERSION：版本号只能有一个出处
 
 
 def _env(name: str) -> str:
-    return (os.environ.get(name) or "").strip()
+    """读一个运行时路径变量：**进程环境优先，其次网页上设的覆盖值**。
+
+    三级回落里这里只做两级，第三级（内置默认）在调用点各自判断——
+    因为默认值因变量而异（有的推 `$HOME/FastVideo`，有的靠 PATH 找）。
+
+    **为什么环境变量优先**（2026-11-11）：部署脚本、CI、`run.sh` 的推导都靠它，
+    网页上的值不该悄悄盖掉一个显式导出的环境（排查时"我明明导出了为什么没用"
+    比"我在网页上设的为什么没用"难查得多）。`runtime_path` 表存的只是
+    "没人在环境里配时，网页上想让它去哪"。
+
+    **为什么不在这里写 `os.environ`**：这个函数在探测与健康检查里被高频调用，
+    写环境是副作用；而且 worker 是独立进程，父进程改了 `os.environ` 它看不见
+    （它拿的是 `_worker_env()` 的快照）。要让页面上的值对 worker 生效，
+    必须重启 worker —— 见 `runtime_paths.set_and_apply()` 的注释。
+
+    读库失败一律当"没设过"：探测是只读诊断，不能因为库锁就整页报错。
+    """
+    value = (os.environ.get(name) or "").strip()
+    if value:
+        return value
+    try:
+        from repositories import runtime_path
+        return (runtime_path.get_one(name) or "").strip()
+    except Exception:
+        return ""
 
 
 @dataclass(frozen=True)

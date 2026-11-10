@@ -308,6 +308,23 @@ ROUTES = [
      {"engine_code": "draw_things", "endpoint": "http://127.0.0.1:7860"}, 403),
     ("PATCH", "/api/engines/{m}", {"note": "越权改"}, 403),
     ("DELETE", "/api/engines/{m}?confirm=1", None, 403),
+    # ---------- 本地运行时路径（0051） ----------
+    # 两条都 system:config：路径决定 worker 去哪里找权重，改错了整条生成腿就停摆。
+    # 普通人（含制作）看都不该看到这台机器的目录结构。
+    ("GET", "/api/runtime-paths", None, 403),
+    ("PUT", "/api/runtime-paths/{m}", {"path": "/tmp/evil"}, 403),
+    # ---------- 云端密钥的指纹与连通性（2026-11-11） ----------
+    # 两条都 system:config。指纹推不回密钥值，但它能让拿到泄漏 key 的人确认
+    # "是不是这一把"，且露出的家族标记也算信息；测试连接是**真出网**的调用。
+    # 两条都不该让普通人碰到。
+    ("GET", "/api/secrets", None, 403),
+    ("POST", "/api/secrets/{m}/test", None, 403),
+    # ---------- 密钥的密文存储（0052，2026-11-11） ----------
+    # 这三条能**改真实密钥**，是整份权限表里最敏感的三条。普通人 403 是底线；
+    # 管理员能看到指纹但看不到明文（明文只在一个 PUT 入参里存在一次）。
+    ("GET", "/api/secret-values", None, 403),
+    ("PUT", "/api/secret-values/{m}", {"value": "sk-evil"}, 403),
+    ("DELETE", "/api/secret-values/{m}", None, 403),
     ("POST", "/api/engines/{m}/probe", None, 403),
     # 探测历史（0042）：只读，但仍要 system:config——detail 里有端点和内网地址。
     ("GET", "/api/engines/{m}/probes", None, 403),

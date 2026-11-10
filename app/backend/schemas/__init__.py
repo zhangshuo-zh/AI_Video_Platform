@@ -101,7 +101,10 @@ from .members import (
 
 from .model_center import (
     REG_SOURCES, POLICY_PREFERENCES, ModelRegistrationIn, ModelRegistrationPatch,
-    EngineInstanceIn, EngineInstancePatch, EngineInstanceOut, ModelPolicyIn, AgentRunIn
+    EngineInstanceIn, EngineInstancePatch, EngineInstanceOut, ModelPolicyIn, AgentRunIn,
+    RuntimePathIn, RuntimePathItem, RuntimePathsOut,
+    SecretItem, SecretProbeOut, SecretsOut,
+    SecretValueIn, SecretValueOut, SecretValuesOut
 )
 
 from .pipeline import (
@@ -297,6 +300,15 @@ __all__ = [
     "ReviewSignIn",
     "RoleOut",
     "RolePermIn",
+    "RuntimePathIn",
+    "RuntimePathItem",
+    "RuntimePathsOut",
+    "SecretItem",
+    "SecretProbeOut",
+    "SecretsOut",
+    "SecretValueIn",
+    "SecretValueOut",
+    "SecretValuesOut",
     "SeasonCancelIn",
     "SeasonIn",
     "SeasonOut",

@@ -29,6 +29,21 @@ from services import ensure_workspace
 
 def create_app() -> FastAPI:
     migrate(verbose=False)          # 启动时把库补到最新，重复执行是安全的
+    # 网页上设过的运行时路径并进本进程环境（0051）。
+    # **必须在 migrate 之后**：`runtime_path` 表是 0051 建的，读早了会撞
+    # "no such table"（`runtime_paths.apply` 会吞掉异常，于是静默不生效——
+    # 那比报错更难查）。
+    # 环境变量优先：这里只补"环境里没有、网页上设过"的那几项，不覆盖显式配置。
+    try:
+        import runtime_paths
+        written = runtime_paths.apply()
+        if written:
+            print(f"[启动] 已应用网页上设的运行时路径 {len(written)} 项："
+                  + "、".join(written))
+    except Exception as exc:
+        # 一条路径没应用不该让整个平台起不来：探测会如实回 unknown/missing，
+        # 人点开设置页看得见，比启动失败好排查。
+        print(f"[启动] 运行时路径没应用上：{type(exc).__name__}: {exc}")
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
     # 内置产线模板按 (name, version) 补齐：已有的不动，只插缺的。
     # 放这里是因为 worker 进程也要有一份同样的模板表，而两边共用同一个库，

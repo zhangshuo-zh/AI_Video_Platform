@@ -291,6 +291,13 @@ def main():
     # wan 故意不配 ALIYUN_WAN_BASE_URL——"无可探端点"那一档也要在界面上过一遍。
     os.environ["DEEPSEEK_BASE_URL"] = f"http://127.0.0.1:{gateway.server_address[1]}"
     os.environ["DEEPSEEK_API_KEY"] = MOCK_SECRET
+    # 密钥密文存储（0052）需要 KEK 才可用：给一次性的随机 32 字节。
+    # **不能用固定值**——它是这套加密的根，写死在脚本里等于宣布"测试环境的密钥
+    # 谁都能解"。每次跑现生成，用完随进程消失。
+    import base64 as _b64
+    import secrets as _sec
+    os.environ["PLATFORM_SECRET_KEK"] = _b64.b64encode(
+        _sec.token_bytes(32)).decode()
     os.environ.pop("ALIYUN_WAN_BASE_URL", None)
 
     # 数据摆在起服务之前：直插仓储要的是"库里的历史"，不是 HTTP 写路径。
@@ -716,9 +723,11 @@ def main():
                              " r.textContent.includes('未接入') && !r.querySelector('button')); })()"),
               f"页面 {offline} 行／接口 {want_off} 家")
         cards = P.eval_js(cdp, "document.querySelectorAll('#view-root .card').length")
-        # 四张卡：顶部四数 ＋ 能力轨 ＋ 引擎（按 code 分组） ＋ 引擎实例（0040 端点表）。
-        # 上一版是 3，引擎实例那一格后端早就有接口、界面一直空着——补上它就多一张。
-        check("引擎收成一张表而不是 13 张卡", 0 < cards <= 4, f"整页 {cards} 张卡片")
+        # 五张卡：顶部四数 ＋ 能力轨 ＋ 引擎（按 code 分组） ＋ 引擎实例（0040 端点表）
+        # ＋ 本地运行时路径（0051）。
+        # 上一版是 3，引擎实例那一格后端早就有接口、界面一直空着——补上就多一张；
+        # 0051 又把"权重在哪"这一格接上，于是到 5。
+        check("引擎收成一张表而不是 13 张卡", 0 < cards <= 6, f"整页 {cards} 张卡片")
         # 引擎实例那一张：有"加实例"入口，端点列与探测/停用/撤实例按钮都在。
         # 这张卡是 W-C 补的，之前 `engines.probe()` 的提示指向一个不存在的界面。
         check("引擎实例有界面可加端点",
@@ -732,6 +741,105 @@ def main():
                              " && r.querySelector('[data-act-toggle]')"
                              " && r.querySelector('[data-act-uninst]')); })()"),
               f"{inst_rows} 行实例")
+        # ---- 密钥指纹（2026-11-11）----
+        # 指纹要真的**显示在展开的槽位行里**，而且不能把密钥值露出来。
+        # 判据放在"真浏览器的 DOM 文本"上而不是接口上：接口给了但界面没渲染，
+        # 是本仓踩过的真故障（运行时路径那次卡片 0 行）。
+        # 必须点**云端那一行**：槽位表按能力轨排，第一行通常是 local，
+        # 展开它看不到密钥（本组第一版就是点错了行，然后误判"指纹没渲染"）。
+        # 判据用行内文本里的 backend，不靠下标猜。
+        P.eval_js(cdp, """(() => {
+          const rows = [...document.querySelectorAll('tr.slot')];
+          const cloud = rows.find(r => /云端|cloud/.test(r.innerText));
+          const td = (cloud || rows[0]).querySelector('td:first-child');
+          if (td) td.click();
+          return 1; })()""")
+        time.sleep(0.8)
+        fp_txt = P.eval_js(cdp, "(() => [...document.querySelectorAll('[data-secret-test]')]"
+                                ".map(b => b.parentElement.textContent).join('|'))()") or ""
+        # 真判据：按钮要在、指纹文本要非空。第一版写成 `bool(fp_txt.strip())`
+        # 的三元表达式，空文本也会走 `[data-secret-test]` 那个非空字符串分支而通过——
+        # 典型的自证式断言，实测把整段指纹代码删掉它照样绿。
+        check("云端槽位显示密钥指纹与「测试连接」",
+              bool(fp_txt.strip())
+              and P.eval_js(cdp, "document.querySelectorAll('[data-secret-test]').length") >= 1,
+              f"指纹区文本：{fp_txt.strip()[:60] if fp_txt.strip() else '（空）'}")
+        # **密钥值本身绝不能出现在页面上**——这是本组的安全底线。
+        check("页面里没有出现密钥值本身",
+              P.eval_js(cdp, f"!document.body.innerText.includes({MOCK_SECRET!r})"),
+              "body 文本不含 MOCK_SECRET")
+        # 指纹是 8 位十六进制：要有，且不能是值的片段
+        check("指纹是 8 位十六进制而非值片段",
+              P.eval_js(cdp, "(() => { const t = document.body.innerText;"
+                             f" const m = t.match(/…([0-9a-f]{{8}})/);"
+                             f" const leak = t.includes({MOCK_SECRET[:12]!r});"
+                             " return !!m && !leak; })()"),
+              "有 8 位指纹且不含密钥前 12 位")
+
+        # ---- 供应商密钥的密文存储（0052）----
+        # 这一块的价值全在"页面能配"，所以判据必须在**真浏览器的 DOM + 真保存**上，
+        # 而不是接口返回对不对（接口对、界面没渲染，是本仓踩过的真故障）。
+        check("密钥卡存在且列出云端密钥变量",
+              P.eval_js(cdp, "!!document.querySelector('#mc-secret-values')"
+                             " && document.querySelectorAll('#mc-secret-values tbody tr').length >= 1"),
+              "密钥卡存在且有行")
+        # 有 KEK 时不该出现"不能保存"的红字
+        check("配了 KEK 时页面不说「不能保存」",
+              P.eval_js(cdp, "!document.querySelector('#mc-secret-values').innerText"
+                             ".includes('现在不能保存密钥')"),
+              "有 KEK 时无禁用提示")
+        # 关键：页面上任何地方都不许出现明文密钥。
+        #
+        # 判据里**必须先断言卡片存在**：第一版写成
+        # `!document.querySelector('#mc-secret-values').innerText.includes(...)`，
+        # 卡片被删掉时 querySelector 返回 null，整句在 JS 里抛 TypeError、
+        # eval 回一个 falsy，被 `!` 一翻就成了 true——**删掉整个卡片它照样绿**。
+        # 变异验证抓出来的（同一轮还有"显示指纹"那条也是这个毛病）。
+        # 现在先取 innerText，取不到就明确判失败。
+        check("密钥卡里没有明文密钥值",
+              P.eval_js(cdp, f"""(() => {{
+                const el = document.querySelector('#mc-secret-values');
+                if (!el) return false;          // 卡片不在 = 这条不能算过
+                return !el.innerText.includes({MOCK_SECRET!r});
+              }})()"""),
+              "卡存在且卡内文本不含 MOCK_SECRET")
+        # 指纹要显示（环境里配了 DEEPSEEK_API_KEY，所以 source=env）
+        check("密钥卡显示指纹与来源",
+              P.eval_js(cdp, """(() => {
+                const el = document.querySelector('#mc-secret-values');
+                if (!el) return false;          // 同上：卡片不在不能算过
+                const t = el.innerText;
+                return /…[0-9a-f]{8}/.test(t) && /环境变量|这里保存/.test(t);
+              })()"""),
+              "有指纹且有来源标注")
+        # 输入框是 type=password 且不预填（防浏览器密码管理器把它当登录框）
+        check("密钥输入框是 password 且默认空",
+              P.eval_js(cdp, "(() => { const i = document.querySelector("
+                             "'#mc-secret-values [data-sv-input]');"
+                             " return !i || (i.type === 'password' && i.value === ''); })()"),
+              "password 且空")
+
+        # ---- 本地运行时路径（0051）----
+        # 三件事都要在：卡片在、每行带状态、**密钥类变量一个都不出现**。
+        rp_rows = P.eval_js(cdp, "document.querySelectorAll('tr[data-rp]').length")
+        check("运行时路径每项一行且带状态徽章",
+              (rp_rows or 0) >= 8
+              and P.eval_js(cdp, "(() => [...document.querySelectorAll('tr[data-rp]')]"
+                                 ".every(r => r.querySelector('.chip')))()"),
+              f"{rp_rows} 行")
+        # 这一条是这个功能的红线：页面里**不能**出现任何密钥变量名。
+        # 后端白名单与 migration CHECK 拦着写入，这里再验一次"界面也没给入口"，
+        # 三道各自独立——任何一道单独失效都不至于把密钥摆到页面上。
+        check("运行时路径里没有任何密钥变量",
+              P.eval_js(cdp, "(() => { const t = (document.querySelector('#mc-runtime-paths')"
+                             "||{}).textContent || '';"
+                             "return !/API_KEY|_TOKEN|SECRET/.test(t); })()"),
+              "卡片正文不含 API_KEY／TOKEN／SECRET")
+        check("运行时路径说明了改完要重启 worker",
+              P.eval_js(cdp, "(() => { const c = document.querySelector('#mc-runtime-paths');"
+                             "return !!c && c.textContent.includes('重启'); })()"),
+              "卡片里有「重启 worker」提示")
+
         # 连接方式只让选真有实现的那一档（2026-11-07 第三批，CR-010）。
         # `grpc`／`cli` 存得进 0040 的 CHECK，但探测与执行都只写了 HTTP——
         # 摆进下拉就是"选进去看不到任何行为"的选项。

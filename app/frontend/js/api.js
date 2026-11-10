@@ -282,6 +282,29 @@ export const api = {
   // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动
   removeEngine: (id) => send('DELETE', `/api/engines/${id}?confirm=1`),
   probeEngine: (id) => send('POST', `/api/engines/${id}/probe`),
+  // 本地运行时路径（0051）：这 10 个变量决定 worker 去哪里找权重/CLI。
+  // **只包含路径类变量**，密钥永远不在这一族里（后端白名单 + migration CHECK 两道拦）。
+  // 云端密钥的**指纹**（2026-11-11）：只给 sha256 前 8 位与长度，**绝不返回值**。
+  // 用来回答"这台机器上配的是供应商后台里哪一把"——人不用去 cat ~/.zshrc。
+  secrets: () => get('/api/secrets'),
+  // 密钥的**密文存储**（0052，2026-11-11）：管理员在页面上配供应商密钥。
+  //
+  // 三个纪律，前端的责任是"别让明文多留一份"：
+  //   1. 保存成功后**立刻清空输入框**，不回填、不缓存、不进 localStorage；
+  //   2. 读回来只有指纹（sha256 前 8 位）与长度，页面绝不显示明文；
+  //   3. 环境变量优先——库里的值不生效时要说清，否则人会以为保存失败。
+  secretValues: () => get('/api/secret-values'),
+  saveSecretValue: (envName, value) => send('PUT',
+    `/api/secret-values/${encodeURIComponent(envName)}`, { value }),
+  deleteSecretValue: (envName) => send('DELETE',
+    `/api/secret-values/${encodeURIComponent(envName)}`),
+  // 测试连接：真出网打一次供应商网关（不生成、不花钱），回答"这把到底能不能用"。
+  // 后端用 fresh=true（绕过 15 秒缓存）：人刚 export 完新 key 就来点，
+  // 拿到旧结论会以为没生效。
+  testSecret: (provider) => send('POST', `/api/secrets/${encodeURIComponent(provider)}/test`),
+  runtimePaths: () => get('/api/runtime-paths'),
+  saveRuntimePath: (envName, path) =>
+    send('PUT', `/api/runtime-paths/${encodeURIComponent(envName)}`, { path: path || '' }),
   // 探测历史（0042）：只追加不改，最新在前。卡面只摆最近一条，这里是给它后面
   // 那个「看历史」用的——「这台是不是三天两头掉线」得看几条才答得上来。
   engineProbes: (id, limit = 20) =>

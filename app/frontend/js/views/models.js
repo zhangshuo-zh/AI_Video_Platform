@@ -32,7 +32,9 @@ import {
   SUBS, SUB_NEEDS, cache, MODALS, overviewCard, setPendingFilter, viewFilter, alertNotify,
 } from './models/shared.js';
 import { pageRepo, mountRepo, openForm } from './models/repo.js';
-import { pageEngines, mountEngines, mountEngineInstances, openProbeResults } from './models/engines.js';
+import { pageEngines, mountEngines, mountEngineInstances, mountRuntimePaths,
+         mountSecretValues,
+  openProbeResults } from './models/engines.js';
 import { pagePolicies, mountPolicies } from './models/policies.js';
 import { pageMonitor, mountMonitor } from './models/monitor.js';
 
@@ -58,12 +60,19 @@ async function loadAll(sub) {
     // 要现查请按页头的「检查引擎连接」或那一行的「探测」。
     const need = SUB_NEEDS[sub] || SUB_NEEDS[0];
     const [catalog, manifest] = await Promise.all([api.models(), api.providerManifest()]);
-    const [providers, policies, worker, validations, engines, workerProcess] = await Promise.all([
+    const [providers, policies, worker, validations, engines, runtimePaths,
+      secretValues, workerProcess] = await Promise.all([
       need.providers ? api.providers() : null,
       need.policies ? api.modelPolicies() : null,
       need.worker ? api.workerStatus() : null,
       need.validations ? api.providerValidations(50) : null,
       need.engines ? api.engines() : null,
+      // 运行时路径（0051）：读不到就当没这一块，不挡整页——它是配置面，
+      // 不是这一屏的主内容。
+      need.runtimePaths ? api.runtimePaths().catch(() => null) : null,
+      // 密钥的密文存储（0052）：同样读不到就不挡整页。**403 也走这里**——
+      // 非管理员本来就不该看到密钥区，静默降级成"没有这一块"是对的。
+      need.secretValues ? api.secretValues().catch(() => null) : null,
       // 进程控制面：要 system:config 的人才有；403 时降级为 undefined
       // （卡片自己会显示"未运行"，但按钮点了会报权限不足——那是真实情况，
       //  不在前端假装成"没有这个功能"）。
@@ -91,6 +100,9 @@ async function loadAll(sub) {
               // 整页重载＝回到第一页。翻页是模块内状态，不该跟着刷新一起漂。
               validationPage: validations ? { before: null, pages: 0 } : cache.validationPage,
       stats, engines,
+      runtimePaths: runtimePaths || cache.runtimePaths || { items: [], note: '' },
+      secretValues: secretValues || cache.secretValues
+        || { items: [], kek_ready: false, kek_env: '', note: '' },
     });
     return { error: '' };
   } catch (err) {
@@ -273,7 +285,12 @@ export default {
 
     const sub = getSub('models') ?? 0;
     if (sub === 0) mountRepo(root);
-    if (sub === 1) { mountEngines(root); mountEngineInstances(root); }
+    // 三块挂载点都在子页 1（引擎管理）。上次把运行时路径的需求加错了子页，
+    // 数据取了但没人渲染、卡片 0 行——所以这里与 SUB_NEEDS[1] 逐项对齐。
+    if (sub === 1) {
+      mountEngines(root); mountEngineInstances(root);
+      mountRuntimePaths(root); mountSecretValues(root);
+    }
     if (sub === 2) mountPolicies(root);
     if (sub === 3) mountMonitor(root);
   },
