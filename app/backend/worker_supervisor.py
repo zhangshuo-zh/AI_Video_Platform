@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -63,6 +64,24 @@ START_TIMEOUT_SECONDS = 15.0
 # 本进程起过、还没 poll() 回收的 Popen。**不是缓存状态**，是回收句柄：
 # 只有握住它才能在判活时用 poll() 顺带 waitpid——见 `_pid_alive` 的注释。
 _LAUNCHED: dict[int, subprocess.Popen] = {}
+
+# 起停串行化。**这是修一个真竞态**（2026-11-10 复核）：
+#
+# `start()` 的判断是「先读当前有几个，再逐个 fork」——两步之间没有原子性。
+# FastAPI 的同步路由跑在线程池里，所以两个管理员同时点「启动」、或者
+# 一个管理员点启动的同时守护线程正好在处理 `need`，两个调用会**各自读到
+# 同一个 already**，各自都通过"不会超限"的检查，然后各起一批：
+#
+#     already=7，两个 start(count=1) 并发 → 都看到 7+1≤8 → 都起 → 实际 9 个
+#
+# 后果不只是数字难看：`MAX_WORKERS=8` 的存在理由就是"这台机器的内存撑不住
+# 那么多"（见 start 的注释），突破上限正是它要防的事。
+#
+# 用一把普通 `Lock` 而不是 RLock：`start()` 内部会调 `current()`，
+# 而 `current()` 不取这把锁（它只读文件与进程表），所以不会自锁。
+# 锁只在**本进程**内有效——跨进程要靠 PID 目录，但起停本来就只从 API 走
+# （`./run.sh worker` 那条路是人手工敲的，不会和界面点在同一毫秒上）。
+_LOCK = threading.Lock()
 
 
 def _reap(pid: int) -> None:
@@ -149,8 +168,14 @@ def list_workers() -> list[dict]:
         except ValueError:
             continue
         _reap(pid)
-        out.append({"pid": pid, "alive": _pid_alive(pid),
-                    "stale": not _pid_alive(pid)})
+        # **只探一次**：原来 alive 与 stale 各调一次 `_pid_alive`，
+        # 除了白跑（我给 `_pid_alive` 加的 `ps` 兜底是子进程，8 个 worker
+        # 就是 16 次），还有个真的正确性问题——两次调用之间进程若退出了，
+        # 会返回 `alive=True, stale=True` 这种自相矛盾的一行，
+        # 而 `current()` 拿它同时算 live 和 stale，界面就会显示
+        # "在跑 1 个"同时还"残留 1 个"，同一个 pid 出现两次。
+        alive = _pid_alive(pid)
+        out.append({"pid": pid, "alive": alive, "stale": not alive})
     return out
 
 
@@ -245,15 +270,31 @@ def start(*, max_global: int | None = None, per: dict | None = None,
 
     返回 `{ok, pids, message, failed}`：`ok` 只在**全部**起来了才是真。
     部分成功时 `pids` 给出真的那几个，`failed` 说清哪一步没成。
+
+    **锁只包住"读已有数 → 检查上限 → 逐个 fork"，不包等心跳。**
+    等心跳最长 `START_TIMEOUT_SECONDS`（15 秒）× 个数，多开时能到两分钟，
+    把这期间所有并发启动全堵死是不可接受的；而锁真正要防的是"两个调用
+    各自读到同一个 already、各起一批"——那个窗口到 fork 结束就关闭了。
     """
-    # **超出上限要拒绝，不能静默截断**（真踩到）：第一版写的是
-    # `min(count, MAX_WORKERS)`，于是 `start(count=99)` 被悄悄改成 8 个、
-    # 返回成功——人以为起了 99 个，实际只有 8 个在跑，而队列里的活永远干不完。
-    # 静默改需求比拒绝糟得多：拒绝会让人重新想一下，截断只会让人困惑。
     count = int(count or 1)
     if count < 1:
         return {"ok": False, "pids": [], "failed": [],
                 "message": f"数量必须 ≥ 1，给的是 {count}"}
+
+    with _LOCK:
+        begun = _fork_workers(count=count, max_global=max_global, per=per)
+    if "message" in begun:                  # 被上限拒绝，一个都没起
+        return begun
+    return _await_heartbeats(begun["procs"], begun["failed"], count=count)
+
+
+def _fork_workers(*, count: int, max_global: int | None,
+                  per: dict | None) -> dict:
+    """锁内部分：检查上限并 fork。**调用方必须已持有 `_LOCK`**。
+
+    返回 `{"procs": [(pid, 序号)], "failed": [...]}`；被上限拒绝时返回
+    带 `message` 的失败 dict（一个进程都没起）。等心跳在锁外做。
+    """
     already = current()["count"]
     if count > MAX_WORKERS or already + count > MAX_WORKERS:
         return {"ok": False, "pids": [], "failed": [],
@@ -269,7 +310,7 @@ def start(*, max_global: int | None = None, per: dict | None = None,
     for name, value in (per or {}).items():
         argv += [f"--max-{name}", str(int(value))]
 
-    pids: list[int] = []
+    procs: list[tuple[int, int]] = []
     failed: list[str] = []
     for index in range(count):
         # 日志追加写：与 `run.sh` 的 `tee -a` 同义，重启不丢上一次的输出。
@@ -297,29 +338,41 @@ def start(*, max_global: int | None = None, per: dict | None = None,
 
         _LAUNCHED[proc.pid] = proc
         _write_pid_file(proc.pid)
+        procs.append((proc.pid, index))
 
-        # 等它写第一份心跳。worker 起来会先 migrate 再 heartbeat，
-        # 这段等待是"确认真的在干活"而不是"确认 fork 成功"。
+    return {"procs": procs, "failed": failed}
+
+
+def _await_heartbeats(procs: list[tuple[int, int]], failed: list[str],
+                      *, count: int) -> dict:
+    """锁外部分：逐个等 worker 写第一份心跳。
+
+    worker 起来会先 migrate 再 heartbeat，这段等待是"确认真的在干活"
+    而不是"确认 fork 成功"。
+    """
+    pids: list[int] = []
+    for pid, index in procs:
+        proc = _LAUNCHED.get(pid)
         ok = False
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            if proc.poll() is not None:
+            if proc is not None and proc.poll() is not None:
                 code = proc.returncode
-                _remove_pid_file(proc.pid)
+                _remove_pid_file(pid)
                 tail = _log_tail()
                 failed.append(f"第 {index + 1} 个启动后立刻退出（退出码 {code}）"
                               + (f"：{tail}" if tail else ""))
                 break
-            if _heartbeat_written_since(proc.pid):
+            if _heartbeat_written_since(pid):
                 ok = True
-                pids.append(proc.pid)
+                pids.append(pid)
                 break
             time.sleep(0.25)
         else:
             # 进程活着但没心跳：起来了却没登记，多半是环境/迁移问题。
             # **不报成功**——那样人会以为在跑，而队列其实不动。
             failed.append(
-                f"第 {index + 1} 个（PID {proc.pid}）进程起来了但 "
+                f"第 {index + 1} 个（PID {pid}）进程起来了但 "
                 f"{START_TIMEOUT_SECONDS:.0f} 秒内没有写心跳；看 worker.log 尾部")
         if not ok:
             break       # 一个起不来就停手：环境问题多半对下一个也一样

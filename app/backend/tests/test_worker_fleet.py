@@ -574,3 +574,65 @@ class TestNotificationPrune:
                    VALUES ('worker_daemon','warn','旧','config_admins',
                            datetime('now','localtime','-10 days'))""")
         assert notifications.prune() == 0, "刚跑过就又不该再删"
+
+
+class TestStartRace:
+    """`start()` 的「读已有数 → fork」竞态（2026-11-10 复核）。
+
+    判断分两步、中间没有原子性。FastAPI 的同步路由跑在线程池里，所以
+    两个管理员同时点「启动」、或一个人点启动时守护正好在处理 `need`，
+    两个调用会**各自读到同一个 already**，各自都通过"不会超限"检查：
+
+        already=7，两个 start(count=1) 并发 → 都看到 7+1≤8 → 都起 → 9 个
+
+    而 `MAX_WORKERS=8` 的存在理由就是"这台机器的内存撑不住那么多"。
+    """
+
+    def test_并发_start_不会突破上限(self, env, monkeypatch):
+        sup = env["sup"]
+        # 把"起进程"换成记账，不真 fork（真 fork 会要心跳，测试里没有 worker）
+        forked: list[int] = []
+        fake_next = iter(range(900001, 900999))
+
+        def fake_fork(*, count, max_global, per):
+            already = sup.current()["count"]
+            if count > sup.MAX_WORKERS or already + count > sup.MAX_WORKERS:
+                return {"ok": False, "pids": [], "failed": [],
+                        "message": f"已在跑 {already} 个，超过上限"}
+            out = []
+            for i in range(count):
+                pid = next(fake_next)
+                (sup.PID_DIR / f"{pid}.pid").write_text(str(pid))
+                # 假登记：让 current() 数得到它，但探测判"活"
+                monkeypatch.setitem(sup._FAKE_ALIVE, pid, True)
+                forked.append(pid)
+                out.append((pid, i))
+            return {"procs": out, "failed": []}
+
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(sup, "_fork_workers", fake_fork)
+        # 等心跳也桩掉：否则每个"worker"都要白等 15 秒超时
+        monkeypatch.setattr(sup, "_await_heartbeats",
+                            lambda procs, failed, *, count: {
+                                "ok": True, "pids": [p for p, _ in procs],
+                                "failed": failed, "message": "stub"})
+        # 先占到 7（上限 8）
+        sup._FAKE_ALIVE = {p: True for p in range(1, 8)}
+        for p in range(1, 8):
+            (sup.PID_DIR / f"{p}.pid").write_text(str(p))
+        monkeypatch.setattr(sup, "_pid_alive",
+                            lambda pid: sup._FAKE_ALIVE.get(pid, False))
+
+        import threading
+        results = []
+        def go():
+            results.append(sup.start(count=1))
+        ts = [threading.Thread(target=go) for _ in range(2)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+
+        total = sup.current()["count"]
+        assert total <= sup.MAX_WORKERS, (
+            f"并发 start 突破了上限：{total} > {sup.MAX_WORKERS}"
+            f"（forked={forked}）")
+        assert sum(1 for r in results if r["ok"]) <= 1, "两个并发都报成功"
