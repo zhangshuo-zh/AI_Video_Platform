@@ -71,7 +71,7 @@ def save_config(*, enabled: bool, desired: int) -> dict:
     return cfg
 
 
-def _record(action: str, detail: str) -> None:
+def _record(action: str, detail: str, *, level: str = "warn") -> None:
     """记一条守护动作。进内存环形缓冲（给接口看）**并**尝试写通知表。
 
     写通知失败不能影响守护本身——一句日志写不进去不该让自动拉起停摆。
@@ -83,7 +83,11 @@ def _record(action: str, detail: str) -> None:
         import notifications
         notifications.emit(
             kind="worker_daemon",
-            level="warn" if action != "recovered" else "info",
+            # `level` 由调用方给。**原来这里是 `"warn" if action !=
+            # "recovered"`**：全仓四个调用点没有一个传 `action="recovered"`，
+            # 于是连「已补起」这条**成功**记录也一直按 warn 发出去
+            # （2026-11-10 审计）。判据挂在一个不存在的取值上＝死分支。
+            level=level,
             title=f"守护：{action}",
             body=detail,
             # 守护动的是整台机器的进程，不是某个项目，所以收件人是
@@ -107,9 +111,7 @@ def _notify_state(online: int) -> None:
     try:
         import worker_notice
         if online > 0:
-            cleared = worker_notice.resolve_offline()
-            if cleared:
-                _STATE["last_check"] = _STATE["last_check"] or ""
+            worker_notice.resolve_offline()
             return
         queued = sum(worker_notice.queued_by_project().values())
         sent = worker_notice.notify_offline(online=online, queued_total=queued)
@@ -171,8 +173,31 @@ def _tick() -> None:
         _STATE["failures"] = 0
         _STATE["recovered"] += len(result.get("pids") or [])
         _record("已补起", f"在线 {online} → {desired}，"
-                          f"新起 PID {'、'.join(map(str, result['pids']))}")
+                          f"新起 PID {'、'.join(map(str, result['pids']))}",
+                level="info")
     else:
+        # 2026-11-10 审计修的真 bug：`start()` 的契约写明「部分成功时
+        # `pids` 给出真的那几个」（见 `worker_supervisor.start` 的文档），
+        # 而失败分支原来**一次都不读 `pids`**，只看 `ok is False`。
+        # 于是最常见的一类真实故障——期望 3 个、每轮只起来 2 个——
+        # 三个数字同时说谎：
+        #   * `recovered` 不增 → 界面「累计已补 X 次」少算，人以为守护没干事；
+        #   * `failures` 照增 → 连续 3 轮就「放弃自动拉起」，
+        #     而那只差 1 个的缺口**再也不会补**（上面那个 return 之后就没了）；
+        #   * `online` 是对的，面板于是红着说「守护失效」，
+        #     其实守护稳定维持着 desired-1 个。
+        # 判据按**这一轮有没有净增量**：补上了几个就算有进展，
+        # `failures` 归零、`recovered` 照加；一个都没补上才算连续失败。
+        got = len(result.get("pids") or [])
+        if got:
+            _STATE["recovered"] += got
+            _STATE["failures"] = 0
+            _STATE["last_error"] = result["message"]
+            _record("部分补起",
+                    f"要 {need} 个、起来 {got} 个（PID "
+                    f"{'、'.join(map(str, result['pids']))}），"
+                    f"仍差 {desired - online - got} 个：{result['message']}")
+            return
         _STATE["failures"] += 1
         _STATE["last_error"] = result["message"]
         # 第 MAX_FAILURES 次失败才报"放弃"，前几次只记 warn——
@@ -190,7 +215,25 @@ def _loop() -> None:
         try:
             _tick()
         except Exception as exc:            # 守护线程绝不能因为一句异常就死
+            # 2026-11-10 审计修的真 bug：原来这里只写 `last_error`，
+            # **不计 `failures`**。于是一句反复抛出的异常（例如起进程时
+            # 目录不可写）永远走不到 `MAX_FAILURES`，也就永远不会发
+            # 「放弃自动拉起」那条通知，`actions` 一直是 0 条、
+            # `exposed` 一直是 False —— 界面渲染成绿色的「守护中」，
+            # 实际每 15 秒重试一次同一个失败、无界地造野进程。
+            # `last_error` 虽然在 API 响应里，但 `frontend/js` 全仓
+            # 没有一处渲染它，所以这个失败对操作者完全不可见。
             _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
+            _STATE["failures"] += 1
+            try:
+                if _STATE["failures"] >= MAX_FAILURES:
+                    _record("放弃自动拉起",
+                            f"连续 {MAX_FAILURES} 次检查抛异常，停止重试以免"
+                            f"无界刷进程。最后一次：{_STATE['last_error']}")
+                else:
+                    _record("守护检查异常", _STATE["last_error"])
+            except Exception:
+                pass      # 记账本身再坏也不能让守护线程死
         _STOP.wait(CHECK_INTERVAL)
 
 

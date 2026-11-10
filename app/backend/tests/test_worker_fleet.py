@@ -606,15 +606,19 @@ class TestStartRace:
                 # 假登记：让 current() 数得到它，但探测判"活"
                 monkeypatch.setitem(sup._FAKE_ALIVE, pid, True)
                 forked.append(pid)
-                out.append((pid, i))
-            return {"procs": out, "failed": []}
+                out.append((pid, i, None))   # 三元组：pid、序号、proc 对象
+            # `since` 是真代码的必填返回（心跳新鲜度的基线）。少给它会
+            # 在 `start()` 里 KeyError —— 而 KeyError 发生在线程里，
+            # 只变成一条 warning，下面那两条断言会**平凡成立**。
+            return {"procs": out, "failed": [],
+                    "since": time.strftime("%Y-%m-%d %H:%M:%S")}
 
         sup.PID_DIR.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(sup, "_fork_workers", fake_fork)
         # 等心跳也桩掉：否则每个"worker"都要白等 15 秒超时
         monkeypatch.setattr(sup, "_await_heartbeats",
-                            lambda procs, failed, *, count: {
-                                "ok": True, "pids": [p for p, _ in procs],
+                            lambda procs, failed, *, count, since="": {
+                                "ok": True, "pids": [t[0] for t in procs],
                                 "failed": failed, "message": "stub"})
         # 先占到 7（上限 8）
         sup._FAKE_ALIVE = {p: True for p in range(1, 8)}
@@ -631,11 +635,54 @@ class TestStartRace:
         for t in ts: t.start()
         for t in ts: t.join()
 
+        # **先确认两条线程真的跑完了**。少了这一句，本条是假绿的：
+        # 2026-11-10 给 `start()` 加必填的 `since` 时，桩函数没返回它，
+        # 两条线程都 KeyError 死在里面 —— `results` 是空的，于是
+        # `total <= MAX_WORKERS` 与 `sum(ok) <= 1` 都平凡成立，测试照样绿。
+        # 线程里的异常默认只成一条 warning，不失败；断言必须自己站住。
+        assert len(results) == 2, (
+            f"两次 start 只回来了 {len(results)} 个：线程里的异常被吞成 "
+            f"warning 了，下面那两条上限断言会在空结果上假绿")
+        assert not any(t.is_alive() for t in ts)
+
         total = sup.current()["count"]
         assert total <= sup.MAX_WORKERS, (
             f"并发 start 突破了上限：{total} > {sup.MAX_WORKERS}"
             f"（forked={forked}）")
         assert sum(1 for r in results if r["ok"]) <= 1, "两个并发都报成功"
+
+    def test_限额判断本身要被抓到_边界不放水(self, env, monkeypatch):
+        """**在 `_fork_workers` 内部下桩**，让真代码那句限额判断自己跑（2026-11-10 自查）。
+
+        为什么非要有这一条：上面 `test_并发_start_不会突破上限` 把整个
+        `_fork_workers` 换成了假函数，假函数里**自己重写了一遍**限额判断。
+        于是它证明的是"`start()` 的锁是有效的"，而不是"真代码的上限算得对"。
+        实测把真代码的 `already + count > MAX_WORKERS` 放水成 `> MAX_WORKERS + 1`，
+        整个 `test_worker_fleet.py` **34 条全绿**——上限逻辑实际无人看守。
+        `test_超上限要拒` 也抓不到：它用 `count=99` 远超上限，放水 1 个仍然超。
+
+        做法：只把"真去 fork"这一步（`subprocess.Popen`）换成抛错，
+        限额判断与 `current()` 全走真代码。到上限时应当在碰 Popen 之前就被拒；
+        若放水了就会走到 Popen，被这里抓住。
+        """
+        sup = env["sup"]
+        monkeypatch.setattr(sup, "_pid_alive", lambda pid: True)
+
+        def boom(*a, **kw):
+            raise AssertionError(
+                "已经到上限了还走到 fork——限额判断放水了（MAX_WORKERS 形同虚设）")
+        monkeypatch.setattr(sup.subprocess, "Popen", boom)
+
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        for pid in range(1, sup.MAX_WORKERS + 1):
+            (sup.PID_DIR / f"{pid}.pid").write_text(str(pid))
+        assert sup.current()["count"] == sup.MAX_WORKERS
+
+        result = sup.start(count=1)
+        assert result["ok"] is False, (
+            f"已有 {sup.MAX_WORKERS} 个还允许再起 1 个，"
+            f"真起第 {sup.MAX_WORKERS + 1} 个会 OOM")
+        assert "上限" in result["message"]
 
 
 class TestReadLoop:
@@ -742,3 +789,416 @@ class TestReadLoop:
             "加入项目后那条通知已经变成已读——用户会永久错过它")
         assert notifications.mark_read(user, [nid]) == 1, "可见后应该能标"
         assert notifications.mark_read(user, [nid]) == 0, "重复标不该计数"
+
+
+class TestAwaitHeartbeats:
+    """`_await_heartbeats` 不能把"已经 fork 出来的 worker"从报告里弄丢。
+
+    2026-11-10 审计修的真 bug。原来循环末尾是 `if not ok: break`，注释写
+    "一个起不来就停手：环境问题多半对下一个也一样"——这句把时序搞反了：
+    fork 全部在锁内的 `_fork_workers()` 做完（每个都已登记 `_LAUNCHED` +
+    写 PID 文件），`break` 中断的是**确认**而不是**启动**。于是第 1 个失败后，
+    第 2..N 个明明活着、心跳也写了，却既不进 pids 也不进 failed：报告查无此人。
+    操作者看到只提第 1 个的 400 → 再点启动 → 又 fork 一批，无人认领的 worker
+    一路累积到 MAX_WORKERS，而 `worker_daemon` 下一拍用 `current()["count"]`
+    数得到它们，面板于是显示"在跑"，启动却从没确认过。
+    """
+
+    def _procs(self, sup, monkeypatch, heartbeat_by_pid, dead=()):
+        """装好最小假环境并交出 `procs` 三元组；判定全走真代码。
+
+        `heartbeat_by_pid` 的 True/False = 这个 pid 有没有写心跳；
+        `dead` 里的 pid 其 proc.poll() 返回退出码 2（＝fork 之后秒退）。
+        2026-11-10 起 `procs` 是 `(pid, 序号, proc)`：proc 对象由
+        `_fork_workers` 直接带出来，确认阶段不再查 `_LAUNCHED`。
+        """
+        class FakeProc:
+            def __init__(self, alive=True, code=None):
+                self._alive, self.returncode = alive, code
+
+            def poll(self):
+                return None if self._alive else self.returncode
+
+        sup._LAUNCHED.clear()
+        procs = []
+        for i, pid in enumerate(heartbeat_by_pid):
+            proc = FakeProc(alive=pid not in dead,
+                            code=None if pid not in dead else 2)
+            sup._LAUNCHED[pid] = proc
+            procs.append((pid, i, proc))
+        monkeypatch.setattr(sup, "START_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(sup, "_heartbeat_written_since",
+                            lambda pid, *, since: bool(heartbeat_by_pid.get(pid)))
+        monkeypatch.setattr(sup, "_log_tail", lambda: "")
+        return procs
+
+    def test_第一个没心跳时后面起好的必须仍然报出来(self, env, monkeypatch):
+        p1, p2 = 111111, 222222
+        # 第 1 个永不写心跳；第 2 个写了
+        sup = env["sup"]
+        procs = self._procs(sup, monkeypatch, {p1: False, p2: True})
+
+        out = sup._await_heartbeats(procs, [], count=2, since="")
+
+        assert out["ok"] is False, "第 1 个没起来，整体不该报成功"
+        assert out["pids"] == [p2], (
+            f"第 2 个已 fork、心跳也写了，却没进 pids —— "
+            f"它在报告里查无此人：{out}")
+        assert "只起来 1 个" in out["message"], (
+            f"报告没交代第 2 个去哪了：{out['message']}")
+
+    def test_全部失败时逐个都要有交代(self, env, monkeypatch):
+        """两个都没心跳 → failed 必须两条都在，而不是只报第一个就收工。"""
+        p1, p2 = 311111, 322222
+        sup = env["sup"]
+        procs = self._procs(sup, monkeypatch, {p1: False, p2: False})
+
+        out = sup._await_heartbeats(procs, [], count=2, since="")
+
+        assert out["ok"] is False and out["pids"] == []
+        assert len(out["failed"]) == 2, (
+            f"两个都没心跳却只报了 {len(out['failed'])} 条：{out['failed']}")
+
+    def test_立刻崩溃的也要逐个报出来(self, env, monkeypatch):
+        """第 1 个秒退（fork 失败之外的另一种失败），第 2 个照样要被确认。"""
+        p1, p2 = 411111, 422222
+        sup = env["sup"]
+        procs = self._procs(sup, monkeypatch, {p1: False, p2: True},
+                            dead={p1})
+
+        out = sup._await_heartbeats(procs, [], count=2, since="")
+
+        assert "立刻退出" in out["failed"][0], out["failed"]
+        assert out["pids"] == [p2], (
+            f"第 1 个崩溃不该连累第 2 个被确认：{out}")
+        sup._LAUNCHED.clear()
+
+    def test_确认期间被并发收掉的进程仍要报退出码(self, env, monkeypatch):
+        """`_await_heartbeats` 不能回头查 `_LAUNCHED`（2026-11-10 审计修的真 bug）。
+
+        `_LOCK` 在 fork 结束就释放，等心跳在锁外。这中间任何一次并发的
+        `current()`／守护线程一拍都会走 `_reap()`，把已退出的那条从
+        `_LAUNCHED` 弹掉。旧代码是 `proc = _LAUNCHED.get(pid)`，于是：
+
+        * `proc is None` → 「已退出」这条判据永不成立，报的是
+          「起来了但 15 秒内没有写心跳；看 worker.log 尾部」——
+          把人指向环境/迁移问题，而真相是进程 150 毫秒就退了、退出码 2；
+        * `_remove_pid_file(pid)` 也不执行 → PID 文件永久留盘，
+          `current()["stale_pids"]` 从此恒定多一个号，界面一直显示
+          「未运行（残留 …）」，而且没有任何按钮能清它。
+
+        这里把 proc 交到手上的同时**故意让 `_LAUNCHED` 是空的**，
+        正是那个并发时序的事后状态。
+        """
+        sup = env["sup"]
+        pid = 511111
+        sup.PID_DIR.mkdir(parents=True, exist_ok=True)
+        pid_file = sup.PID_DIR / f"{pid}.pid"
+        pid_file.write_text(str(pid))
+
+        dead = type("Dead", (), {"returncode": 2, "poll": lambda self: 2})()
+        monkeypatch.setattr(sup, "START_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(sup, "_heartbeat_written_since",
+                            lambda _p, *, since: False)
+        monkeypatch.setattr(sup, "_log_tail", lambda: "")
+        sup._LAUNCHED.clear()            # ← 模拟 _reap 已经把它收掉了
+
+        out = sup._await_heartbeats([(pid, 0, dead)], [], count=1,
+                                since="")
+
+        assert len(out["failed"]) == 1, out
+        assert "立刻退出（退出码 2）" in out["failed"][0], (
+            f"报错了方向，人会被引去查环境：{out['failed']}")
+        assert "没有写心跳" not in out["failed"][0]
+        assert not pid_file.exists(), (
+            f"PID 文件没删，会永久算成残留：{sorted(p.name for p in sup.PID_DIR.iterdir())}")
+        sup._LAUNCHED.clear()
+
+
+class TestForkFailureLeavesNoOrphan:
+    """fork 成功了但登记失败 —— 绝不能留下一个界面上停不掉的野进程。
+
+    2026-11-10 整库审计实测到的真 bug（`worker_supervisor._fork_workers`）。
+    原来 `_write_pid_file(proc.pid)` 在 `try` 之外，而它内部
+    `PID_DIR.mkdir(...)` + `path.write_text(...)` 没有任何保护。触发条件是
+    `data/run/workers` 不可写／被同名普通文件占住／磁盘满。一条链四件事：
+
+    1. 异常穿透 `_fork_workers` → 穿透 `start()`（`with _LOCK` 不吞异常）
+       → 路由没有 try/except → **HTTP 500**，而子进程**已经真起来了**；
+    2. 它不在 `list_workers()` 里（没有登记文件），`current()["count"]=0`，
+       `stop_one` 以"不是本机登记的 worker"拒绝操作，`stop()` 报
+       「没有 worker 在跑」→ **界面上没有任何入口能停掉它**；
+    3. `MAX_WORKERS=8` 数的是 `current()["count"]` → 防呆对它完全不设防，
+       每点一次启动多一个；
+    4. 守护每 15 秒重复踩同一个异常，而 `_loop` 的 `except` 原来
+       **只写 last_error、不计 failures** → 永远到不了 `MAX_FAILURES`，
+       「放弃自动拉起」那条通知永远不发，`exposed=False`，
+       界面渲染成绿色的「守护中 · 累计已补 0 次」。
+    """
+
+    def _sleep_proc(self):
+        """真 Popen 一个会活着的假 worker（要的是真 pid 和真 kill）。"""
+        import subprocess
+        return subprocess.Popen(
+            [sys.executable, "-c", "import time;time.sleep(30)"])
+
+    def test_登记失败必须杀掉刚起的进程并如实报失败(self, env, monkeypatch):
+        sup = env["sup"]
+        proc = self._sleep_proc()
+        monkeypatch.setattr(sup.subprocess, "Popen", lambda *a, **k: proc)
+        # 用普通文件占住 PID_DIR：`PID_DIR.mkdir(exist_ok=True)` 会抛
+        # FileExistsError（OSError 的子类）。fixture 里 PID_DIR 就是
+        # `RUN_DIR/"workers"`，所以这里占的正是它。
+        sup.RUN_DIR.mkdir(parents=True, exist_ok=True)
+        sup.PID_DIR.write_text("我不是目录")
+
+        out = sup.start(count=1)          # 关键：**不能抛异常**
+
+        assert out["ok"] is False
+        assert out["failed"], "登记失败必须写进 failed，不能只丢一句 500"
+        assert "登记失败" in out["failed"][0], out["failed"]
+        # 真的等它死（`kill()` 是异步的，立刻 poll 只会看到 None）。
+        # 等不到就是**没杀**：这条正是那个孤儿进程的本体。
+        import subprocess as sp
+        try:
+            proc.wait(timeout=5)
+        except sp.TimeoutExpired:
+            proc.kill(); proc.wait()
+            pytest.fail(
+                f"PID {proc.pid} 没被杀掉 —— 它不在 _LAUNCHED、没有 PID 文件，"
+                f"`stop_one` 会拒绝操作、`stop()` 报『没有 worker 在跑』，"
+                f"界面上没有任何入口能停掉它：{out}")
+
+    def test_目录准备失败要给出原因而不是穿透成_500(self, env, monkeypatch):
+        sup = env["sup"]
+        sup.RUN_DIR.mkdir(parents=True, exist_ok=True)
+        (sup.LOG_DIR.parent / "logs").write_text("我不是目录")
+        called = []
+        monkeypatch.setattr(sup.subprocess, "Popen",
+                            lambda *a, **k: called.append(1))
+
+        out = sup.start(count=1)
+
+        assert out["ok"] is False and "准备失败" in out["message"], out
+        assert not called, "目录都没准备好就不该 fork 任何进程"
+
+    def test_日志打不开时不fork并报出路径(self, env, monkeypatch):
+        """`open(WORKER_LOG, "ab")` 也得包起来——它和 `Popen` 一样会抛 OSError。
+
+        这一条刻意**只**把 `WORKER_LOG` 造成目录（`LOG_DIR` 本身完好），
+        否则先撞上上面那条"目录准备失败"，测不到这里。
+        判据两条：一条进程都没 fork；失败信息里带得出问题的文件路径。
+        """
+        sup = env["sup"]
+        sup.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        sup.WORKER_LOG.mkdir()                 # 目录不能以 "ab" 打开
+        called = []
+        monkeypatch.setattr(sup.subprocess, "Popen",
+                            lambda *a, **k: called.append(1))
+
+        out = sup.start(count=1)
+
+        assert out["ok"] is False
+        assert "日志打不开" in out["message"], out["message"]
+        assert str(sup.WORKER_LOG) in out["message"], (
+            f"报错没说是哪个文件打不开，人还得自己猜：{out['message']}")
+        assert not called, "日志都没有就不该 fork（否则 worker 输出无处可去）"
+
+    def test_守护反复抛异常也必须升级成需要人处理(self, env, monkeypatch):
+        """`_loop` 的 `except` 不记 failures，就永远走不到放弃那条。
+
+        这一条测的是"线程不能死"和"必须记账"能不能同时成立。
+        """
+        daemon = env["daemon"]
+        import threading
+        stop = threading.Event()
+        monkeypatch.setattr(daemon, "_STOP", stop)
+
+        ticks = {"n": 0}
+        def boom() -> None:
+            ticks["n"] += 1
+            raise PermissionError("run/workers 不可写")
+        monkeypatch.setattr(daemon, "_tick", boom)
+        monkeypatch.setattr(daemon, "_record",
+                            lambda action, detail, *, level="warn":
+                            daemon._STATE["actions"].insert(
+                                0, {"at": "", "action": action, "detail": detail}))
+        waits = {"n": 0}
+        def fake_wait(_seconds):
+            waits["n"] += 1
+            if waits["n"] >= daemon.MAX_FAILURES:
+                stop.set()
+        monkeypatch.setattr(daemon, "CHECK_INTERVAL", 0.001)
+        monkeypatch.setattr(daemon._STOP, "wait", fake_wait)
+
+        daemon._STATE["failures"] = 0
+        daemon._STATE["actions"] = []
+        daemon._loop()
+
+        assert ticks["n"] == daemon.MAX_FAILURES, (
+            f"线程要么死了、要么没继续重试：{ticks}")
+        assert daemon._STATE["failures"] >= daemon.MAX_FAILURES, (
+            "异常不计 failures → 永远发不出『放弃自动拉起』，"
+            "界面会一直绿色显示『守护中』")
+        actions = [a["action"] for a in daemon._STATE["actions"]]
+        assert "放弃自动拉起" in actions, (
+            f"到了上限必须升级为需要人处理，实际只记了：{actions}")
+
+
+class TestHeartbeatMustBeFresh:
+    """PID 被重用时，上一任的死心跳不能冒充"新 worker 起来了"。
+
+    2026-11-10 整库审计修的真 bug：`_heartbeat_written_since` 名字里有
+    `since`，实现里**没有任何时间判据**（`SELECT 1 FROM worker_node
+    WHERE pid = ?`），而 `worker_node` 的行 7 天才清（`lease.py:233`）。
+    长跑的 Linux 机默认 `pid_max=32768`，几天绕一圈，重用完全够撞。
+    实测后果：插一行三天前的心跳，`_await_heartbeats` **0.00 秒**返回
+    `ok=True`，而那个新进程一秒都没活过。谎报成功比报失败更坏——
+    操作者以为在跑，守护下一拍数出 `online >= desired` 于是**连补都不补**，
+    队列原地不动，而且没有任何地方显示异常。
+
+    这一组**故意不桩 `_heartbeat_written_since`**：桩掉它就桩掉了本条
+    唯一被测的东西（那句 SQL 的时间过滤）。
+    """
+
+    PID = 987654          # 不会真存在的 PID，纯当键用
+
+    def _seed(self, *, age_days):
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM worker_node WHERE pid = ?", (self.PID,))
+            conn.execute(
+                """INSERT INTO worker_node (worker_id, pid, host, started_at,
+                                            heartbeat_at, version,
+                                            limits_json, resources_json)
+                   VALUES (?, ?, 'testhost',
+                           datetime('now','localtime', ?),
+                           datetime('now','localtime', ?),
+                           'v1', '{}', '{}')""",
+                (f"testhost:{self.PID}:stale", self.PID,
+                 f"-{age_days} days", f"-{age_days} days"))
+
+    def teardown_method(self):
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM worker_node WHERE pid = ?", (self.PID,))
+
+    def test_旧心跳不算本轮确认(self, env):
+        sup = env["sup"]
+        self._seed(age_days=3)
+        since = time.strftime("%Y-%m-%d %H:%M:%S")
+        assert sup._heartbeat_written_since(self.PID, since=since) is False, (
+            "三天前的记录被当成'这个 PID 写过心跳'——PID 重用即谎报成功")
+
+    def test_新心跳算确认(self, env):
+        """配对用例：判据不是"一律不认"，窗口之内必须认，否则永远确认不了。"""
+        sup = env["sup"]
+        self._seed(age_days=0)      # heartbeat_at = 现在
+        since = time.strftime("%Y-%m-%d %H:%M:%S",
+                              time.localtime(time.time() - 60))
+        assert sup._heartbeat_written_since(self.PID, since=since) is True
+
+    def test_since_是必填的(self, env):
+        """不给"不过滤"的缺省值——忘了过滤就是上面那个 bug 本体。
+
+        留一个默认＝把门开着，下一个人加调用点时不会想到要传。
+        """
+        sup = env["sup"]
+        with pytest.raises(TypeError):
+            sup._heartbeat_written_since(self.PID)
+
+    def test_确认用的是传进来的基线而不是当下时间(self, env, monkeypatch):
+        """`_await_heartbeats` 必须用 `_fork_workers` 交出来的那个基线。
+
+        基线的正确取值点是**第一个 fork 之前**（见 `worker_supervisor` 里
+        那段注释：先起的 worker 可能在 `_fork_workers` 返回后就写好了心跳，
+        基线取晚会把真活着的它误判成死的）。"取点"本身这里测不了——
+        `heartbeat_at` 是秒级串，两次 `strftime` 只差十几毫秒，
+        任何断言都无法证伪，所以那条只写在注释里，不虚报成"已覆盖"。
+
+        能测的是**判据用的是参数**：给一个足够老的基线，三天前的记录
+        就该被认；如果确认阶段自己 `strftime(now)` 把参数遮住，
+        同一条记录立刻变成"没写过心跳"，这里就红。
+        """
+        sup = env["sup"]
+        self._seed(age_days=3)
+        monkeypatch.setattr(sup, "START_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(sup, "_log_tail", lambda: "")
+
+        out = sup._await_heartbeats([(self.PID, 0, None)], [], count=1,
+                                    since="1970-01-01 00:00:00")
+
+        assert out["ok"] is True, (
+            f"传进来的老基线没生效，确认阶段用的是当下时间：{out['message']}")
+
+
+class TestDaemonPartialSuccess:
+    """守护不能把"这轮真起来了几个"算成一次纯失败（2026-11-10 审计）。
+
+    `start()` 的契约写明「部分成功时 `pids` 给出真的那几个」，
+    而失败分支原来一次都不读它。于是最常见的真实故障——期望 3 个、
+    每轮只起来 2 个——三个数字同时说谎：`recovered` 不增、
+    `failures` 照增到 3 就**永久放弃**（那 1 个缺口再也不补），
+    面板还红着报「守护失效」，其实守护稳定维持着 desired-1 个。
+    """
+
+    def _drive(self, env, monkeypatch, *, started, message):
+        daemon, sup = env["daemon"], env["sup"]
+        result = {"ok": False, "pids": list(started),
+                  "failed": [message], "message": message}
+        monkeypatch.setattr(sup, "current",
+                            lambda: {"count": len(started), "running": bool(started),
+                                     "pids": list(started), "pid": None,
+                                     "stale_pids": []})
+        monkeypatch.setattr(sup, "start", lambda **kw: dict(result))
+        daemon.save_config(enabled=True, desired=3)
+        daemon._STATE.update(failures=0, recovered=0, actions=[],
+                            last_error="", exposed=False)
+        return daemon
+
+    def test_部分补起要算进展不能推进放弃计数(self, env, monkeypatch):
+        daemon = self._drive(env, monkeypatch, started=[11, 22],
+                             message="只起来 2 个；第 3 个启动后立刻退出")
+        for _ in range(daemon.MAX_FAILURES):
+            daemon._tick()
+        st = daemon._STATE
+        assert st["recovered"] >= daemon.MAX_FAILURES * 2, (
+            f"每轮真起来 2 个却一次都不计 recovered：{st['recovered']}")
+        assert st["failures"] == 0, (
+            f"有净增量还累计 failures，三轮就到上限、缺口再也不补：{st['failures']}")
+        assert not any(a["action"] == "放弃自动拉起" for a in st["actions"]), st["actions"]
+        assert any(a["action"] == "部分补起" for a in st["actions"]), st["actions"]
+
+    def test_一个都没起来仍然要按连续失败计(self, env, monkeypatch):
+        """配对用例：判据是"有没有净增量"，不是"ok 是不是假"。"""
+        daemon = self._drive(env, monkeypatch, started=[],
+                             message="一个都没起来")
+        for _ in range(daemon.MAX_FAILURES):
+            daemon._tick()
+        st = daemon._STATE
+        assert st["failures"] == daemon.MAX_FAILURES, st["failures"]
+        assert st["recovered"] == 0
+        assert any(a["action"] == "放弃自动拉起" for a in st["actions"]), st["actions"]
+
+    def test_成功记录不该按_warn_发出去(self, env, monkeypatch):
+        """`_record` 原来靠 `action != "recovered"` 判 level，
+        而全仓没有任何调用传 `"recovered"` → 连「已补起」都是 warn。"""
+        daemon, sup = env["daemon"], env["sup"]
+        monkeypatch.setattr(sup, "current",
+                            lambda: {"count": 0, "running": False, "pids": [],
+                                     "pid": None, "stale_pids": []})
+        monkeypatch.setattr(sup, "start",
+                            lambda **kw: {"ok": True, "pids": [77],
+                                          "failed": [], "message": "已启动"})
+        levels = {}
+        import notifications
+        real_emit = notifications.emit
+        def spy(**kw):
+            levels[kw["title"]] = kw["level"]
+            return real_emit(**kw)
+        monkeypatch.setattr(notifications, "emit", spy)
+        daemon.save_config(enabled=True, desired=1)
+        daemon._STATE.update(failures=0, recovered=0, actions=[])
+        daemon._tick()
+        assert levels.get("守护：已补起") == "info", (
+            f"成功记录发成了需要人处理的级别：{levels}")

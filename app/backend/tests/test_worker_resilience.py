@@ -118,3 +118,51 @@ def test_心跳不每次都清死节点(fresh_project, clean_queue):
     job_repo._last_prune = _time.monotonic() - 3601
     job_repo.heartbeat("w-alive", 4001, None, "v1")
     assert not _alive("drill-dead-2"), "过了一小时必须恢复清理"
+
+
+def test_mock分支的库调用也必须走锁兜底():
+    """`_run_mock` 里的三处库调用原来是**裸的**（2026-11-10 整库审计修的）。
+
+    同一个文件里 `_pump` 对 `status_of/renew/heartbeat` 这三个调用全都走
+    `_db_guard(log)`，唯独 mock 分支没有。于是一条 mock 作业只要撞上
+    `pipeline.advance_run` 的写锁，`OperationalError: database is locked`
+    就冒泡出 `_run_mock`，被 `process()` 的 `except Exception` 写死成
+    `failed / internal_error`——而产物一件都没坏。`_db_guard` 的文档
+    承诺的正是这件事的反面。
+
+    这里把三个调用**全部**换成会锁死的桩，逼它真的走一遍：
+    作业必须正常跑完并交出产物，一句异常都不许冒出来。
+    只在其中一个调用上加 `db(...)` 的半修，会在另外两处变红。
+    """
+    import jobfiles
+
+    log = io.StringIO()
+    guard = worker._db_guard(log)
+    calls = {"status_of": 0, "renew": 0, "heartbeat": 0}
+
+    def locked(name):
+        def fn(*_args, **_kwargs):
+            calls[name] += 1
+            raise sqlite3.OperationalError("database is locked")
+        return fn
+
+    real = {n: getattr(worker.jobs, n) for n in calls}
+
+    for name in calls:
+        setattr(worker.jobs, name, locked(name))
+    job = {"id": 990001, "capability": "text", "provider_code": "mock"}
+    params = {"text": "锁也拦不住我", "sleep": 0.25, "fail": False,
+              "media": "text"}
+    try:
+        paths, _elapsed = worker._run_mock(job, params, log, "w-test", guard)
+    finally:
+        for name, fn in real.items():
+            setattr(worker.jobs, name, fn)
+
+    assert calls["status_of"] and calls["renew"] and calls["heartbeat"], (
+        f"三个调用没有都真的走到，这条测试盖不住全部裸调用点：{calls}")
+    assert paths and paths[0].endswith("result-990001.txt"), (
+        f"锁冲突把 mock 作业打断成没有产物了：{paths}")
+    assert "库锁" in log.getvalue(), "降级要在 run.log 留痕，不能静默"
+    target = jobfiles.JOBS_DIR / paths[0]
+    assert target.exists() and "锁也拦不住我" in target.read_text(encoding="utf-8")

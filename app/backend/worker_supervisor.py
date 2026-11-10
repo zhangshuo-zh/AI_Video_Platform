@@ -285,15 +285,23 @@ def start(*, max_global: int | None = None, per: dict | None = None,
         begun = _fork_workers(count=count, max_global=max_global, per=per)
     if "message" in begun:                  # 被上限拒绝，一个都没起
         return begun
-    return _await_heartbeats(begun["procs"], begun["failed"], count=count)
+    return _await_heartbeats(begun["procs"], begun["failed"],
+                             count=count, since=begun["since"])
 
 
 def _fork_workers(*, count: int, max_global: int | None,
                   per: dict | None) -> dict:
     """锁内部分：检查上限并 fork。**调用方必须已持有 `_LOCK`**。
 
-    返回 `{"procs": [(pid, 序号)], "failed": [...]}`；被上限拒绝时返回
-    带 `message` 的失败 dict（一个进程都没起）。等心跳在锁外做。
+    返回 `{"procs": [(pid, 序号, Popen)], "failed": [...]}`；被上限拒绝时
+    返回带 `message` 的失败 dict（一个进程都没起）。等心跳在锁外做。
+
+    **proc 对象要一起带出来**，别让锁外的确认阶段回头查 `_LAUNCHED`：
+    `_LOCK` 在 fork 结束就释放（见 `start()` 的注释），而 `_reap()`
+    会被并发的 `current()`／守护线程调用，从 `:355` 等到第 N 个之前，
+    第 N 个完全可能已经退出并被弹掉。那时 `_LAUNCHED.get(pid)` 是 None，
+    2026-11-10 审计实测的后果是两条：死进程被报成「起来了但没写心跳」
+    （把人指向环境/迁移问题），而且 PID 文件不删、永久留在盘上。
     """
     already = current()["count"]
     if count > MAX_WORKERS or already + count > MAX_WORKERS:
@@ -301,8 +309,18 @@ def _fork_workers(*, count: int, max_global: int | None,
                 "message": f"已在跑 {already} 个、要求再起 {count} 个，"
                            f"超过上限 {MAX_WORKERS}；这台机器的内存撑不住那么多"}
 
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # 2026-11-10 审计修的真 bug：这两句原来裸着。`data/run`／`data/logs`
+    # 被同名普通文件占住、权限被改、磁盘满 → `OSError` 一路穿透
+    # `_fork_workers` → 穿透 `start()`（`with _LOCK` 不吞异常）→
+    # 路由 `routers/jobs.py` 没有 try/except → **HTTP 500**，
+    # 而且那句"没起来"的原因被丢进 traceback，界面只看得到 500。
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"ok": False, "pids": [], "failed": [],
+                "message": f"worker 的运行目录／日志目录准备失败：{exc}"
+                           f"（RUN_DIR={RUN_DIR}，LOG_DIR={LOG_DIR}）"}
 
     argv = [_python_executable(), str(BASE_DIR / "worker.py")]
     if max_global is not None:
@@ -310,12 +328,22 @@ def _fork_workers(*, count: int, max_global: int | None,
     for name, value in (per or {}).items():
         argv += [f"--max-{name}", str(int(value))]
 
-    procs: list[tuple[int, int]] = []
+    procs: list[tuple[int, int, object]] = []
     failed: list[str] = []
+    # **本轮的绝对基线**，取在第一个 fork 之前。锁外的确认阶段用它筛掉
+    # `worker_node` 里属于上一任的死记录（见 `_heartbeat_written_since`）。
+    # 只能是"fork 之前"：先起的那个 worker 完全可能在 `_fork_workers` 返回
+    # 之后、`_await_heartbeats` 开头之前就已经写好心跳——基线取晚了会把
+    # **真活着**的它误判成死的，那比原来的 bug 还糟。
+    since = time.strftime("%Y-%m-%d %H:%M:%S")
     for index in range(count):
         # 日志追加写：与 `run.sh` 的 `tee -a` 同义，重启不丢上一次的输出。
         # `open` 只在这一个循环体内驻留，避免多开时句柄堆积。
-        log = open(WORKER_LOG, "ab")
+        try:
+            log = open(WORKER_LOG, "ab")
+        except OSError as exc:
+            failed.append(f"第 {index + 1} 个的日志打不开（{WORKER_LOG}）：{exc}")
+            break
         try:
             proc = subprocess.Popen(
                 argv,
@@ -336,23 +364,46 @@ def _fork_workers(*, count: int, max_global: int | None,
         finally:
             log.close()      # 父进程不必握着这个句柄；子进程已经继承了一份
 
+        # 2026-11-10 审计修的真 bug：`_write_pid_file` 原来在 try 之外，
+        # 而它的 `PID_DIR.mkdir` + `write_text` 没有任何保护。fork 已经成功、
+        # 进程**真的活着**了，这时登记失败会留下一个谁都管不到的孤儿：
+        # 它不在 `list_workers()` 里（没有登记文件），`current()["count"]=0`，
+        # `stop_one` 以"不是本机登记的 worker"拒绝操作，`stop()` 报"没有 worker 在跑"
+        # → **界面上没有任何入口能停掉它**；而 `MAX_WORKERS` 数的正是
+        # `current()["count"]`，于是防它对它完全不设防，每点一次启动多一个。
+        # 宁可这一个算失败，也绝不能留野进程：先杀再报。
+        try:
+            _write_pid_file(proc.pid)
+        except OSError as exc:
+            # 不 pop `_LAUNCHED`：登记（`:380`）在这之后才做，此刻表里没有它。
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            failed.append(
+                f"第 {index + 1} 个已经 fork（PID {proc.pid}）但登记失败，"
+                f"已把它杀掉以免变成无人认领的孤儿：{exc}")
+            break
         _LAUNCHED[proc.pid] = proc
-        _write_pid_file(proc.pid)
-        procs.append((proc.pid, index))
+        procs.append((proc.pid, index, proc))
 
-    return {"procs": procs, "failed": failed}
+    return {"procs": procs, "failed": failed, "since": since}
 
 
-def _await_heartbeats(procs: list[tuple[int, int]], failed: list[str],
-                      *, count: int) -> dict:
+def _await_heartbeats(procs: list[tuple[int, int, object]], failed: list[str],
+                      *, count: int, since: str) -> dict:
     """锁外部分：逐个等 worker 写第一份心跳。
 
     worker 起来会先 migrate 再 heartbeat，这段等待是"确认真的在干活"
     而不是"确认 fork 成功"。
     """
     pids: list[int] = []
-    for pid, index in procs:
-        proc = _LAUNCHED.get(pid)
+    for pid, index, proc in procs:
+        # `proc` 由 `_fork_workers` 直接交到手上看，**不再回头查 `_LAUNCHED`**
+        # （那行 `proc = _LAUNCHED.get(pid)` 是本条的真 bug：并发的 `_reap()`
+        # 能把还没轮到确认的那一条弹掉，于是 `proc is None`，
+        # 「已退出」这条判据永远不成立，报错文案指错方向，PID 文件也不删。
+        # 详见 `_fork_workers` 的文档。）
         ok = False
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -363,7 +414,7 @@ def _await_heartbeats(procs: list[tuple[int, int]], failed: list[str],
                 failed.append(f"第 {index + 1} 个启动后立刻退出（退出码 {code}）"
                               + (f"：{tail}" if tail else ""))
                 break
-            if _heartbeat_written_since(pid):
+            if _heartbeat_written_since(pid, since=since):
                 ok = True
                 pids.append(pid)
                 break
@@ -374,8 +425,21 @@ def _await_heartbeats(procs: list[tuple[int, int]], failed: list[str],
             failed.append(
                 f"第 {index + 1} 个（PID {pid}）进程起来了但 "
                 f"{START_TIMEOUT_SECONDS:.0f} 秒内没有写心跳；看 worker.log 尾部")
-        if not ok:
-            break       # 一个起不来就停手：环境问题多半对下一个也一样
+        # **这里不能 break**（2026-11-10 审计修的真 bug）。
+        #
+        # 原来这句是 `if not ok: break`，理由写着"环境问题多半对下一个也一样"。
+        # 那个理由把时序搞反了：fork 全部发生在锁内的 `_fork_workers()`
+        # （`:322-339`，每个都已经 `_LAUNCHED[pid]` 登记并写了 PID 文件），
+        # 这里中断的是**确认**，不是**启动**。于是第 1 个失败之后，
+        # 第 2..N 个明明已经起来、心跳也写了，却既不进 `pids`（说"起来了"）
+        # 也不进 `failed`（说"没起来"）——报告里查无此人。
+        #
+        # 后果是一条链：操作者看到的 HTTP 400 只提第 1 个 → 以为什么都没起 →
+        # 再点一次启动 → 又 fork 一批 → 那些无人认领的 worker 一直累积到
+        # `MAX_WORKERS`；更糟的是 `worker_daemon` 下一拍用 `current()["count"]`
+        # 数出它们，于是面板显示"在跑 N 个"，而启动从来没人确认过它们。
+        #
+        # 代价是等待时长仍是文档里那句「15 秒 × 个数」，本来就没省下来。
 
     if pids and not failed:
         return {"ok": True, "pids": pids, "failed": [],
@@ -390,14 +454,35 @@ def _await_heartbeats(procs: list[tuple[int, int]], failed: list[str],
             "message": "；".join(failed) or "一个都没起来"}
 
 
-def _heartbeat_written_since(pid: int) -> bool:
-    """这个 PID 有没有在 `worker_node` 里登记过。读库失败一律当"还没有"——
-    宁可等满超时说"没确认"，也不要谎报成功。"""
+def _heartbeat_written_since(pid: int, *, since: str) -> bool:
+    """这个 PID 有没有在 `since`（本地时间串）**之后**写过心跳。
+    读库失败一律当"还没有"——宁可等满超时说"没确认"，也不要谎报成功。
+
+    2026-11-10 审计修的真 bug：函数名里的 `since` 在实现里**根本不存在**，
+    查询只有 `WHERE pid = ?`，没有任何时间判据。而 `worker_node` 的行
+    7 天才清（`lease.py:233`），于是 PID 一旦被重用，上一任的死记录会直接
+    冒充"新 worker 起来了"。实测（长跑的 Linux 机默认 `pid_max=32768`，
+    几天绕一圈，完全够撞）：插一行三天前的心跳，`_await_heartbeats`
+    **0.00 秒**返回 `ok=True`，而那个新进程一秒都没活过。
+    谎报成功的代价是整条链都反了——操作者以为在跑、守护那一拍数出
+    `online >= desired` 于是**连补都不补**、队列原地不动。
+
+    `since` 是**必填**的关键字参数，不给缺省值：这里"忘了过滤"就是上面那个 bug，
+    留一个"不过滤"的默认等于把门开着。判据必须是"本轮 fork 之后"这个
+    **绝对基线**，不能是"最近 15 秒"这种滚动窗口——多开时确认第 N 个之前，
+    前 N-1 个各可能等满 15 秒，滚动窗口会把**真的活着**的第 N 个误判成死的
+    （它的心跳是在本轮基线之后、但已超出 15 秒写的）。
+
+    字符串比较在这里等于时间比较：`heartbeat_at` 与 `since` 都是
+    `datetime('now','localtime')` 那个定宽格式 `YYYY-MM-DD HH:MM:SS`。
+    """
     try:
         from db import get_conn
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM worker_node WHERE pid = ? LIMIT 1", (pid,)
+                """SELECT 1 FROM worker_node
+                    WHERE pid = ? AND heartbeat_at >= ? LIMIT 1""",
+                (pid, since)
             ).fetchone()
         return row is not None
     except Exception:

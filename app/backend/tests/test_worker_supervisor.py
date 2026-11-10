@@ -212,7 +212,8 @@ class TestStartStop:
         """进程起来了但没写心跳 → 报失败并带日志尾部，不报成功。
         "界面说成功而队列不动"是最坏的情况。"""
         monkeypatch.setattr(sup, "START_TIMEOUT_SECONDS", 1.0)
-        monkeypatch.setattr(sup, "_heartbeat_written_since", lambda pid: False)
+        monkeypatch.setattr(sup, "_heartbeat_written_since",
+                            lambda pid, *, since: False)
         proc = _spawn_sleeper(sup, 30)
         # 把 PID 文件清掉，让 start() 认为可以起
         (sup.PID_DIR / f"{proc.pid}.pid").unlink()
@@ -245,7 +246,7 @@ class TestStartStop:
             import worker_supervisor as module
             # 心跳判据在临时库里会等满超时；这里只关心进程组，把等待缩到最短
             original = module._heartbeat_written_since
-            module._heartbeat_written_since = lambda pid: True
+            module._heartbeat_written_since = lambda pid, *, since: True
             module.START_TIMEOUT_SECONDS = 5.0
             try:
                 result = sup.start()

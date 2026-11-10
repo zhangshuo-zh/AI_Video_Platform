@@ -333,8 +333,24 @@ def _validate(job, outputs: Path) -> tuple[dict, runners.RunSpec | None]:
     return params, spec
 
 
-def _run_mock(job, params: dict, log, wid: str) -> tuple[list[str], int]:
-    """假适配器：睡一会儿、可失败、写一个文本产物；每 0.2 秒看一眼取消。"""
+def _run_mock(job, params: dict, log, wid: str,
+              db=lambda fn, *a, **k: fn(*a, **k)) -> tuple[list[str], int]:
+    """假适配器：睡一会儿、可失败、写一个文本产物；每 0.2 秒看一眼取消。
+
+    `db` 是 `_db_guard(log)` 那个包装，由 `process()` 传进来。
+    2026-11-10 整库审计修的真 bug：这里三处库调用原来是裸的
+    （`jobs.status_of/renew/heartbeat`），而同一个文件里 `_pump` 对
+    **同样这三个调用**全都走 `db(...)`。后果是 mock 作业撞上
+    `pipeline.advance_run` 的写锁（`get_conn` 只有 5 秒 timeout）时，
+    `OperationalError: database is locked` 直接冒泡出 `_run_mock` →
+    `process()` 的 `except Exception` 把一条产物一件没坏的作业写死成
+    `failed / internal_error`；`renew` 那处更糟——正常跑动的作业会被
+    判死。这正是 `_db_guard` 文档里承诺的反面：「锁冲突绝不能变成
+    『杀死正在跑的模型』」。同一个 worker 上真适配器的作业不受影响，
+    只有 mock 分支这一条路径行为不一致，所以平时完全看不出来。
+
+    缺省值是恒等包装，为了让单元测试可以不构造 log 直接调它。
+    """
     sleep_s = float(params.get("sleep", 0.6))
     should_fail = bool(params.get("fail", False))
     text = str(params.get("text", "mock output"))
@@ -345,16 +361,19 @@ def _run_mock(job, params: dict, log, wid: str) -> tuple[list[str], int]:
     while remaining > 0:
         if STOP:
             raise JobFailure("worker_stopped", "worker 收到停止信号，作业未完成；可以重试")
-        status = jobs.status_of(job["id"])
+        # 锁冲突时这一拍读到 None：当作"没有取消请求"继续跑，下一拍再问。
+        # 与 `_pump` 同一套语义，不能因为没读到就把作业判死。
+        status = db(jobs.status_of, job["id"], label="查取消状态")
         if status == "cancel_requested":
             raise Cancelled("收到取消请求")
         step = min(0.2, remaining)
         time.sleep(step)
         remaining -= step
-        jobs.renew(job["id"], wid, WORKER_LEASE_SECONDS)
+        db(jobs.renew, job["id"], wid, WORKER_LEASE_SECONDS, label="续租")
         # 心跳另外按 2 秒一次刷：任务跑久了顶栏不能显示 worker 离线
         if time.monotonic() - last_beat >= 2:
-            jobs.heartbeat(wid, os.getpid(), job["id"], adapters.MANIFEST_VERSION)
+            db(jobs.heartbeat, wid, os.getpid(), job["id"],
+               adapters.MANIFEST_VERSION, label="心跳")
             last_beat = time.monotonic()
     if should_fail:
         raise JobFailure("mock_failed", "模拟失败：params.fail=true", 1)
@@ -813,7 +832,7 @@ def process(job, wid: str, limits: dict | None = None) -> None:
             _write(log, f"参数通过白名单：{json.dumps(params, ensure_ascii=False)}")
             request_id = None
             if spec is None:
-                paths, elapsed = _run_mock(job, params, log, wid)
+                paths, elapsed = _run_mock(job, params, log, wid, db)
             else:
                 child_cpu_start = _cpu_totals()[1]
                 paths, elapsed, request_id = _run_spec(job, spec, log, wid, extra)
