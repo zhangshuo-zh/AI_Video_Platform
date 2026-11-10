@@ -348,7 +348,7 @@ CAP_LABELS = {"text": "文本", "image": "图像", "video": "视频",
               "tts": "配音", "music": "音乐"}
 
 
-def preserve_baseline_line(pattern: str) -> str:
+def preserve_baseline_line(pattern: str) -> list[str]:
     """重生成时保留**人工登记**的行（演练、备注）。找不到就给占位。
 
     为什么是"保留"而不是"现算"：这几行记的是"那一轮真跑过什么"，由验收的人
@@ -356,12 +356,38 @@ def preserve_baseline_line(pattern: str) -> str:
     且当前工作树可能正被别的会话改动，跑出来的数不代表这一册登记的那一轮）。
     代价是它**不会自己变新**——所以 `build_md` 里那行明写"人工登记、重生成不
     自动更新"，别让"最近一次"四个字把旧读数冒充成当前观测（《写作与引用规范》§13.1）。
+
+    **返回全部匹配行，不是第一条**（2026-11-10 修）。原来用 `re.search` 只取
+    第一条，而「真浏览器验收」这张单子会一行一行往后追加
+    （「…补充」「…补充之二」「…补充之三」都命中同一个正则）。
+    于是重生成一次就静默删掉后三条——**它们记的是真跑过的验收，
+    删掉之后没人知道那几套工具曾经全过**。实测：HEAD 的 §4 有 4 行验收记录，
+    重生成后剩 1 行，文件 72 行掉到 67 行，而门禁当时不查这一节，一路绿灯。
     """
     if BASELINE.exists():
-        m = re.search(pattern, BASELINE.read_text(encoding="utf-8"), re.M)
-        if m:
-            return m.group(1)
-    return "尚未演练／待填写"
+        found = [m.group(1) for m in
+                 re.finditer(pattern, BASELINE.read_text(encoding="utf-8"), re.M)]
+        if found:
+            return found
+    return ["尚未演练／待填写"]
+
+
+def preserve_labeled_lines(pattern: str) -> list[tuple[str, str]]:
+    """同 `preserve_baseline_line`，但连**行的标签一起**返回：[(标签, 正文)]。
+
+    为什么不能只保留正文：这几行的标签本身带信息——「真浏览器验收」
+    「真浏览器验收补充」「…补充之二」「…补充之三」是四批不同的工作，
+    按序号一眼能看出先后。只存正文再统一印成「补充」，
+    四条就变成四个一模一样的抬头，等于把"第几批"这个事实删掉
+    （2026-11-10 第一次修法就是这么错的，重生成后三条全印成「补充」）。
+    标签由文件自己带着，这里原样搬走，不重新发明。
+    """
+    if BASELINE.exists():
+        found = [(m.group("label"), m.group("body")) for m in
+                 re.finditer(pattern, BASELINE.read_text(encoding="utf-8"), re.M)]
+        if found:
+            return found
+    return [("真浏览器验收（人工登记，重生成基线不会自动更新）", "尚未演练／待填写")]
 
 
 def build_md(facts: dict) -> str:
@@ -382,7 +408,9 @@ def build_md(facts: dict) -> str:
     a("")
     a("| 项 | 值 | 来源 |")
     a("|---|---|---|")
-    a(f"| 迁移 | 0001—{facts['migration']:04d}，共 {facts['migration']} 个 | `app/backend/migrations/` |")
+    gap = ("，编号无 0048" if facts["migration_missing"] == [48]
+           else (f"，缺号 {facts['migration_missing']}" if facts["migration_missing"] else ""))
+    a(f"| 迁移 | 0001—{facts['migration']:04d}，共 {facts['migration_count']} 个{gap} | `app/backend/migrations/` |")
     a(f"| 表 | {facts['tables']} 张 | 临时库真实跑完迁移后数 |")
     a(f"| 总 API 路由 | {facts['operations']} 操作 / {facts['paths']} 路径 | `app.openapi()` 现算 |")
     a(f"| 业务路由 | {facts['business']}（总 API 路由减去健康检查 {len(facts['health'])} 条与认证 {len(facts['auth'])} 条） | 口径见上 |")
@@ -442,7 +470,28 @@ def build_md(facts: dict) -> str:
     a(f"- 最近一次 Job 故障演练：{facts['drill_job']}")
     a(f"- 最近一次备份恢复演练：{facts['drill_backup']}")
     a(f"- 最近一次产线故障演练：{facts['drill_pipeline']}")
-    a(f"- 真浏览器验收（人工登记，重生成基线不会自动更新）：{facts['drill_browser']}")
+    # 真浏览器验收是一张**会一行一行往后追加**的单子（每补一套工具就多一条），
+    # 所以这里逐条渲染，且**连标签一起搬走**——标签带着"第几批"这个事实，
+    # 统一印成「补充」等于把序号删掉（见 `preserve_labeled_lines`）。
+    for label, entry in facts["drill_all"]:
+        a(f"- {label}：{entry}")
+    a("")
+    # **这段以前不在 `build_md` 里，于是每重生成一次就被抹掉一次**（2026-11-10 补）。
+    # 它记的是"历史读数不是现值"这条口径本身，被生成器吞掉最讽刺：
+    # 文件里正留着 920/1037/…/1202 这些历史数字，却没有一句说明它们不是现值。
+    # 当时的"当前值"还硬写着 1218，早就过期——这里改成现算。
+    a("> **测试口径（别拿历史数字当现值）**：本文件与《系统设计说明书》里出现的 "
+      "`920 / 1037 / 1054 / 1058 / 1067 / 1074 / 1202 passed` 都是**当时那一轮的读数**，"
+      "写在各自的变更记录里，不是当前值。当前口径以 "
+      "`tools/make_release_baseline.py --check` 打印的为准："
+      f"**CI 与开发机现在是同一个数——{facts['passed']} passed**。"
+      "（2026-11-09 外部审查第 9 条把 `FASTVIDEO_TEST_SKIP_ENV` 去掉了："
+      "它曾让 CI 上 4 条「删资产清图」类用例恒跳过，用「两边一样地不测」换一个稳定的 "
+      "passed 数。现在只留 `conftest.delete_guard` 里的真实探测：环境删不掉文件才跳过，"
+      "删得掉就必须跑，CI 的 ubuntu-latest 删得掉。开发机可能因沙箱多 1 条跳过——"
+      "`test_worker_rss.py` 不给跑 `ps`，内存采样那一档无法取证；CI 上这条会真跑。）"
+      "pytest 必须在 `app/backend` 目录下跑，在仓库根目录跑会 "
+      "`ModuleNotFoundError: No module named 'main'`。")
     a("")
     return "\n".join(lines) + "\n"
 
@@ -497,6 +546,42 @@ def check_docs(facts: dict) -> int:
     elif stamped.group(1) != facts["design"]:
         fails.append(f"发布基线.md: 头部设计稿版本 {stamped.group(1)}"
                      f" 与现算 {facts['design']} 不一致（重跑一次生成）")
+    # **基线自己 §1 那几张表也要对得上**（2026-11-10 补）。
+    #
+    # 上面那条只查头部的「设计稿 vX.Y」，于是 §1 里的迁移号、表数、路由数、
+    # 测试数**从来没有任何一道门禁看过**。实测：盘上写着「迁移 47 个／
+    # 1239 passed」，真值是 50（49 份文件，无 0048）／1312，`--check` 照样
+    # 打印「关键数字与基线一致」并 exit=0——它比的是说明书与**内存里现算的
+    # facts**，唯独不比对那个自称"以本文件为准"的文件。四份说明书被检查，
+    # 唯一的权威反而没被检查。
+    #
+    # 为什么这里只查"值对不对"、不查"该有哪些行"：`build_md` 才是格式的
+    # 定义处，用正则把它的每一行都复述一遍会长出第二份格式真相。
+    # 挑四个真正会被引用的数（迁移／表／路由／测试），逐项与现算比。
+    for label, expected in (
+            ("迁移", f"0001—{facts['migration']:04d}，共 {facts['migration_count']} 个"),
+            ("表", f"{facts['tables']} 张"),
+            ("总 API 路由", f"{facts['operations']} 操作 / {facts['paths']} 路径"),
+            ("测试", f"**{facts['passed']} passed**")):
+        row = re.search(rf"^\| {re.escape(label)} \| (.+?) \|", base, re.M)
+        if not row:
+            fails.append(f"发布基线.md: §1 找不到「{label}」那一行")
+        elif expected not in row.group(1):
+            fails.append(f"发布基线.md: §1「{label}」写的是「{row.group(1).strip()}」，"
+                         f"现算是「{expected}」——重跑一次生成")
+    # **§4 的真浏览器验收条数不能比盘上少**（2026-11-10 补）。
+    #
+    # 这一节是人工登记、生成器只负责搬运。而搬运曾经只搬第一条
+    # （`re.search` 取第一个匹配），于是一次重生成就把后面三条真跑过的
+    # 验收记录静默删掉，全部门禁绿灯——因为没有任何一道看这一节的条数。
+    # 条数只增不减：新增是"又验收了一套"，减少只可能是搬运出错或有人手删。
+    # 注意这里比的是**文件自身前后一致**（现读 vs 现读的条数），不涉及现算；
+    # 真要抓"重生成会不会丢"，得在生成前后各数一次——那条防线在
+    # `preserve_labeled_lines` 的返回全部匹配里，这里是它的兜底。
+    browser_rows = re.findall(r"^- 真浏览器验收[^：]*?：", base, re.M)
+    if not browser_rows:
+        fails.append("发布基线.md: §4 一条「真浏览器验收」记录都没有了"
+                     "（这一节是人工登记，不该被删空）")
     if fails:
         print("与基线不一致：")
         for f in fails:
@@ -516,10 +601,21 @@ def main() -> None:
     commit, branch = git_info()
     migrations = sorted((BACKEND / "migrations").glob("[0-9]" * 4 + "_*.sql"))
     latest = int(migrations[-1].name[:4])
+    # **「共 N 个」要数文件，不能用最大编号代替**（2026-11-10 修）。
+    # 编号是允许跳号的：仓库里就没有 `0048`（0047 之后直接 0049），
+    # 于是 `latest = 50` 而实际只有 49 份文件，基线却印「共 50 个」——
+    # 一个自己算错、还自称"数字一律现算"的文件。缺号一并写进 facts，
+    # 让读者知道是跳号而不是丢了文件（丢了才是事故）。
+    migration_count = len(migrations)
+    migration_missing = [n for n in range(1, latest + 1)
+                         if n not in {int(p.name[:4]) for p in migrations}]
     probe = probe_app()
     passed, duration = passed_from_log(log) if log else run_tests()
     facts = {"commit": commit, "branch": branch, "design": design_version(),
-             "docs": doc_versions(), "migration": latest, "tables": probe["tables"],
+             "docs": doc_versions(), "migration": latest,
+             "migration_count": migration_count,
+             "migration_missing": migration_missing,
+             "tables": probe["tables"],
              "paths": probe["paths"], "operations": probe["operations"],
              "business": probe["business"], "health": probe["health"],
              "auth": probe["auth"], "passed": passed, "duration": duration,
@@ -528,14 +624,18 @@ def main() -> None:
              "target_total": target_baseline_state()[1],
              "configured_slots": provider_slot_counts()[0],
              "total_slots": provider_slot_counts()[1],
-             "drill_job": preserve_baseline_line(r"Job 故障演练：(.+)$"),
-             "drill_backup": preserve_baseline_line(r"备份恢复演练：(.+)$"),
-             "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$"),
-             # 匹配两种写法：旧的「最近一次真浏览器验收：」与新的
-             # 「真浏览器验收（人工登记…）：」——后者是 v1.2 写作规范之后改的，
-             # 括注里带冒号但不含读数，正则只取最后一个冒号之后的内容。
-             "drill_browser": preserve_baseline_line(
-                 r"真浏览器验收(?:（[^）]*）)?：(.+)$"),
+             "drill_job": preserve_baseline_line(r"Job 故障演练：(.+)$")[0],
+             "drill_backup": preserve_baseline_line(r"备份恢复演练：(.+)$")[0],
+             "drill_pipeline": preserve_baseline_line(r"产线故障演练：(.+)$")[0],
+             # 真浏览器验收是**会追加的单子**，保留全部行（见 `preserve_labeled_lines`）。
+             # 正则要认全几种写法：旧的「真浏览器验收：」、v1.2 之后的
+             # 「真浏览器验收（人工登记…）：」，以及补充条目
+             # 「真浏览器验收补充（日期）：」「…补充之二（日期）：」——
+             # 中间夹着"补充"/"补充之二"，所以标签段用 `[^：]*?` 而不是
+             # `(?:（[^）]*）)?`（后者要求括号紧跟其后，补充条目一条都匹配不上）。
+             # label 用惰性匹配 + body 吃到行尾，标签原样留住（含"补充之二"）。
+             "drill_all": preserve_labeled_lines(
+                 r"^- (?P<label>真浏览器验收[^：]*?)：(?P<body>.+)$"),
              # 探针是否降级（2026-11-09 外部审查第 8 条）。
              #
              # 原来 `probe_app()` 失败时把 `degraded` 写进它自己返回的 facts，
@@ -568,7 +668,8 @@ def main() -> None:
         raise SystemExit(check_docs(facts))
     BASELINE.write_text(build_md(facts), encoding="utf-8")
     print(f"已生成 {BASELINE.relative_to(ROOT)}（{facts['passed']} passed，"
-          f"{facts['business']}/{facts['operations']} 路由，迁移 00{facts['migration']}）")
+          f"{facts['business']}/{facts['operations']} 路由，"
+          f"迁移 {facts['migration']:04d}，共 {facts['migration_count']} 个）")
 
 
 if __name__ == "__main__":
