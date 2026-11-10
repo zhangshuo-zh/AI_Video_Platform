@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import re
 from dataclasses import dataclass
 import engines
 import runtime
@@ -643,8 +645,90 @@ def resolved_key_env(provider: str, capability: str, backend: str,
 
 
 def key_present(env_name: str) -> bool:
-    """只看有没有，不看值；空名字自然算没有。"""
-    return bool(env_name) and bool(os.environ.get(env_name))
+    """只看有没有，不看值；空名字自然算没有。
+
+    2026-11-11 起也认**库里的密文**：`secret_store.present()` 不解密，
+    所以它回答的是"配过没有"而不是"现在能不能用"。要后者用
+    `secret_store.resolve()`（它会把解不开变成异常）。
+
+    这个区分是有意的：这里被探测/健康检查高频调用，每次解密既慢又
+    把明文摊得更开；而"配了没配"正是健康徽章要答的问题。
+    """
+    if not env_name:
+        return False
+    if os.environ.get(env_name):
+        return True
+    try:
+        import secret_store
+        return secret_store.present(env_name)
+    except Exception:
+        return False
+
+
+def key_fingerprint(env_name: str) -> dict:
+    """密钥的"指纹"：**能用来比对是哪一把，但推不回原值**。
+
+    为什么要它（2026-11-11）：配置文件里可能同时存在好几把 key（旧的没删、
+    新加的、按项目分开的），人在供应商后台看到一串 key 时无法确认"这台机器
+    上配的是哪一把"，而让他去 `cat ~/.zshrc` 看等于给了 shell。指纹解决的就
+    这一个问题：把 `sha256(值)` 取前 8 位印在页面上，人对着后台一比就知道。
+
+    三个必须守住的边界：
+
+    1. **不落库、不落日志**。每次现算现扔。认证 `security.py` 里存的是 scrypt
+       派生值（那是为了验口令）；这里连派生值都不存——它只需要活在一次响应里。
+    2. **只给 `system:config` 的人看**。它推不回原值，但仍能让拿到泄漏 key 的人
+       确认"是不是这一把"，且露出的前 3 位也是真值。路由层挡权限。
+    3. **值本身一个字符都不出现**。`preview` 只露供应商前缀（`sk-`／`sk-ant-`
+       这类公开约定）与哈希前 8 位，中间用省略号——**不是值的前 8 位**。
+       这一点最容易写错：顺手写成 `value[:8]` 就把它变成了"泄漏 1/6 的密钥"。
+
+    返回 `{"present": False}` 表示没配；配了则给长度与指纹。**长度**是有用的：
+    复制粘贴时多一个换行或少几个字符，人对一下长度就能发现。
+    """
+    value = os.environ.get(env_name) or ""
+    if not value:
+        return {"present": False}
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8].lower()
+    # 供应商前缀按公开约定露出来（`sk-`、`sk-ant-`、`sk-proj-` 之类）。
+    # 只认"字母数字加连字符、以 sk- 开头、长度 ≤ 12"的那种；认不出就不露。
+    prefix = ""
+    m = _KEY_PREFIX_RE.match(value)
+    if m:
+        prefix = m.group(0)
+    return {
+        "present": True,
+        "length": len(value),
+        "fingerprint": digest,
+        # 示例：`sk-…a3f9c1d2`。**中间是省略号 + 哈希，不是值本身**
+        "preview": f"{prefix}…{digest}" if prefix else f"…{digest}",
+    }
+
+
+def _preview_for_db(digest: str, family: str = "") -> str:
+    """按**指纹**（不含明文）拼出页面用的 preview：`sk-…a3f9c1d2`。
+
+    为什么单独开一个：库里只有指纹，没有明文，所以走不了 `key_fingerprint`。
+    家族标记（`sk-` 那类）在库里也没存，默认省略——**省略比猜错好**：
+    猜成 `sk-` 而实际是 AWS 风格会让人比对错后台。
+
+    这是本模块唯一"只吃指纹就产出显示值"的函数，刻意做得很小，
+    免得有人当成"能还原明文"的路子。
+    """
+    return f"{family}…{digest}" if family else f"…{digest}"
+
+
+# **只认"公开约定的家族标记"，绝不匹配值本身**（2026-11-11 自查修的真错）。
+#
+# 第一版写成 `^(sk-[a-z0-9-]{0,9}-?)`，本意是"露出供应商前缀"，
+# 实测发现它把真实密钥的前 12 个字符印在了页面上（`sk-a1b2c3d4e…748986e2`）——
+# 那不是"前缀"，是**泄漏了一部分密钥**。攻击者拿到这 12 个字符可以直接去
+# 暴力补全剩下的部分，比纯哈希弱得多。
+#
+# 所以收紧成一张**封闭白名单**：只认几家已知供应商的家族标记（它们本身就是
+# 公开文档里写着的名字，不含任何随机部分）。认不出的，一个字符都不露。
+_KEY_PREFIX_RE = re.compile(
+    r"^(sk-ant-|sk-proj-|sk-or-|sk-)")
 
 
 def _type_ok(kind: str, value) -> bool:

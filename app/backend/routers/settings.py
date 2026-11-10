@@ -57,7 +57,11 @@ def _row_out(row, matrix: dict | None = None) -> ProviderOut:
     # 要传**空字典**而不是 None——传 None 会让 summary_for 自己再打五趟查询去确认"没有"。
     latest = matrix.get(_slot_model_key(row), {}) if matrix is not None else None
     summary = validations.summary_for(row, latest)
-    return ProviderOut.from_row(row, has_key(row, env), env, health, summary)
+    # 指纹只给 cloud 行；本地轨没有密钥这个概念，给空 dict（不是 None——
+    # None 会让 schema 那一侧再判一次"是不是没算"）。
+    fp = adapters.key_fingerprint(env) if row["backend"] == "cloud" else {}
+    return ProviderOut.from_row(row, has_key(row, env), env, health, summary,
+                                secret_fingerprint=fp)
 
 
 @router.get("/providers", response_model=list[ProviderOut])

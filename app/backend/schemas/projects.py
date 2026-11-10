@@ -183,6 +183,10 @@ class ProviderOut(BaseModel):
     enabled: bool
     is_default: bool
     has_key: bool          # 只看环境变量里有没有，永远不回传密钥本身
+    # 密钥指纹（2026-11-11）：sha256 前 8 位 + 长度 + 只含公开家族标记的 preview。
+    # **推不回原值**，用来确认"这台机器配的是供应商后台里哪一把"。
+    # 空 dict 表示没配（`{"present": False}`）——不是"没算"。
+    secret_fingerprint: dict = {}
     # key_env 是"实际去哪个变量找"（用户填的名字 > 清单建议 > FV_KEY_<PROVIDER>）；
     # key_env_custom 是库里那一列的原值，界面要能把两者分开显示。
     key_env: str
@@ -199,7 +203,8 @@ class ProviderOut(BaseModel):
 
     @classmethod
     def from_row(cls, row, has_key: bool, key_env: str, health: dict,
-                 validation: dict | None = None) -> "ProviderOut":
+                 validation: dict | None = None,
+                 secret_fingerprint: dict | None = None) -> "ProviderOut":
         return cls(
             id=row["id"],
             capability=row["capability"],
@@ -211,6 +216,7 @@ class ProviderOut(BaseModel):
             enabled=bool(row["enabled"]),
             is_default=bool(row["is_default"]),
             has_key=has_key,
+            secret_fingerprint=secret_fingerprint or {},
             key_env=key_env,
             key_env_custom=row["key_env"],
             notes=row["notes"],
