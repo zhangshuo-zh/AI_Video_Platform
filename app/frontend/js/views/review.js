@@ -369,6 +369,13 @@ export default {
     if (!detail.isConnected) return;
     if (err) {
       detail.innerHTML = `<div class="card-body">${errorBox('产物审核', err)}</div>`;
+      // 这颗「重试」得接上（2026-11-10 自查修的真 bug）。`errorBox` 默认画
+      // **可点**的 `[data-retry]`，全站没有容器级委托（逐文件普查确认），
+      // 而这里写在 `detail` 里面，mount 顶层绑不到它——节点是刚换上的。
+      // 用传进来的 `refresh`，与这一屏其它交互同一个出口（它派 `app:refresh`，
+      // 重画的是整页：这一条的详情连同列表一起重读）。
+      detail.querySelectorAll('[data-retry]').forEach((btn) =>
+        btn.addEventListener('click', refresh));
       return;
     }
     if (!rev.reviewable) {

@@ -177,6 +177,12 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('audio', i); refresh(); });
 
+    // 读失败那张卡（:126）上的「重试」原来点了没反应：`util.errorBox()`
+    // 默认画的是**可点**的 `[data-retry]`，而全站没有容器级委托接住它
+    // （2026-11-10 逐文件普查确认），这里也没绑。与 `writing.js:411` 同一做法。
+    root.querySelectorAll('[data-retry]').forEach((btn) =>
+      btn.addEventListener('click', refresh));
+
     // 换集时只换镜头候选；不整页重绘，刚写的文本还在输入框里
     root.querySelector('#audio-ep')?.addEventListener('change', async (e) => {
       const wanted = Number(e.target.value);

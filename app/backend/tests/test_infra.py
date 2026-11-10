@@ -1067,3 +1067,103 @@ def test_视图里的_window_监听必须成对解绑():
         "这些视图往 window/document 上挂了监听但不在允许清单里："
         + "、".join(offenders)
         + "。要么改成挂节点、要么成对解绑、要么把理由写进 allowed 表")
+
+
+def test_可点的重试按钮都必须接上线():
+    """`util.errorBox()` 画的重试默认是**可点**的，两处都得有人接住。
+
+    2026-11-10 整库审计逐文件普查得到的事实：
+      * `errorBox(what, err, retry=true)` 第三参不显式给 `false` 时渲染
+        `<button data-retry>`（可点）；给 `false` 才是 `disabled`，不用接。
+      * **全站没有任何 `document`/容器级的 `[data-retry]` 委托**
+        （`generate.js` 那两处是在它自己的表体上 `closest` 委托，
+        且两处调用都显式传了 `false`），
+        所以每个渲染它的视图都得自己绑。
+      * 审计当时 `agents.js`(5 处)、`audio.js`(1 处)、`review.js`(1 处)、
+        `composition.js`(1 处) 都只渲染不绑；`writing.js` 与
+        `review-actions.js` 只在单数 `querySelector` 上绑了一颗，
+        同屏第二张卡的按钮仍是死的。点了没反应、不发请求、不变灰、
+        控制台也不报错——后端测试完全摸不到，因为它整个活在浏览器里。
+
+    于是分两条判据（缺任何一条都会漏掉一类真 bug）：
+      **A 同步渲染**：文件里有可点的 `errorBox` 出现在**返回 HTML 的模板**里
+         （`return` / 模板插值），就必须存在**复数**接线
+         `querySelectorAll('[data-retry]')`——单数只绑第一颗，
+         同屏两张卡（`writing.js` 的 :1346 与 :1506）就漏一颗。
+      **B 异步换节点**：`errorBox` 出现在 `innerHTML =`/`outerHTML =` 赋值里，
+         mount 顶层那次绑不住它（节点是刚换上的、而且 mount 只跑一遍），
+         必须在**同一函数往下几行内**看到接线。
+    """
+    import re
+
+    views = FRONTEND / "js" / "views"
+    files = list(views.glob("*.js")) + list(views.rglob("models/*.js"))
+
+    def code_of(text: str) -> str:
+        """注释行**置空而不是删掉**，好让报出来的行号就是文件里的行号。
+
+        原来这里直接把这些行滤掉，于是断言里写的「第 252 行」是压缩后的序号，
+        人照着行号去看会看到另一段代码——守卫测试给出的位置必须是可跳的。
+        """
+        return "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                         for l in text.splitlines())
+
+    call_re = re.compile(r"errorBox\(([^()]*)\)")
+    plural_re = re.compile(r"querySelectorAll\(['\"][^'\"]*data-retry")
+    async_re = re.compile(r"(innerHTML|outerHTML)\s*=.*errorBox\(")
+    any_wire_re = re.compile(
+        r"(?:querySelector(?:All)?\(|closest\()['\"]?[^)\]]*data-retry")
+
+    def clickable_calls(text: str):
+        """返回 [(行号, 是否可点)]：第三参显式 false 的不算死按钮。"""
+        out = []
+        for n, line in enumerate(text.split("\n"), 1):
+            for m in call_re.finditer(line):
+                args = [a.strip() for a in m.group(1).split(",")]
+                out.append((n, not (len(args) >= 3 and args[2] == "false")))
+        return out
+
+    offenders = []
+    for f in files:
+        code = code_of(f.read_text(encoding="utf-8"))
+        calls = clickable_calls(code)
+        if not any(ok for _, ok in calls):
+            continue
+        lines = code.split("\n")
+
+        def is_async_swap(n: int) -> bool:
+            """这一处 errorBox 是不是「换整块节点」那类。
+
+            `holder.outerHTML = \'<div>\' + errorBox(...)` 是跨行拼的，
+            所以只看当前行会把这类误判成模板那类（规则 A），
+            给人一条方向不对的建议。往前看两行足够覆盖本仓两种写法。
+            """
+            for k in range(max(0, n - 3), n):
+                if async_re.search(lines[k]) or re.search(
+                        r"(innerHTML|outerHTML)\s*=", lines[k]):
+                    return True
+            return False
+
+        # A：模板里的可点卡 -> 必须有复数接线
+        tpl = [n for n, ok in calls
+               if ok and not is_async_swap(n)]
+        if tpl and not plural_re.search(code):
+            offenders.append(
+                f"{f.name}: 第 {tpl} 行在模板里画了可点重试，"
+                f"但没有复数接线（单数只绑第一颗，同屏第二张卡就是死的）")
+
+        # B：异步换节点画的可点卡 -> 同函数内几行必须接线
+        for n, ok in calls:
+            if not ok or not is_async_swap(n):
+                continue
+            window = "\n".join(lines[n - 1:n + 11])
+            if not any_wire_re.search(window):
+                offenders.append(
+                    f"{f.name}: 第 {n} 行用 innerHTML/outerHTML 换了整块节点再画"
+                    f"可点重试，紧接着没绑——mount 顶层那次绑不到新节点")
+    assert not offenders, (
+        "这些重试按钮点了没有任何反应（静默失败）：\n  "
+        + "\n  ".join(offenders)
+        + "\n要么绑上（本仓做法：mount 顶层用复数 querySelectorAll，"
+          "异步换节点的在渲染后立刻绑新节点），"
+          "要么确认这里不该给重试、显式传 `false`")

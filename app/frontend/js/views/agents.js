@@ -467,6 +467,18 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('agents', i); refresh(); });
 
+    // 错误卡上那颗「重试」必须接上（2026-11-10 自查修的真 bug）。
+    // `util.errorBox()` 默认渲染**可点**的 `[data-retry]`，但全站没有
+    // 任何 `document`/容器级的委托接住它（已逐个文件普查确认），
+    // 于是这一屏 4 处读失败（读配置 :293、读概览 :320、读任务策略 :395、
+    // 读运行列表 :441）画出来的按钮点了没有任何反应：不发请求、不 disabled、
+    // 控制台也不报错——人只会以为"重试没用"，而它本来是唯一不用刷整页的出路。
+    // 做法与 `writing.js:411` 一致：绑在这一屏持久容器上、一次一绑。
+    // 用 `querySelectorAll` 而不是 `querySelector`：概览那一屏可能同时出现
+    // 两张错误卡（读概览 :320 与读运行列表 :441），只绑第一颗等于漏绑。
+    root.querySelectorAll('[data-retry]').forEach((btn) =>
+      btn.addEventListener('click', refresh));
+
     root.querySelectorAll('[data-goto-models]').forEach((btn) => {
       btn.addEventListener('click', () => {
         // 跳哪一个二级页由模型中心自己的 SUBS 决定，这里只按语义给下标：
@@ -526,6 +538,13 @@ async function renderDetail(root) {
   if (wanted !== openRunId) return;              // 已经有更新的点击在等回来
   if (err) {
     holder.outerHTML = `<div class="card" id="ag-run-detail">${errorBox('读运行详情', err)}</div>`;
+    // `outerHTML` 换掉的是**整张卡**，上面 mount 里绑的那次早就跟着旧节点没了
+    // （mount 只在进这一屏时跑一遍，而这一张是点某一行时才画的），
+    // 所以这里必须在新节点上重新绑一次，否则这颗重试依旧是死的。
+    document.getElementById('ag-run-detail')
+      ?.querySelector('[data-retry]')
+      ?.addEventListener('click',
+        () => window.dispatchEvent(new CustomEvent('app:refresh')));
     return;
   }
   // 先把服务端给的事件标签收进缓存，再画：`detailHtml` 里那一栏要用它。

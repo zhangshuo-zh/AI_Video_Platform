@@ -408,7 +408,10 @@ function mountDocs(root, tab) {
     setSub('writing', i);
     refresh();
   });
-  root.querySelector('[data-retry]')?.addEventListener('click', refresh);
+  // 复数：集/镜那一屏可能同时出现两张错误卡（:1346 与 :1506），
+  // 只绑第一颗等于第二颗是死的（2026-11-10 自查）。
+  root.querySelectorAll('[data-retry]').forEach((btn) =>
+    btn.addEventListener('click', refresh));
 
   /* ---------- 列表：选一份、删一份 ---------- */
   root.querySelectorAll('[data-doc]').forEach((el) => {

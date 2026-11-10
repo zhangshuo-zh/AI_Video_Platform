@@ -14,7 +14,7 @@
  * 所以批完之后界面说的话是"下一拍会执行"，而不是"已执行"。
  */
 import { api } from '../api.js';
-import { escapeHtml, run, skeleton } from '../util.js';
+import { errorBox, escapeHtml, run, skeleton } from '../util.js';
 import { DECISION_TONE } from '../validation.js';
 
 const RISK_TONE = { read: 'gray', write: 'amber', paid: 'amber', formal: 'red' };
@@ -143,9 +143,31 @@ export async function bindActions(root, refresh) {
   });
   const box = root.querySelector('#action-detail');
   if (!box || !openStepId) return;
-  const detail = await api.agentStepReview(openStepId);
-  box.outerHTML = `<div class="card mt-card" id="action-detail" >${detailHtml(detail)}</div>`;
+  // 详情读不到时必须**当场换成错误卡**（2026-11-10 自查修的真 bug）。
+  //
+  // `renderActions` 已经先把骨架屏摆上去了（`skeleton(3,'text')`），这里一旦
+  // 不接住异常，它会一直是灰色骨架条：不变成错误、不重试、也不消失，人只能
+  // 反复点。而 `bindActions` 是 async、`router.js` 调 `view.mount?.()` 既不
+  // await 也没有 try/catch，前端又没有全局 `unhandledrejection` 兜底，于是
+  // 错误只会落进控制台。同一仓库 `agents.js:528` 的同类写法是有 catch 的。
+  let detail = null;
+  let readErr = null;
+  try { detail = await api.agentStepReview(openStepId); } catch (e) { readErr = e; }
+  const holder0 = document.getElementById('action-detail');
+  if (!holder0) return;             // 请求飞行途中人切页了：新页面不需要这张卡
+  if (readErr) {
+    holder0.outerHTML = `<div class="card mt-card" id="action-detail">`
+      + `${errorBox('这一步的审批详情', readErr)}</div>`;
+    // `errorBox` 的 `data-retry` 没有全局接线（全仓都是各视图自己绑），
+    // 所以这里必须自己接上，否则"重试"按钮点了同样没反应。
+    document.getElementById('action-detail')
+      ?.querySelectorAll('[data-retry]')
+      ?.forEach((btn) => btn.addEventListener('click', () => refresh()));
+    return;
+  }
+  holder0.outerHTML = `<div class="card mt-card" id="action-detail" >${detailHtml(detail)}</div>`;
   const holder = document.getElementById('action-detail');
+  if (!holder) return;
   const noteEl = holder.querySelector('#action-note');
   noteEl.addEventListener('input', () => { note = noteEl.value; });
   const errEl = holder.querySelector('#action-err');

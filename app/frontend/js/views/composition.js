@@ -288,6 +288,13 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('composition', i); refresh(); });
 
+    // 「成片列表」读失败那张卡（:262）上的重试原来点了没反应：`errorBox` 默认画
+    // **可点**的 `[data-retry]`，全站没有容器级委托（2026-11-10 逐文件普查确认），
+    // 而这一屏只在**详情**那个 catch 里绑过一次（:314），整页级的列表卡没人接。
+    // 详情那张是异步画的、此刻还不存在，两处不会重复绑同一个节点。
+    root.querySelectorAll('[data-retry]').forEach((btn) =>
+      btn.addEventListener('click', refresh));
+
     root.querySelectorAll('[data-open-comp]').forEach((btn) => btn.addEventListener('click', () => {
       openId = Number(btn.dataset.openComp);
       refresh();
