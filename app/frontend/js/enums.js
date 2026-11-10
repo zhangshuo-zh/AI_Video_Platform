@@ -39,6 +39,26 @@ export const UNITS = {
   character: '字符',
 };
 
+/** 资产类型的中文名。权威在 `app/backend/schemas/enums.py` 的 `ASSET_KINDS`。
+ *
+ * **为什么单列一张**（2026-11-10 裁决）：同一个 `character` 在界面上有两个叫法——
+ * `asset-studio.js` 与 `asset-triage.js` 写「人物」，`assets.js`／`writing.js`／
+ * `asset-detail.js` 写「角色」，而服务端 `ASSET_KINDS` 写的是「角色」。
+ * 同一件东西在"资产创作"和"资产库"里叫两个名字，人对着两屏会以为不是一类。
+ *
+ * 注意别和这两处混：
+ *   * `UNITS.character` 是**计费单位**「字符」，与资产无关（同一个英文 code，
+ *     两个完全不同的概念，这就是必须把中文名收成一份的实际理由）；
+ *   * 「人物档案」（`character_profile`，后端 `ASSET_GEN_OPERATIONS` 叫
+ *     「人物文字设定」）是 asset 的**附属文本**，不是资产类型，沿用它自己的说法。
+ */
+export const ASSET_KIND_LABELS = { character: '角色', scene: '场景', prop: '道具' };
+
+/** 取资产类型中文名：认不出来就原样念 code，绝不猜一个近义类型。 */
+export function assetKindLabel(kind) {
+  return ASSET_KIND_LABELS[kind] || String(kind || '');
+}
+
 /** 取单位中文名：认不出来就原样念 code，绝不猜一个近义单位。 */
 export function unitLabel(unit) {
   return UNITS[unit] || String(unit || '单位');

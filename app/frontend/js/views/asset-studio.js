@@ -2,7 +2,7 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl, subChipRow } from '../util.js';
 import { JOB_ACTIVE, jobTone, publicStatus, validationText } from '../validation.js';
-import { unitLabel } from '../enums.js';
+import { ASSET_KIND_LABELS, unitLabel } from '../enums.js';
 import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './asset-workspaces.js';
 
 /**
@@ -28,7 +28,10 @@ import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './
  *    值不丢是底线，不打断是这一条。
  */
 
-const KIND_LABEL = { character: '人物', scene: '场景', prop: '道具' };
+// 资产类型的中文名统一从 `enums.js` 取（2026-11-10 裁决：统一为「角色」）。
+// 原来这张本地表写「人物」，而 `assets.js`／`writing.js`／`asset-detail.js`
+// 写「角色」、服务端 `ASSET_KINDS` 也是「角色」——同一个 character 在两屏两个名字。
+const KIND_LABEL = ASSET_KIND_LABELS;
 const OPERATION = {
   character: 'character_profile', scene: 'scene_setting', prop: 'prop_setting',
 };

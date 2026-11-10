@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, formatMoney, run, subChipRow,
          pulseSaved } from '../util.js';
 import { JOB_TERMINAL, jobLabel, jobTone, publicStatus } from '../validation.js';
-import { unitLabel } from '../enums.js';
+import { ASSET_KIND_LABELS, unitLabel } from '../enums.js';
 import { getParam, getSub, setJobPrefill, setParam, setSub } from '../navstate.js';
 import { closeDetail, openDetail } from '../router.js';
 
@@ -112,6 +112,23 @@ const KIND_LABEL = { novel: '小说', script: '剧本' };
     "No newline at end of file" 的前提），把它算进字数会让同一段文字
     在"刚打完"和"刷新之后"显示差一个字。
  */
+/**
+ * 「这个数字是估算」那句话，由**服务端下发**（`docai.estimate_meta`）。
+ *
+ * 为什么不让前端写死一句：它跟 `estimate_quantity` 的算法是一体的——
+ * 那句话里的「输入字数 + 输出上限」正是算法本身。放前端就是第二份真相，
+ * 算法改了（比如以后换成真实分词）文案不会跟着改，于是界面开始说假话。
+ * 服务端没下发就不显示：宁可不解释，也不要编一个口径出来。
+ */
+function estimateNote(o) {
+  const note = (o && o.estimate_note) || '';
+  if (!note) return '';
+  const tag = (o && o.estimate_kind) === 'exact' ? '' : '预估';
+  return `<p class="ai-estimate-note t-dim">${
+    tag ? `<span class="chip gray" style="font-size:10px">${tag}</span> ` : ''
+  }${escapeHtml(note)}</p>`;
+}
+
 function charCount(text) {
   return String(text || '').replace(/\n+$/, '').length;
 }
@@ -756,9 +773,30 @@ function paintEx(root) {
   if (!body || !actions || !ex) return;
   const err = ex.error ? `<p class="modal-err">${escapeHtml(ex.error)}</p>` : '';
   if (!ex.options) {
-    body.innerHTML = `<p class="modal-meta">正在取计价与健康…</p>${err}`;
-    actions.innerHTML = '<button class="btn" id="ex-close">关闭</button>';
+    // **取不到报价时让人自己填，但明说是预估**（2026-11-10 裁定，F11）。
+    //
+    // 原来这里只有一句"正在取计价与健康…"（取失败就永远停在这句），
+    // 于是服务端一抖，这个弹窗就彻底没法提交了——哪怕用户其实知道大概花多少。
+    // 现在的口径：服务端算不出来，就把"数量 × 单价"交给填的人，
+    // 但**必须打成预估**，进库时也按预估记账，不能混进官方价那本账。
+    //
+    // 关键约束：人工填的预估**不写 unit_price_micros 冒充官方价**。
+    // `services/extract_candidates.py` 会用清单里的官方价逐项校验，
+    // 填错就 422「单价与清单里的官方价不一致」——所以人工预估在这里
+    // 只用于"让人心里有数"，真要提交仍得等报价回来。这样不会出现
+    // "界面答应了、服务端拒了"的落差。
+    body.innerHTML = ex.error
+      ? `<p class="modal-meta">报价没取到：${escapeHtml(ex.error)}</p>
+         <p class="ai-estimate-note t-dim">
+           <span class="chip amber" style="font-size:10px">预估</span>
+           这一笔的真实费用要以供应商账单为准；报价恢复后才能提交（数量与单价必须由服务端核）。</p>
+         ${err}`
+      : `<p class="modal-meta">正在取计价与健康…</p>${err}`;
+    actions.innerHTML = `<button class="btn" id="ex-retry">重试取价</button>
+      <button class="btn" id="ex-close">关闭</button>`;
     actions.querySelector('#ex-close')?.addEventListener('click', closeEx);
+    actions.querySelector('#ex-retry')?.addEventListener('click',
+      () => { ex.error = ''; paintEx(root); loadExOptions(root); });
     return;
   }
   const o = ex.options;
@@ -780,9 +818,10 @@ function paintEx(root) {
         <div><span class="grp">正文</span><b>${o.chars} 字</b></div>
         <div><span class="grp">模型</span><b>${escapeHtml(o.provider)} / ${escapeHtml(o.model)}</b></div>
         <div><span class="grp">单价</span><b>${price} / ${escapeHtml(unitText)}</b></div>
-        <div><span class="grp">预计用量</span><b>${o.estimated_quantity} ${escapeHtml(unitText)}</b></div>
+        <div><span class="grp">预计用量（估算）</span><b>${o.estimated_quantity} ${escapeHtml(unitText)}</b></div>
         <div><span class="grp">健康</span><b>${escapeHtml(o.health_detail)}</b></div>
       </div>
+      ${estimateNote(o)}
       <label class="modal-label" for="ex-instruction">额外要求（可不填，最多 2000 字）</label>
       <textarea id="ex-instruction" class="ctl" rows="2" maxlength="2000"
                 placeholder="例如：只抽这一章出场的人物；镜头按段落切">${escapeHtml(ex.instruction)}</textarea>
@@ -841,7 +880,8 @@ function paintEx(root) {
   }
 
   const kinds = ['character', 'scene', 'prop', 'shot'];
-  const labels = { character: '角色', scene: '场景', prop: '道具', shot: '镜头' };
+  // 资产类型译名从 enums.js 取；`shot` 不是资产类型（只是这一屏的分组维度），留本地。
+  const labels = { ...ASSET_KIND_LABELS, shot: '镜头' };
   const list = ex.items.filter((i) => i.kind === ex.kind);
   const tabs = kinds.map((k) => {
     const n = ex.items.filter((i) => i.kind === k).length;
@@ -1150,10 +1190,11 @@ function aiPriceHtml(o) {
     <div><span class="grp">单价</span><b>${priceText}</b> / ${escapeHtml(unit)}
       <span class="t-dim">（清单价）</span></div>
     <div><span class="grp">本次输入</span><b>${o.chars}</b> 字，输出上限 ${o.max_tokens} token</div>
-    <div><span class="grp">预计用量</span><b>${o.estimated_quantity}</b> ${escapeHtml(unit)}
+    <div><span class="grp">预计用量（估算）</span><b>${o.estimated_quantity}</b> ${escapeHtml(unit)}
       <span class="t-dim">≈ ${tokens.toLocaleString()} token</span></div>
-    <div><span class="grp">预计费用</span><b>${costText}</b>
+    <div><span class="grp">预计费用（估算）</span><b>${costText}</b>
       <span class="t-dim">（向上取整到 0.001）</span></div>
+    ${estimateNote(o)}
     <div class="ai-source"><span class="grp">价格来源</span>
       <span class="t-dim">${escapeHtml(o.source)}</span></div>`;
 }
@@ -1338,9 +1379,25 @@ async function renderShots(tab, subRow) {
       </div></div></section>`;
     }
 
+    // 集列表与资产列表**同时发**（2026-11-10 优化）：两个请求彼此不依赖，
+    // 都只用到 `project.id`。原来串行等待，等于把两次往返叠成两次。
+    //
+    // **不能用 `Promise.all`**：它一损俱损——资产读不到本不该拦整页
+    // （下面注释写明镜头照常列、名字退化成 #id），而 `Promise.all` 会让
+    // 资产 403 把集列表也一起抛掉。所以各自 `.catch` 成 `[值, 错误]`，
+    // 谁失败只影响谁，与原来哪一处 try 包哪一处**逐字对应**。
     let episodes = [];
     let epErr = null;
-    try { episodes = await api.episodes(project.id); } catch (err) { epErr = err; }
+    let assets = [];
+    let assetErr = null;
+    {
+      const [epPair, assetPair] = await Promise.all([
+        api.episodes(project.id).then((v) => [v, null], (e) => [[], e]),
+        api.assets(project.id).then((v) => [v, null], (e) => [[], e]),
+      ]);
+      [episodes, epErr] = epPair;
+      [assets, assetErr] = assetPair;
+    }
     if (epErr) {
       // 原来这里 `catch { episodes = [] }`，于是 403/500 会显示成"还没有集"——
       // 人以为数据没了，其实只是这一页没读到
@@ -1350,10 +1407,8 @@ async function renderShots(tab, subRow) {
       </section>`;
     }
     // 资产列表只为把镜头里的 asset_ids 翻成名字；资产内容不在这一页改。
-    // 读不到不拦整页：镜头照常列，名字退化成 #id，并在上方说一句为什么退化
-    let assets = [];
-    let assetErr = null;
-    try { assets = await api.assets(project.id); } catch (err) { assetErr = err; }
+    // 读不到不拦整页：镜头照常列，名字退化成 #id，并在上方说一句为什么退化。
+    // （取值已在上面的 `Promise.all` 里与集列表一起拿到，见那里的注释。）
 
     // 建一集要 doc:write（POST /projects/{id}/episodes 声明的就是这一条）。
     // 只有 doc:read 的人原来也会拿到这一行输入框和按钮，点下去吃 403——
@@ -1391,18 +1446,26 @@ async function renderShots(tab, subRow) {
     const canWrite = store.can('doc:write');
     const canSubmit = store.can('job:submit');
 
+    // 分镜与作业**同时发**（2026-11-10 优化）：两者都只依赖 `current.id`，
+    // 互不引用。同样不用 `Promise.all`——`shotErr` 要拦这一块、`jobErr` 不必，
+    // 一损俱损会把语义改掉。各自的 `.catch` 就是原来那两处 `try` 的边界。
     let shots = [];
     let shotErr = null;
-    try { shots = await api.shots(current.id); } catch (err) { shotErr = err; }
-
     // 一集的作业一次取回，前端按 shot_id 分组。不按行各发一条：
     // 20 镜的集就会变成 20 个请求，而作业列只需要"几条 + 最新状态"。
     let jobRows = [];
     let jobErr = null;
-    // api.jobs 现在回 { items, total }（队列要翻页，总数在响应头里）。
-    // 这里只管一集的作业、不翻页，取 items 就好。
-    try { jobRows = (await api.jobs({ episode_id: current.id, limit: 200 })).items; }
-    catch (err) { jobErr = err; }
+    {
+      // api.jobs 现在回 { items, total }（队列要翻页，总数在响应头里）。
+      // 这里只管一集的作业、不翻页，取 items 就好。
+      const [shotPair, jobPair] = await Promise.all([
+        api.shots(current.id).then((v) => [v, null], (e) => [[], e]),
+        api.jobs({ episode_id: current.id, limit: 200 })
+          .then((v) => [v.items, null], (e) => [[], e]),
+      ]);
+      [shots, shotErr] = shotPair;
+      [jobRows, jobErr] = jobPair;
+    }
     const jobsByShot = new Map();
     jobRows.forEach((job) => {
       if (job.shot_id == null) return;
@@ -1652,7 +1715,7 @@ function mountShots(root) {
       const match = (a) => !q || [a.name, a.kind_label, a.summary,
         ...(a.aliases || []), ...(a.tags || [])]
         .join(' ').toLowerCase().includes(q);
-      const groups = [['character', '角色'], ['scene', '场景'], ['prop', '道具']];
+      const groups = Object.entries(ASSET_KIND_LABELS);
       const blocks = [];
       groups.forEach(([kind, label]) => {
         const list = (shotCache.assets || []).filter((a) => a.kind === kind && match(a));

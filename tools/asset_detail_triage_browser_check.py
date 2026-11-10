@@ -509,11 +509,14 @@ def main() -> int:
               done_row and done_row["buttons"] == 0 and "已驳回" in done_row["text"],
               str(done_row and done_row["text"].replace("\n", " ")[:70]))
 
-        # 分组必须按 人物→场景→道具→镜头（ITEM_ORDER 只决定显示顺序）
+        # 分组必须按 角色→场景→道具→镜头（ITEM_ORDER 只决定显示顺序）。
+        # 2026-11-10 起资产类型统一叫「角色」（与服务端 `ASSET_KINDS` 一致），
+        # 原来这里写的是「人物」——术语统一时必须同步改这条验收，否则面板
+        # 会一直红着，而红的原因还是"界面改对了"。
         groups = P.eval_js(cdp, "[...document.querySelectorAll('.grp')]"
                                ".map(e => e.innerText.trim())") or []
-        check("分组按 人物→场景→道具→镜头 排，且每条数对得上",
-              groups == ["人物 · 4 条", "场景 · 1 条", "道具 · 1 条", "镜头 · 1 条"],
+        check("分组按 角色→场景→道具→镜头 排，且每条数对得上",
+              groups == ["角色 · 4 条", "场景 · 1 条", "道具 · 1 条", "镜头 · 1 条"],
               str(groups))
 
         # ── mergePlan 的两个方向 ───────────────────────────────────────

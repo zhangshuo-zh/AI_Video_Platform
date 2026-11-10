@@ -5,6 +5,7 @@ import { jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
 import { closeDetail } from '../router.js';
 import { setStudioTarget, missingOf } from './asset-workspaces.js';
+import { ASSET_KIND_LABELS } from '../enums.js';
 
 /**
  * 资产详情。由 assets.js 在地址带 `a<id>` 时调起来——它不是一个独立模块，
@@ -83,7 +84,9 @@ export async function renderDetail(id) {
   const isGlobal = a.project_id === null;
   // 能不能改：全局要管理员，项目要 asset:write（服务端同样判一遍）
   const canEdit = store.can('asset:write') && (!isGlobal || store.isManager);
-  const kindOptions = [['character', '角色'], ['scene', '场景'], ['prop', '道具']]
+  // 译名从 enums.js 取（2026-11-10 统一为「角色」）：这里原来又抄了一份，
+  // 三处副本迟早会和 `ASSET_KINDS` 分叉。
+  const kindOptions = Object.entries(ASSET_KIND_LABELS)
     .map(([v, l]) => `<option value="${v}"${a.kind === v ? ' selected' : ''}>${l}</option>`).join('');
 
   return `

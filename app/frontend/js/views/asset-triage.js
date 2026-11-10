@@ -2,6 +2,7 @@ import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindSubChips, confirmDanger, escapeHtml, run, subChipRow } from '../util.js';
 import { WS_LABELS, setWsIndex, wsIndex } from './asset-workspaces.js';
+import { ASSET_KIND_LABELS } from '../enums.js';
 
 /**
  * 文本提取补资产：把抽取出来的候选分诊成资产。
@@ -14,12 +15,19 @@ import { WS_LABELS, setWsIndex, wsIndex } from './asset-workspaces.js';
  *
  * 三条口径跟着服务端走，页面不自己判：
  * - 证据有效性：`quote/start/end` 由服务端拿盘上正文复核，这里只显示；
- * - 顺序：人物→场景→道具→镜头（`ITEM_ORDER` 只决定分组显示，不重排服务端结果）；
+ * - 顺序：角色→场景→道具→镜头（`ITEM_ORDER` 只决定分组显示，不重排服务端结果）；
  * - 一次一条：处理过的候选按钮禁用，刷新后以服务端状态为准。
  * 镜头候选只导出 Markdown——分镜的真相是 shot 表，自动灌进去等于绕过人确认。
  */
 
-const ITEM_ORDER = [['character', '人物'], ['scene', '场景'], ['prop', '道具'], ['shot', '镜头']];
+// 前三类走 enums.js 的单一来源（2026-11-10 裁决：统一为「角色」）；
+// `shot` 不是资产类型（它只是这一屏的分组维度），所以留在这里。
+const ITEM_ORDER = [
+  ['character', ASSET_KIND_LABELS.character],
+  ['scene', ASSET_KIND_LABELS.scene],
+  ['prop', ASSET_KIND_LABELS.prop],
+  ['shot', '镜头'],
+];
 const RUN_TONE = { pending: 'gray', done: 'green', failed: 'red', parse_failed: 'amber' };
 const STATUS_TONE = { pending: 'plain', accepted: 'green', merged: 'blue', rejected: 'gray' };
 
