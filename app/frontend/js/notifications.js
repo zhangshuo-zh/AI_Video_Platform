@@ -24,6 +24,15 @@ const POLL_MS = 20000;      // 20 秒一轮，与 worker 心跳同量级；不�
 const LIMIT = 100;
 let timer = null;
 let items = [];
+// 挂在 document 上的三个监听。它们不随任何节点回收，必须记住引用成对解绑：
+// visibilitychange 只在 document 上派发（不冒泡到元素），点外面与 Esc 也
+// 只能挂 document。会话过期后不再 mount，靠 stopNotifications 一起收。
+let visHandler = null;
+let awayHandler = null;
+let escHandler = null;
+// 回前台补一拍要用的那两个节点：用的就是 mount 那一次的，不重新查 DOM。
+let pollDot = null;
+let pollMenu = null;
 
 /** 通知落到哪一页。
  *
@@ -153,77 +162,107 @@ export function mountNotifications() {
   const btn = document.getElementById('bell-btn');
   const menu = document.getElementById('bell-menu');
   const dot = document.getElementById('bell-dot');
-  if (!btn || !menu || !dot) return;
+  if (!btn || !menu || !dot) { stopNotifications(); return; }
 
   refresh(dot, null);
 
-  btn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const willOpen = menu.hidden;
-    menu.hidden = !willOpen;
-    btn.setAttribute('aria-expanded', String(willOpen));
-    if (willOpen) {
-      await refresh(dot, menu);
-    }
-  });
-
-  // 点条目：跳过去 + 标记已读（**只有被点的那一条**，见文件头第 2 条）
-  menu.addEventListener('click', async (e) => {
-    const readAll = e.target.closest('#bell-read-all');
-    if (readAll) {
-      try {
-        await api.markNotificationsRead([]);     // 空 ids＝全部已读
-        closeMenu();
-        // **要把 menu 一起传**：原来传 `null` 等于"只更新角标、不重绘列表"，
-        // 于是菜单 DOM 里还留着"3 条未读"和 3 个 .unread 条目。
-        // 菜单此刻已关、用户看不见，但只要在 refresh 的 await 落地前重新打开，
-        // 就会看到那个过期状态（实测能稳定复现）。重绘一次就没有这个窗口了。
+  // 节点级委托只挂一次。会话过期后重新登录会再调一次 mountNotifications，
+  // 而铃铛这两个节点一直在 body 里、不随视图回收：不判一次就会叠两份 click，
+  // 一次点击开→关，看上去像铃铛坏了。要重挂的只有轮询与 document 监听。
+  if (!btn.__bellBound) {
+    btn.__bellBound = true;
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      menu.hidden = !willOpen;
+      btn.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) {
         await refresh(dot, menu);
-      } catch { /* 失败就保持原样，下次刷新重试 */ }
-      return;
-    }
-    const row = e.target.closest('.bell-item');
-    if (!row) return;
-    const id = Number(row.dataset.id);
-    const item = items.find((x) => x.id === id);
-    closeMenu();
-    try {
-      if (item && !item.read) await api.markNotificationsRead([id]);
-    } catch { /* 跳转优先于标记 */ }
-    if (item) navigate(item);
-    // 同上：传 menu，让列表里那一条立刻变成已读态。
-    // 这里不 await——跳转已经发生，不该让新页面的首屏等这次刷新。
-    refresh(dot, menu);
-  });
+      }
+    });
+
+    // 点条目：跳过去 + 标记已读（**只有被点的那一条**，见文件头第 2 条）
+    menu.addEventListener('click', async (e) => {
+      const readAll = e.target.closest('#bell-read-all');
+      if (readAll) {
+        try {
+          await api.markNotificationsRead([]);     // 空 ids＝全部已读
+          closeMenu();
+          // **要把 menu 一起传**：原来传 `null` 等于"只更新角标、不重绘列表"，
+          // 于是菜单 DOM 里还留着"3 条未读"和 3 个 .unread 条目。
+          // 菜单此刻已关、用户看不见，但只要在 refresh 的 await 落地前重新打开，
+          // 就会看到那个过期状态（实测能稳定复现）。重绘一次就没有这个窗口了。
+          await refresh(dot, menu);
+        } catch { /* 失败就保持原样，下次刷新重试 */ }
+        return;
+      }
+      const row = e.target.closest('.bell-item');
+      if (!row) return;
+      const id = Number(row.dataset.id);
+      const item = items.find((x) => x.id === id);
+      closeMenu();
+      try {
+        if (item && !item.read) await api.markNotificationsRead([id]);
+      } catch { /* 跳转优先于标记 */ }
+      if (item) navigate(item);
+      // 同上：传 menu，让列表里那一条立刻变成已读态。
+      // 这里不 await——跳转已经发生，不该让新页面的首屏等这次刷新。
+      refresh(dot, menu);
+    });
+  }
 
   // 点外面收起（与顶栏其它菜单同一套行为）
-  document.addEventListener('click', (e) => {
+  awayHandler = (e) => {
     if (!menu.hidden && !menu.contains(e.target) && !btn.contains(e.target)) {
       closeMenu();
     }
-  });
+  };
+  document.addEventListener('click', awayHandler);
 
   // **Esc 关闭**（2026-11-10 自查补的）：顶栏的项目菜单、集菜单、用户菜单
   // 三个都支持 Esc（见 app.js 的 closeProjMenu/closeEpMenu 与 bindUserMenu），
   // 只有这一处漏了——键盘用户点开之后没有退路。同一套外壳就该有同一套行为。
-  document.addEventListener('keydown', (e) => {
+  escHandler = (e) => {
     if (e.key === 'Escape' && !menu.hidden) {
       closeMenu();
       btn.focus();          // 焦点还给铃铛，否则会掉到 body 上
     }
-  });
+  };
+  document.addEventListener('keydown', escHandler);
 
   // 轮询：卸载时由调用方 stopNotifications 清掉，避免切页后还在跑
   stopNotifications();
+  pollDot = dot;
+  pollMenu = menu;
   timer = setInterval(() => {
-    // 后台标签页不发（2026-11-10 审计，与 `monitor.js:642`／`app.js:797`
-    // 同一纪律）。原来这条轮询**不看 `document.hidden`**：人在别的标签页
-    // 干活时它照跑，而屏幕上没有"让人知道"的对象。
+    // 后台标签页不发（2026-11-10 审计，与 monitor.js／app.js 同一纪律）。
+    // 原来这条轮询不看 document.hidden：人在别的标签页干活时它照跑，
+    // 而屏幕上没有"让人知道"的对象。
     if (document.hidden) return;
     refresh(dot, menu.hidden ? null : menu);
   }, POLL_MS);
+
+  // 回前台补一拍（2026-11-11 审计 F-04）：只跳过不够——人在别的标签页待了
+  // 十分钟，切回来看到的还是十分钟前那个角标，而这十分钟里 worker 可能
+  // 已经掉线了。补这一下才让"回来看到的就是现在"，不额外加轮询。
+  visHandler = () => {
+    if (document.hidden) return;
+    refresh(pollDot, pollMenu && !pollMenu.hidden ? pollMenu : null);
+  };
+  document.addEventListener('visibilitychange', visHandler);
 }
 
+/** 收掉这一套：计时器 + 三个 document 监听。
+ *
+ *  为什么要收监听而不只是计时器：会话过期走的是 app:unauthorized →
+ *  登录闸门，**不重新加载页面**（app.js:769）。只停计时器的话，过期之后
+ *  每一次点外面、每一次按 Esc 都还在跑旧闭包；而重新登录会再 mount 一次，
+ *  于是同一件事叠两份回调。 */
 export function stopNotifications() {
   if (timer) { clearInterval(timer); timer = null; }
+  if (visHandler) { document.removeEventListener('visibilitychange', visHandler); visHandler = null; }
+  if (awayHandler) { document.removeEventListener('click', awayHandler); awayHandler = null; }
+  if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+  pollDot = null;
+  pollMenu = null;
 }

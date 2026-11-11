@@ -32,6 +32,9 @@ import {
    为什么不用全站那条 20s 轮询：它只刷顶栏 chip（app.js paintWorker），
    监控页的队列表与告警它一概不动——名为"运行监控"却是切页那一刻的快照。 */
 let pollTimer = null;
+// 回前台补一拍的那个闭包。visibilitychange 只在 document 上派发、不冒泡，
+// 挂上去就不随 #mc-live 回收，所以必须记住引用、和计时器一起收。
+let visHandler = null;
 const POLL_MS = 5000;
 
 /** 验证历史的一条行。首屏渲染与「更早」追加共用这一份——原来两处各抄了一遍
@@ -655,19 +658,39 @@ export function mountMonitor(root) {
   // 作用域轮询：只刷队列与告警（liveCards），不碰验证留痕的页码。
   // 锚点取 #mc-live：切走子页时路由替换 #view-root，它 isConnected 变 false，
   // 下一拍自己清掉。mount 先清旧计时器，避免同屏重 mount 叠出多条。
-  if (pollTimer) clearInterval(pollTimer);
+  stopPoll();
   const anchor = root.querySelector('#mc-live');
   const alive = () => anchor.isConnected && (getSub('models') === 3);
-  pollTimer = setInterval(async () => {
-    if (!alive()) { clearInterval(pollTimer); pollTimer = null; return; }
-    // 页面不可见时不发：后台标签页没有"让人知道"的对象（与全站轮询同一纪律）。
-    if (document.hidden) return;
+  // 一拍做的事抽成函数：计时器与"回前台补一拍"共用同一份判活/写法，
+  // 免得两条路径慢慢长歪（2026-11-11 审计 F-04）。
+  const tick = async () => {
+    if (!alive()) { stopPoll(); return; }
     try {
       cache.worker = await api.workerStatus();
       const live = root.querySelector('#mc-live');
       if (live && alive()) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
     } catch { /* 轮询读不到就保持上一帧，下一拍再试；不打断人 */ }
+  };
+  pollTimer = setInterval(() => {
+    if (!alive()) { stopPoll(); return; }
+    // 页面不可见时不发：后台标签页没有"让人知道"的对象（与全站轮询同一纪律）。
+    if (document.hidden) return;
+    tick();
   }, POLL_MS);
+  // 只跳过不够：人切回来时看到的是**离开那一刻**的队列，而作业可能早跑完了。
+  // 这里补一拍，不额外加轮询。判活与 hidden 两个条件都要——document 的监听
+  // 不随视图回收，切走之后这一下照样会派发过来。
+  visHandler = () => {
+    if (!alive() || document.hidden) return;
+    tick();
+  };
+  document.addEventListener('visibilitychange', visHandler);
+}
+
+/** 计时器与 document 监听一起收。只清计时器会留下一个拿着旧 alive 闭包的监听。 */
+function stopPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (visHandler) { document.removeEventListener('visibilitychange', visHandler); visHandler = null; }
 }
 
 /** 取更早一页验证记录并**追加**到表后。委托与首次绑定共用这一段。 */

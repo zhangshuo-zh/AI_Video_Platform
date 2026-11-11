@@ -9,7 +9,7 @@ import { renderView, currentViewId } from './router.js';
 import { setParam, setSub } from './navstate.js';
 import { escapeHtml, announce } from './util.js';
 import { applyPicks, restorePicks } from './pick.js';
-import { mountNotifications } from './notifications.js';
+import { mountNotifications, stopNotifications } from './notifications.js';
 
 /* ---------------- worker 状态条 ---------------- */
 
@@ -713,6 +713,11 @@ async function startApp() {
   }
 
   appStarted = true;
+  // 铃铛在 boot 里挂过一次（未登录也要在），这里再挂一次是**幂等**的：
+  // 节点委托有 __bellBound 判重，轮询与 document 监听每次先收再挂。
+  // 需要这一次是因为会话过期那条路把它收掉了，而重登只走 startApp，
+  // 不再经过 boot——不补这一下，过期重登后角标就永远不动了。
+  mountNotifications();
   await store.loadWorker();
   paintWorker();
   // 0037：当前集是服务端上下文，不是浏览器缓存——启动时读一次，
@@ -768,6 +773,12 @@ async function boot() {
   // 闸门已经开着就别重复 focus——会把人正在输入的口令框清空焦点。
   window.addEventListener('app:unauthorized', () => {
     if (!document.getElementById('gate').hidden) return;
+    // 会话过期与登出不同：登出是 location.reload()，进程里的一切自然没了；
+    // 这条路只是把闸门盖上，页面还活着。不在这儿收掉通知轮询，它就会
+    // 每 20 秒再吃一个 401、再派一次 app:unauthorized，一直转到人重新登录
+    // 或关掉标签页（2026-11-11 审计 F-07 实测：过期后 22 秒仍有 1 次请求）。
+    appStarted = false;      // worker 心跳那两条回调也据此停下
+    stopNotifications();
     showGate('login', '登录会话已过期（默认 12 小时）。重新登录后回到原来这一页。');
   });
 

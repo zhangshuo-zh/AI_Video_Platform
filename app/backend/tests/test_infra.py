@@ -1065,6 +1065,10 @@ def test_视图里的_window_监听必须成对解绑():
         # 计时器与监听在它里面一起收——startPoll 开头也会先 stopPoll。
         "asset-studio.js": "回前台补一拍的 visibilitychange，挂 document（不冒泡），"
                            "由模块级 visHandler 在 stopPoll 里与计时器成对解绑",
+        # 同一轮（F-04）把 monitor.js 也补齐：它原来只有 hidden 早退，
+        # 没有回前台补一拍——人切回来看到的还是离开那一刻的队列。
+        "monitor.js": "回前台补一拍的 visibilitychange，挂 document（不冒泡），"
+                      "由模块级 visHandler 在 stopPoll 里与计时器成对解绑",
     }
 
     offenders = []
@@ -1248,48 +1252,125 @@ def test_云端提交必须入口即置busy否则连点会双份计费():
         "submitBusy 没有模块级声明，运行时会 ReferenceError")
 
 
-def test_轮询必须让开后台标签页并成对解绑():
-    """三个轮询点都不能在人看不见的时候照跑，且挂 document 的要能解绑。
+def _call_args(code: str, open_paren: int) -> str:
+    """从 '(' 起做括号配对，取出这一次调用的实参文本。
 
-    2026-11-10 审计：`monitor.js:642` 与 `app.js:797` 早有 `document.hidden`
-    判断（注释写着「与全站轮询同一纪律」），但 `generate.js` 的 3 秒队列轮询
-    与 `notifications.js` 的角标轮询**都没有**——人切到别的标签页干活时照跑，
-    而屏幕上没有"让人知道"的对象。generate.js 一轮还是三个请求
-    （队列＋成本账＋worker 状态）。
+    只做配对、不解析 JS：判据要的是"守卫在不在这个回调**里面**"，
+    整份文件 grep 一下 document.hidden 会把守卫写在别处也算过。
+    跳过字符串与模板里的括号，避免 f('a)b') 把深度带歪。
+    """
+    depth = 0
+    quote = ""
+    i = open_paren
+    while i < len(code):
+        ch = code[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return code[open_paren + 1:i]
+        i += 1
+    raise AssertionError("括号没配上：扫描口径与源码写法脱节了，先修判据再看结论")
+
+
+def _handler_body(code: str, args: str, at: int) -> str:
+    """取出监听回调的**函数体**，实参是内联函数还是变量名都认。
+
+    为什么必须认变量名：成对解绑的写法**要求**先把闭包记在模块级变量里
+    （removeEventListener 得拿到同一个引用），于是源码长这样：
+        visHandler = () => { if (... || document.hidden) return; ... };
+        document.addEventListener('visibilitychange', visHandler);
+    只看实参文本就只拿到 "visHandler" 五个字母，守卫在别处——
+    合规的写法反而被判成缺守卫。这里顺着赋值找回函数体。
+    """
+    parts = args.split(",", 1)
+    ref = parts[1].strip() if len(parts) > 1 else ""
+    if not re.fullmatch(r"[A-Za-z_$][\w$]*", ref):
+        return args                      # 内联箭头/function，实参里就是函数体
+    assigns = [m for m in re.finditer(r"\b" + re.escape(ref) + r"\s*=\s*(?!=)", code)
+               if m.start() < at]
+    if not assigns:
+        return args
+    start = code.index("{", assigns[-1].end())
+    depth = 0
+    for i in range(start, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[start:i + 1]
+    return args
+
+
+def test_轮询必须让开后台标签页并成对解绑():
+    """全站每一处 setInterval 都要让开后台标签页，并在回前台补一拍。
+
+    **这条守卫自己不许写死文件名。** 它的前身只读 generate.js 与
+    notifications.js 两份，于是 2026-11-11 审计 F-03 那一处
+    （asset-studio.js 每 3 秒一发、后台照跑）在门禁全绿的情况下活了很久：
+    判据覆盖的是"我记得的两处"，不是"站上真实存在的每一处"。
+    现在改成 rglob 全量枚举——新增一个轮询就自动进判据，
+    不需要谁记得回来加一行。枚举结果同时断言非空：
+    扫不到任何 setInterval 说明扫描口径坏了，而不是全站没有轮询。
 
     判据分三段，各自防一种退化：
-      A 每个轮询回调里必须有 `document.hidden` 提前 return；
-      B 跳过后必须**补一拍**（否则切回来看到的是离开那一刻的旧队列），
-        且补拍挂在 `visibilitychange` 上；
-      C 挂 document 的监听必须成对解绑——`#view-root` 换页时仍在 body 里，
-        `isConnected` 挡不住，只能靠 removeEventListener。
+      A 每个轮询回调**里面**必须有 document.hidden 提前 return；
+      B 同一份模块必须有 visibilitychange 回前台补一拍，且那个回调里
+        也要判 hidden（否则切到后台时这一下照样发）；
+      C 模块只要有 clearInterval 这条拆卸路径，挂 document 的监听就必须
+        在那条路上成对解绑——visibilitychange 只在 document 上派发、
+        不冒泡，#view-root 换页时仍在 body 里，isConnected 挡不住。
+        没有拆卸路径的（app.js 的 worker 心跳，整个应用周期只挂一次）
+        不要求解绑，但 A、B 照旧。
     """
     js = FRONTEND / "js"
-    gen = (js / "views" / "generate.js").read_text(encoding="utf-8")
-    notif = (js / "notifications.js").read_text(encoding="utf-8")
+    sites = []
+    for f in sorted(js.rglob("*.js")):
+        code = code_lines(f.read_text(encoding="utf-8"))
+        if "setInterval(" in code:
+            sites.append((f.relative_to(js).as_posix(), code))
+    assert sites, ("一处 setInterval 都没扫到——是扫描口径坏了，"
+                   "不是全站真的没有轮询；先修判据")
 
-    def code_of(text: str) -> str:
-        return "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
-                         for l in text.splitlines())
+    # 条件里允许一层嵌套括号：视图写的是 if (!alive('#as-cands') || document.hidden)，
+    # [^)]* 会在 alive(...) 的那个右括号处停下，于是合规的写法被误报成缺守卫。
+    _COND = r"(?:[^()]|\([^()]*\))*"
+    hidden_guard = re.compile(r"if\s*\(" + _COND + r"document\.hidden" + _COND + r"\)\s*return")
+    bad = []
+    for rel, code in sites:
+        # A：逐个回调取实参，守卫必须在回调体内
+        for m in re.finditer(r"setInterval\(", code):
+            args = _call_args(code, m.end() - 1)
+            if not hidden_guard.search(args):
+                bad.append(f"{rel} 的 setInterval 回调里没有 document.hidden 提前 return")
 
-    gen_code, notif_code = code_of(gen), code_of(notif)
+        # B：回前台补一拍，且补拍回调自己也要让开后台
+        vis = list(re.finditer(r"addEventListener\(\s*['\"]visibilitychange['\"]", code))
+        if not vis:
+            bad.append(f"{rel} 只跳过、没有 visibilitychange 回前台补一拍"
+                       "（人切回来看到的是离开那一刻的旧数据）")
+        for m in vis:
+            args = _handler_body(code, _call_args(code, code.index("(", m.start())), m.start())
+            if not hidden_guard.search(args):
+                bad.append(f"{rel} 的 visibilitychange 回调里没有 document.hidden 判断")
 
-    # A：两处轮询都要让开
-    assert re.search(r"if\s*\(\s*document\.hidden\s*\)\s*return", gen_code), (
-        "generate.js 的轮询没有 `document.hidden` 判断，后台标签页照跑三个请求")
-    assert re.search(r"if\s*\(\s*document\.hidden\s*\)\s*return", notif_code), (
-        "notifications.js 的角标轮询没有 `document.hidden` 判断")
-
-    # B：回前台补一拍
-    assert "visibilitychange" in gen_code, (
-        "generate.js 只是跳过、没有回前台补一拍——人切回来看到的是旧队列")
-    assert re.search(r"addEventListener\(\s*['\"]visibilitychange['\"]", gen_code)
-
-    # C：成对解绑（记下闭包 → 下次 mount 先 remove 再 add）
-    assert re.search(r"removeEventListener\(\s*['\"]visibilitychange['\"]",
-                     gen_code), (
-        "generate.js 挂了 visibilitychange 却不解绑：`#view-root` 换页后仍在 "
-        "body 里，isConnected 挡不住，切十个来回会叠十份监听")
+        # C：有拆卸路径就必须成对解绑
+        removed = len(re.findall(r"removeEventListener\(\s*['\"]visibilitychange['\"]", code))
+        if "clearInterval" in code and removed < len(vis):
+            bad.append(f"{rel} 挂了 {len(vis)} 处 visibilitychange 只解绑 {removed} 处："
+                       "有 clearInterval 这条拆卸路径就要一起收，"
+                       "否则切十个来回叠十份监听")
+    assert not bad, "后台轮询纪律没守住：\n  - " + "\n  - ".join(bad)
 
 
 def test_抽屉重画必须保住_details_展开态():
