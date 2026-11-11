@@ -508,7 +508,12 @@ def check_docs(facts: dict) -> int:
     for name in DOC_NAMES:
         text = (DOCS / f"{name}.md").read_text(encoding="utf-8")
         where = f"{name}.md"
-        if "403 passed" in text:
+        # **必须用词边界，不能用子串**（2026-11-11 修的真 bug）：
+        # 判据原本是 `"403 passed" in text`，而 `"1403 passed"` 里含 `"403 passed"`
+        # ——测试数一到 1403，这条门禁就对**完全正确的文档**报"残留旧测试数 403"，
+        # 而且它看起来像文档的问题，实际是门禁自己在骗人。
+        # `(?<![0-9])` 保证 403 前面不是数字：1403/2403 都不再命中。
+        if re.search(r"(?<![0-9])403\s+passed", text):
             fails.append(f"{where}: 残留旧测试数 403")
         if facts["migration"] >= 22 and "0001—0019" in text.replace("0017—0019", "").replace("0019 迁移", ""):
             fails.append(f"{where}: 仓库结构残留 0001—0019")
