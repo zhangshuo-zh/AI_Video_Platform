@@ -184,8 +184,14 @@ class JobsLeaseMixin:
                 "needs_attention": attention + attention_cancelled}
 
 
-    # 上次清理久未心跳行的时间（monotonic 秒）。见 heartbeat 里的说明。
-    _last_prune = 0.0
+    # 上次清理久未心跳行的时间（monotonic 秒）；`None` = 本次进程还没清过。
+    # **不能用 0.0 当"从没清过"**（2026-11-11 实测抓到的真 bug）：
+    # 判据是 `now - _last_prune >= 3600`，而 `time.monotonic()` 是**开机以来的
+    # 秒数**，不是 epoch。机器刚重启时它可能只有几百秒，于是
+    # `now - 0.0 < 3600` 成立 ⇒ **开机后第一个小时内一次都不清**。
+    # 后果：重启后紧跟着的那些"7 天没心跳"的行会在表里多躺最多一小时；
+    # 面板上的死节点也就多显示一小时。`None` 明确表达"从没清过 ⇒ 立刻清"。
+    _last_prune: float | None = None
 
     def heartbeat(self, worker_id: str, pid: int, current_job_id: int | None,
                   version: str, *, limits: dict | None = None,
@@ -227,7 +233,8 @@ class JobsLeaseMixin:
             # 改成一小时清一回：最多晚一小时看到旧行消失，没有任何界面
             # 依赖"它必须在这一拍消失"。
             now = time.monotonic()
-            if now - self._last_prune >= 3600:
+            # `None`＝本进程还没清过，第一拍就清（见类属性的注释）。
+            if self._last_prune is None or now - self._last_prune >= 3600:
                 self._last_prune = now
                 conn.execute(
                     """DELETE FROM worker_node

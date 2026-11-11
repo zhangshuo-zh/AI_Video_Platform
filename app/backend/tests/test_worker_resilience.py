@@ -101,8 +101,14 @@ def test_心跳不每次都清死节点(fresh_project, clean_queue):
             return conn.execute("SELECT 1 FROM worker_node WHERE worker_id = ?",
                                 (worker_id,)).fetchone() is not None
 
-    # ① 首次心跳（_last_prune 初始 0）应当清掉超期行
-    job_repo._last_prune = 0.0
+    # ① 首次心跳（本进程还没清过）应当清掉超期行。
+    #
+    # **`None` 而不是 `0.0`**（2026-11-11 修的真 bug）：`time.monotonic()` 是
+    # 开机以来秒数，机器刚重启时可能远小于 3600；那时 `now - 0.0 >= 3600`
+    # 为假，于是"第一次心跳必须清"这条永远不成立——用例会在刚重启的机器上红，
+    # 而更糟的是**产品行为也错**：开机第一个小时内一次都不清死节点。
+    # 哨兵改成 None 之后，两种情况都正确。
+    job_repo._last_prune = None
     _dead("drill-dead-1")
     job_repo.heartbeat("w-alive", 4001, None, "v1")
     assert not _alive("drill-dead-1"), "第一次心跳必须清掉超期节点"
@@ -166,3 +172,39 @@ def test_mock分支的库调用也必须走锁兜底():
     assert "库锁" in log.getvalue(), "降级要在 run.log 留痕，不能静默"
     target = jobfiles.JOBS_DIR / paths[0]
     assert target.exists() and "锁也拦不住我" in target.read_text(encoding="utf-8")
+
+
+def test_刚重启的机器也立刻清死节点(fresh_project, clean_queue, monkeypatch):
+    """**开机不到一小时时，第一次心跳照样要清死节点**（2026-11-11 真 bug）。
+
+    这条是回归守卫，不是重复：`_last_prune` 曾用 `0.0` 当"从没清过"的哨兵，
+    而判据是 `time.monotonic() - _last_prune >= 3600`。`monotonic()` 是**开机
+    以来秒数**，机器刚重启时只有几百秒，于是差值小于 3600 ⇒ 开机后第一个
+    小时内一次都不清理。product 行为与用例同时错，且只在"刚重启"时暴露
+    ——正是 CI 冷启动最容易命中的情形。
+
+    这里把 monotonic 压到 5 秒（模拟刚开机），断言第一拍仍然清理。
+    """
+    from repositories.jobs import jobs as job_repo
+    import repositories.jobs_parts.lease as lease_mod
+
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO worker_node (worker_id, pid, host, heartbeat_at, version)
+               VALUES ('boot-dead', 1, 'h', datetime('now','localtime','-8 days'), 'v1')""")
+
+    class _FakeTime:
+        @staticmethod
+        def monotonic():
+            return 5.0                    # 开机 5 秒
+
+    monkeypatch.setattr(lease_mod, "time", _FakeTime)
+    job_repo._last_prune = None
+    job_repo.heartbeat("w-boot", 4002, None, "v1")
+
+    with get_conn() as conn:
+        alive = conn.execute(
+            "SELECT 1 FROM worker_node WHERE worker_id = 'boot-dead'").fetchone()
+    assert alive is None, (
+        "开机 5 秒时第一次心跳没清死节点——说明哨兵又被写回 0.0 那类值了"
+        "（monotonic 小于 3600 时 0.0 哨兵永远不触发清理）")
