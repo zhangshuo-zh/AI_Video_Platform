@@ -404,7 +404,11 @@ def _await_heartbeats(procs: list[tuple[int, int, object]], failed: list[str],
         # 能把还没轮到确认的那一条弹掉，于是 `proc is None`，
         # 「已退出」这条判据永远不成立，报错文案指错方向，PID 文件也不删。
         # 详见 `_fork_workers` 的文档。）
-        ok = False
+        # **不再有 `ok` 变量**（2026-11-11 清 ruff F841）：它原来是给
+        # 已删掉的 `if not ok: break` 用的（见下面"这里不能 break"那段）。
+        # 那个 break 删掉之后 `ok` 只剩赋值、没有任何读取，留着会让人以为
+        # "循环结束后还要看 ok 决定什么"——实际结论完全由 `pids`／`failed`
+        # 两个列表决定（见函数末尾三个 return）。
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if proc is not None and proc.poll() is not None:
@@ -415,8 +419,7 @@ def _await_heartbeats(procs: list[tuple[int, int, object]], failed: list[str],
                               + (f"：{tail}" if tail else ""))
                 break
             if _heartbeat_written_since(pid, since=since):
-                ok = True
-                pids.append(pid)
+                pids.append(pid)      # 进了 pids 就是"确认起来了"，不再单设标志位
                 break
             time.sleep(0.25)
         else:

@@ -401,7 +401,9 @@ def test_mark_attention_走状态机_运行中的作业不会被钉进终态(
 def test_mark_attention_排队中的作业也不能被标记(fresh_project, clean_queue, people):
     """`queued` 连 `needs_attention` 都转不过去，标记必须明确失败。"""
     pid = fresh_project("editor")
-    uid = {"id": people["editor"]["id"]}
+    # 这里**不建用户上下文**：本用例直接打仓储（`mark_attention_by_user` 的
+    # 用户参数由服务层给），所以不需要 uid。原来留着一个没用的 uid 变量，
+    # 会让人以为"这个用例走了权限判定"——实际没有。
     job = job_repo.create({
         "project_id": pid, "capability": "text", "kind": "text",
         "execution_mode": "cloud", "provider_code": "deepseek",

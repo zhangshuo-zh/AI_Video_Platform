@@ -14,9 +14,6 @@
 """
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
 
@@ -228,7 +225,7 @@ class TestService:
         import services.jobs as svc
         from models import WorkerLimitIn
         # 先塞一份"内存很大"的样本，制造 over
-        import json, sqlite3
+        import json
         from db import get_conn
         with get_conn() as conn:
             for _ in range(3):
@@ -279,7 +276,9 @@ class TestService:
     def test_over_必须进_alerts_而且是_bad(self, tmp_path, monkeypatch):
         """设置卡平时没人打开，而内存溢出是"下一次领活就发生"的事。
         所以它必须进顶栏那个每人都会拉到的 alerts。"""
-        wl = self._prepare(tmp_path, monkeypatch)
+        # `_prepare` 的**副作用**才是本用例要的（建库 + 清掉上次的并发
+        # 配置）；返回值（worker_limit 仓储）这里用不上，所以用 `_` 接。
+        _ = self._prepare(tmp_path, monkeypatch)   # 只用它的副作用，见下
         import services.jobs as svc
         from models import WorkerLimitIn
         import json

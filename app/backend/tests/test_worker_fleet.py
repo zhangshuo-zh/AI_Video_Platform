@@ -19,7 +19,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import uuid
 import signal
@@ -132,7 +131,6 @@ class TestMultiWorker:
         的汇总逻辑本身——真起进程那条在 e2e 里验过（实测 count=2 得到两个 pid）。
         """
         sup = env["sup"]
-        from db import get_conn
         # 手工登记两个"活着的"pid：用当前进程与它的子进程
         import subprocess
         p1 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"],
@@ -402,7 +400,6 @@ class TestOptimizations:
         """
         import contextlib
         import worker_notice
-        import db as db_module
         from db import get_conn
 
         statements: list[str] = []
@@ -453,8 +450,6 @@ class TestP0Regressions:
         早退之后——注释成了空话。实测确认过：修之前 `_tick()` 后通知表 0 条。
         """
         import worker_daemon as daemon
-        import worker_notice
-        from db import get_conn
 
         _insert_project(uniq, owner_id=uniq)
         _insert_queued_job(uniq)
