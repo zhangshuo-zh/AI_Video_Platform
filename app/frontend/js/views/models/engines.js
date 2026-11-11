@@ -464,7 +464,11 @@ export function openProbeResults(payload, cloudRows) {
       <td>${chip}
         ${queried && it.engine_model
           ? `<div class="hint mono">${escapeHtml(it.engine_model)}</div>` : ''}
-        <div class="hint">${escapeHtml(it.health_detail || '')}</div></td>
+        <div class="hint">${escapeHtml(it.health_detail || '')}</div>
+        ${it.launch_ready
+          ? `<button class="btn xs" data-act-launch="${it.id}"
+                     title="${escapeHtml(it.launch_note || '按内置配方启动这台本机服务')}">启动服务</button>`
+          : ''}</td>
       <td class="hint">${escapeHtml(it.note || '')}</td>
     </tr>`;
   }).join('');
@@ -559,6 +563,30 @@ export function openProbeResults(payload, cloudRows) {
     if (e.target === host || e.target.closest('[data-close-probe-res]')) close();
   });
   host.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  // 启动按钮的点击要绑在**这个弹窗自己**身上（2026-11-12 修）。
+  // 它由这里 append 到 body、不在 #view-root 里，所以 mountEngineInstances
+  // 里那次 root.querySelectorAll 永远选不到它——实测：按钮画得出来、
+  // 点下去没有任何反应（不报错、也不发请求），比不画更糟。
+  host.querySelectorAll('[data-act-launch]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.actLaunch;
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '启动中…';     // 后端最多等 6 秒，必须有可见反馈
+      try {
+        const out = await api.launchEngine(id);
+        alertNotify(out.message, out.reachable ? 'info' : 'warn');
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+        close();
+      } catch (err) {
+        alertNotify('启动失败：' + (err && err.message ? err.message : String(err)), 'warn');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    });
+  });
 }
 
 /** 两条探测之间隔了多久。数字都是秒；负值（同一秒内）当 0。 */

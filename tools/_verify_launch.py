@@ -62,15 +62,22 @@ def main():
             "fetch('/api/engines').then(r => r.json()).then(d => JSON.stringify(d))"))
         by_code = {i['engine_code']: i for i in api['items']}
         check('两台实例都在列表里', set(by_code) == {'ollama', 'draw_things'}, list(by_code))
+        # 这条判据必须**跟着环境状态走**：本机真机上这两台可能有一台正在跑
+        # （2026-11-12 实测 Draw Things 被用户打开后 7860 就通了）。写死
+        # "一定 launch_ready" 会让探针在正常机器上假红。
         for code in ('ollama', 'draw_things'):
             it = by_code[code]
-            check(f'{code} 没答话时 launch_ready 为真', it['launch_ready'] is True,
-                  {'health': it['health_state'], 'ready': it['launch_ready']})
+            want = it['health_state'] != 'ok'
+            check(f'{code} 的 launch_ready 与健康相反（没答话才给启动入口）',
+                  it['launch_ready'] == want,
+                  {'health': it['health_state'], 'ready': it['launch_ready'], 'want': want})
             check(f'{code} 带上了启动说明（launch_note）', 'launch_note' in it, it.get('launch_note'))
 
         # 页面上的按钮
         n_btn = cdp.eval("document.querySelectorAll('[data-act-launch]').length")
-        check('页面上出现启动按钮', n_btn == 2, n_btn)
+        want_btn = sum(1 for i in (by_code['ollama'], by_code['draw_things']) if i['launch_ready'])
+        check('页面上的启动按钮数 = 该启动的那几台（不是写死 2）', n_btn == want_btn,
+              {'got': n_btn, 'want': want_btn})
 
         # 点 ollama 那颗，观察「启动中…」与最终结果
         clicked = cdp.eval('''(() => {
@@ -159,6 +166,31 @@ def main():
             check('再点一次：实例没被复制出第二行', before_hl == 1, before_hl)
 
         # ---- 「起了但没答话」必须如实报，不能把命令发出当成能用了 ----
+        # **不依赖真机状态**：插一条端点指向没人听的端口的 ollama 实例。
+        # 配方按 engine_code 查，所以它照样会去跑 `ollama serve`（起在 11434），
+        # 而探的是 11435——一定「起来了但没答话」。这样即便真机上两台都在跑，
+        # 这条判据也测得到（2026-11-12：Draw Things 被用户打开后，原来那条
+        # 依赖它不通的检查整段被跳过，反向对照的 C 变异因此漏网）。
+        with get_conn() as conn:
+            conn.execute('INSERT INTO engine_instance (engine_code, display_name, endpoint) '
+                         'VALUES (?, ?, ?)',
+                         ('ollama', '验收用假端口', 'http://127.0.0.1:11435'))
+            dead = conn.execute("SELECT id FROM engine_instance WHERE display_name='验收用假端口'").fetchone()
+        dead_id = dead['id']
+        out_dead = json.loads(cdp.eval(
+            "fetch('/api/engines/' + " + str(dead_id) + " + '/launch', {method: 'POST'})"
+            "  .then(async r => JSON.stringify({status: r.status, body: await r.json()}))"))
+        print('DEAD PORT LAUNCH: ' + json.dumps(out_dead, ensure_ascii=False)[:240], flush=True)
+        body_dead = out_dead.get('body') or {}
+        check('端点没人听时：命令发出了但不报「能用了」',
+              body_dead.get('started') is True and body_dead.get('reachable') is False,
+              {'started': body_dead.get('started'), 'reachable': body_dead.get('reachable')})
+        check('端点没人听时：提示说清了「没答话」而不是「已启动」',
+              '没有答话' in str(body_dead.get('message', '')), body_dead.get('message'))
+        with get_conn() as conn:
+            conn.execute('DELETE FROM engine_instance WHERE id = ?', (dead_id,))
+
+        # ---- 真机上的 Draw Things：通了就不该给启动入口 ----
         # 用一个一定起不来监听的服务验：`ollama serve` 配上坏端口不行（配方是常量），
         # 所以直接对 engine_launch 造一次：临时把端口指到一个没人听的地方。
         dt = next(i for i in after['items'] if i['engine_code'] == 'draw_things')
