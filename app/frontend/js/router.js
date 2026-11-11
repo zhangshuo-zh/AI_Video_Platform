@@ -1,5 +1,5 @@
 /** 路由：按 id 渲染视图并同步侧栏高亮、地址栏 hash。 */
-import views from './views/index.js';
+import { loadView, hasView } from './views/index.js';
 import { getParam, getSub, setParam, setSub } from './navstate.js';
 import { MODULES } from './modules.js';
 import { escapeHtml, announce } from './util.js';
@@ -65,7 +65,41 @@ export function closeDetail(viewId) {
 
 export async function renderView(id) {
   const seq = ++renderSeq;
-  const view = views[id] || views.overview;
+  // 视图按需加载（2026-11-11 审计 F-06）。这一句必须在**任何** DOM 改动之前
+  // await：取模块要走一次网络，中途人可能已经点了别处，等它回来再看 seq。
+  // 所以「拿视图」放在最前面，拿不到就不必再动屏幕。
+  //
+  // `hasView` 判一次是保留原来的语义：未知 id 退回总览（不是空白页）。
+  // loadView 内部也做了同样的兜底，这里判是为了下面取 label 时也走同一条路。
+  const viewId = hasView(id) ? id : 'overview';
+  let view;
+  try {
+    view = await loadView(viewId);
+  } catch (err) {
+    // 模块取不下来（网络断了、文件名写错）与 render() 抛错是两件事，但表现
+    // 都是「点了没反应」。走同一个兜底卡片，别让人对着上一屏发呆。
+    if (seq !== renderSeq) return;
+    console.error(`[router] ${id} 视图模块加载失败`, err);
+    const root0 = document.getElementById('view-root');
+    root0.classList.toggle('cold', false);
+    root0.innerHTML = `<section class="view on">
+      <div class="page-head"><h1>${escapeHtml(MODULES.find((m) => m.id === id)?.label || id)}</h1></div>
+      <div class="card"><div class="empty">
+        <div class="empty-t">这一页没有加载出来</div>
+        <p>${escapeHtml(err && err.message ? err.message : String(err))}</p>
+        <p class="hint">页面代码没能取回来；检查网络后刷新一次浏览器（Cmd+R）通常能恢复。</p>
+      </div></div></section>`;
+    return;
+  }
+  // 取模块期间又发生了一次导航：这一次作废，不要覆盖更新的那一屏。
+  if (seq !== renderSeq) return;
+
+  // 未知 id 已经在这里被换成 overview 了，下面所有落点都该用换过的那个：
+  // 原来只有"画哪一屏"用了兜底值，而 `body[data-view]`、侧栏高亮、地址栏
+  // 写的仍是那个不存在的 id——人看到的页面是总览、外壳状态却认着另一个名字。
+  // （2026-11-11 审计 F-06 一并修掉：`#nope-not-a-view` 实测 body 上写的就是
+  //  nope-not-a-view。）CSS 与调试都读这个属性，它得和屏幕上那一屏一致。
+  id = viewId;
 
   // 换模块时把上一个模块的详情参数清掉：从资产详情跳去创作中心再跳回来，
   // 应该回到列表，而不是莫名其妙落在那条旧资产上（它可能已经被删了）。

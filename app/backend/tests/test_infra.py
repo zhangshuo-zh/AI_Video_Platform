@@ -851,9 +851,13 @@ def test_同视图重绘不重播入场动画():
     # 入场动画的判据必须同时看首屏与同视图刷新
     assert "firstPaint || sameView" in code, (
         "cold 的判据又只判首屏了：同视图重绘会重播入场动画（切项目闪屏）")
-    # sameView 必须算在 cold 之前——顺序反了它当时还是 undefined
+    # sameView 必须算在「那一处」cold 之前——顺序反了它当时还是 undefined。
+    # 锚点要认准带判据的那一次 toggle：文件里另有几处 `toggle('cold', false)`
+    # 是错误兜底卡片用来把动画压掉的，它们本来就在前面（2026-11-11 加了按需
+    # 加载的模块取不下来分支之后，按 `classList.toggle('cold'` 找第一次出现
+    # 会抓到那一处，于是这条守卫对着错误的位置比大小，误报）。
     i_same = code.index("const sameView =")
-    i_cold = code.index("classList.toggle('cold'")
+    i_cold = code.index("classList.toggle('cold', firstPaint || sameView)")
     assert i_same < i_cold, "sameView 算在 cold 之后了，判据拿到的是旧值"
 
 
@@ -1707,4 +1711,53 @@ def test_通知面板的空态也要能被焦点访问():
         "通知空态没有 menuitem 身份：0 条通知时打开面板，焦点无处可去")
     assert re.search(r'bell-empty"[^>]*tabindex=\\?"-1', notif), (
         "通知空态没有 tabindex=-1，程序化 focus() 落不上去")
+
+
+
+def test_视图必须按需加载而不是首屏全量():
+    """首屏只为画总览，不该把 15 个视图模块全下下来。
+
+    2026-11-11 审计 F-06：`views/index.js` 原来是 15 个静态 import，
+    首屏 43 个模块、约 1.0 MB（未压缩）——写作、生成、成片、模型中心
+    那几页一两百 KB 的代码，在看「总览」的时候一个字符也用不上，
+    却要全部下载 + 解析完才能出首屏。
+
+    判据分三段：
+      A 注册表里不许再有静态 import（`from './xxx.js'` 那种）；
+      B 每个视图都有一条 `() => import('./xxx.js')` 的懒加载入口——
+        **写成函数**，不能是 `import('./x.js')` 直接返回的 Promise：
+        模块顶层的 import() 会在加载时就发出去，等于回到全量；
+      C 视图对象要按 key 缓存，不能每次渲染都重新 load 一份——
+        视图文件里的 module 级状态（记 visibilitychange 闭包的那个变量）
+        必须跨渲染保持同一个，否则旧的那份永远解绑不掉。
+
+    数量也对齐：注册表里的视图数必须等于 modules.js 里的模块数——
+    加了新页却忘了加懒加载入口，会在打开那一页时白屏。
+    """
+    reg = code_lines((FRONTEND / 'js' / 'views' / 'index.js').read_text(encoding='utf-8'))
+    mods = (FRONTEND / 'js' / 'modules.js').read_text(encoding='utf-8')
+
+    # A：不许再静态 import 视图
+    static = re.findall(r"^import\s+\w+\s+from\s+'\./[\w-]+\.js'", reg, re.M)
+    assert not static, (
+        '视图注册表又变回静态 import 了，首屏会把所有页都拉下来：' + str(static))
+
+    # B：每个条目都是 `() => import('./x.js')`
+    loaders = re.findall(r"\(\s*\)\s*=>\s*import\(\s*'\./([\w-]+)\.js'\s*\)", reg)
+    assert len(loaders) >= 10, (
+        '懒加载入口只有 %d 条，注册表看起来不完整' % len(loaders))
+    bare = re.findall(r"(?<!=>\s)import\(\s*'\./[\w-]+\.js'\s*\)\s*,\s*$", reg, re.M)
+    assert not bare, '写成 import() 直接返回 Promise 了，加载时就会发请求：' + str(bare)
+
+    # C：按 key 缓存
+    assert re.search(r'cache\.has\(key\)', reg), (
+        '没有按 key 缓存视图对象：每次渲染都会重新取一份模块，'
+        '视图里 module 级的状态（visibilitychange 闭包）会越积越多')
+    assert re.search(r'cache\.set\(key', reg), '取了模块却没有放进 cache'
+
+    # 数量对齐：modules.js 里注册了几个模块，就要有几条懒加载入口
+    ids = re.findall(r"^\s*id:\s*'([\w-]+)'", mods, re.M)
+    assert ids, 'modules.js 里没读到模块 id，扫描口径变了'
+    missing = [i for i in ids if i not in reg]
+    assert not missing, '这些模块在注册表里没有懒加载入口，点开会白屏：' + str(missing)
 
