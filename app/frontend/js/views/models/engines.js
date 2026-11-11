@@ -473,11 +473,13 @@ export function openProbeResults(payload, cloudRows) {
         ${/* 模型名只在 detail 里出现一次。原来这里还单独画一行 engine_model，
               而 detail 的内容是「服务在线，当前模型 xxx.ckpt」——同一个名字
               连着显示两遍（2026-11-12 截图里一眼可见）。 */ ''}
-        <div class="hint">${escapeHtml(it.health_detail || '')}</div>
+        <div class="hint">${escapeHtml(it.health_detail || '')}</div></td>
+      <td class="c" style="white-space:nowrap">
         ${it.launch_ready
           ? `<button class="btn xs" data-act-launch="${it.id}"
                      title="${escapeHtml(it.launch_note || '按内置配方启动这台本机服务')}">启动服务</button>`
-          : ''}</td>
+          : '<span class="hint">—</span>'}
+      </td>
     </tr>`;
   }).join('');
 
@@ -503,8 +505,8 @@ export function openProbeResults(payload, cloudRows) {
   // 「备注」那一列被挤成一行一个字（截图里是竖排的"本机常驻服务"）。
   // tbl-fixed 让列宽由 app.css 里的百分比说了算，长句在格子里换行。
   const body = items.length
-    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-3"><thead><tr>
-        <th>引擎实例</th><th>端点</th><th>状态</th>
+    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-4"><thead><tr>
+        <th>引擎实例</th><th>端点</th><th>状态</th><th>操作</th>
       </tr></thead><tbody>${rowsNow}</tbody></table></div>`
     : '';
 

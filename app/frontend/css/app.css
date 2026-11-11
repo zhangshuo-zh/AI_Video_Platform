@@ -1506,6 +1506,13 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(1){width:26%}
 table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(2){width:34%}
 table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(3){width:40%}
+/* 四列表（本机引擎·操作列在最右）：左三列分摊 82%，操作列固定 18%。
+   操作列只放一颗按钮（或一个破折号），给它是为了不让按钮挤在状态格里——
+   状态说的是"现在怎样"，按钮是"要做什么"，两件事不该同格。 */
+table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(1){width:24%}
+table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(2){width:24%}
+table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(3){width:34%}
+table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(4){width:18%}
 /* 弹窗里的表：长端点/长 detail 必须在格子里折行，否则 tbl-fixed 下会溢出 */
 .modal .tbl-fixed td{word-break:break-word;overflow-wrap:anywhere}
 .gen-form{max-width:none}
