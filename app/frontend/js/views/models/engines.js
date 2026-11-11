@@ -513,7 +513,7 @@ export function openProbeResults(payload, cloudRows) {
   // tbl-fixed 让列宽由 app.css 里的百分比说了算，长句在格子里换行。
   const body = items.length
     ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-4"><thead><tr>
-        <th>引擎实例</th><th>端点</th><th>状态</th><th>操作</th>
+        <th>引擎实例</th><th>端点</th><th>状态</th><th class="c">操作</th>
       </tr></thead><tbody>${rowsNow}</tbody></table></div>`
     : '';
 

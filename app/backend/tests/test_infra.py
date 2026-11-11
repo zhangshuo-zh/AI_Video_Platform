@@ -1831,3 +1831,5 @@ def test_启动本机引擎的配方必须是常量且只认回环():
     assert re.search(r"reachable\s*:\s*bool", mod_code), "结果里没有 reachable 字段"
     assert "subprocess.Popen(" in mod_code, "没有真的执行命令的那一步（扫描口径变了？）"
 
+
+
