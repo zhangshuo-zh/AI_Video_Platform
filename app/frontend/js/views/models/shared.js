@@ -261,8 +261,8 @@ export function overviewCard(s) {
   const cal = s.caliber || {};
   const degraded = s.degraded
     ? `<p class="note" style="margin:8px 0 0"><span class="chip amber">口径不全</span>
-        <span class="hint">目录接口这次没读回来（${escapeHtml(String(s.degraded))}），
-        下面这几个数不是真的 0，是空位。切到别的页再回来会重试。</span></p>`
+        <span class="hint" title="切到别的页再回来会重试。">目录没读回来（${escapeHtml(String(s.degraded))}）——
+        下面的数不是 0，是空位。</span></p>`
     : '';
   const queued = (s.running || 0) + (s.queued || 0);
   return `

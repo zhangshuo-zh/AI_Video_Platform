@@ -112,13 +112,10 @@ export function pagePolicies() {
     </div>
     <div class="card-body" style="border-top:1px solid var(--line)">
       <p class="modal-err" id="policy-error"></p>
-      <p class="note"><b>保存只改配置，不会启动任何任务</b>；
-        也不会把建议轨写成默认轨——默认轨的唯一来源仍是「引擎管理」那张能力轨表。</p>
-      <p class="note"><b>备用轨不自动顶上</b>（清单里 <code>no_auto_fallback</code> 为
-        ${String(cache.policies.no_auto_fallback)}）。备用轨的意义是：默认轨不行时，
-        「看候选」能立刻告诉你哪一档能力匹配、可以人工改选，而不是悄悄换一条路把钱花了。</p>
-      <p class="note"><b>候选只从登记里出</b>：下拉里能看到的前提是这一档已经在
-        「模型仓库」登记过。没登记就不是可选项，避免选了一个跑不起来的东西。</p>
+      <p class="note" title="保存只改配置、不启动任务；也不会把建议轨写成默认轨，默认轨的唯一来源是「引擎管理」那张能力轨表。候选只从「模型仓库」已登记的档里出，没登记的不是可选项。">
+        <b>保存只改配置。</b>
+        <b>备用轨不自动顶上</b>（<code>no_auto_fallback</code> ＝ ${String(cache.policies.no_auto_fallback)}）——
+        默认轨不行时用「看候选」人工改选，而不是悄悄换路花钱。</p>
     </div>
   </div>`;
 }

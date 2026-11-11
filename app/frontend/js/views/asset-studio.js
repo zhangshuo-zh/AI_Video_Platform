@@ -606,9 +606,9 @@ function variantPanel(d) {
       <div class="card-head"><h2>${escapeHtml(VARIANT_LABEL[VARIANT_TYPE[d.kind]] || '形态')}列表</h2>
         <span class="sub">服饰／视角／形态的图跟着形态走，不混进基础参考图</span></div>
       <div class="card-body">
-        <p class="note">同一人物的日常服、正式服、战斗服、冬季服、年轻时期、受伤状态都算同一个人，
-          不该各建一条人物资产；但它们的图必须分开存——把互相矛盾的服装塞进同一组参考图，
-          下游图生视频会把它们当成同一套衣服去生。</p>
+        <p class="note" title="日常服、正式服、战斗服、年轻时期、受伤状态都算同一个人，不该各建一条人物资产。但图必须分开存：把互相矛盾的服装塞进同一组参考图，下游图生视频会把它们当成同一套衣服去生。">
+          同一个人的不同形态（服装／时期／状态）不算新资产，但<b>图要分开存</b>——
+          混在一组参考图里，下游会当成同一套衣服去生。</p>
         ${d.targetId > 0 ? `
           <div class="as-actions">
             <input id="as-new-variant" class="ctl" placeholder="新形态名称，例如 雨夜外套"

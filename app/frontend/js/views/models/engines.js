@@ -381,8 +381,7 @@ export function openProbeHistory(data) {
       <div class="modal-head neutral">探测历史</div>
       <div class="modal-body">${body}
         <p class="note" style="margin:12px 0 0"><b>这一屏只讲过去。</b>
-          现在通不通，看引擎实例卡上那枚状态徽章——它是每次现查的，
-          和这里的任何一条都没关系。${escapeHtml((data && data.note) || '')}</p>
+          现在通不通看引擎实例那枚徽章（每次现查）${escapeHtml((data && data.note) || '')}</p>
       </div>
       <div class="modal-actions"><button class="btn" data-close-probes>关闭</button></div>
     </div>`;
@@ -693,15 +692,10 @@ export function engineInstancesCard() {
       </tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" ><b>端点改不了</b>：端点连同引擎 code 是这一行的键，
-        要换机器请新建一条再停旧的——否则历史作业的「当时打的是哪台」就说不清了。
-        「非服务型」那几档也能登记（给远程执行器留的位置），但现在没有探测分支，
-        加进来只会显示"不是本机服务型引擎，平台不猜它的状态"。</p>
-      <p class="note"><b>连接方式今天只有 local_http 一档能选</b>：迁移 0040 的 CHECK 还收
-        <code>grpc</code> 与 <code>cli</code>，但探测与执行都只写了 HTTP 那一条路。
-        把它们摆进下拉，等于给一个选进去看不到任何行为的选项——所以接口直接拒，
-        并明说"要先写探测与执行分支"。库里若有历史行用了别的值，这一屏照样列出来，
-        状态写成「探测未实现」，不拿一次 HTTP 的失败冒充它的结论。</p>
+      <p class="note flush" title="端点连同引擎 code 是这一行的键，要换机器请新建一条再停旧的，否则历史作业的「当时打的是哪台」就说不清了。非服务型那几档也能登记（给远程执行器留位置），但暂时没有探测分支。">
+        <b>端点改不了</b>——换机器请新建一条再停旧的，否则历史作业说不清打的是哪台。</p>
+      <p class="note" title="探测与执行都只写了 HTTP 那一条路。把它们摆进下拉等于给一个选进去看不到任何行为的选项，所以接口直接拒。库里若有历史行用了别的值，这一屏照样列出，状态写「探测未实现」，不拿一次 HTTP 的失败冒充它的结论。">
+        <b>连接方式只有 <code>local_http</code> 可选</b>——<code>grpc</code>／<code>cli</code> 的探测与执行分支还没写。</p>
     </div>
   </div>`;
 }

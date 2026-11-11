@@ -181,9 +181,9 @@ export function pageMonitor() {
         <span class="chip amber" title="列表接口只有 limit，全仓没有 since/date_from">按时间范围筛选：不支持</span>
         <span class="chip amber" title="只有单条 job.elapsed_ms，没有 AVG/分位">分档执行耗时：不支持</span>
       </div>
-      <p class="hint" style="margin-top:10px">这三项各要改一处后端（成本聚合维度、列表参数、耗时统计），
-        属于 P1。云端调用次数与金额的权威出口仍是生成中心的成本账（§1 不变量：成本只有一个出口），
-        这一页不另算一遍。</p>
+      <p class="hint" style="margin-top:10px"
+         title="这三项各要改一处后端（成本聚合维度、列表参数、耗时统计），属于 P1。云端调用次数与金额的权威出口是生成中心的成本账（§1 不变量：成本只有一个出口）。">
+        三项都要改后端，属 P1。云端次数与金额只看生成中心的成本账，这一页不另算。</p>
     </div>
   </div>
 

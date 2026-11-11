@@ -1621,9 +1621,9 @@ function shotModalHtml() {
               <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
               <div id="sm-assets" class="asset-pick"></div>
               <div id="sm-variants" class="variant-pick"></div>
-              <p class="hint" style="text-align:left">只选引用；角色／场景／道具的内容到资产中心改。
-                选中的是**哪一套形态**（0034）会记在这一镜上：换衣服不用另建一个人，
-                而旧素材会不会因此过期，分镜表那格「源已变」会告诉你。</p>
+              <p class="hint" style="text-align:left"
+                 title="角色／场景／道具的内容到资产中心改。选中的是哪一套形态会记在这一镜上；旧素材会不会因此过期，看分镜表那格「源已变」。">
+                只选引用。换衣服不用另建人物，形态记在这一镜上。</p>
             </div>
           </div>
           <p class="modal-err" id="sm-error"></p>
