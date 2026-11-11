@@ -1059,6 +1059,12 @@ def test_视图里的_window_监听必须成对解绑():
         # `root` 是 `#view-root`，换页时它仍在 body 里，那个判断永远为真。
         "generate.js": "回前台补一拍的 visibilitychange，挂 document（不冒泡），"
                        "由模块级 visHandler 在下次 mount 开头成对解绑",
+        # 2026-11-11 审计 F-03：同一套写法搬到资产工坊。它原来是全站 5 处
+        # 轮询里唯一没有 document.hidden 早退的一处（后台 7 秒实测 3 次请求）。
+        # 解绑点与 generate.js 不同：这里的轮询有明确的 stopPoll()，
+        # 计时器与监听在它里面一起收——startPoll 开头也会先 stopPoll。
+        "asset-studio.js": "回前台补一拍的 visibilitychange，挂 document（不冒泡），"
+                           "由模块级 visHandler 在 stopPoll 里与计时器成对解绑",
     }
 
     offenders = []

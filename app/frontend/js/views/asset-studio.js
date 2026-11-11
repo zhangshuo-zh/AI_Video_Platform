@@ -84,6 +84,10 @@ let draft = null;
 let draftProjectId = null;
 let reqSeq = 0;          // 渲染与轮询的序号：迟到的响应不许盖新页面
 let pollTimer = null;
+// 回前台补一拍用的闭包（与 generate.js 同一套纪律）。挂 document 的监听
+// 不随视图回收——#view-root 换页时它仍在 body 里，isConnected 挡不住，
+// 所以必须记住这一次挂的那个函数，下次 startPoll 先解掉上一份。
+let visHandler = null;
 let lastOptions = [];    // 本次渲染拿到的槽位清单，提交时用它查单价
 
 function newDraft(kind = 'character') {
@@ -1272,6 +1276,9 @@ function againKey(which) {
 
 function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  // 计时器与 visibilitychange 是一对：只清计时器会留下一个拿着旧 patch/alive
+  // 闭包的监听，每次切标签页都白跑一遍（切十个来回叠十份）。
+  if (visHandler) { document.removeEventListener('visibilitychange', visHandler); visHandler = null; }
 }
 
 /**
@@ -1287,7 +1294,9 @@ function startPoll(d, projectId, patch, alive) {
   const inflightNow = () => [d.textJob, d.imageJob].filter((j) => inflight(j));
   if (!inflightNow().length) return;
   stopPoll();
-  pollTimer = setInterval(async () => {
+  // 一轮轮询做的事抽成函数：计时器与"回前台补一拍"共用同一份，
+  // 免得两条路径的判活/竞态判据慢慢长歪。
+  const tick = async () => {
     if (!alive('#as-cands')) { stopPoll(); return; }
     const wanted = reqSeq;
     let changed = false;
@@ -1324,7 +1333,31 @@ function startPoll(d, projectId, patch, alive) {
     if (!changed) return;
     patch();
     if (!inflightNow().length) stopPoll();
+  };
+
+  pollTimer = setInterval(() => {
+    // 后台标签页不发请求（2026-11-11 审计）。全站 5 处轮询里这里是唯一漏掉的
+    // 一处：generate.js:2076 / monitor.js:664 / notifications.js:201 /
+    // app.js:797 都有这道早退，只有资产工坊照跑。真浏览器实测：把标签页挤到
+    // 后台后 3 秒内，本写法心跳 3 次、monitor 写法 0 次。
+    // 判活放在 hidden 之前没有意义（隐藏时连判活都不必做），但**顺序上先判
+    // hidden 再判活**会让切走后的计时器多活一轮；这里保持先判活（tick 内第一
+    // 行），再判 hidden。
+    if (!alive('#as-cands')) { stopPoll(); return; }
+    if (document.hidden) return;
+    tick();
   }, 3000);
+
+  // 回到前台补一拍：光跳过不够——人切回来时看到的是**离开那一刻**的作业状态，
+  // 而本地视频可能早跑完了。补这一下才让"回来看到的就是现在"。
+  // visibilitychange 只在 document 上派发、不冒泡到普通元素，所以只能挂
+  // document；成对解绑见 stopPoll（test_视图里的_window_监听必须成对解绑）。
+  if (visHandler) document.removeEventListener('visibilitychange', visHandler);
+  visHandler = () => {
+    if (!alive('#as-cands') || document.hidden) return;
+    tick();
+  };
+  document.addEventListener('visibilitychange', visHandler);
 }
 
 /**
