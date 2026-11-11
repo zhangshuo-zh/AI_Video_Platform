@@ -2187,3 +2187,99 @@ td.shot-jobs .t-desc{max-width:180px}
 @media (prefers-reduced-motion:reduce){
   .sk-bar,.sk-cover{animation:none}
 }
+
+/* ================= worker 进程卡（2026-11-11 重排） =================
+ * 这一卡原来有两个问题，都不是配色，是**结构**：
+ *   1. 用了 `.row-actions` 这个 class，而它**从未在 CSS 里定义过**
+ *      （全站 4 处引用、零行样式）。于是"启动 [1] 个"、两个按钮、状态提示
+ *      全挤在一行，宽度随文字长短乱跳——看着就是"没排过版"。
+ *   2. 启停与守护是**两个等级的动次**（"我现在就要起/停" vs "要不要让平台
+ *      自己管"），却共用同一套行内 style 排在一起，人不知道该先按哪个。
+ *
+ * 现在：启停用全站同一套 `.form-grid`（标签在左、控件在右），守护单独一块
+ * 带分隔线与自己的小标题。不再有行内 style。
+ */
+.row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+
+.wp-grid{max-width:none}          /* 这一块控件少，不必套 620px 上限 */
+.wp-grid > label{min-width:64px}  /* 「数量」「操作」「逐个停止」对齐同一条竖线 */
+.wp-inline{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.wp-inline .inp{width:72px}       /* 数字框定宽，不跟着内容伸缩 */
+.wp-inline .hint{margin:0}
+
+/* 勾选项：复选框与文字垂直居中。默认 baseline 对齐会让方框浮在文字上方。
+   两个 `width:auto` 都必须写：`.form-grid input` 那条规则给了 `width:100%`，
+   而全文 checkbox 的圈只有 15px——不覆盖宽度的话，圆圈会被拉成一个竖条
+   （2026-11-11 截图里就是一根竖线，宽度 100% 的圆看着像"｜"）。 */
+.wp-check{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.wp-check input[type="checkbox"]{width:15px;height:15px;flex:none;margin:0}
+.wp-check > span{white-space:nowrap}
+
+/* 守护那一块：与上面的启停分开，用一条细线隔开而不是靠留白 */
+.wp-sub{
+  margin-top:18px;padding-top:16px;border-top:1px solid var(--line);
+}
+.wp-sub-head{
+  display:flex;align-items:center;gap:10px;margin-bottom:8px;
+}
+.wp-sub-head h3{
+  font-size:13px;font-weight:600;color:var(--ink);margin:0;
+}
+.wp-sub-head .right{margin-left:auto}
+
+.wp-boundary{margin-top:10px;line-height:1.7}
+.wp-actions{margin:8px 0 0;padding-left:18px}
+.wp-log{margin-top:14px}
+
+/* ================= 表格里的长文本（2026-11-11 布局审计） =================
+ * 引擎实例那张表原来是"状态"格里塞一句 health_detail（可能长到
+ * "http://127.0.0.1:7860/api/v1/options 连不上：[Errno 61] Connection refused"），
+ * 于是那一列被挤成一字一行、整张表被一个单元格撑歪，右侧「备注」跟着塌成竖排。
+ *
+ * 解决办法是**表级**的 `table.tbl-fixed`（见上一条），列宽由百分比说了算。
+ * 这里只留 .t-wrap 负责"长句在格子里换行"。
+ *
+ * **不再有 .t-note{min-width}**：第一版给备注列写了 min-width:220px，但
+ * `table-layout:fixed` 下列宽只认表格给的百分比，min-width 在 td 上被忽略，
+ * 等于一条死代码；留着只会让下一个人以为"备注列宽度是靠它定的"。
+ */
+.t-wrap{
+  margin-top:4px;line-height:1.55;
+  overflow-wrap:anywhere;word-break:normal;
+  color:var(--ink-3);
+}
+
+/* 音频「这一页现在能干什么」：5 项能力按项数分栏。
+   用 auto-fit 会在 1184px 下算出 4 列、第 5 项孤行（详见 audio.js 的注释）。 */
+.audio-caps{
+  display:grid;gap:12px 16px;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+}
+@media (min-width:1100px){
+  /* 宽屏固定 5 列：这一卡永远是 5 项（配音/旁白/背景音乐/音效/口型同步），
+     让它们排成一行本身就是信息——"这一类全在这" */
+  .audio-caps{grid-template-columns:repeat(5,minmax(0,1fr))}
+}
+.audio-cap{
+  padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--field);min-width:0;   /* 允许内部长词换行，不撑破列 */
+}
+.audio-cap-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.audio-cap-h b{font-size:12.5px;color:var(--ink)}
+.audio-cap .mono{font-family:var(--mono);font-size:11px}
+.audio-cap-why{margin:4px 0 0;line-height:1.55}
+
+/* 固定列宽的表格（引擎实例那张）。默认 auto 布局下，只要有一格是长 URL
+   或长英文串（没有空格可断），浏览器就把那一列撑到它的最小内容宽度，
+   其余列被挤成竖条——引擎实例表的状态列曾经整列被压成一字一行。
+   fixed 之后列宽按下表分配，内容在格内换行。
+   比例按"信息密度"给：实例名与端点最需要宽，操作列最窄（按钮已 nowrap）。 */
+table.tbl-fixed{table-layout:fixed}
+table.tbl-fixed > thead > tr > th:nth-child(1){width:22%}
+table.tbl-fixed > thead > tr > th:nth-child(2){width:22%}
+table.tbl-fixed > thead > tr > th:nth-child(3){width:15%}
+table.tbl-fixed > thead > tr > th:nth-child(4){width:17%}
+table.tbl-fixed > thead > tr > th:nth-child(5){width:14%}
+table.tbl-fixed > thead > tr > th:nth-child(6){width:10%}
+table.tbl-fixed td{overflow-wrap:anywhere;word-break:normal}
+table.tbl-fixed code{overflow-wrap:anywhere}

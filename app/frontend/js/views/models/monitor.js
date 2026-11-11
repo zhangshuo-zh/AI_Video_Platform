@@ -276,47 +276,69 @@ function workerProcessCard() {
         <b>API 重启不会带走它们</b>（每个都是独立会话）。但 worker 自己崩了
         <strong>只有开了守护</strong>才会自动拉起。
       </p>
-      <div class="row-actions" style="margin-top:10px">
-        <label class="hint" style="display:flex;align-items:center;gap:6px">
-          启动
-          <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1"
-                 style="width:64px"> 个
-        </label>
-        <button class="btn primary" id="mc-wp-start">启动</button>
-        <button class="btn danger" id="mc-wp-stop">停止全部</button>
-        <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
-      </div>
-      ${count ? `<div class="row-actions" style="margin-top:6px;flex-wrap:wrap">
-        ${pids.map((pid) => `<button class="btn xs" data-stop-pid="${pid}">
-          停止 PID ${escapeHtml(String(pid))}</button>`).join('')}
-      </div>` : ''}
 
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
-        <div class="card-head" style="padding:0;border:0;margin-bottom:8px">
-          <h2 style="font-size:14px">守护（自动拉起）</h2>
+      <!-- 启停：标签在左、控件在右，用全站同一套 form-grid。
+           原来这几行用的是 row-actions 那个 class——它在 app.css 里根本
+           没有定义（全站 4 处用它，一行 CSS 都没有），全靠行内 style 撑，
+           于是"启动 [1] 个"和两个按钮挤成一行、宽度随内容乱跳。
+           注意：模板字符串里的注释**不能出现反引号**，会提前闭合模板
+           字面量、把后面的 HTML 当代码执行（这里撞上了同名的 actions）。 -->
+      <div class="form-grid wp-grid">
+        <label>数量</label>
+        <div class="wp-inline">
+          <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1">
+          <span class="hint">个（上限 8）</span>
+        </div>
+        <label>操作</label>
+        <div class="wp-inline">
+          <button class="btn primary" id="mc-wp-start">启动</button>
+          <button class="btn danger" id="mc-wp-stop">全部停止</button>
+          <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
+        </div>
+        ${count ? `<label>逐个停止</label>
+        <div class="wp-inline">
+          ${pids.map((pid) => `<button class="btn xs" data-stop-pid="${pid}">
+            停止 PID ${escapeHtml(String(pid))}</button>`).join('')}
+        </div>` : ''}
+      </div>
+
+      <!-- 守护：**单独一块**，不和启停混排。它是"要不要让平台自己管进程"的
+           配置，上面是"我现在就要起/停"——两个等级不同的动作挤在同一操作行里，
+           人会不知道该先按哪个。 -->
+      <section class="wp-sub">
+        <div class="wp-sub-head">
+          <h3>守护（自动拉起）</h3>
           <span class="right">${daemonChip}</span>
         </div>
         <p class="note flush">${daemonLine}</p>
-        <div class="row-actions" style="margin-top:8px">
-          <label class="hint" style="display:flex;align-items:center;gap:6px">
-            <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}> 开启守护
-          </label>
-          <label class="hint" style="display:flex;align-items:center;gap:6px">
-            期望在线
+        <div class="form-grid wp-grid">
+          <label>开启</label>
+          <div class="wp-inline">
+            <label class="wp-check">
+              <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}>
+              <span>worker 掉了自动补起</span>
+            </label>
+          </div>
+          <label>期望在线</label>
+          <div class="wp-inline">
             <input class="inp" type="number" id="mc-daemon-desired" min="0" max="8"
-                   value="${d.desired != null ? d.desired : 1}" style="width:64px"> 个
-          </label>
-          <button class="btn" id="mc-daemon-save">保存守护设置</button>
-          <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg')}</span>
+                   value="${d.desired != null ? d.desired : 1}">
+            <span class="hint">个（0 = 不自动补）</span>
+          </div>
+          <label></label>
+          <div class="wp-inline">
+            <button class="btn" id="mc-daemon-save">保存守护设置</button>
+            <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg') || ''}</span>
+          </div>
         </div>
-        <p class="hint" style="margin-top:8px">
+        <p class="hint wp-boundary">
           <b>边界说清楚</b>：守护住在 API 进程里——<strong>API 自己挂了，守护也跟着停</strong>。
           它能挡的是"worker 崩了"，不是"整台机器挂了"。
         </p>
-        ${actions ? `<ul class="hint flush" style="margin-top:8px">${actions}</ul>` : ''}
-      </div>
+        ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
+      </section>
 
-      <p class="hint" style="margin-top:10px">
+      <p class="hint wp-log">
         日志：<code>${escapeHtml(p.log_path || 'data/logs/worker.log')}</code>
         （追加写，重启不丢上一次的输出）。
       </p>

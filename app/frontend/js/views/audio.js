@@ -127,13 +127,22 @@ export default {
       ${audioNotice ? `<div class="card"><div class="bar bad">${escapeHtml(audioNotice)}</div></div>` : ''}
       ${audioCaps ? `<div class="card"><div class="card-head"><h2>这一页现在能干什么</h2>
           <span class="sub">四类能力逐条判，判据来自清单、默认轨与执行接线三处</span></div>
-        <div class="card-body"><div class="kv-grid">
-          ${audioCaps.rows.map((r) => `<div class="kv">
-            <dt>${escapeHtml(r.label)}</dt>
-            <dd><span class="chip ${r.can_submit ? 'green' : r.runner_wired ? 'amber' : 'gray'}">
-              ${r.can_submit ? '可提交' : '未接线'}</span>
-              <span class="t-desc">${escapeHtml(r.engine || '—')}${r.provider ? ` · ${escapeHtml(r.provider)}` : ''}</span>
-              <p class="t-desc">${escapeHtml(r.why || '')}</p></dd></div>`).join('')}
+        <!-- 能力一览用专用网格，不用通用 kv-grid。
+             通用那条是 auto-fit + minmax(230px,1fr)：1184px 宽时算出 4 列，
+             而这里有 **5 项**能力 ⇒ 第 5 项（口型同步）孤零零折到第二行左侧，
+             看着像漏了一项；同时列宽被内容撑得四列不等、文字被截成「音…」。
+             这里直接按"几项就几列"排，窄屏再退回两列/一列。 -->
+        <div class="card-body"><div class="audio-caps">
+          ${audioCaps.rows.map((r) => `<div class="audio-cap">
+            <div class="audio-cap-h">
+              <b>${escapeHtml(r.label)}</b>
+              <span class="chip ${r.can_submit ? 'green' : r.runner_wired ? 'amber' : 'gray'}">
+                ${r.can_submit ? '可提交' : '未接线'}</span>
+            </div>
+            <div class="t-desc mono">${escapeHtml(r.engine || '—')}${
+              r.provider ? ` · ${escapeHtml(r.provider)}` : ''}</div>
+            <p class="t-desc audio-cap-why">${escapeHtml(r.why || '')}</p>
+          </div>`).join('')}
         </div>
         <p class="hint" style="text-align:left;margin:8px 0 0">
           登记台词与归属是纯台账动作，任何时候都可以做；「送进队列」要执行引擎真接上才点得动。

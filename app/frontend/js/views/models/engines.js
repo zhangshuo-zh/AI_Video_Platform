@@ -610,7 +610,7 @@ export function engineInstancesCard() {
               : healthChip({ state: it.health_state, detail: it.health_detail }))
           : '<span class="chip gray">已停用</span>'}
         ${it.engine_model ? `<div class="hint mono">${escapeHtml(it.engine_model)}</div>` : ''}
-        ${it.health_detail ? `<div class="hint">${escapeHtml(it.health_detail)}</div>` : ''}
+        ${it.health_detail ? `<div class="hint t-wrap">${escapeHtml(it.health_detail)}</div>` : ''}
         ${probeHistoryLine(it)}</td>
       <td class="t-dim">${escapeHtml(it.note || '')}</td>
       <td class="c" style="white-space:nowrap">
@@ -632,7 +632,12 @@ export function engineInstancesCard() {
   <div class="card">
     <div class="card-head"><h2>引擎实例</h2>
       <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span></div>
-    <div class="table-wrap"><table>
+    <!-- table-fixed：这张表的状态列里有一句 health_detail（可能是
+         "http://127.0.0.1:7860/api/v1/options 连不上：[Errno 61] Connection refused"），
+         而长 URL 没有空格、浏览器按 auto 布局会把它当成"最小内容宽度"，
+         于是一整列被压成一字一行、整张表被一个单元格撑歪（2026-11-11 截图实见）。
+         fixed 之后列宽由我们给的百分比说了算，长句在格子里换行。 -->
+    <div class="table-wrap"><table class="tbl-fixed">
       <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
         <th>状态</th><th>备注</th><th class="c">操作</th></tr></thead>
       <tbody>${rows}${empty}

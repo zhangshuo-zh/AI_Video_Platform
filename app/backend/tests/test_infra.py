@@ -1455,3 +1455,33 @@ def test_二级菜单标签统一四字():
         "二级菜单标签应统一四字，以下不合规：" + "、".join(bad)
         + "。改的时候记得 modules.js 的 subs 与各视图自己的 SUBS/TABS 要一起改，"
           "只改一处会出现侧栏与页内名字不一致。")
+
+
+def test_模板字符串里的注释不能出现反引号():
+    """前端模板里的 HTML 注释**绝不能出现反引号**（2026-11-11 连踩两次）。
+
+    前端视图用标签模板拼 HTML，注释也写在模板里面。反引号会**提前闭合模板
+    字面量**，后面的 HTML 文本就被当成 JS 执行——报错五花八门（一次是
+    `actions is not a function`、一次是 `Unexpected identifier 'auto'`），
+    而 `js_load_check` 只在语法彻底坏掉时才发现，第一次那个语法恰好合法，
+    于是所有自动门禁都绿、页面白屏，只有真浏览器点进去才看得见。
+
+    判据：逐个模板文件，把反引号**成对**消除后剩下的奇数窗口里不许有
+    `<!-- ... -->` 注释块里含反引号的情况。实现上取简单可靠的一条：
+    源码里出现 `<!--` 到 `-->` 之间的内容，若含反引号就报错。
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[3]
+    js_dir = root / "app/frontend/js"
+    bad = []
+    for f in sorted(js_dir.rglob("*.js")):
+        src = f.read_text(encoding="utf-8")
+        for m in re.finditer(r"<!--(.*?)-->", src, re.S):
+            if "`" in m.group(1):
+                line = src[:m.start()].count("\n") + 1
+                snippet = m.group(1).strip().split("\n")[0][:50]
+                bad.append(f"{f.relative_to(root)}:{line} {snippet}")
+    assert not bad, (
+        "这些 HTML 注释里含反引号，会提前闭合模板字面量、把后面的 HTML 当 JS 执行："
+        + "；".join(bad))
