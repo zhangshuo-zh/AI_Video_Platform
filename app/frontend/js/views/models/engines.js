@@ -455,21 +455,29 @@ export function openProbeResults(payload, cloudRows) {
           : `<span class="chip amber" title="${escapeHtml(it.health_detail || '')}">查不了</span>`;
     }
     const queried = it.enabled && !it.probe_unsupported;
+    // 备注并进第一列（2026-11-12）。它写的是「本机常驻服务；端点无路径无查询串」
+    // 这类静态说明，与这一屏的问题（通不通）关系不大，却占着 24% 的宽度，
+    // 把「状态」列挤到长模型名要折三行。并过来之后状态列拿回那部分宽度。
+    // 引擎码与标题完全相同时不再重复显示（2026-11-12 截图：
+    // draw_things 上面一行是它、下面一行还是它）。有 display_name 时才补一行码。
+    const codeLine = it.engine_code && it.engine_code !== name
+      ? `<div class="hint mono">${escapeHtml(it.engine_code)}${served ? '' : ' · 非服务型'}</div>`
+      : (served ? '' : '<div class="hint">非服务型</div>');
     return `<tr>
       <td class="t-strong">${escapeHtml(name)}
-        <div class="hint mono">${escapeHtml(it.engine_code)}${
-          served ? '' : ' · 非服务型'}</div></td>
+        ${codeLine}
+        ${it.note ? `<div class="hint">${escapeHtml(it.note)}</div>` : ''}</td>
       <td><code>${escapeHtml(it.endpoint || '—')}</code>
         <div class="hint">${escapeHtml(it.connection_type || '')}</div></td>
       <td>${chip}
-        ${queried && it.engine_model
-          ? `<div class="hint mono">${escapeHtml(it.engine_model)}</div>` : ''}
+        ${/* 模型名只在 detail 里出现一次。原来这里还单独画一行 engine_model，
+              而 detail 的内容是「服务在线，当前模型 xxx.ckpt」——同一个名字
+              连着显示两遍（2026-11-12 截图里一眼可见）。 */ ''}
         <div class="hint">${escapeHtml(it.health_detail || '')}</div>
         ${it.launch_ready
           ? `<button class="btn xs" data-act-launch="${it.id}"
                      title="${escapeHtml(it.launch_note || '按内置配方启动这台本机服务')}">启动服务</button>`
           : ''}</td>
-      <td class="hint">${escapeHtml(it.note || '')}</td>
     </tr>`;
   }).join('');
 
@@ -479,20 +487,24 @@ export function openProbeResults(payload, cloudRows) {
   const skipped = items.length - queried.length;
 
   // 一句结论：人想知道的首先就是"通了没有"，不该让他去数徽章。
+  // 说明文字只留一句。原来这里连弹窗底部的注，把「连上≠可用」讲了三遍
+  // （2026-11-12 用户反馈「注释、提醒字数太多，简略一些」）。结论本身一句就够，
+  // 剩下的细节放进 title，想追的人 hover 得到。
   const verdict = !items.length
     ? `<p class="note" style="margin:0 0 10px"><b>还没有登记过引擎实例。</b>
-      Draw Things、Ollama 这类"跑成一台常驻服务"的引擎，要先在「引擎管理」
-      里给它写一条端点（例如 <code>http://127.0.0.1:7860</code>），
-      这里才有可查的对象。</p>`
+      先到「引擎管理」给它写一条端点（如 <code>http://127.0.0.1:7860</code>）。</p>`
     : `<p class="note" style="margin:0 0 10px">
-      <b>本次现查 ${queried.length} 台：通 ${okN} 台${badN ? `，不通 ${badN} 台` : ''}。</b>
-      ${skipped ? `另有 ${skipped} 台没查（已停用或连接方式还没有探测分支）。` : ''}
-      <b>连上只说明引擎进程在线、端点答话，不等于那一档模型能用</b>——
-      「可用」还要过验证那几关，这一屏不替它下这个结论。</p>`;
+      <b>现查 ${queried.length} 台：通 ${okN}${badN ? `，不通 ${badN}` : ''}。</b>
+      ${skipped ? `另有 ${skipped} 台没查（已停用或暂无探测分支）。` : ''}
+      <span title="连上只说明引擎进程在线、端点答话；那一档模型能不能用还要过验证那几关。">连上只说明端点答话，不等于模型可用。</span></p>`;
 
+  // 这张表必须用 table.tbl-fixed（2026-11-12 用户反馈截图）：
+  // 自动布局下四列按内容抢宽度，而 th 带 white-space:nowrap，
+  // 「备注」那一列被挤成一行一个字（截图里是竖排的"本机常驻服务"）。
+  // tbl-fixed 让列宽由 app.css 里的百分比说了算，长句在格子里换行。
   const body = items.length
-    ? `<div class="table-wrap"><table><thead><tr>
-        <th>引擎实例</th><th>端点</th><th>状态</th><th>备注</th>
+    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-3"><thead><tr>
+        <th>引擎实例</th><th>端点</th><th>状态</th>
       </tr></thead><tbody>${rowsNow}</tbody></table></div>`
     : '';
 
@@ -520,19 +532,16 @@ export function openProbeResults(payload, cloudRows) {
 
   const cloudVerdict = cloud.length
     ? `<p class="note" style="margin:14px 0 10px">
-        <b>云端 ${cloud.length} 家：现查过供应商网关。</b>
-        这里只回答"路通不通、钥匙被不被接受"，<b>不等于那一档模型能用</b>；
-        「没配密钥」「无可探端点」两档没发出请求，是配置层面的事实，不是网络故障。</p>`
+        <b>云端 ${cloud.length} 家。</b>
+        <span title="这里只回答路通不通、钥匙被不被接受，不等于那一档模型能用。「没配密钥」「无可探端点」两档没发出请求，是配置事实不是网络故障。">只回答路通不通、钥匙对不对。</span></p>`
     : cloudMissing
       ? `<p class="note" style="margin:14px 0 10px">
           <span class="chip red">没查</span>
-          <b>这一轮没拿到云端结论：后端没有返回 <code>cloud</code> 段。</b>
-          说明跑着的服务不是带云端现查的那一版（改了后端代码要重启进程，
-          uvicorn 这里没开 reload）。<b>云端那几家有没有登记、路通不通，这一屏都没查</b>——
-          别把"没显示"当成"都是好的"。</p>`
+          <b>后端没返回 <code>cloud</code> 段</b>——跑着的服务不是带云端现查的那一版，
+          重启进程即可。<b>别把"没显示"当成"都是好的"。</b></p>`
       : '';
   const cloudBody = cloud.length
-    ? `<div class="table-wrap"><table><thead><tr>
+    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-3"><thead><tr>
         <th>云端引擎</th><th>探测目标</th><th>状态</th>
       </tr></thead><tbody>${cloudRowsNow}</tbody></table></div>`
     : '';
@@ -547,13 +556,9 @@ export function openProbeResults(payload, cloudRows) {
         ${cloud.length ? '<div class="modal-head neutral" style="margin-top:16px">云端引擎 · 现查</div>' : ''}
         ${cloudVerdict}
         ${cloudBody}
-        <p class="note" style="margin:12px 0 0">
-          这一屏是<b>刚刚这一轮</b>的现查结论。本机实例用的是每台实例自己的端点，
-          列表档超时 0.8 秒，服务半死时可能被判成不通，要问到底请到
-          「引擎管理」点那一行的<b>探测</b>（5 秒档），那边还留着历史。
-          ${cloud.length ? `云端引擎这一轮<b>真去供应商网关发了一次 GET</b>（5 秒档）：探的是
-          "路通不通、钥匙对不对"，没配密钥或没登记端点的不会发出请求。` : ''}
-          两类都不等于那一档模型可用——可用要过验证那几关。</p>
+        <p class="note" style="margin:12px 0 0"
+           title="本机实例用各自端点，列表档超时 0.8 秒；服务半死时可能被判成不通，要问到底请到「引擎管理」点那一行的探测（5 秒档，留历史）。云端这一轮真去供应商网关发了一次 GET（5 秒档），探的是路通不通、钥匙对不对。">
+          本轮现查结论。要问到底：去「引擎管理」点那一行的<b>探测</b>（5 秒档，留历史）。</p>
       </div>
       <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>
     </div>`;

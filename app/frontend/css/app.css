@@ -1495,10 +1495,19 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .pf-check{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}
 
 /* 提交弹窗比普通确认框宽：十来个字段挤在 452px 里会换行到看不见 */
-.modal-box.wide{width:min(720px,100%);max-height:calc(100vh - 40px);
+.modal-box.wide{width:min(920px,100%);max-height:calc(100vh - 40px);
   display:flex;flex-direction:column}
 .modal-box.wide .modal-body{overflow-y:auto}
 .modal-box.wide .modal-actions{flex:none}
+/* 结果类弹窗里放着 3—4 列的表，宽一点列才排得开（2026-11-12 用户反馈：
+   720px 下「备注」列被挤成一行一个字）。920px 是量出来的——四列表里
+   最窄的「状态」列能放下一个徽章加一句 40 字的 detail。 */
+/* 三列表（云端引擎·现查）：列宽由这里说了算，不再按内容抢 */
+table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(1){width:26%}
+table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(2){width:34%}
+table.tbl-fixed.modal-tbl-3 > thead > tr > th:nth-child(3){width:40%}
+/* 弹窗里的表：长端点/长 detail 必须在格子里折行，否则 tbl-fixed 下会溢出 */
+.modal .tbl-fixed td{word-break:break-word;overflow-wrap:anywhere}
 .gen-form{max-width:none}
 .gen-cost{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
 /* 场景候选那一块横跨两列：它长在 form-grid 里（label／控件两列），
