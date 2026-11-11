@@ -1761,3 +1761,73 @@ def test_视图必须按需加载而不是首屏全量():
     missing = [i for i in ids if i not in reg]
     assert not missing, '这些模块在注册表里没有懒加载入口，点开会白屏：' + str(missing)
 
+
+
+def test_启动本机引擎的配方必须是常量且只认回环():
+    """「启动服务」按钮（2026-11-11 加）是唯一会真的 `subprocess.Popen` 的接口。
+
+    它存在的理由很小（省掉去终端拉服务那一步），但破坏面很大：一旦配方能接受
+    请求里传来的路径，这条接口就成了通用的命令执行。`0040_engine_instance.sql:34`
+    那句「地址或可执行入口这一格会变成任意命令的注入口（CR-001 明令禁止）」
+    说的就是这件事——所以这条守卫钉的不是"功能在不在"，是那几道不许松的口子：
+
+      A 配方是常量表，且按 engine_code 查；查不到必须拒绝，不许兜底；
+      B 配方里不许出现 shell 包装或插值（`sh -c` / `{}` / `$`）；
+      C 路由必须校验来源是回环——`FASTVIDEO_HOST=0.0.0.0` 那种部署下
+        「点一下在你机器上起进程」是越权的；
+      D 起之前必须复探一次（已在跑就不重复启动），起之后必须再探一次
+        （「进程起来了」与「端口答话了」是两件事）。
+
+    这些行为都有测试（`test_engine_launch.py` 8 条 + 变异 5/5），这条只是
+    把它们钉在源码层：测试被删掉时它还在。
+    """
+    mod = (BACKEND / "engine_launch.py").read_text(encoding="utf-8")
+    router = (BACKEND / "routers" / "model_center.py").read_text(encoding="utf-8")
+    mod_code = code_lines(mod)
+
+    # A：常量配方 + 查不到就拒绝
+    assert re.search(r"^RECIPES\s*(:\s*dict\[str, dict\])?\s*=\s*\{", mod_code, re.M), (
+        "启动配方表不见了：这个接口的全部安全性建立在「命令是常量」上")
+    assert "def recipe_for(" in mod_code, "没有按 engine_code 查配方的那一步"
+    assert "没有内置启动配方" in mod_code, (
+        "查不到配方时没有明确拒绝——留了兜底就等于可以执行未登记的命令")
+
+    # B：不许 shell 包装、不许插值
+    argv_lines = [l for l in mod_code.splitlines() if '"argv":' in l]
+    assert argv_lines, "配方表里一条 argv 都没有，扫描口径变了"
+    for line in argv_lines:
+        for banned in ("sh", "bash", "zsh"):
+            assert f'"{banned}"' not in line, (
+                f"配方用 {banned} 包了一层：这会把注入面打开 → {line.strip()}")
+    recipe_block = mod_code[mod_code.index("RECIPES"):mod_code.index("WAIT_SECONDS")]
+    for token in ("{", "}", "$"):
+        body = recipe_block.replace("RECIPES: dict[str, dict] = {", "")
+        # 只检查 argv 值里有没有插值，不检查表本身的括号
+        for line in body.splitlines():
+            if '"argv":' in line:
+                assert token not in line.split("[", 1)[-1], (
+                    f"配方里出现了插值 {token!r}：命令必须是写死的常量 → {line.strip()}")
+
+    # C：回环校验
+    assert re.search(r"LOOPBACK\s*=\s*frozenset\(", mod_code), "回环来源清单不见了"
+    assert re.search(r"if\s+client\s+not\s+in\s+engine_launch\.LOOPBACK\s*:", router), (
+        "启动路由没有校验请求来源是回环：开放到局域网时谁都能在你机器上起进程")
+    assert "status_code=403" in router[router.index("def launch_engine("):
+                                router.index("def launch_engine(") + 2000], (
+        "非回环来源没有被拒成 403")
+
+    # D：先探再起、起后复探
+    assert "_already_answering(" in mod_code, "没有「已经在跑就不重复启动」的判断"
+    # 这一条必须数**调用**而不是数字符串出现次数：`def _already_answering(`
+    # 也算一次匹配，于是把两处调用里的一处改成 `if False`，count 仍然 ≥2——
+    # 变异测试实测漏过这一种（2026-11-11）。去掉定义行再数才是真的。
+    call_sites = [l for l in mod_code.splitlines()
+                  if "_already_answering(" in l and not l.lstrip().startswith("def ")]
+    assert len(call_sites) >= 2, (
+        "起之前与起之后都要探一次；只探一次的话「起来了但没答话」会漏报"
+        "（当前调用点：%d 处）" % len(call_sites))
+    assert re.search(r"started\s*:\s*bool", mod_code), (
+        "结果里没有 started 这个字段：把 exit code 当「能用了」正是这一屏最容易撒的谎")
+    assert re.search(r"reachable\s*:\s*bool", mod_code), "结果里没有 reachable 字段"
+    assert "subprocess.Popen(" in mod_code, "没有真的执行命令的那一步（扫描口径变了？）"
+

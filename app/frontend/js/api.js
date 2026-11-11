@@ -289,6 +289,9 @@ export const api = {
   // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动
   removeEngine: (id) => send('DELETE', `/api/engines/${id}?confirm=1`),
   probeEngine: (id) => send('POST', `/api/engines/${id}/probe`),
+  // 按内置配方把这一台本机服务拉起来（2026-11-11 加）。
+  // 后端只认回环来源、只执行写死的配方；界面这边不做任何拼接。
+  launchEngine: (id) => send('POST', `/api/engines/${id}/launch`),
   // 本地运行时路径（0051）：这 10 个变量决定 worker 去哪里找权重/CLI。
   // **只包含路径类变量**，密钥永远不在这一族里（后端白名单 + migration CHECK 两道拦）。
   // 云端密钥的**指纹**（2026-11-11）：只给 sha256 前 8 位与长度，**绝不返回值**。

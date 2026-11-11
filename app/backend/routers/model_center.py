@@ -14,10 +14,11 @@ import json
 import os
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import adapters
 import cloud_probe
+import engine_launch
 import engines
 import model_center as mc
 import validations
@@ -559,6 +560,16 @@ def list_engines(_=Depends(require_permission("system:config"))) -> dict:
             "engine_model": status.values.get("model", "") if row["enabled"] else "",
             **_last_probe_fields(last_probe.get(row["id"])),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
+            # 「启动服务」按钮的两格（2026-11-11）：界面据此决定要不要画那颗按钮。
+            # launch_ready 只在这一档有内置启动配方、连的是本机 HTTP、
+            # 而且当前没在答话时为真——已经在跑的服务不该再给一个启动入口。
+            # 判定放在服务端：配方表在后端，界面不该自己维护第二份名单。
+            "launch_ready": bool(
+                row["connection_type"] in SUPPORTED_CONNECTION_TYPES
+                and row["enabled"]
+                and engine_launch.recipe_for(row["engine_code"]) is not None
+                and status.state != "ok"),
+            "launch_note": (engine_launch.recipe_for(row["engine_code"]) or {}).get("note", ""),
         })
     # 下发的是**能选的那一把**（SUPPORTED），不是 CHECK 认的全集：界面不该列出
     # 一个选进来看不到任何行为的选项（CR-010）。CHECK 全集另给一个键，
@@ -675,6 +686,68 @@ def probe_engine(instance_id: int,
             "model": status.values.get("model", ""),
             "latency_ms": latency_ms,
             "endpoint": status.values.get("endpoint", row["endpoint"])}
+
+
+@router.post("/engines/{instance_id}/launch")
+def launch_engine(instance_id: int, request: Request,
+                  user=Depends(require_permission("system:config"))) -> dict:
+    """按内置配方把这一台本机服务拉起来，起完复探一次。
+
+    存在的理由：引擎列表说「连不上」时，人得离开页面去终端/启动台把服务起来，
+    再回来点探测。平台本来就跑在这台机器上，这个来回可以省掉。
+
+    **三道边界，缺一不可**（详见 `engine_launch` 模块头）：
+      1. 配方是常量不是数据——命令按 engine_code 查表，绝不接受请求里传来的
+         可执行路径。`0040_engine_instance.sql:34` 那句 CR-001 明令禁止的就是
+         把「可执行入口」变成可写字段；这个接口不能把它变成可执行字段。
+      2. 只认回环来源——`FASTVIDEO_HOST=0.0.0.0` 开放到局域网时，
+         「点一下在你机器上起进程」必须挡住。
+      3. 先探再起、起后半秒一探——重复点击不起第二个进程，
+         且「进程起来了」与「端口答话了」分开报（Draw Things 的 API Server
+         是应用内开关，默认关，应用起来照样连不上）。
+
+    返回值里 `started` 与 `reachable` 是两个字段而不是一个布尔：把 exit code 0
+    读成「能用了」正是这一屏最容易出的谎。
+    """
+    client = request.client.host if request.client else ""
+    if client not in engine_launch.LOOPBACK:
+        raise HTTPException(
+            status_code=403,
+            detail="只能在运行平台的这台机器上启动本机引擎（当前请求来自 "
+                   f"{client}）。请在服务器本机打开页面，或手动启动后回来点探测。")
+
+    row = engine_instances.instance(instance_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    if row["connection_type"] not in SUPPORTED_CONNECTION_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="这一档连接方式不是本机 HTTP 服务，平台不会按启动配方拉它")
+
+    result = engine_launch.launch(row["engine_code"], row["endpoint"])
+    if not result.ok and not result.started and not result.reachable:
+        # 三次明确拒绝（没配方 / 没装 / Popen 抛错）都落在这里；已经在跑与
+        # 「起了但没答话」不算失败请求——那是如实结论，界面要能原样显示。
+        raise HTTPException(status_code=409, detail=result.message)
+
+    if result.reachable:
+        # 起来并答话了才留痕：留痕表记的是「这个端点被问过」，
+        # 没答话的那几次已经由返回体告诉人，不往历史里塞半截结论。
+        #
+        # source 记 `manual` 而不是新开一个 `launch` 档：0042 的 CHECK 只认
+        # manual/create，加第三档要改约束（SQLite 得重建表）。而"这一次是
+        # 人按了按钮去问的"这个语义，manual 已经说全了——按启动按钮的人
+        # 与按探测按钮的人是同一个人、同一个意图（"我要知道这台通不通"）。
+        # 为了一个界面不显示的区别去重建一张只追加表，代价与收益不成比例。
+        status = engines.probe(row["engine_code"], row["endpoint"], fresh=True)
+        engine_probe_log.record(row["id"], status, source="manual",
+                                latency_ms=0, created_by=user["id"],
+                                engine_code=row["engine_code"],
+                                endpoint=row["endpoint"])
+
+    return {"id": row["id"], "engine_code": row["engine_code"],
+            "started": result.started, "reachable": result.reachable,
+            "message": result.message}
 
 
 def _age_seconds(stamp: str) -> int | None:

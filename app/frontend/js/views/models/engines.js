@@ -614,6 +614,9 @@ export function engineInstancesCard() {
         ${probeHistoryLine(it)}</td>
       <td class="t-dim">${escapeHtml(it.note || '')}</td>
       <td class="c" style="white-space:nowrap">
+        ${it.health_state === 'ok' || !it.launch_ready ? ''
+          : `<button class="btn xs" data-act-launch="${it.id}"
+                     title="${escapeHtml(it.launch_note || '')}">启动服务</button>`}
         <button class="btn xs" data-act-probe="${it.id}">探测</button>
         <button class="btn xs" data-act-probes="${it.id}">看历史</button>
         <button class="btn xs" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}">${
@@ -932,6 +935,31 @@ export function mountEngineInstances(root) {
     repaint();
   });
 
+  // 启动本机引擎（2026-11-11 加）。只在服务没答话、且这一档有内置配方时才有这颗按钮。
+  //
+  // 三件事必须分开说清楚，否则这一屏最容易出的谎就是「点了没反应」或「点了就好了」：
+  //   1. started 与 reachable 分开——命令发出去了不等于端口答话了；
+  //      Draw Things 的 API Server 是应用内开关，应用起来照样连不上。
+  //   2. 已经在跑时不重复启动（后端会拦），界面照实说「本来就在跑」。
+  //   3. 失败原因原样透出：没装 / 没配方 / 起了没答话，是三种不同的下一步。
+  root.querySelectorAll('[data-act-launch]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.actLaunch;
+      btn.disabled = true;
+      const label = btn.textContent;
+      btn.textContent = '启动中…';   // 后端最多等 6 秒，必须有可见反馈
+      let out = null;
+      const ok = await run('启动服务', async () => {
+        out = await api.launchEngine(id);
+      });
+      btn.textContent = label;
+      btn.disabled = false;
+      if (!ok || !out) { repaint(); return; }
+      // 无论成败都把后端那句话原样给出去：它已经分清了「起来了」与「能用了」。
+      alertNotify(out.message, out.reachable ? 'info' : 'warn');
+      repaint();
+    });
+  });
   root.querySelectorAll('[data-act-probe]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;

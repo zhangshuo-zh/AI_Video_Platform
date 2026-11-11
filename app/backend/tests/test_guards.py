@@ -326,6 +326,9 @@ ROUTES = [
     ("PUT", "/api/secret-values/{m}", {"value": "sk-evil"}, 403),
     ("DELETE", "/api/secret-values/{m}", None, 403),
     ("POST", "/api/engines/{m}/probe", None, 403),
+    # 启动本机引擎：越权者同样只该看到 403，轮不到"这条实例存不存在"。
+    # 真正会在回环来源下执行命令的那一路，由 tests/test_engine_launch.py 覆盖。
+    ("POST", "/api/engines/{m}/launch", None, 403),
     # 探测历史（0042）：只读，但仍要 system:config——detail 里有端点和内网地址。
     ("GET", "/api/engines/{m}/probes", None, 403),
     # ---------- 智能体中心（0041） ----------
