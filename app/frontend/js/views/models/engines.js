@@ -433,6 +433,14 @@ export function openProbeResults(payload, cloudRows) {
   //   · 返回了空数组——云端一家都没登记，那是正常的"没有可查对象"。
   const cloudMissing = cloudRows === undefined || cloudRows === null || !Array.isArray(cloudRows);
 
+  // 这一整块派生逻辑必须在「启动服务之后重画」时能再跑一遍，所以包成函数：
+  // 入参是新的 payload，出参是这一屏要的几段 HTML。
+  function derive(inst2, cloudRows2) {
+    const items = (inst2 || {}).items || [];
+    const service = new Set((inst2 || {}).service_engines || []);
+    const cloud = Array.isArray(cloudRows2) ? cloudRows2 : [];
+    const cloudMissing = cloudRows2 === undefined || cloudRows2 === null
+      || !Array.isArray(cloudRows2);
   const rowsNow = items.map((it) => {
     const name = it.display_name || it.engine_label || it.engine_code;
     const served = service.has(it.engine_code);
@@ -546,25 +554,42 @@ export function openProbeResults(payload, cloudRows) {
         <th>云端引擎</th><th>探测目标</th><th>状态</th>
       </tr></thead><tbody>${cloudRowsNow}</tbody></table></div>`
     : '';
+    return { verdict, body, cloudVerdict, cloudBody, cloud };
+  }
 
   const host = document.createElement('div');
   host.className = 'modal';
   host.innerHTML = `<div class="modal-box wide">
       <div class="modal-head neutral">引擎连接检查 · 结果</div>
-      <div class="modal-body">
-        ${verdict}
-        ${body}
-        ${cloud.length ? '<div class="modal-head neutral" style="margin-top:16px">云端引擎 · 现查</div>' : ''}
-        ${cloudVerdict}
-        ${cloudBody}
-        <p class="note" style="margin:12px 0 0"
-           title="本机实例用各自端点，列表档超时 0.8 秒；服务半死时可能被判成不通，要问到底请到「引擎管理」点那一行的探测（5 秒档，留历史）。云端这一轮真去供应商网关发了一次 GET（5 秒档），探的是路通不通、钥匙对不对。">
-          本轮现查结论。要问到底：去「引擎管理」点那一行的<b>探测</b>（5 秒档，留历史）。</p>
-      </div>
+      <div class="modal-body" data-probe-body></div>
       <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>
     </div>`;
   document.body.appendChild(host);
   const close = () => host.remove();
+
+  // 主体内容抽成函数：启动服务之后要**就地重画这一屏**，不是关掉弹窗。
+  // 原来的实现是 alertNotify + 派 app:refresh + close()——close() 直接把节点删了，
+  // 而 app:refresh 又重绘整页，人根本看不到这一轮的结果（2026-11-12 用户反馈
+  // 「点了启动服务弹窗就直接消失了，不能在原来的弹窗刷新吗」）。
+  const footerNote = `
+        <p class="note" style="margin:12px 0 0"
+           title="本机实例用各自端点，列表档超时 0.8 秒；服务半死时可能被判成不通，要问到底请到「引擎管理」点那一行的探测（5 秒档，留历史）。云端这一轮真去供应商网关发了一次 GET（5 秒档），探的是路通不通、钥匙对不对。">
+          本轮现查结论。要问到底：去「引擎管理」点那一行的<b>探测</b>（5 秒档，留历史）。</p>`;
+  // 屏内结论行（启动结果写在这里，重画后仍然保留）
+  let noticeLine = '';
+  const bodyEl = host.querySelector('[data-probe-body]');
+  // paintWith 用**新数据**重画这一屏；不传就用最初那次的数据。
+  const paintWith = (inst2, cloudRows2) => {
+    const d = derive(inst2 === undefined ? payload : inst2,
+                     cloudRows2 === undefined ? cloudRows : cloudRows2);
+    bodyEl.innerHTML = d.verdict + d.body
+      + (d.cloud.length ? '<div class="modal-head neutral" style="margin-top:16px">云端引擎 · 现查</div>' : '')
+      + d.cloudVerdict + d.cloudBody + footerNote
+      + (noticeLine ? `<p class="note" data-launch-notice style="margin:10px 0 0">${noticeLine}</p>` : '');
+    bindLaunch();
+  };
+  const paint = () => paintWith(payload, cloudRows);
+  paint();      // 首次绘制
   host.addEventListener('click', (e) => {
     if (e.target === host || e.target.closest('[data-close-probe-res]')) close();
   });
@@ -574,25 +599,45 @@ export function openProbeResults(payload, cloudRows) {
   // 它由这里 append 到 body、不在 #view-root 里，所以 mountEngineInstances
   // 里那次 root.querySelectorAll 永远选不到它——实测：按钮画得出来、
   // 点下去没有任何反应（不报错、也不发请求），比不画更糟。
-  host.querySelectorAll('[data-act-launch]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.actLaunch;
-      const label = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = '启动中…';     // 后端最多等 6 秒，必须有可见反馈
-      try {
-        const out = await api.launchEngine(id);
-        alertNotify(out.message, out.reachable ? 'info' : 'warn');
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-        close();
-      } catch (err) {
-        alertNotify('启动失败：' + (err && err.message ? err.message : String(err)), 'warn');
-      } finally {
+  //
+  // **启动完就地重画这一屏，不关弹窗**。原来这里是
+  // `alertNotify(...) + 派 app:refresh + close()`：close() 直接删节点，
+  // 而 app:refresh 又重绘整页——人会看到弹窗凭空消失，且这一轮结果
+  // 一个字都没读到（用户原话：「弹窗就直接消失了，不能在原来的弹窗刷新吗」）。
+  // 现在的顺序是：拉一次最新实例列表 → 用新数据重画 → 结论写在屏内一行。
+  async function bindLaunch() {
+    for (const btn of host.querySelectorAll('[data-act-launch]')) {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.actLaunch;
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '启动中…';   // 后端最多等 6 秒，必须有可见反馈
+        let out = null;
+        let err = null;
+        try {
+          out = await api.launchEngine(id);
+        } catch (e) {
+          err = e;
+        }
         btn.disabled = false;
         btn.textContent = label;
-      }
-    });
-  });
+
+        // 屏内结论：把后端那句话原样写到这一屏底部，重画之后仍然保留。
+        noticeLine = (err
+          ? '启动失败：' + (err && err.message ? err.message : String(err))
+          : (out && out.message) || '已请求启动。')
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+        // 重画要的是**全部实例**的新状态，而 launch 只回这一台，所以再取一次列表。
+        try {
+          const fresh = await api.engines();
+          paintWith(fresh);
+        } catch {
+          paint();     // 取不到新数据就至少把结论行画出来
+        }
+      });
+    }
+  }
 }
 
 /** 两条探测之间隔了多久。数字都是秒；负值（同一秒内）当 0。 */
