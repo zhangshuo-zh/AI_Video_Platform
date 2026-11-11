@@ -19,6 +19,9 @@ import { setSub } from './navstate.js';
 import { MODULES } from './modules.js';
 
 const POLL_MS = 20000;      // 20 秒一轮，与 worker 心跳同量级；不追实时
+// 面板一次取多少条。后端 Query(30, ge=1, le=100) 的上限就是 100，取满它——
+// 原来不传 limit 只拿 30 条，第 31 条起在界面上无法到达（无翻页、无加载更多）。
+const LIMIT = 100;
 let timer = null;
 let items = [];
 
@@ -52,8 +55,15 @@ function navigate(item) {
   window.dispatchEvent(new CustomEvent('app:go', { detail: page }));
 }
 
-function render(menu, dot) {
-  const unread = items.filter((x) => !x.read).length;
+/** 画面板。
+ *
+ *  unread 由调用方从服务端字段传进来，不在这里数（文件头第 1 条纪律）。
+ *  2026-11-11 审计实测：原来这里写的是 items.filter(x => !x.read).length，
+ *  而 items 被 limit 截断——造 45 条未读，服务端 unread=45 / items=30，
+ *  页脚就显示"30 条未读"，「全部已读」的启用判据也跟着少算。注释写对了、
+ *  代码没跟上，正是这条纪律要防的情形。
+ */
+function render(menu, dot, unread) {
   if (dot) dot.hidden = unread === 0;
   paintUnreadTone(unread);
 
@@ -61,6 +71,13 @@ function render(menu, dot) {
     menu.innerHTML = '<div class="bell-empty">没有通知</div>';
     return;
   }
+  // 截断提示的判据是「未读有没有全在列表里」，不是 unread > items.length：
+  // 列表按 id 倒序取最近 N 条，已读的那些也占名额。最新 100 条里若 90 条已读、
+  // 10 条未读，而真实未读 45，那时 45 > 100 为假、却仍有 35 条未读看不见。
+  // 这里数 items 是为了判断要不要提示；角标与页脚的数字仍然只用服务端的
+  // unread——两者不是一回事，别把这一行当成"又在前端自己数未读"。
+  const shownUnread = items.filter((x) => !x.read).length;
+  const truncated = shownUnread < unread;
   const rows = items.map((item) => `
     <button class="bell-item ${item.read ? '' : 'unread'}" data-id="${item.id}">
       <div class="bt">
@@ -75,6 +92,8 @@ function render(menu, dot) {
     </button>`).join('');
 
   menu.innerHTML = `${rows}
+    ${truncated ? `<div class="bell-trunc">未读共 ${unread} 条，这里只列出最近 ${items.length} 条。
+      「全部已读」仍会清掉全部未读（含没列出来的）。</div>` : ''}
     <div class="bell-foot">
       <span class="hint">${unread} 条未读</span>
       <button class="btn xs" id="bell-read-all" ${unread ? '' : 'disabled'}>全部已读</button>
@@ -95,11 +114,13 @@ async function refresh(dot, menu) {
     // 只在这个方向省：菜单**开着**时必须拉全量（人要看已读的那些），
     // 不能因为"反正角标只要计数"就把打开的列表缩成未读——那样已读通知
     // 会从眼前消失。
-    const payload = await api.notifications(!menu);
+    // 面板打开时取满上限（后端 le=100）；关着时只要未读数，不传 limit。
+    const payload = await api.notifications(!menu, menu ? LIMIT : undefined);
     items = payload?.items || [];
-    if (menu) render(menu, dot);
+    // 两条分支共用同一个口径：服务端独立那条 COUNT，与 items 长度无关。
+    const unread = payload?.unread ?? 0;
+    if (menu) render(menu, dot, unread);
     else {
-      const unread = payload?.unread || 0;
       if (dot) dot.hidden = unread === 0;
       paintUnreadTone(unread);
     }

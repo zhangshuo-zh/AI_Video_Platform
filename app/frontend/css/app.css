@@ -651,6 +651,14 @@ main{min-width:0;display:flex;flex-direction:column}
 /* 徽章不许被压扁：flex 子项默认会缩，缩到 0 就看不见了 */
 .bell-item .bt .chip{flex:none}
 .bell-empty{padding:14px 10px;text-align:center;color:var(--ink-3);font-size:12px}
+/* 列表被 limit 截断时的说明（2026-11-11）。用 warn 而不是 bad：
+   这不是错误，是"还有没列出来的"，而且「全部已读」照样能清干净。
+   放在列表与页脚之间——它解释的正是页脚那个数字为什么比行数大。 */
+.bell-trunc{
+  padding:7px 10px;margin-top:4px;border-top:1px dashed var(--line);
+  font-size:11.5px;line-height:1.5;color:var(--warn);
+  word-break:break-word;overflow-wrap:anywhere;
+}
 .bell-foot{
   display:flex;justify-content:space-between;align-items:center;gap:8px;
   padding:8px 10px 4px;border-top:1px solid var(--line);margin-top:4px;

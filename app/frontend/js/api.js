@@ -179,7 +179,14 @@ export const api = {
   setWorkerDaemon: (body) => send('PUT', '/api/worker/daemon', body),
 
   // 站内通知（0049）。收件人由服务端按「点名的 + 所在项目的 + 管理员类」算。
-  notifications: (unreadOnly) => get('/api/notifications' + (unreadOnly ? '?unread_only=true' : '')),
+  //
+  // limit 必须能传（2026-11-11 审计）：后端 Query(30, ge=1, le=100) 早就支持
+  // 到 100，而这里写死不带，于是打开面板永远只有 30 条——**第 31 条起的通知
+  // 在界面上根本到不了**（没有翻页、没有"加载更多"）。角标那一轮不需要正文，
+  // 不传 limit 保持原样；面板打开时传满 100。
+  notifications: (unreadOnly, limit) => get('/api/notifications?' + new URLSearchParams(
+    Object.assign({}, unreadOnly ? { unread_only: 'true' } : {},
+                  limit ? { limit: String(limit) } : {})).toString()),
   markNotificationsRead: (ids) => send('POST', '/api/notifications/read', { ids: ids || [] }),
 
   // 生成中心：队列、成本账、参数模板。

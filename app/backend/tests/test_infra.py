@@ -1309,6 +1309,78 @@ def test_抽屉重画必须保住_details_展开态():
         "重画抽屉之后没有恢复 details 的展开态")
 
 
+def code_lines(text: str) -> str:
+    """去掉整行注释，只留代码行。
+
+    前端没有 JS 测试框架，这些守卫是文本扫描；注释里常引用旧写法
+    （"原来是 items.filter…"），不去掉就会把自己的说明当成违规证据。
+    """
+    return "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
+                     for l in text.splitlines())
+
+
+def test_通知未读数必须取服务端字段():
+    """未读数只能用服务端那条独立 COUNT，不能在前端 filter 列表自己数。
+
+    2026-11-11 审计实测：notifications.js 文件头第 1 条纪律写着"未读数以接口
+    为准，不在前端自己数"，而 render() 里恰恰是
+    items.filter(x => !x.read).length。列表被 limit 截断，于是造 45 条未读时
+    服务端给 unread=45 / items=30，页脚显示"30 条未读"，「全部已读」的启用
+    判据也跟着少算。真浏览器验收（tools/_verify_bell.py --reverse）：改回
+    自己数，150 条未读那屏显示"100 条未读"、45 未读+80 已读那屏显示
+    "20 条未读"——两处都少报。
+
+    判据钉住两件事（缺一条都还能退化）：
+      A render 的 unread 是**参数**，不是函数体里算出来的；
+      B 调用处把 payload?.unread 传进去。
+    注意不禁止 items.filter 本身——截断提示需要数"列表里有几条未读"，
+    那是另一个量（判要不要提示），不是角标口径。
+    """
+    notif = (FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8")
+    code = code_lines(notif)
+    assert re.search(r"function\s+render\s*\(\s*menu\s*,\s*dot\s*,\s*unread\s*\)", code), (
+        "render 没有把 unread 当参数收进来，仍在函数体里自己数")
+    # **不能只禁 const/let**（2026-11-11 变异验证抓到的假绿）：参数已经叫
+    # unread，退化写法是裸赋值 `unread = items.filter(...)`，带 const|let 的
+    # 正则放它过去。这里禁的是"任何对 unread 的赋值来自 items.filter"。
+    # 前面的 (?<![\w$]) 是为了不误伤 shownUnread = items.filter(...)——
+    # 那一行是截断提示要用的另一个量，是合法的。
+    assert not re.search(r"(?<![\w$])unread\s*=\s*items\.filter", code), (
+        "又在用 items.filter 算 unread：列表被 limit 截断时会少报未读数")
+    assert re.search(r"render\(\s*menu\s*,\s*dot\s*,\s*unread\s*\)", code), (
+        "调用处没有把服务端 unread 传给 render")
+    assert re.search(r"unread\s*=\s*payload\?\.unread", code), (
+        "unread 不是从 payload.unread 取的")
+
+
+def test_通知面板必须取到后端上限():
+    """打开面板时要传 limit，否则第 31 条起的通知在界面上根本到不了。
+
+    2026-11-11 审计：后端 Query(30, ge=1, le=100) 早就支持到 100，
+    而 api.notifications(unreadOnly) 写死不带 limit，面板永远只有 30 条，
+    且没有翻页、没有"加载更多"。真浏览器验收：造 150 条未读，
+    修复前面板 30 行、修复后 100 行（后端上限）。
+
+    判据：api 那一层能收 limit 并拼进 query；面板打开时传的是上限常量。
+    角标那一轮不传（只要计数，不要正文）——方向由 !menu 决定，
+    与 test_通知角标轮询不要拉全量正文 那条互为两面。
+    """
+    api = (FRONTEND / "js" / "api.js").read_text(encoding="utf-8")
+    notif = (FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8")
+    assert re.search(r"notifications:\s*\(\s*unreadOnly\s*,\s*limit\s*\)", api), (
+        "api.notifications 收不下 limit，面板拿不到 30 条以外的通知")
+    assert "limit: String(limit)" in api, "limit 没有拼进 query"
+    assert re.search(r"const\s+LIMIT\s*=\s*100\b", notif), (
+        "面板没有取满后端上限 100（le=100）")
+    assert re.search(r"api\.notifications\(\s*!\s*menu\s*,\s*menu\s*\?\s*LIMIT", notif), (
+        "打开面板时没有传 LIMIT")
+    # 截断要明说：判据是"未读有没有全列出来"，不是 unread > items.length
+    # （已读也占名额，那个写法会漏报——实测 45 未读 + 80 已读时漏）。
+    assert re.search(r"truncated\s*=\s*shownUnread\s*<\s*unread", notif), (
+        "截断提示的判据错了：已读占名额时会漏报还有未读没列出来")
+    assert "bell-trunc" in notif, "截断了却没有在面板里说明"
+
+
 def test_通知角标轮询不要拉全量正文():
     """菜单关着时只要未读数，不必把 30 条正文拉回来。
 
@@ -1324,7 +1396,9 @@ def test_通知角标轮询不要拉全量正文():
     notif = (FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8")
     code = "\n".join("" if l.strip().startswith(("//", "*", "/*")) else l
                      for l in notif.splitlines())
-    assert re.search(r"api\.notifications\(\s*!\s*menu\s*\)", code), (
+    # 第一参仍必须是 !menu（方向不变）；第二参是 2026-11-11 加的 limit，
+    # 见 test_通知面板必须取到后端上限。这里只钉方向，不钉参数个数。
+    assert re.search(r"api\.notifications\(\s*!\s*menu\s*[,)]", code), (
         "菜单关着时没有走 unread_only，仍在拉全量正文")
     assert "payload?.unread" in code, (
         "角标没有读服务端独立返回的 unread 字段")
