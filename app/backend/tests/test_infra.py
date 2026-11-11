@@ -1646,3 +1646,65 @@ def test_模板字符串里的注释不能出现反引号():
     assert not bad, (
         "这些 HTML 注释里含反引号，会提前闭合模板字面量、把后面的 HTML 当 JS 执行："
         + "；".join(bad))
+
+
+def test_铃铛菜单必须是真菜单而不是只有_role_属性():
+    """声明了 `role="menu"` 就要有菜单的行为，否则不如不声明。
+
+    2026-11-11 审计 F-05：`index.html:195` 的铃铛面板写着 `role="menu"`，
+    而 `render()` 画出来的每一行都是裸 `<button>`、没有一个 `menuitem`；
+    键盘只有 Esc 能关，方向键完全没接。读屏软件读到"菜单"之后会按菜单
+    的交互去试（上下键、Home/End、焦点在项之间走），一试全无反应——
+    这比老老实实说"这是一个普通弹层"更糟。
+
+    判据不是"有没有 role 这个词"（原来就有），而是：
+      A 面板里画出来的项带 `role="menuitem"`；
+      B 有方向键处理，且 Home/End 到两端；
+      C 打开时把焦点送进菜单——不移焦点的话方向键没有起点；
+      D 这个 keydown 与其它 document 监听一样成对解绑。
+    """
+    notif = code_lines((FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8"))
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+
+    assert re.search(r'id="bell-menu"[^>]*role="menu"', html), (
+        "铃铛面板不再声明 role=menu 了？若是有意改成普通弹层，"
+        "把这条守卫一起改掉，别只删属性")
+
+    # A：画出来的项要是 menuitem
+    assert re.search(r'role=\\?"menuitem\\?"[^>]*class=\\?"bell-item', notif), (
+        "铃铛面板的条目没有 role=menuitem，读屏软件不知道这些是可选项")
+
+    # B：方向键 + Home/End
+    for key in ("ArrowDown", "ArrowUp", "Home", "End"):
+        assert key in notif, (
+            "铃铛菜单没有处理 " + key + "，键盘打开之后只能靠 Tab 一个个挪")
+    assert re.search(r"\.focus\(\)", notif), "方向键只挪高亮不移焦点，读屏软件跟不上"
+
+    # C：打开时把焦点送进菜单
+    assert re.search(r"menuItems\(\)\[0\]\?\.focus\(\)", notif), (
+        "打开菜单没有把焦点送进去：方向键没有起点，读屏软件仍停在触发按钮上")
+
+    # D：成对解绑
+    # B2：光有处理函数不算，得真的挂上去（拆掉 addEventListener 时上面那些
+    #     关键词还在，只查关键词会假绿——2026-11-11 变异测试实测漏过这一种）
+    assert re.search(r"addEventListener\(\s*['\"]keydown['\"]\s*,\s*keyNavHandler", notif), (
+        "方向键处理函数写好了却没挂到 document 上（或挂了别的引用）")
+    assert re.search(r"removeEventListener\(\s*['\"]keydown['\"]\s*,\s*keyNavHandler", notif), (
+        "挂了 keydown 却没有成对解绑：会话过期后重登会再挂一份，"
+        "一次方向键走两格")
+
+
+def test_通知面板的空态也要能被焦点访问():
+    """菜单里没有任何条目时（0 条通知），打开后必须还有可以落焦点的东西。
+
+    2026-11-11 审计 F-05 的连带项：空态原来是一个裸 `<div>没有通知</div>`。
+    菜单打开、焦点送进去，却没有任何可聚焦项——焦点会掉回 body，
+    此时 Esc 之外的键（包括方向键）全部落空。给空态一个 menuitem 身份
+    加 tabindex=-1，焦点就有地方可去，读屏软件也能读到"没有通知"。
+    """
+    notif = code_lines((FRONTEND / "js" / "notifications.js").read_text(encoding="utf-8"))
+    assert re.search(r'bell-empty"[^>]*role=\\?"menuitem', notif), (
+        "通知空态没有 menuitem 身份：0 条通知时打开面板，焦点无处可去")
+    assert re.search(r'bell-empty"[^>]*tabindex=\\?"-1', notif), (
+        "通知空态没有 tabindex=-1，程序化 focus() 落不上去")
+

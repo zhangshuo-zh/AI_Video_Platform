@@ -30,6 +30,7 @@ let items = [];
 let visHandler = null;
 let awayHandler = null;
 let escHandler = null;
+let keyNavHandler = null;
 // 回前台补一拍要用的那两个节点：用的就是 mount 那一次的，不重新查 DOM。
 let pollDot = null;
 let pollMenu = null;
@@ -77,7 +78,7 @@ function render(menu, dot, unread) {
   paintUnreadTone(unread);
 
   if (!items.length) {
-    menu.innerHTML = '<div class="bell-empty">没有通知</div>';
+    menu.innerHTML = '<div class="bell-empty" role="menuitem" tabindex="-1" aria-disabled="true">没有通知</div>';
     return;
   }
   // 截断提示的判据是「未读有没有全在列表里」，不是 unread > items.length：
@@ -88,7 +89,7 @@ function render(menu, dot, unread) {
   const shownUnread = items.filter((x) => !x.read).length;
   const truncated = shownUnread < unread;
   const rows = items.map((item) => `
-    <button class="bell-item ${item.read ? '' : 'unread'}" data-id="${item.id}">
+    <button role="menuitem" class="bell-item ${item.read ? '' : 'unread'}" data-id="${item.id}">
       <div class="bt">
         <span class="chip ${item.level === 'bad' ? 'red'
                           : (item.level === 'warn' ? 'amber' : 'plain')}"
@@ -105,7 +106,7 @@ function render(menu, dot, unread) {
       「全部已读」仍会清掉全部未读（含没列出来的）。</div>` : ''}
     <div class="bell-foot">
       <span class="hint">${unread} 条未读</span>
-      <button class="btn xs" id="bell-read-all" ${unread ? '' : 'disabled'}>全部已读</button>
+      <button role="menuitem" class="btn xs" id="bell-read-all" ${unread ? '' : 'disabled'}>全部已读</button>
     </div>`;
 }
 
@@ -158,11 +159,29 @@ function closeMenu() {
 }
 
 
+/** 菜单里可以被方向键走过的那些项。已禁用的不算（「全部已读」在 0 条未读时
+ *  是 disabled，焦点停在它上面按回车什么也不会发生，等于死角）。 */
+function menuItems() {
+  const menu = document.getElementById('bell-menu');
+  if (!menu) return [];
+  return Array.from(menu.querySelectorAll('[role="menuitem"]'))
+    .filter((el) => !el.disabled);
+}
+
+
+
+
 export function mountNotifications() {
   const btn = document.getElementById('bell-btn');
   const menu = document.getElementById('bell-menu');
   const dot = document.getElementById('bell-dot');
   if (!btn || !menu || !dot) { stopNotifications(); return; }
+
+  // 先收掉上一轮（2026-11-11 F-05 修的一个真缺陷：这行原来在函数末尾，
+  // 那时 stopNotifications 只清计时器、没有副作用；现在它连 document 监听
+  // 也一起解绑，留在末尾就会把**刚挂上的**方向键与 Esc 当场摘掉——实测
+  // 菜单能点开、焦点也进去了，但方向键和 Esc 全无反应。收尾要放在开头。
+  stopNotifications();
 
   refresh(dot, null);
 
@@ -178,6 +197,10 @@ export function mountNotifications() {
       btn.setAttribute('aria-expanded', String(willOpen));
       if (willOpen) {
         await refresh(dot, menu);
+      // 打开后把焦点送进菜单第一项（2026-11-11 审计 F-05）。声明了
+      // role=menu 却不移焦点，读屏软件仍停在触发按钮上，方向键也就
+      // 无处可去——菜单的 ARIA 语义要配得上真实行为才作数。
+      menuItems()[0]?.focus();
       }
     });
 
@@ -229,9 +252,30 @@ export function mountNotifications() {
     }
   };
   document.addEventListener('keydown', escHandler);
+  // 方向键在菜单里移动焦点（2026-11-11 审计 F-05）：菜单声明了 role=menu、
+  // 里面也有 menuitem 了，但原来只有 Esc——键盘用户打开之后只能靠 Tab
+  // 一个个挪，与顶栏另外三个菜单的行为不一致（项目菜单支持 ArrowUp/Down/Enter）。
+  // 这里补齐同一套：上下循环、Home/End 到两端、Enter 交给按钮自己点。
+  keyNavHandler = (e) => {
+    if (menu.hidden) return;
+    const rows = menuItems();
+    if (!rows.length) return;
+    const at = rows.indexOf(document.activeElement);
+    if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      rows[e.key === 'Home' ? 0 : rows.length - 1].focus();
+      return;
+    }
+    const step = e.key === 'ArrowDown' ? 1 : (e.key === 'ArrowUp' ? -1 : 0);
+    if (!step) return;
+    e.preventDefault();
+    const next = at < 0 ? (step > 0 ? 0 : rows.length - 1)
+      : (at + step + rows.length) % rows.length;
+    rows[next].focus();
+  };
+  document.addEventListener('keydown', keyNavHandler);
 
   // 轮询：卸载时由调用方 stopNotifications 清掉，避免切页后还在跑
-  stopNotifications();
   pollDot = dot;
   pollMenu = menu;
   timer = setInterval(() => {
@@ -259,6 +303,7 @@ export function mountNotifications() {
  *  每一次点外面、每一次按 Esc 都还在跑旧闭包；而重新登录会再 mount 一次，
  *  于是同一件事叠两份回调。 */
 export function stopNotifications() {
+  if (keyNavHandler) { document.removeEventListener('keydown', keyNavHandler); keyNavHandler = null; }
   if (timer) { clearInterval(timer); timer = null; }
   if (visHandler) { document.removeEventListener('visibilitychange', visHandler); visHandler = null; }
   if (awayHandler) { document.removeEventListener('click', awayHandler); awayHandler = null; }
