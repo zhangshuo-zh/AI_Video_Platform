@@ -12,7 +12,7 @@ import { getSub, setSub } from '../navstate.js';
  * 读的是同一个下标，反着写的结果是"高亮资产库、页面摆的是候选"。
  */
 export const WORKSPACES = [
-  { key: 'library', label: '资产库' },
+  { key: 'library', label: '资产总览' },
   { key: 'studio', label: '资产创作' },
   { key: 'triage', label: '文本提取' },
 ];

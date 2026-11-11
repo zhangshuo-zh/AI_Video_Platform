@@ -1408,3 +1408,50 @@ def test_mypy_门禁真的在检查而不是空转():
             f"mypy 报了错但不是探针文件，说明它没在查 schemas/：{proc.stdout[:300]}")
     finally:
         probe.unlink(missing_ok=True)
+
+
+def test_二级菜单标签统一四字():
+    """全站二级菜单标签统一四个汉字（2026-11-11 用户定）。
+
+    为什么值得一条用例：子页名是**界面上的导航骨架**，长短混排看着像没做完
+    （「配音」「成片」「运行」挨着「文档审核」「证据快照」）。而且它一改就要
+    同步改**两处**——`modules.js` 的 `subs`（侧栏）与各视图自己的
+    `SUBS`/`TABS`（页内页签）。只改一处会出现"侧栏叫 A、页内叫 B"，
+    界面上没人会报错，但两处点进去看到的名字对不上。
+
+    例外：**智能体中心整页保留原样**（用户明说不动）——它的
+    「智能体总览」「智能体配置」是五字，压成四字会丢掉"体"这个主体词。
+
+    实现说明：**不调 node**（本仓前端是零构建，CI 里没有 node，装了也不用）。
+    直接读 `modules.js` 源码、按正则取每个模块的 `subs: [...]`。`subs: []`
+    表示没有二级页，跳过。
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[3]
+    src = (root / "app/frontend/js/modules.js").read_text(encoding="utf-8")
+
+    # 每个模块从 `id: 'xxx'` 到下一个 id 之前算一段，段内的 subs 归属它
+    entries = list(re.finditer(r"id:\s*'([a-z-]+)'", src))
+    EXEMPT = {"agents"}          # 用户明确保留原样的那一页
+    HAN = re.compile(r"[\u4e00-\u9fff]")
+    bad = []
+    checked = 0
+    for i, m in enumerate(entries):
+        mid = m.group(1)
+        end = entries[i + 1].start() if i + 1 < len(entries) else len(src)
+        chunk = src[m.start():end]
+        subs_m = re.search(r"subs:\s*\[([^\]]*)\]", chunk)
+        if not subs_m or mid in EXEMPT:
+            continue
+        labels = re.findall(r"'([^']+)'", subs_m.group(1))
+        for label in labels:
+            checked += 1
+            if len(HAN.findall(label)) != 4:
+                bad.append(f"{mid}:{label}({len(HAN.findall(label))}字)")
+
+    assert checked >= 15, f"只解析到 {checked} 个子页标签，正则大概失效了"
+    assert not bad, (
+        "二级菜单标签应统一四字，以下不合规：" + "、".join(bad)
+        + "。改的时候记得 modules.js 的 subs 与各视图自己的 SUBS/TABS 要一起改，"
+          "只改一处会出现侧栏与页内名字不一致。")

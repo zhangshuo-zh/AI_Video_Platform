@@ -18,7 +18,7 @@ import { publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
 import { diagnosisHtml } from './diagnosis.js';
 
-const TABS = ['运行', '模板', '整季'];
+const TABS = ['运行监控', '产线模板', '整季排产'];
 // 与后端 pipeline.RUN_STATUS_LABELS／NODE_STATUS_LABELS 同一套词，这里只决定颜色
 const RUN_TONE = {
   running: 'blue', waiting_review: 'amber', attention: 'amber', paused: 'amber',

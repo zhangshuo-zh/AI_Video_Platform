@@ -776,69 +776,15 @@ def main():
                              " return !!m && !leak; })()"),
               "有 8 位指纹且不含密钥前 12 位")
 
-        # ---- 供应商密钥的密文存储（0052）----
-        # 这一块的价值全在"页面能配"，所以判据必须在**真浏览器的 DOM + 真保存**上，
-        # 而不是接口返回对不对（接口对、界面没渲染，是本仓踩过的真故障）。
-        check("密钥卡存在且列出云端密钥变量",
-              P.eval_js(cdp, "!!document.querySelector('#mc-secret-values')"
-                             " && document.querySelectorAll('#mc-secret-values tbody tr').length >= 1"),
-              "密钥卡存在且有行")
-        # 有 KEK 时不该出现"不能保存"的红字
-        check("配了 KEK 时页面不说「不能保存」",
-              P.eval_js(cdp, "!document.querySelector('#mc-secret-values').innerText"
-                             ".includes('现在不能保存密钥')"),
-              "有 KEK 时无禁用提示")
-        # 关键：页面上任何地方都不许出现明文密钥。
-        #
-        # 判据里**必须先断言卡片存在**：第一版写成
-        # `!document.querySelector('#mc-secret-values').innerText.includes(...)`，
-        # 卡片被删掉时 querySelector 返回 null，整句在 JS 里抛 TypeError、
-        # eval 回一个 falsy，被 `!` 一翻就成了 true——**删掉整个卡片它照样绿**。
-        # 变异验证抓出来的（同一轮还有"显示指纹"那条也是这个毛病）。
-        # 现在先取 innerText，取不到就明确判失败。
-        check("密钥卡里没有明文密钥值",
-              P.eval_js(cdp, f"""(() => {{
-                const el = document.querySelector('#mc-secret-values');
-                if (!el) return false;          // 卡片不在 = 这条不能算过
-                return !el.innerText.includes({MOCK_SECRET!r});
-              }})()"""),
-              "卡存在且卡内文本不含 MOCK_SECRET")
-        # 指纹要显示（环境里配了 DEEPSEEK_API_KEY，所以 source=env）
-        check("密钥卡显示指纹与来源",
-              P.eval_js(cdp, """(() => {
-                const el = document.querySelector('#mc-secret-values');
-                if (!el) return false;          // 同上：卡片不在不能算过
-                const t = el.innerText;
-                return /…[0-9a-f]{8}/.test(t) && /环境变量|这里保存/.test(t);
-              })()"""),
-              "有指纹且有来源标注")
-        # 输入框是 type=password 且不预填（防浏览器密码管理器把它当登录框）
-        check("密钥输入框是 password 且默认空",
-              P.eval_js(cdp, "(() => { const i = document.querySelector("
-                             "'#mc-secret-values [data-sv-input]');"
-                             " return !i || (i.type === 'password' && i.value === ''); })()"),
-              "password 且空")
-
-        # ---- 本地运行时路径（0051）----
-        # 三件事都要在：卡片在、每行带状态、**密钥类变量一个都不出现**。
-        rp_rows = P.eval_js(cdp, "document.querySelectorAll('tr[data-rp]').length")
-        check("运行时路径每项一行且带状态徽章",
-              (rp_rows or 0) >= 8
-              and P.eval_js(cdp, "(() => [...document.querySelectorAll('tr[data-rp]')]"
-                                 ".every(r => r.querySelector('.chip')))()"),
-              f"{rp_rows} 行")
-        # 这一条是这个功能的红线：页面里**不能**出现任何密钥变量名。
-        # 后端白名单与 migration CHECK 拦着写入，这里再验一次"界面也没给入口"，
-        # 三道各自独立——任何一道单独失效都不至于把密钥摆到页面上。
-        check("运行时路径里没有任何密钥变量",
-              P.eval_js(cdp, "(() => { const t = (document.querySelector('#mc-runtime-paths')"
-                             "||{}).textContent || '';"
-                             "return !/API_KEY|_TOKEN|SECRET/.test(t); })()"),
-              "卡片正文不含 API_KEY／TOKEN／SECRET")
-        check("运行时路径说明了改完要重启 worker",
-              P.eval_js(cdp, "(() => { const c = document.querySelector('#mc-runtime-paths');"
-                             "return !!c && c.textContent.includes('重启'); })()"),
-              "卡片里有「重启 worker」提示")
+        # ---- 运行时路径 / 供应商密钥已搬到「系统设置 · 参数管理」（2026-11-11）----
+        # 这两块原来在本页，现在归 `#system-config/2`。这里只验"搬干净了"：
+        # 引擎管理页不该再出现它们（留着会变成一处能改、另一处看着也能改）。
+        check("引擎管理页不再有运行时路径卡（已搬到系统设置）",
+              not P.eval_js(cdp, "!!document.querySelector('#mc-runtime-paths')"),
+              "本页无 #mc-runtime-paths")
+        check("引擎管理页不再有供应商密钥卡（已搬到系统设置）",
+              not P.eval_js(cdp, "!!document.querySelector('#mc-secret-values')"),
+              "本页无 #mc-secret-values")
 
         # 连接方式只让选真有实现的那一档（2026-11-07 第三批，CR-010）。
         # `grpc`／`cli` 存得进 0040 的 CHECK，但探测与执行都只写了 HTTP——
@@ -1360,6 +1306,91 @@ def main():
         P.eval_js(cdp, "document.querySelector('#mc-form').hidden = true")
         cdp.cmd("Emulation.clearDeviceMetricsOverride")
         time.sleep(0.4)
+
+        # ================= 系统设置 · 参数管理（2026-11-11 搬入；子页名统一四字）=================
+        # 从「模型中心 · 引擎管理」搬来的两块。判据必须在**真浏览器的 DOM** 上：
+        # 接口对、界面没渲染，是本仓踩过两次的坑（第一次是 SUB_NEEDS 加错子页，
+        # 第二次是挂载点留在旧页），都不是单测能发现的。
+        go(cdp, f"{BASE}/#system-config/2")
+        time.sleep(0.6)
+        check("系统设置有第三个子页「参数管理」",
+              P.eval_js(cdp, "[...document.querySelectorAll('.sub-chip,.chip')]"
+                             ".some(c => c.textContent.includes('参数管理'))"),
+              "子页标签里有「参数管理」")
+        check("参数管理页两块卡都在",
+              P.eval_js(cdp, "!!document.querySelector('#mc-runtime-paths')"
+                             " && !!document.querySelector('#mc-secret-values')"),
+              "路径卡 + 密钥卡")
+
+        # ---- 密钥卡（0052）----
+        check("密钥卡列出云端密钥变量",
+              (P.eval_js(cdp, "document.querySelectorAll('#mc-secret-values tbody tr').length") or 0) >= 1,
+              f"{P.eval_js(cdp, 'document.querySelectorAll("#mc-secret-values tbody tr").length')} 行")
+        check("配了 KEK 时页面不说「不能保存」",
+              not P.eval_js(cdp, "(document.querySelector('#mc-secret-values').innerText || '')"
+                                 ".includes('现在不能保存密钥')"),
+              "有 KEK 时无禁用提示")
+        # **任何一页都不许出现明文密钥**。判据里先断言元素存在：
+        # 写成 `!el.innerText.includes(...)` 时，元素不在会抛 TypeError、
+        # eval 回 falsy、被 ! 翻成 true——删掉整张卡断言照样绿（变异验证抓过）。
+        check("密钥卡里没有明文密钥值",
+              P.eval_js(cdp, f"""(() => {{
+                const el = document.querySelector('#mc-secret-values');
+                if (!el) return false;
+                return !el.innerText.includes({MOCK_SECRET!r});
+              }})()"""),
+              "卡存在且不含 MOCK_SECRET")
+        check("密钥卡显示指纹与来源",
+              P.eval_js(cdp, """(() => {
+                const el = document.querySelector('#mc-secret-values');
+                if (!el) return false;
+                const t = el.innerText;
+                return /…[0-9a-f]{8}/.test(t) && /环境变量|这里保存/.test(t);
+              })()"""),
+              "有指纹且有来源标注")
+        check("密钥输入框是 password 且默认空",
+              P.eval_js(cdp, "(() => { const i = document.querySelector("
+                             "'#mc-secret-values [data-sv-input]');"
+                             " return !i || (i.type === 'password' && i.value === ''); })()"),
+              "password 且空")
+
+        # ---- 运行时路径卡（0051）----
+        rp_rows = P.eval_js(cdp, "document.querySelectorAll('tr[data-rp]').length")
+        check("运行时路径每项一行且带状态徽章",
+              (rp_rows or 0) >= 8
+              and P.eval_js(cdp, "(() => [...document.querySelectorAll('tr[data-rp]')]"
+                                 ".every(r => r.querySelector('.chip')))()"),
+              f"{rp_rows} 行")
+        # 红线：这块页面里**不能**出现任何密钥变量名（后端白名单与 CHECK 之外
+        # 的第三道——界面也不给入口，三道各自独立）。
+        check("运行时路径里没有任何密钥变量",
+              P.eval_js(cdp, "(() => { const t = (document.querySelector('#mc-runtime-paths')"
+                             "||{}).textContent || '';"
+                             "return !/API_KEY|_TOKEN|SECRET/.test(t); })()"),
+              "卡片正文不含 API_KEY／TOKEN／SECRET")
+
+        # ---- 文案：只说"什么时候生效"，不解释内部机制（用户 2026-11-11 定）----
+        # 这两句是**实测为真**的（tests 里另有对应用例）：
+        #   队列里排队的作业 → 轮到它时按新值；
+        #   已在跑的那一单   → 不受影响（值在作业开始时就复制进子进程 env）。
+        check("两卡都说「下一次执行作业生效」而不是「立即生效」",
+              P.eval_js(cdp, """(() => {
+                const a = document.querySelector('#mc-runtime-paths').innerText;
+                const b = document.querySelector('#mc-secret-values').innerText;
+                return a.includes('下一次执行作业生效') && b.includes('下一次执行作业生效');
+              })()"""),
+              "两处都写明生效时机")
+        check("文案提到已在队列的作业也按新值",
+              P.eval_js(cdp, "document.querySelector('#mc-runtime-paths').innerText"
+                             ".includes('队列')"),
+              "路径卡说明覆盖队列中的作业")
+        # 反面：不该再把实现细节摊在界面上（用户原话"不用说这么多描述"）。
+        check("界面不再解释实现机制（现查/快照那类措辞已删）",
+              P.eval_js(cdp, """(() => {
+                const t = document.body.innerText;
+                return !t.includes('作业执行时现查') && !t.includes('不是进程启动时');
+              })()"""),
+              "无实现细节措辞")
 
         errors = P.eval_js(cdp, "window.__errs || []") or []
         check("整轮没有 JS 异常", not errors, str(errors)[:220])

@@ -51,7 +51,7 @@ export const MODULES = [
     // 和创作中心（小说／剧本／分镜）、产线中心（运行／模板／整季）同一套做法：
     // 侧栏高亮与页内切换必须是同一个值，类型那种"筛选条件"不该占一级导航。
     // 顺序必须与 views/assets.js 的 WORKSPACES 一字不差。
-    subs: ['资产库', '资产创作', '文本提取'],
+    subs: ['资产总览', '资产创作', '文本提取'],
     group: 'prepare', group_label: G.prepare,
     desc: '角色／场景／道具登记，定妆图落盘，一致性提示词——资产内容只在这里改。'
       + '文字设定与图像候选也在这里发起，但排队、成本与产物仍归生成中心。',
@@ -59,7 +59,7 @@ export const MODULES = [
   },
   {
     id: 'writing', label: '创作中心', icon: 'ic-writing',
-    subs: ['小说', '剧本', '分镜'],
+    subs: ['小说原文', '剧本改编', '分镜脚本'],
     group: 'prepare', group_label: G.prepare,
     desc: '集与三级文档的东家：建集删集、加镜删镜都在这一页；小说剧本正文走文件 + git。',
     ents: 'Episode · Doc · Shot',
@@ -79,7 +79,7 @@ export const MODULES = [
     // W08 起这一页就是"队列 + 成本账 + 详情抽屉 + 参数模板"一整页：
     // 原来的三个二级标签里只有"队列"有内容，另外两个点了什么都不变。
     // 收成一个，参数模板做成页头按钮、产物进详情抽屉，不再留两个死入口。
-    subs: ['队列与成本'],
+    subs: ['队列成本'],
     group: 'produce', group_label: G.produce,
     desc: '唯一队列、模型路由、参数模板、产物落盘，成本账的唯一出口。本地串行单 worker。',
     ents: 'Job · Task',
@@ -88,7 +88,7 @@ export const MODULES = [
     // v0.90 阶段 C：编排层，排在生成中心之后——它读的是生成中心的事实。
     // perms 是进入门槛：job:read 就够了（viewer 也能看进度，签字与发起另按点卡）
     id: 'pipeline', label: '产线中心', icon: 'ic-pipeline',
-    subs: ['运行', '模板', '整季'],
+    subs: ['运行监控', '产线模板', '整季排产'],
     perms: ['job:read'],
     group: 'produce', group_label: G.produce,
     desc: '单集编排与整季排产：模板、运行、节点、事件、批次与 worker 状态。干活仍交给生成中心那一个队列，签字仍归审核中心。',
@@ -98,7 +98,7 @@ export const MODULES = [
     // v0.91 阶段 D：成片是产线的下游，读者先看"这一集什么时候能出片"。
     // 它同样只读 Job 的事实：视频、sha256、时长都来自那条合成作业。
     id: 'composition', label: '成片中心', icon: 'ic-composition',
-    subs: ['成片'],
+    subs: ['成片合成'],
     perms: ['job:read'],
     group: 'quality', group_label: G.quality,
     desc: '把已审核的镜头按顺序合成一集：时间线快照、成片版本、sha256 与回放。合成走同一个 Job 队列。',
@@ -106,7 +106,7 @@ export const MODULES = [
   },
   {
     id: 'audio', label: '音频中心', icon: 'ic-audio',
-    subs: ['配音', '音乐', '口型', '音效'],
+    subs: ['配音管理', '音乐管理', '口型对齐', '音效管理'],
     group: 'produce', group_label: G.produce,
     desc: '台词、配音素材、音乐条目、口型 viseme 挂接；作业送生成中心排队，这里不开队列。',
     ents: 'Task',
@@ -125,7 +125,7 @@ export const MODULES = [
   {
     // 业务资料，不是运行时配置——两者曾叫 setting / settings，差一个字母
     id: 'knowledge', label: '设定中心', icon: 'ic-knowledge',
-    subs: ['条目', '证据快照'],
+    subs: ['世界条目', '证据快照'],
     group: 'prepare', group_label: G.prepare,
     desc: '世界观条目与证据快照引用，抓取内容逐字留档。',
     ents: 'Knowledge',
@@ -167,11 +167,11 @@ export const MODULES = [
     // subs 的顺序必须与 views/system-config.js 的 SUBS 一字不差（router 按下标钳位）。
     // perms 仍带 system:config：万一有人粘进旧地址，也要能落到"这一页已经搬走"的说明上
     id: 'system-config', label: '系统设置', icon: 'ic-system',
-    subs: ['用户管理', '角色管理'], utility: true,
+    subs: ['用户管理', '角色管理', '参数管理'], utility: true,
     perms: ['system:config', 'user:read'],
     group: 'platform', group_label: G.platform,
-    desc: '账号与权限：用户管理（建人、挂角色、口令、删除）与角色管理'
-      + '（角色概览与 18 个权限点矩阵）。模型与引擎的配置已搬到「模型中心」。',
+    desc: '平台级配置：账号与权限（用户、角色与 18 个权限点矩阵），'
+      + '以及参数管理（本地路径与供应商密钥）。模型与引擎本身的配置在「模型中心」。',
     ents: '系统',
   },
 ];

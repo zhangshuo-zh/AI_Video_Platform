@@ -31,7 +31,7 @@ function blockerRow(b) {
   return '<li><b>阻塞</b> ' + escapeHtml(b.text || '') + gotoAttr + '</li>';
 }
 
-const TABS = ['成片'];
+const TABS = ['成片合成'];
 const TONE = {
   draft: 'gray', queued: 'blue', starting: 'blue', running: 'blue',
   succeeded: 'green', failed: 'red', cancelled: 'gray',

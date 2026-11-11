@@ -141,7 +141,7 @@ export default {
   async render() {
     const tab = getSub('writing') ?? 2;
     // 页内也摆一排切换器：窄屏侧栏的二级标签会收起，只靠它等于把功能藏了
-    const subRow = subChipRow(['小说', '剧本', '分镜'], tab);
+    const subRow = subChipRow(['小说原文', '剧本改编', '分镜脚本'], tab);
     if (tab === 2) return renderShots(tab, subRow);
     return await renderDocs(tab, subRow);
   },

@@ -12,13 +12,13 @@ import { bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow } fr
 import { jobLabel } from '../validation.js';
 
 const TABS = [
-  { key: 'voice', label: '配音', kinds: ['dialogue', 'narration'],
+  { key: 'voice', label: '配音管理', kinds: ['dialogue', 'narration'],
     hint: '台词与旁白。台词挂到镜头，旁白可以只挂到集。' },
-  { key: 'music', label: '音乐', kinds: ['music'],
+  { key: 'music', label: '音乐管理', kinds: ['music'],
     hint: '一集可以有多条音乐；按用途写在文本里，生成时整段送进队列。' },
-  { key: 'viseme', label: '口型', kinds: ['dialogue'],
+  { key: 'viseme', label: '口型对齐', kinds: ['dialogue'],
     hint: '口型是台词的后处理；Rhubarb 适配器尚未接线，这一版只记录素材与占用空间。' },
-  { key: 'sfx', label: '音效', kinds: ['sfx'],
+  { key: 'sfx', label: '音效管理', kinds: ['sfx'],
     hint: '环境音与音效还没有可核对的自托管适配器，这一档标为实验态：能登记，不能提交。' },
 ];
 const KIND_LABEL = { dialogue: '台词', narration: '旁白', music: '音乐', sfx: '音效' };
