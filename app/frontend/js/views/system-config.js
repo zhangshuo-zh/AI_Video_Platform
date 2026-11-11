@@ -1,5 +1,6 @@
 import usersPanel from './system-users.js';
 import rolesPanel from './system-roles.js';
+import runtimePanel from './system-runtime.js';
 import { getSub, setSub } from '../navstate.js';
 import { bindSubChips, subChipRow } from '../util.js';
 
@@ -16,17 +17,17 @@ import { bindSubChips, subChipRow } from '../util.js';
  * 旧深链 `#system-config/1` 现在有了真内容（角色管理），不再被钳回第 0 页。
  */
 
-const SUBS = ['用户管理', '角色管理'];
+const SUBS = ['用户管理', '角色管理', '参数管理'];
 
 export default {
   async render() {
     const sub = getSub('system-config') ?? 0;
-    const panel = sub === 1 ? rolesPanel : usersPanel;
+    const panel = sub === 2 ? runtimePanel : sub === 1 ? rolesPanel : usersPanel;
     const body = await panel.render();
     return `<section class="view on">
       <div class="page-head">
         <h1>系统设置</h1>
-        <p>${SUBS[sub]} · 账号与权限；密钥只显示配没配，值永远不出后端</p>
+        <p>${SUBS[sub]} · 平台级配置；密钥只显示指纹，值永远不出后端</p>
         <div class="right">${subChipRow(SUBS, sub)}</div>
       </div>
       ${body}
@@ -39,6 +40,10 @@ export default {
       window.dispatchEvent(new CustomEvent('app:refresh'));
     });
     const sub = getSub('system-config') ?? 0;
-    (sub === 1 ? rolesPanel : usersPanel).mount?.(root);
+    // 三页各自挂：写成 `sub === 1 ? roles : users` 时第三页**永远不挂载**
+    // ——DOM 画出来了、按钮点下去没反应，而 render 那条路完全正常，
+    // 于是"页面渲染成功"这一点会骗过所有不看点击的检查。
+    const panel = sub === 2 ? runtimePanel : sub === 1 ? rolesPanel : usersPanel;
+    panel.mount?.(root);
   },
 };

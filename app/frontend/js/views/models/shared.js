@@ -76,13 +76,13 @@ export let cache = { catalog: null, manifest: null, providers: null, policies: n
  */
 export const SUB_NEEDS = [
   { providers: true },
-  // 子页 1（引擎管理）读运行时路径：两者是同一件事的两半——
-  // "用哪一档引擎"与"这一档的权重在哪"，分开两屏人会来回切。
-  // **注意别放到子页 0**：那一页是模型仓库（`pageRepo`），运行时路径的卡
-  // 在 `pageEngines` 里，放错了数据取了但没人渲染（实测就是踩到了这个：
-  // 卡片 0 行、接口明明回 10 项）。
-  { providers: true, validations: true, engines: true, runtimePaths: true,
-    secretValues: true },
+  // 子页 1（引擎管理）。
+  // **运行时路径与供应商密钥不在这里了**（2026-11-11 搬到「系统设置 · 参数管理」）：
+  // 它们的卡长在那两页自己的 `render()` 里，数据也由那一页自己取——还留在这个
+  // 数组里只会白拉两次接口（读到的东西没人用）。
+  // 这条曾经是真故障的来源：`runtimePaths` 一度加在子页 0，而卡片在
+  // `pageEngines`（子页 1）里渲染，于是"数据取了、卡片 0 行"，接口明明回 10 项。
+  { providers: true, validations: true, engines: true },
   { providers: true, policies: true },
   { providers: true, worker: true, validations: true, process: true },
 ];
