@@ -976,3 +976,331 @@ def test_资产历史匹配沿用解析语义并在限量前排除脏引用(stud
     assert [r["job_id"] for r in rows] == list(reversed(expected))[:2]
     all_rows = asset_studio.recent_generations(pid, limit=50)
     assert [r["job_id"] for r in all_rows] == list(reversed(project_expected))
+
+
+@pytest.mark.parametrize("target", ["asset", "variant"])
+@pytest.mark.parametrize("failure", ["copy", "database", "commit"])
+def test_图片导入失败清理本次文件且重试一致(
+        as_role, studio, monkeypatch, target, failure):
+    """真实导入接口、文件与事务，只在指定故障点注入失败。"""
+    from contextlib import contextmanager
+    from pathlib import Path
+    import errno
+    import routers.content as content_router
+
+    aid = studio["aid"]
+    job, _ = _image_job(studio["pid"])
+    payload = {"job_id": job["id"], "artifact_index": 0}
+    repository = asset_repo
+    row_id = aid
+    if target == "variant":
+        row_id = variants.create(asset_id=aid, variant_type="outfit", name="故障测试形态")["id"]
+        payload["variant_id"] = row_id
+        repository = variants
+    c = as_role("editor")
+    url = f"/api/assets/{aid}/generated-images"
+    original = c.post(url, json=payload)
+    assert original.status_code == 200, original.text
+    original_images = original.json()["ref_images"]
+    target_dir = FILES_DIR / str(aid)
+    before_files = {p.name: p.read_bytes() for p in target_dir.iterdir()}
+    source = jobfiles.artifact_at(job["result_paths_json"], 0)
+    assert source is not None and source.read_bytes() == PNG
+    original_source_job = repository.get(row_id)["source_job_id"] if target == "variant" else None
+
+    with monkeypatch.context() as patch:
+        if failure == "copy":
+            def copy_partial(src, dest):
+                Path(dest).write_bytes(b"partial-png")
+                raise OSError(errno.ENOSPC, "injected disk full")
+            patch.setattr(asset_studio.shutil, "copyfile", copy_partial)
+        elif failure == "database":
+            original_add = repository.add_image
+
+            def fail_after_write(*args, **kwargs):
+                original_add(*args, **kwargs)
+                raise sqlite3.OperationalError("injected database write failure")
+            patch.setattr(repository, "add_image", fail_after_write)
+        else:
+            original_transaction = content_router.transaction
+
+            @contextmanager
+            def fail_commit():
+                with original_transaction():
+                    yield
+                    # 服务已返回，事务结束时失败；仍须回滚行并清理已复制文件。
+                    raise sqlite3.OperationalError("injected commit failure")
+            patch.setattr(content_router, "transaction", fail_commit)
+        with pytest.raises((OSError, sqlite3.OperationalError), match="injected"):
+            c.post(url, json=payload)
+
+    assert {p.name: p.read_bytes() for p in target_dir.iterdir()} == before_files
+    assert json.loads(repository.get(row_id)["ref_images"]) == original_images
+    if target == "variant":
+        assert repository.get(row_id)["source_job_id"] == original_source_job
+        assert json.loads(asset_repo.get(aid)["ref_images"]) == []
+    assert source.read_bytes() == PNG
+    assert job_repo.get(job["id"])["result_paths_json"] == job["result_paths_json"]
+
+    retried = c.post(url, json=payload)
+    assert retried.status_code == 200, retried.text
+    body = retried.json()
+    assert body["image_count"] == 2
+    assert body["ref_images"] == original_images + [body["path"]]
+    assert json.loads(repository.get(row_id)["ref_images"]) == body["ref_images"]
+    assert len(list(target_dir.iterdir())) == 2
+    assert (FILES_DIR / body["path"]).read_bytes() == PNG
+
+
+@pytest.mark.parametrize("target", ["asset", "variant"])
+@pytest.mark.parametrize("stage", ["copy", "row", "committed"])
+def test_导入进程突然退出后启动恢复只清理未登记文件(as_role, studio, target, stage):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    import main
+
+    aid = studio["aid"]
+    job, _ = _image_job(studio["pid"])
+    payload = {"job_id": job["id"], "artifact_index": 0}
+    repo = asset_repo
+    rid = aid
+    if target == "variant":
+        rid = variants.create(asset_id=aid, variant_type="outfit", name="重启恢复")["id"]
+        payload["variant_id"] = rid
+        repo = variants
+    client = as_role("editor")
+    url = f"/api/assets/{aid}/generated-images"
+    first = client.post(url, json=payload)
+    assert first.status_code == 200, first.text
+    before = set((FILES_DIR / str(aid)).iterdir())
+    code = '''
+import json, os, sys
+import asset_studio
+from db import transaction
+from models import AssetImageImportIn
+from repositories.content import assets, variants
+payload=AssetImageImportIn(**json.loads(sys.argv[2]))
+aid=int(sys.argv[1]); stage=sys.argv[3]
+if stage=='copy':
+    original=asset_studio.shutil.copyfile
+    def interrupted(src,dst):
+        original(src,dst)
+        os._exit(73)
+    asset_studio.shutil.copyfile=interrupted
+elif stage=='row':
+    repo=variants if payload.variant_id else assets
+    original=repo.add_image
+    def interrupted(*args,**kwargs):
+        original(*args,**kwargs)
+        os._exit(73)
+    repo.add_image=interrupted
+with transaction():
+    asset_studio.import_generated_image(assets.get(aid),payload)
+os._exit(73)
+'''
+    child = subprocess.run([sys.executable, "-c", code, str(aid), json.dumps(payload), stage],
+                           cwd=Path(__file__).resolve().parents[1], env=dict(os.environ),
+                           capture_output=True, text=True, timeout=15)
+    assert child.returncode == 73, child.stdout + child.stderr
+    assert len(set((FILES_DIR / str(aid)).iterdir()) - before) == 1
+    main.create_app()
+    current_files = set((FILES_DIR / str(aid)).iterdir())
+    images = json.loads(repo.get(rid)["ref_images"])
+    if stage == "committed":
+        assert len(current_files) == 2
+        assert len(images) == 2
+        assert all((FILES_DIR / p).read_bytes() == PNG for p in images)
+    else:
+        assert current_files == before
+        assert images == first.json()["ref_images"]
+    main.create_app()  # 恢复可重复执行，不删已登记图片。
+    assert set((FILES_DIR / str(aid)).iterdir()) == current_files
+
+
+@pytest.mark.parametrize("target", ["asset", "variant"])
+def test_导入补偿无权限时返回待恢复且权限恢复后重试(as_role, studio, monkeypatch, target):
+    from pathlib import Path
+    import main
+
+    aid = studio["aid"]
+    job, _ = _image_job(studio["pid"])
+    payload = {"job_id": job["id"], "artifact_index": 0}
+    repo, rid = asset_repo, aid
+    if target == "variant":
+        rid = variants.create(asset_id=aid, variant_type="outfit", name="权限恢复")["id"]
+        payload["variant_id"] = rid
+        repo = variants
+    original_unlink = Path.unlink
+    with monkeypatch.context() as patch:
+        def partial_copy(src, dst):
+            Path(dst).write_bytes(b"partial")
+            raise OSError("injected copy failure")
+
+        def denied(path, *args, **kwargs):
+            if path.parent.resolve() == (FILES_DIR / str(aid)).resolve():
+                raise PermissionError("injected cleanup denied")
+            return original_unlink(path, *args, **kwargs)
+
+        patch.setattr(asset_studio.shutil, "copyfile", partial_copy)
+        patch.setattr(Path, "unlink", denied)
+        response = as_role("editor").post(f"/api/assets/{aid}/generated-images", json=payload)
+        assert response.status_code == 503, response.text
+        assert "恢复记录" in response.json()["detail"]
+        assert str(FILES_DIR) not in response.text
+        assert json.loads(repo.get(rid)["ref_images"]) == []
+        assert len(list((FILES_DIR / ".asset-imports").glob("*.json"))) == 1
+    main.create_app()
+    assert list((FILES_DIR / str(aid)).iterdir()) == []
+    assert list((FILES_DIR / ".asset-imports").glob("*.json")) == []
+    retried = as_role("editor").post(f"/api/assets/{aid}/generated-images", json=payload)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["image_count"] == 1
+
+
+def test_已提交图片清意图失败不报导入失败且恢复保留图片(as_role, studio, monkeypatch):
+    from pathlib import Path
+    import main
+
+    job, _ = _image_job(studio["pid"])
+    original_unlink = Path.unlink
+    with monkeypatch.context() as patch:
+        def denied(path, *args, **kwargs):
+            if path.parent == FILES_DIR / ".asset-imports":
+                raise PermissionError("injected journal cleanup denied")
+            return original_unlink(path, *args, **kwargs)
+        patch.setattr(Path, "unlink", denied)
+        response = as_role("editor").post(f"/api/assets/{studio['aid']}/generated-images",
+                                           json={"job_id": job["id"], "artifact_index": 0})
+        assert response.status_code == 200, response.text
+        assert len(list((FILES_DIR / ".asset-imports").glob("*.json"))) == 1
+    main.create_app()
+    assert (FILES_DIR / response.json()["path"]).read_bytes() == PNG
+    assert json.loads(asset_repo.get(studio["aid"])["ref_images"]) == [response.json()["path"]]
+    assert list((FILES_DIR / ".asset-imports").glob("*.json")) == []
+
+
+def test_恢复工具默认只预览且不删除无意图文件(studio, tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    import asset_import_recovery
+
+    aid = studio["aid"]
+    filename = uuid.uuid4().hex + ".png"
+    directory = FILES_DIR / str(aid)
+    directory.mkdir(parents=True, exist_ok=True)
+    orphan = directory / filename
+    orphan.write_bytes(b"partial")
+    token = asset_import_recovery.begin(f"{aid}/{filename}", 123)
+    unknown = directory / "old-untracked.png"
+    unknown.write_bytes(b"keep")
+    command = [sys.executable, str(Path(__file__).resolve().parents[3] / "tools/recover_asset_imports.py")]
+    preview = subprocess.run(command, env=dict(os.environ), capture_output=True, text=True, timeout=10)
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout) == {"applied": False, "removed": 1, "kept": 0, "pending": 0, "invalid": 0}
+    assert orphan.exists() and (FILES_DIR / ".asset-imports" / token).exists()
+    applied = subprocess.run(command + ["--apply"], env=dict(os.environ), capture_output=True, text=True, timeout=10)
+    assert applied.returncode == 0, applied.stderr
+    assert not orphan.exists()
+    assert unknown.read_bytes() == b"keep"
+
+
+def test_恢复拒绝伪造路径符号链接与不确定的图片引用(studio, tmp_path):
+    import asset_import_recovery
+
+    aid = studio["aid"]
+    directory = FILES_DIR / str(aid)
+    directory.mkdir(parents=True, exist_ok=True)
+    external = tmp_path / "outside.png"
+    external.write_bytes(b"keep")
+    filename = uuid.uuid4().hex + ".png"
+    token = asset_import_recovery.begin(f"{aid}/{filename}", 123)
+    marker = FILES_DIR / ".asset-imports" / token
+    (directory / filename).symlink_to(external)
+    assert asset_import_recovery.recover()["invalid"] == 1
+    assert external.read_bytes() == b"keep"
+    (directory / filename).unlink()
+    marker.write_text(json.dumps({"version": 1, "path": "../outside.png"}))
+    assert asset_import_recovery.recover()["invalid"] == 1
+    marker.unlink()
+    marker.symlink_to(tmp_path / "missing-journal-target")
+    assert asset_import_recovery.recover()["invalid"] == 1
+    assert marker.is_symlink()
+    marker.unlink()
+    # 坏清单可能包含尚不能确定的引用，禁止按“没引用”直接删除。
+    token = asset_import_recovery.begin(f"{aid}/{filename}", 123)
+    (directory / filename).write_bytes(b"keep-unknown")
+    with get_conn() as conn:
+        conn.execute("UPDATE asset SET ref_images='broken' WHERE id=?", (aid,))
+    assert asset_import_recovery.recover()["pending"] == 1
+    assert (directory / filename).read_bytes() == b"keep-unknown"
+    with get_conn() as conn:
+        conn.execute("UPDATE asset SET ref_images='[]' WHERE id=?", (aid,))
+    assert asset_import_recovery.recover()["removed"] == 1
+
+
+def test_恢复与正在导入的独立连接串行不误删(as_role, studio, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from contextlib import contextmanager
+    from threading import Event
+    import asset_import_recovery
+
+    job, _ = _image_job(studio["pid"])
+    aid = studio["aid"]
+    copied, release, recovery_started = Event(), Event(), Event()
+    original_copy = asset_studio.shutil.copyfile
+    original_transaction = asset_import_recovery.transaction
+
+    def pause_copy(src, dst):
+        original_copy(src, dst)
+        copied.set()
+        assert release.wait(5), "测试未释放导入"
+
+    @contextmanager
+    def recovery_transaction():
+        recovery_started.set()
+        with original_transaction():
+            yield
+
+    monkeypatch.setattr(asset_studio.shutil, "copyfile", pause_copy)
+    monkeypatch.setattr(asset_import_recovery, "transaction", recovery_transaction)
+    c = as_role("editor")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(c.post, f"/api/assets/{aid}/generated-images",
+                             json={"job_id": job["id"], "artifact_index": 0})
+        try:
+            assert copied.wait(5), "导入未执行到复制点"
+            recovery = pool.submit(asset_import_recovery.recover)
+            assert recovery_started.wait(5), "恢复未执行"
+            with pytest.raises(TimeoutError):
+                recovery.result(timeout=0.2)
+        finally:
+            release.set()
+        response = writer.result(timeout=5)
+        result = recovery.result(timeout=5)
+    assert response.status_code == 200, response.text
+    assert result["removed"] == 0 and result["pending"] == 0
+    assert (FILES_DIR / response.json()["path"]).read_bytes() == PNG
+    assert json.loads(asset_repo.get(aid)["ref_images"]) == [response.json()["path"]]
+
+
+def test_恢复发现已登记图片丢失时保留证据不报已恢复(as_role, studio):
+    import asset_import_recovery
+
+    job, _ = _image_job(studio["pid"])
+    response = as_role("editor").post(f"/api/assets/{studio['aid']}/generated-images",
+                                      json={"job_id": job["id"], "artifact_index": 0})
+    assert response.status_code == 200, response.text
+    relative = response.json()["path"]
+    token = asset_import_recovery.begin(relative, job["id"])
+    (FILES_DIR / relative).unlink()
+    result = asset_import_recovery.recover()
+    assert result == {"removed": 0, "kept": 0, "pending": 1, "invalid": 0}
+    assert (FILES_DIR / ".asset-imports" / token).exists()
+    assert json.loads(asset_repo.get(studio["aid"])["ref_images"]) == [relative]
+    # 恢复源产物后可再次检查，保持已登记文件。
+    (FILES_DIR / relative).write_bytes(PNG)
+    assert asset_import_recovery.recover()["kept"] == 1

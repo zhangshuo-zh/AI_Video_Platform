@@ -85,6 +85,10 @@ def review_sign(doc, payload, user) -> dict:
     gate = reviews.latest_gate(doc["id"])
     if gate is None:
         raise ReviewMissing("这份文档还没有校验报告；先跑一次校验")
+    if not payload.base_version:
+        raise ReviewStale("签字缺少所见正文版本；请刷新审核报告后重新签字")
+    if payload.base_version != gate["base_version"]:
+        raise ReviewStale("当前报告已不是你打开的正文版本；请刷新查看新版后重新签字")
     if gate["base_version"] != data["version"]:
         raise ReviewStale("正文在报告之后被改过；旧报告的签字不能算到新版本上，先重新校验")
     try:

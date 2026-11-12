@@ -21,7 +21,7 @@ generate／pipeline／composition／audio／review／agents／models／system-co
   * 资产计数与本地搜索：`N / M 条` 的两个数必须跟着搜索词变，而搜索
     只筛已经拿到手的那批（不回库、不重渲染整页，焦点不能从输入框被摘走）。
 
-只读纪律：不点「提交」、不建 Job、不发云端请求。写操作只发生在
+验收纪律：不建 Job、不发云端请求。文档签字只写临时副本；写操作只发生在
 `/tmp` 下的库副本与工作区副本里（`_harness.temp_dir()` 统一收尾）。
 
 反向验证（每条都真做过变异，不是口头声明）：
@@ -351,6 +351,69 @@ def main() -> int:
         check("搜不到时给出空态说明而不是空白",
               bool(grid_txt and len(grid_txt.strip()) > 4), grid_txt[:70])
 
+        # ── 文档审核：按钮必须提交眼前版本，旧页不能签新版 ────────────
+        did = seed["doc_id"]
+
+        def request(path, method="GET", body=None):
+            return cdp.eval(f"""(async () => {{
+              const r = await fetch({json.dumps(path)}, {{method: {json.dumps(method)},
+                headers: {{'Content-Type': 'application/json'}},
+                body: {json.dumps(json.dumps(body, ensure_ascii=False)) if body is not None else 'undefined'}}});
+              return {{status: r.status, body: await r.json()}};
+            }})()""")
+
+        def open_review():
+            go(cdp, f"{BASE}/#review/0")
+            selector = f'[data-open-review="{did}"]'
+            if not wait_css(cdp, selector):
+                raise RuntimeError("找不到种子文档的审核入口")
+            cdp.eval(f"document.querySelector({json.dumps(selector)}).click()")
+            if not wait_css(cdp, '#review-detail [data-sign="approved"][data-anchor="document"]'):
+                raise RuntimeError("文档签字按钮未出现")
+            # 只观察真实 fetch 的请求与响应，不替换业务 API 或返回结果。
+            cdp.eval("""(() => {
+              const native = window.fetch;
+              window.__reviewRequests = [];
+              window.fetch = async (...args) => {
+                const r = await native(...args);
+                if (String(args[0]).endsWith('/review-sign')) {
+                  window.__reviewRequests.push({payload: JSON.parse(args[1].body), status: r.status});
+                }
+                return r;
+              };
+            })()""")
+
+        def click_sign():
+            cdp.eval("document.querySelector('#review-detail [data-sign=approved][data-anchor=document]').click()")
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                rows = cdp.eval("window.__reviewRequests || []")
+                if rows:
+                    return rows[-1]
+                time.sleep(0.1)
+            raise RuntimeError("签字按钮没有发送请求")
+
+        old = request(f"/api/documents/{did}/review-gate", "POST")["body"]
+        open_review()
+        saved = request(f"/api/documents/{did}/content", "PUT", {
+            "content": "另一会话更新的新正文。", "expected_version": old["base_version"]})
+        if saved["status"] != 200:
+            raise RuntimeError(f"更新测试正文失败：{saved}")
+        newer = request(f"/api/documents/{did}/review-gate", "POST")["body"]
+        stale_sign = click_sign()
+        check("文档签字按钮携带打开报告的版本",
+              stale_sign["payload"].get("base_version") == old["base_version"])
+        check("正文更新并重跑校验后旧页面签字返回409", stale_sign["status"] == 409)
+        state = request(f"/api/documents/{did}/review-gate")["body"]
+        check("旧页面签字没有批准新版", state["counts"]["approved"] == 0)
+        open_review()
+        fresh_sign = click_sign()
+        check("刷新后签字按钮携带新版版本",
+              fresh_sign["payload"].get("base_version") == newer["base_version"])
+        state = request(f"/api/documents/{did}/review-gate")["body"]
+        check("刷新后签新版成功且落一条签字",
+              fresh_sign["status"] == 200 and state["counts"]["approved"] == 1)
+
         errors = P.eval_js(cdp, "(window.__fvErrors||[])") 
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
     finally:
@@ -365,6 +428,11 @@ def main() -> int:
     total = len(results)
     print(f"\n{passed}/{total} 通过")
     return 0 if passed == total else 1
+
+
+# 变异：移除 review.js 的 base_version: gate.base_version →
+# 「文档签字按钮携带打开报告的版本」与「刷新后签字按钮携带新版版本」必须红。
+MUTATIONS = {"review.js 去掉 base_version": "文档签字按钮携带打开报告的版本"}
 
 
 if __name__ == "__main__":

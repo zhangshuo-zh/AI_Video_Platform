@@ -297,7 +297,8 @@ export default {
     });
     detail.querySelectorAll('[data-sign]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-      const ok = await run('签字', () => api.reviewSign(openDocId, {
+      const ok = await run('签字', () => api.reviewSign(wantedDoc, {
+          base_version: gate.base_version,
           anchor: btn.dataset.anchor, decision: btn.dataset.sign,
           note: signNote,
         }), { btn: btn });

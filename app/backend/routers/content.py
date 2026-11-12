@@ -10,6 +10,7 @@ from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
                      status as http_status)
 
 import asset_studio
+import asset_import_recovery
 import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
 from config import FILES_DIR
@@ -566,6 +567,8 @@ def studio_errors(fn):
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
+        except asset_import_recovery.ImportRecoveryPending as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except asset_studio.VariantMissing as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except asset_studio.ImportImageRejected as exc:
@@ -762,6 +765,15 @@ def import_generated_image(asset_id: int, payload: AssetImageImportIn,
     ensure_by("job", payload.job_id, user, "read", "作业")
     # 一个事务：形态的图清单与资产的 ref_images 都是读-改-写，
     # BEGIN IMMEDIATE 保证两个人同时存图不会互相覆盖那份 JSON
-    with transaction():
-        out = asset_studio.import_generated_image(asset, payload)
+    out = None
+    try:
+        with transaction():
+            out = asset_studio.import_generated_image(asset, payload)
+    except Exception:
+        # 服务返回后，外层事务仍可能提交失败。行已回滚，文件也要补偿清理；
+        # 服务内部失败时 out 仍为 None，沿用服务自身的文件清理。
+        if out is not None:
+            asset_import_recovery.discard(out["_import_marker"])
+        raise
+    asset_import_recovery.committed(out.pop("_import_marker"))
     return AssetImageImportOut(**out)

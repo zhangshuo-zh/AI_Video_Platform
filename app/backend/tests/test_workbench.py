@@ -55,9 +55,11 @@ def test_文档待签绑当前正文版本(fresh_project, as_role):
     # 没签过 → 待签
     assert _row(c, pid)["review_documents"] == 1
 
-    assert c.post(f"/api/documents/{did}/review-gate").status_code == 201
+    gate = c.post(f"/api/documents/{did}/review-gate")
+    assert gate.status_code == 201
     signed = c.post(f"/api/documents/{did}/review-sign",
-                    json={"anchor": "document", "decision": "approved", "note": ""})
+                    json={"anchor": "document", "decision": "approved", "note": "",
+                          "base_version": gate.json()["base_version"]})
     assert signed.status_code == 200
     assert _row(c, pid)["review_documents"] == 0
 

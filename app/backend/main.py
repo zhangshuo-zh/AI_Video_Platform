@@ -45,6 +45,14 @@ def create_app() -> FastAPI:
         # 人点开设置页看得见，比启动失败好排查。
         print(f"[启动] 运行时路径没应用上：{type(exc).__name__}: {exc}")
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
+    # 只恢复有持久化意图的导入，不扫描删除历史文件；与其他进程的导入共用写锁。
+    try:
+        import asset_import_recovery
+        recovered = asset_import_recovery.recover()
+        if any(recovered.values()):
+            print(f"[启动] 图片导入恢复：{recovered}")
+    except Exception as exc:
+        print(f"[启动] 图片导入恢复暂未完成：{type(exc).__name__}，请运行恢复工具检查")
     # 内置产线模板按 (name, version) 补齐：已有的不动，只插缺的。
     # 放这里是因为 worker 进程也要有一份同样的模板表，而两边共用同一个库，
     # 谁先起来谁补齐都行——插过一次之后就是空操作。

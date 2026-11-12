@@ -46,7 +46,7 @@ def test_跑校验_签字_改判_队列(as_role, fresh_project):
     anchor = gate["findings"][0]["anchor"]
 
     signed = c.post(f"/api/documents/{doc['id']}/review-sign",
-                    json={"anchor": anchor, "decision": "returned",
+                    json={"base_version": gate["base_version"], "anchor": anchor, "decision": "returned",
                           "note": "这句先改掉"})
     assert signed.status_code == 200, signed.text
     state = signed.json()
@@ -56,7 +56,7 @@ def test_跑校验_签字_改判_队列(as_role, fresh_project):
 
     # 同一锚点改判：只留一条，不叠历史
     again = c.post(f"/api/documents/{doc['id']}/review-sign",
-                   json={"anchor": anchor, "decision": "approved", "note": "改过了"})
+                   json={"base_version": gate["base_version"], "anchor": anchor, "decision": "approved", "note": "改过了"})
     assert again.status_code == 200
     assert again.json()["counts"] == {"approved": 1, "rejected": 0, "returned": 0}
 
@@ -70,9 +70,9 @@ def test_跑校验_签字_改判_队列(as_role, fresh_project):
 def test_锚点必须来自报告(as_role, fresh_project):
     doc, _data, _pid = _make_doc(fresh_project)
     c = as_role("editor")
-    c.post(f"/api/documents/{doc['id']}/review-gate")
+    gate = c.post(f"/api/documents/{doc['id']}/review-gate").json()
     bad = c.post(f"/api/documents/{doc['id']}/review-sign",
-                 json={"anchor": "c999999", "decision": "approved"})
+                 json={"base_version": gate["base_version"], "anchor": "c999999", "decision": "approved"})
     assert bad.status_code == 422
 
 
@@ -82,14 +82,14 @@ def test_正文改过之后旧报告与旧签字都不算新版本(as_role, fres
     gate = c.post(f"/api/documents/{doc['id']}/review-gate").json()
     anchor = gate["findings"][0]["anchor"]
     c.post(f"/api/documents/{doc['id']}/review-sign",
-           json={"anchor": anchor, "decision": "approved"})
+           json={"base_version": gate["base_version"], "anchor": anchor, "decision": "approved"})
 
     services.save_content(doc, "改过的新正文。\n", data["version"], "测试账号",
                           as_role.id("editor"))
     got = c.get(f"/api/documents/{doc['id']}/review-gate").json()
     assert got["stale"] is True and got["can_sign"] is False
     blocked = c.post(f"/api/documents/{doc['id']}/review-sign",
-                     json={"anchor": anchor, "decision": "approved"})
+                     json={"base_version": gate["base_version"], "anchor": anchor, "decision": "approved"})
     assert blocked.status_code == 409
     # 新版本没有签字：计数按当前版本查，旧签字不会混进来
     assert reviews.counts(reviews.DOCUMENT, doc["id"], got["current_version"]) == {
@@ -105,3 +105,33 @@ def test_没有签字权限不能签(as_role, fresh_project, people):
     assert viewer.post(f"/api/documents/{doc['id']}/review-sign",
                        json={"anchor": "document", "decision": "approved"}).status_code == 403
     assert viewer.get(f"/api/projects/{pid}/reviews").status_code == 200
+
+
+def test_他人改稿并重跑校验后旧页面不能签新版(as_role, fresh_project):
+    doc, _data, _pid = _make_doc(fresh_project, content="甲看到的正文。")
+    first, second = as_role("editor"), as_role("admin")
+    old = first.post(f"/api/documents/{doc['id']}/review-gate").json()
+    changed = second.put(f"/api/documents/{doc['id']}/content", json={
+        "content": "乙改过的新正文。", "expected_version": old["base_version"]})
+    assert changed.status_code == 200, changed.text
+    current = second.post(f"/api/documents/{doc['id']}/review-gate").json()
+    assert current["base_version"] != old["base_version"]
+    result = first.post(f"/api/documents/{doc['id']}/review-sign", json={
+        "anchor": "document", "decision": "approved", "base_version": old["base_version"]})
+    assert result.status_code == 409, result.text
+    assert reviews.signs(reviews.DOCUMENT, doc["id"]) == []
+    signed = first.post(f"/api/documents/{doc['id']}/review-sign", json={
+        "anchor": "document", "decision": "approved", "base_version": current["base_version"]})
+    assert signed.status_code == 200, signed.text
+    assert signed.json()["counts"]["approved"] == 1
+    assert reviews.signs(reviews.DOCUMENT, doc["id"])[0]["base_version"] == current["base_version"]
+
+
+def test_文档签字未携带所见版本不能默认签最新(as_role, fresh_project):
+    doc, _data, _pid = _make_doc(fresh_project)
+    c = as_role("editor")
+    gate = c.post(f"/api/documents/{doc['id']}/review-gate").json()
+    result = c.post(f"/api/documents/{doc['id']}/review-sign", json={
+        "anchor": "document", "decision": "approved"})
+    assert result.status_code == 409, result.text
+    assert reviews.signs(reviews.DOCUMENT, doc["id"], gate["base_version"]) == []

@@ -340,6 +340,25 @@ class AssetRepository:
             touch(conn, "asset", asset_id)
             return conn.execute(f"{self._SELECT} WHERE a.id = ?", (asset_id,)).fetchone(), True
 
+    def image_reference_state(self, relative_path: str) -> bool | None:
+        """全库基础图及形态图是否引用此路径；脏清单无法判定时禁止恢复器删除。"""
+        unknown = False
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT ref_images FROM asset UNION ALL SELECT ref_images FROM asset_variant")
+            for row in rows:
+                try:
+                    images = json.loads(row["ref_images"] or "[]")
+                except (ValueError, TypeError):
+                    unknown = True
+                    continue
+                if not isinstance(images, list):
+                    unknown = True
+                elif relative_path in images:
+                    return True
+        return None if unknown else False
+
+
     def add_image(self, asset_id: int, relative_path: str) -> sqlite3.Row | None:
         """把一张图的相对路径追加进 ref_images。
 

@@ -27,6 +27,7 @@ import uuid
 from types import SimpleNamespace
 
 import adapters
+import asset_import_recovery
 import jobfiles
 from config import FILES_DIR
 from imagetypes import MAX_IMAGE_BYTES, sniff
@@ -703,29 +704,32 @@ def import_generated_image(asset, payload) -> dict:
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}.{ext}"
     copied = target_dir / filename
-    shutil.copyfile(source, copied)
     rel = f"{asset['id']}/{filename}"
+    token = asset_import_recovery.begin(rel, job["id"])
 
     try:
+        # 复制失败也可能已创建部分文件，必须与数据库失败走同一清理路径。
+        shutil.copyfile(source, copied)
+        asset_import_recovery.sync_image(copied)
         if variant is None:
             row = asset_repo.add_image(asset["id"], rel)
             if row is None:
                 raise ImportUnusable("资产不存在")
             images = json.loads(row["ref_images"] or "[]")
-            return {"asset_id": asset["id"], "variant_id": None, "path": rel,
+            return {"_import_marker": token, "asset_id": asset["id"], "variant_id": None, "path": rel,
                     "ref_images": images, "image_count": len(images),
                     "source_job_id": job["id"]}
         row = variant_repo.add_image(variant["id"], rel, source_job_id=job["id"])
         if row is None:
             raise VariantMissing("形态不存在")
         images = json.loads(row["ref_images"] or "[]")
-        return {"asset_id": asset["id"], "variant_id": row["id"], "path": rel,
+        return {"_import_marker": token, "asset_id": asset["id"], "variant_id": row["id"], "path": rel,
                 "ref_images": images, "image_count": len(images),
                 "source_job_id": row["source_job_id"]}
     except Exception:
         # 库没写成，磁盘上那份就是孤儿——立刻收掉。反过来（库里有、文件没了）
         # 会在界面上显示一张打不开的图，更难查。
-        copied.unlink(missing_ok=True)
+        asset_import_recovery.discard(token)
         raise
 
 

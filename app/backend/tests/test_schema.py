@@ -83,3 +83,53 @@ def test_豁免名单不是空架子():
                     leading.add(first["name"])
             assert col not in leading, (
                 f"{t}.{col} 已经有打头索引了，豁免名单该删这一行——留着就没人再看它")
+
+
+def test_项目作业历史按ID倒序不需要临时排序():
+    with get_conn() as conn:
+        plan = [r["detail"] for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM job WHERE project_id=? ORDER BY id DESC LIMIT ?",
+            (1, 12))]
+    assert any("idx_job_project_id" in row for row in plan), plan
+    assert not any("TEMP B-TREE" in row for row in plan), plan
+
+
+def test_0052旧库升级历史索引后数据不变且可重复迁移(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = '''
+import migrate, sqlite3
+from config import DB_PATH
+original=migrate._discover
+migrate._discover=lambda:[(v,p) for v,p in original() if v<=52]
+migrate.migrate(verbose=False)
+with sqlite3.connect(DB_PATH) as conn:
+    conn.execute("INSERT INTO app_user(username,display_name,password_hash) VALUES ('old','old','none')")
+    conn.execute("INSERT INTO project(name,owner_id) VALUES ('old',1)")
+    conn.execute("INSERT INTO job(project_id,capability,kind,execution_mode,provider_code,model_code,input_refs_json,status) VALUES(1,'image','image','local','mock','mock-1','[\\\"op:asset_image\\\",\\\"asset:1\\\"]','queued')")
+    before=conn.execute('SELECT * FROM job').fetchall()
+migrate._discover=original
+assert migrate.migrate(verbose=False)==1
+assert migrate.migrate(verbose=False)==0
+with sqlite3.connect(DB_PATH) as conn:
+    assert conn.execute('SELECT * FROM job').fetchall()==before
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='idx_job_project_id'").fetchone()
+backups=[p for p in DB_PATH.parent.glob(DB_PATH.name+'.bak-*') if not p.name.endswith(('-wal','-shm'))]
+verified=0
+for backup in backups:
+    with sqlite3.connect(backup) as conn:
+        if conn.execute('SELECT max(version) FROM schema_version').fetchone()[0]!=52:
+            continue
+        assert conn.execute('SELECT * FROM job').fetchall()==before
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='idx_job_project_id'").fetchone()
+        verified+=1
+assert verified>=1
+'''
+    result = subprocess.run([sys.executable, "-c", code],
+                            cwd=Path(__file__).resolve().parents[1],
+                            env={**os.environ, "FASTVIDEO_DB": str(tmp_path / "upgrade.db")},
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr

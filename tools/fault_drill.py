@@ -41,10 +41,8 @@ from datetime import datetime, timedelta  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import adapters  # noqa: E402
-import services  # noqa: E402
 from db import get_conn  # noqa: E402
 from main import app  # noqa: E402
-from models import JobSubmitIn  # noqa: E402
 from repositories.jobs import jobs as job_repo  # noqa: E402
 from repositories.projects import projects as project_repo  # noqa: E402
 from repositories.users import sessions, users as user_repo  # noqa: E402
@@ -78,6 +76,8 @@ def main() -> None:
     from bootstrap import ensure_admin
     ensure_admin(verbose=False)
     admin = user_repo.get_by_username("superadmin")
+    # 临时库也遵守首次改密门禁；先完成改密再演练核对与提交，不能绕开认证规则。
+    user_repo.update_password(admin["id"], hash_password("drill-changed-not-a-real-secret"))
     token, token_hash = new_session_token()
     expires = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
     sessions.create(token_hash, admin["id"], expires)
@@ -160,7 +160,7 @@ def main() -> None:
     assert body["status"] == "succeeded" and body["billable_status"] == "known"
     assert body["actual_cost_micros"] == 12_345 and body["cost_micros"] == 16_000
     ok("核对后：实际金额入账，预估快照不动",
-       f"status=succeeded，billable=known，actual=12345，预估 cost_micros 仍=16000")
+       "status=succeeded，billable=known，actual=12345，预估 cost_micros 仍=16000")
 
     # ---------- 演练 4：产物为空/损坏，不许判成功 ----------
     print("[演练 4] 产物路径存在但文件为空或损坏：Job 不能误判成功")
@@ -244,7 +244,6 @@ def main() -> None:
     print("[演练 7] worker 离线、队列积压、有待核对：告警报事实，不改任何作业状态")
     r = client.get("/api/worker/status")
     assert r.status_code == 200, r.text
-    base = r.json()
     # 造积压：三条排队 + 一条待核对；把心跳拨老 = worker 离线
     for i in range(3):
         job_repo.create({

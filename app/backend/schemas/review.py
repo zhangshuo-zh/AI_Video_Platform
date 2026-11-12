@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 class ReviewSignIn(BaseModel):
     """按锚点签字。`anchor` 来自 gate 报告，同一版同一锚点改判会替换。"""
+    # 文档签字必传所见正文版本；产物与 Agent 的既有调用可省略。
+    base_version: str = Field(default="", max_length=100)
     anchor: str = Field(min_length=1, max_length=40)
     decision: Literal["approved", "rejected", "returned"]
     note: str = Field(default="", max_length=500)
