@@ -118,7 +118,24 @@
 
   /* 统计大数一个尺寸（评审 #10）：首页待办卡、成本卡、概览统计、模型条共用；
      页面标题 h1 的 22px 不属于统计数字，不归这里。 */
-  --stat-n:19px;
+  --stat-n:22px;
+
+  /* 字号阶梯（2026-11-12 加，视觉优化 B「太平」）。
+     加之前全站字号是散落的字面量：11.5px 用了 59 次、12px 43 次、
+     几乎一切挤在 11—13px——标题 22、正文 12.5、辅助 11.5，中间没有台阶，
+     所以整页看起来「一样重」。
+     现在收成四级，改层级只动这里：
+       --fs-aux  辅助：次说明、表头、时间戳、脚注
+       --fs-body 正文：表格内容、表单、卡片说明
+       --fs-strong 小标题：卡片标题、数值强调
+       --fs-title 页标题（h1）
+     注意：--fs-aux 保持 11.5 不放大的原因见 td 那条注释——
+     表格一屏要看十几行，行高直接换成「少看两行」。这轮只拉大**层级差**，
+     不整体放大正文，避免与当初「一屏多两行」的取舍打架。 */
+  --fs-aux:11.5px;
+  --fs-body:12.5px;
+  --fs-strong:13.5px;
+  --fs-title:23px;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 
   /* 圆角：玻璃要大一点的圆角才不显薄，卡片 16、控件 10、按钮与标签用胶囊 */
@@ -690,8 +707,8 @@ main{min-width:0;display:flex;flex-direction:column}
 .cold .view.on{animation:none}
 
 /* ---------- 通用块 ---------- */
-.page-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px}
-.page-head h1{font-size:22px;font-weight:650;letter-spacing:-.022em;line-height:1.2}
+.page-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:20px}
+.page-head h1{font-size:var(--fs-title);font-weight:680;letter-spacing:-.024em;line-height:1.15}
 .page-head p{font-size:12.5px;color:var(--ink-2);margin-bottom:2px}
 /* .right 里现在可能有三枚工作区 chip 加一颗按钮（资产中心三个工作区都是这个形状），
    380px 下不换行就会把整页撑出横向滚动条（实测溢出 46px）。
@@ -720,19 +737,26 @@ main{min-width:0;display:flex;flex-direction:column}
 }
 /* 表格铺满卡片时，行悬停的底色会从圆角处漏出去 */
 .card:has(table){overflow:hidden}
+/* 相邻卡片的纵向间距统一 20（2026-11-12 视觉优化 A「太挤」）。
+   原来靠各视图自己 margin-bottom，实测模型中心两卡之间只有 12px，
+   和页头到内容的 20px 不一致，一眼看得出「上面松、下面挤」。
+   这里用 + 选择器兜住所有直接相邻的卡片；已有的 margin 各自保留
+   （不影响需要负 margin 对齐的地方）。 */
+.card + .card, .card + .stack, .stack + .card{margin-top:20px}
+.card + .card{margin-bottom:0}
 .card-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
-.card-head h2{font-size:13px;font-weight:650;letter-spacing:-.01em}
+.card-head h2{font-size:var(--fs-strong);font-weight:680;letter-spacing:-.012em}
 .card-head .sub{font-size:11.5px;color:var(--ink-3)}
 .card-head .right{margin-left:auto;display:flex;gap:6px;align-items:center}
-.card-body{padding:16px}
+.card-body{padding:18px 16px}
 /* 表格卡片的尾部（提示条／脚注／动作按钮）。卡片本身 padding:0——表格要铺满整宽
    才对齐、悬停底色才不漏出来——所以表格之外的那几行必须自己带内距，
    否则最后一个按钮会贴着卡片下边框（实测只剩 1px）。 */
 .card-foot{padding:12px 16px 16px;display:grid;gap:10px}
 .card-foot>*{margin:0}
-.grid{display:grid;gap:16px}
+.grid{display:grid;gap:20px}
 .g-2{grid-template-columns:minmax(0,1.55fr) minmax(0,1fr)}
-.stack{display:grid;gap:16px}
+.stack{display:grid;gap:20px}
 
 /* ---------- 表格 ---------- */
 /* 表格一律坐在 .table-wrap 里：卡片是 overflow:hidden，窄屏时列会被裁掉而
@@ -749,7 +773,7 @@ th{
 /* 行内距 10→7：模型仓库与生成中心都是一屏扫十几行的表，10px 上下内距
    在 61px 行高里占掉三分之一。7px 仍留得出呼吸，但一屏多出两行。
    这是**全局表格**内距，改之前量过两个主表（仓库 61→55、作业 67→61）。 */
-td{padding:7px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+td{padding:8px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr:last-child td{border-bottom:0}
 tbody tr{transition:background var(--fast)}
 tbody tr:hover{background:var(--row-hover)}
