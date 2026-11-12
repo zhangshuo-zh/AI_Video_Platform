@@ -1946,3 +1946,46 @@ def test_按钮进行中态必须真的传给了_run():
         '这些页面一处都没把按钮交给 run()/withBusy，点下去不会显示进行中：'
         + chr(10) + '  - ' + (chr(10) + '  - ').join(missing))
 
+
+def test_空状态必须给出下一步():
+    """空状态不能只写「还没有」，得告诉人接下来做什么。
+
+    2026-11-12 前端体验优化第三刀。实测全站 47 处空状态，其中 33 处只有
+    一句话没有可点操作——最普遍的是「先选一个项目」出现 8 次。
+    项目选择器其实就在顶栏，但空状态**没指过去**：人看到「先选一个项目」，
+    第一反应是去找，而不是知道该点哪里。项目里已有正确范式
+    （projects.js:304「右上角『新建项目』建第一个」，assets.js「去项目中心选」
+    那颗按钮），只是没推广开。
+
+    判据分两段：
+      A 「先选一个项目」这类空状态必须带一条直达操作（按钮），
+        不能只有文字；
+      B 这个按钮必须真的绑了点击——画得出来点不动比不画更糟
+        （结果窗那颗启动按钮就踩过这个坑）。
+    """
+    views = FRONTEND / 'js' / 'views'
+
+    # A：这些视图在「没有项目」时必须给按钮，且 id 固定
+    NEED = {'audio.js': 'audio-topick', 'review.js': 'review-topick',
+            'composition.js': 'composition-topick', 'pipeline.js': 'pipeline-topick'}
+    missing = []
+    for name, btnid in NEED.items():
+        text = code_lines((views / name).read_text(encoding='utf-8'))
+        if ('id="' + btnid + '">') not in text:  # 精确到按钮元素，别看绑定那次出现
+            missing.append(name)
+    assert not missing, (
+        '这些页面的「先选一个项目」空状态没有直达按钮，人得自己找侧栏：'
+        + chr(10) + '  - ' + (chr(10) + '  - ').join(missing))
+
+    # B：按钮要被绑上点击（同一个文件里出现 addEventListener + app:go）
+    unbound = []
+    for name, btnid in NEED.items():
+        text = code_lines((views / name).read_text(encoding='utf-8'))
+        has_btn = re.search(r'id="' + btnid + r'"', text)
+        has_bind = ('#' + btnid + "')?.addEventListener") in text
+        if has_btn and not has_bind:
+            unbound.append(name)
+    assert not unbound, (
+        '这些空状态按钮画出来了但没绑点击，点了没反应（比不画更糟）：'
+        + chr(10) + '  - ' + (chr(10) + '  - ').join(unbound))
+

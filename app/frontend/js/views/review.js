@@ -51,6 +51,7 @@ export default {
       return `<section class="view on"><div class="card"><div class="empty">
         <div class="empty-t">先选一个项目</div>
         <p>审核按项目汇总；去项目中心选一个再回来。</p>
+        <p><button class="btn primary" id="review-topick">去项目中心选</button></p>
       </div></div></section>`;
     }
     const tab = currentSubTab('review', TABS);
@@ -173,6 +174,10 @@ export default {
   },
 
   async mount(root) {
+    // 空状态里的「去项目中心选」：一条直达，别让人自己去找侧栏
+    root.querySelector('#review-topick')?.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('app:go', { detail: 'projects' }));
+    });
     if (!store.current) return;
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('review', i); refresh(); });

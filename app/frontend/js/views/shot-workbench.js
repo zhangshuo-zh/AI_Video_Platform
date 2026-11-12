@@ -222,7 +222,8 @@ export default {
     if (!project) {
       return `<section class="view on"><div class="page-head"><h1>镜头工作台</h1>
         <p>先选项目</p></div><div class="card"><div class="empty">
-        <div class="empty-t">还没有项目</div></div></div></section>`;
+        <div class="empty-t">还没有项目</div>
+        <p>在「项目中心」新建一个项目，镜头工作台才有可排的对象。</p></div></div></section>`;
     }
     const shotId = getParam('shot');
     if (!shotId) {

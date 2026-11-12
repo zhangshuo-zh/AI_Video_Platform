@@ -52,6 +52,7 @@ export default {
       return `<section class="view on"><div class="card"><div class="empty">
         <div class="empty-t">先选一个项目</div>
         <p>音频素材按项目与集组织；去项目中心选一个再回来。</p>
+        <p><button class="btn primary" id="audio-topick">去项目中心选</button></p>
       </div></div></section>`;
     }
     const tab = currentSubTab('audio', TABS);
@@ -182,6 +183,10 @@ export default {
   },
 
   mount(root) {
+    // 空状态里的「去项目中心选」：一条直达，别让人自己去找侧栏
+    root.querySelector('#audio-topick')?.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('app:go', { detail: 'projects' }));
+    });
     if (!store.current) return;
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('audio', i); refresh(); });
