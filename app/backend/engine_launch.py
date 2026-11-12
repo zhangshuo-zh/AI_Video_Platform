@@ -31,13 +31,16 @@ import engines
 
 # 启动配方。键是 engines.SERVICE_ENGINES 里的 engine_code，值是固定命令。
 #
-# 为什么两支形式不同（一支 open -a、一支直接跑可执行文件）：
+# 为什么三种形式各不相同：
 #   * Draw Things 只有 .app，`open -a` 是唯一入口；而且它有幂等性——
 #     应用已经在跑时执行它只是把窗口提到前台，不会起第二个实例。
 #   * Ollama 在开发机上常见的是 Homebrew 版（`/opt/homebrew/bin/ollama`），
 #     没有 .app 可开，只能 `ollama serve`。它是**非幂等**的（已在跑时
 #     再跑一次会抢 11434 报 address in use），所以这一支的重复点击风险
 #     由上面第 3 条「先探再起」兜住，而不是靠命令自己。
+#   * ComfyUI 是 Electron 外壳（Comfy Desktop.app），本体跑在壳里，
+#     所以同样只有 `open -a`；幂等性与 Draw Things 一致。它的差异在**等待**：
+#     首次启动要下载本体与模型，6 秒远远不够（见那一条的 note）。
 RECIPES: dict[str, dict] = {
     "draw_things": {
         "argv": ["open", "-a", "Draw Things"],
@@ -50,6 +53,21 @@ RECIPES: dict[str, dict] = {
         "argv": ["ollama", "serve"],
         "label": "ollama serve",
         "note": "",
+    },
+    # ComfyUI 是第三种形状：装的是 Electron 外壳（`/Applications/Comfy Desktop.app`），
+    # 里面才跑 ComfyUI 本体，所以入口只有 `open -a`，没有可执行文件可跑。
+    # 与 Draw Things 同为幂等（已在跑时只是提到前台），与 Ollama 不同。
+    #
+    # `WAIT_SECONDS` 那 6 秒对它是**不够**的——首次启动要下载 ComfyUI 本体与模型，
+    # 之后也要几十秒才 listen。所以这条的 note 必须把"起来≠答话"说清楚，
+    # 否则人点了按钮、看到「已启动但没答话」会以为坏了。这个不对称是有意的：
+    # 把全局等待抬到几分钟会让另外两档每次点按钮都白等。
+    "comfyui": {
+        "argv": ["open", "-a", "Comfy Desktop"],
+        "label": "Comfy Desktop",
+        "note": "ComfyUI 在 Electron 外壳里起，首次要下载本体与模型，可能几分钟。"
+                "先在 Dock 里看它是否真的打开了界面，再回来点「探测」——"
+                "外壳起来但服务没 listen，通常是它还在下载或卡在首启配置。",
     },
 }
 

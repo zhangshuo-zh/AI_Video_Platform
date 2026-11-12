@@ -195,3 +195,48 @@ def test_起来并答话了才留痕(monkeypatch, as_role):
         assert after[0]["source"] == "manual", after[0]
     finally:
         engine_instances.delete(row["id"])
+
+
+# ---------- ComfyUI：第三种启动形状（2026-11-13） ----------
+
+def test_comfyui用open启动因为本体住在electron壳里():
+    """ComfyUI 装的是 `Comfy Desktop.app`——一个 Electron 外壳，本体跑在壳里。
+
+    所以它既没有可执行文件可跑（不像 `ollama serve`），也不是一个
+    直接能 open 的原生应用（不像 Draw Things 那样 `open -a` 就等于起服务）。
+    入口只有 `open -a "Comfy Desktop"`，与 Draw Things 同一支形状。
+
+    这条断言钉的是**入口形状**而不是某个字符串：`argv[0] == "open"` 且
+    `-a` 后面跟的是应用名。有人把它改成去跑某个 bin，等于假设壳里那套
+    能被绕开——那不是真的。
+    """
+    recipe = engine_launch.recipe_for("comfyui")
+    assert recipe is not None, "ComfyUI 没有启动配方，界面就不会有「启动服务」按钮"
+    assert recipe["argv"][0] == "open"
+    assert "-a" in recipe["argv"]
+    assert "Comfy Desktop" in recipe["argv"]
+
+
+def test_comfyui的note说清首启要等():
+    """6 秒等不到它 listen 是正常的，note 必须把这件事说出来。
+
+    为什么值得一条断言：`WAIT_SECONDS` 是全局的 6 秒（为了不让另外两档
+    每次点按钮都白等几分钟）。ComfyUI 首次启动要下载本体与模型，
+    6 秒必然超时——如果没有这条 note，人看到「已启动但没答话」会以为坏了，
+    而真相是"还在下载"。这类"如实说明"是本仓的一贯要求，写进断言才守得住。
+    """
+    recipe = engine_launch.recipe_for("comfyui")
+    note = recipe["note"]
+    assert "首次" in note, note
+    assert "分钟" in note, f"note 没给出等待量级：{note}"
+
+
+def test_comfyui起来但没答话时把等待说明一起给(monkeypatch, spawns, offline):
+    """超时分支要把配方自己的 note 拼进消息里，而不是只说一句"没答话"。"""
+    monkeypatch.setattr(engine_launch, "WAIT_SECONDS", 0.0)
+    result = engine_launch.launch("comfyui", SLOT)
+    assert len(spawns) == 1, spawns
+    assert result.started is True and result.reachable is False
+    assert "Comfy Desktop" in result.message, result.message
+    # note 里那句"先去 Dock 里看它有没有真的打开"必须传到人眼前
+    assert "下载" in result.message or "分钟" in result.message, result.message
