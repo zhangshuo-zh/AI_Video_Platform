@@ -87,8 +87,10 @@ export async function renderView(id) {
       <div class="card"><div class="empty">
         <div class="empty-t">这一页没有加载出来</div>
         <p>${escapeHtml(err && err.message ? err.message : String(err))}</p>
-        <p class="hint">页面代码没能取回来；检查网络后刷新一次浏览器（Cmd+R）通常能恢复。</p>
+        <p class="hint">页面代码没能取回来，请检查网络后重试。</p>
+      <button class="btn" data-page-retry>重新加载本页</button>
       </div></div></section>`;
+    document.querySelector('[data-page-retry]')?.addEventListener('click', () => renderView(id));
     return;
   }
   // 取模块期间又发生了一次导航：这一次作废，不要覆盖更新的那一屏。
@@ -172,8 +174,10 @@ export async function renderView(id) {
       <div class="card"><div class="empty">
         <div class="empty-t">这一页没有渲染出来</div>
         <p>${escapeHtml(err && err.message ? err.message : String(err))}</p>
-        <p class="hint">数据接口出错时页面会走到这里；刷新一次浏览器（Cmd+R）通常能恢复。</p>
+        <p class="hint">暂时无法读取页面数据，请检查连接后重试。</p>
+      <button class="btn" data-page-retry>重新加载本页</button>
       </div></div></section>`;
+    document.querySelector('[data-page-retry]')?.addEventListener('click', () => renderView(id));
     return;
   }
   if (seq !== renderSeq) { dropMoveWatch(); return; }  // 已有更晚的导航在跑，这份作废

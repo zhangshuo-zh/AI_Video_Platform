@@ -728,7 +728,7 @@ async function startApp() {
   // 地址有三段：#projects（模块）、#assets/1（模块＋二级标签）、
   // #assets/1/a57（再带一个详情参数＝看第 57 号资产）。
   // 直接粘一个没权限的模块地址时退回首页，别渲染出一个满屏 403 的页面
-  const [startView, startSub, startDeep] = (location.hash.replace('#', '') || 'overview').split('/');
+  const [startView, startSub, startDeep] = (location.hash.replace('#', '') || (store.can('project:read') ? 'production' : 'overview')).split('/');
   const entry = MODULES.find((m) => m.id === startView);
   const view = (entry && !allowed(entry)) ? 'overview' : startView;
   if (startSub !== undefined && startSub !== '') setSub(view, Number(startSub));

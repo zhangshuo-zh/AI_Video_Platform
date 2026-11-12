@@ -1624,7 +1624,9 @@ export default {
           await refresh();
           openDrawer(job.id);
         } catch (err) {
-          errEl.textContent = err.message || '提交失败';
+          errEl.textContent = err.outcomeUnknown
+            ? '提交结果尚未确认，服务端可能已创建作业。请先关闭弹窗，在作业列表核对本次任务，避免重复提交。'
+            : (err.message || '提交失败');
         }
       } finally {
         // **必须在这里复位**：上面有 6 处提前 return（没选项目、没写提示词、

@@ -57,6 +57,11 @@ let draftVersion = null;      // 打开/上次保存时拿到的版本令牌
 let serverCopy = null;        // 409 之后拉下来的"盘上现在这份"，用来对照
 let notice = '';              // 上一次保存的结果，一句话
 let lockWarn = '';            // 别人持锁的提示
+window.addEventListener('beforeunload', (event) => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 let dirty = false;            // 有未保存改动
 let locking = false;          // 首次输入时抢锁只发一次
 
@@ -420,7 +425,11 @@ function extractModalHtml() {
 
 function mountDocs(root, tab) {
   const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
-  bindSubChips(root, (i) => {
+  bindSubChips(root, async (i) => {
+    if (i !== tab && dirty && !(await confirmDanger({
+      title: '切换文档类型', body: '当前正文还有未保存的改动，切换会丢弃这些改动。',
+      okText: '丢弃并切换',
+    }))) return;
     if (i !== tab) resetEditor();          // 换的是另一类文档，草稿不能跟着带过去
     setSub('writing', i);
     refresh();

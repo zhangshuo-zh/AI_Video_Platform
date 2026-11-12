@@ -93,8 +93,10 @@ async function request(url, init, opts) {
         && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       const out = new Error('请求超时（15 秒没有响应），后端可能卡住了');
       out.status = 0;
+      out.outcomeUnknown = !!(init?.method && !['GET', 'HEAD'].includes(init.method));
       throw out;
     }
+    if (init?.method && !['GET', 'HEAD'].includes(init.method)) err.outcomeUnknown = true;
     throw err;
   }
   // 标记挂在这次 Response 实例上，只给 toJson 认；不进响应体、不污染全局。
