@@ -377,6 +377,46 @@ _OLLAMA = Adapter(
     ),
 )
 
+# ---------- 图像：本机 ComfyUI（**只接探测，不接执行**，2026-11-13）----------
+# 为什么它在这里、却 models=() 空着：
+#
+# ComfyUI 的核心是**参数化 workflow JSON**（`/prompt` 收的是一整张节点图），
+# 而平台的执行形状只有两种——argv 子进程（`runners.build()` 的分支）或一次性
+# HTTP 请求（`cloud_run.py`）。第二形态最接近，但它要求"参数 → 请求体"是一张
+# 平坦映射；ComfyUI 要的是把参数注入到图里的具名节点（KSampler.seed 之类），
+# 那是 workflow 契约，不是参数白名单。没有这份契约就写 `models=`，等于拿一份
+# 猜的参数表去承诺"这一档能出图"。
+#
+# 所以这一条只做**探测器**：`SERVICE_ENGINES` 认它，`_INFO_PATHS` 给它
+# `/system_stats`（本机/云端同名，见下），引擎页能看见它通不通；`runners.build()`
+# 里**没有**它的分支，`has_branch()` 也回 False，提交框列不到它。
+#
+# 端点选择：`/system_stats`。官方路由文档（docs.comfy.org「服务器路由」）把它列在
+# 核心 API 第一条，用途正是"取系统信息（Python 版本、设备、显存）"；实测形态是
+# `{"system": {"comfyui_version", "python_version", "devices": [...]}}`，
+# 显存在 `system.devices[0].vram_total`／`vram_free`（老版本落在
+# `system.memory.total/free`，`_describe()` 两处都认）。选它而不选 `/object_info`：
+# 后者是"这台机器装了哪些节点"，几 MB 的 JSON，用来判"服务在不在"太贵。
+_COMFYUI = Adapter(
+    code="comfyui",
+    label="ComfyUI（本机工作流应用）",
+    capability="image",
+    backend="local",
+    source="官方路由文档 docs.comfy.org「服务器路由（HTTP 和 WebSocket API）」的"
+           "核心 API 表：/system_stats、/object_info、/queue；本机装的是 "
+           "Comfy Desktop 1.1.8（/Applications/Comfy Desktop.app，bundle "
+           "com.todesktop.241012ess7yxs0e），默认端口 8188",
+    aliases=("comfy", "comfy-desktop"),
+    params_source="",       # 空＝参数未核验；workflow 契约还没有，平台不猜它收什么
+    home_env="",
+    note="**只接探测，不接执行。** 平台里没有 ComfyUI 的 workflow 契约："
+         "它收的是一整张参数化节点图，不是一张平坦参数表，所以拿不出可信的"
+         "参数白名单，也就不会有一个「提交」入口。这一档存在的意义只有一条——"
+         "在引擎管理里看得见它通不通。接执行是独立工作包（要定 workflow 模板、"
+         "参数注入点与产物取回），不是加几行配置。",
+    models=(),          # 空：没有已核验的参数表，就不该有"可选的模型档"
+)
+
 # ---------- 配音 / 音乐：本地 ----------
 _VOXCPM = Adapter(
     code="voxcpm2",
@@ -557,14 +597,16 @@ _CLOUD_OTHER = (
 )
 
 ADAPTERS: tuple[Adapter, ...] = (
-    _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _OLLAMA, _VOXCPM, _ACE_STEP,
-    *_TEXT_CLOUD, *_VIDEO_CLOUD, *_CLOUD_OTHER,
+    _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _COMFYUI, _OLLAMA, _VOXCPM,
+    _ACE_STEP, *_TEXT_CLOUD, *_VIDEO_CLOUD, *_CLOUD_OTHER,
 )
 
 # 清单的版本号：Job 建单时冻结它，将来改清单能看出这条作业是按哪一版参数放行的。
 # 2026-11-06.1＝W-B：新增本机服务型引擎 draw_things（执行形状与 mflux 那一族不同）。
 # 2026-11-06.2＝智能体中心 A4：新增本地文本腿 ollama（平台第一条 text×local）。
-MANIFEST_VERSION = "2026-11-06.2"
+# 2026-11-13.1＝ComfyUI **只接探测**：新增一条 models=() 的壳，让引擎页看得见它
+#   通不通；没有 workflow 契约，所以不进 runners.build()、不进提交框。
+MANIFEST_VERSION = "2026-11-13.1"
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以

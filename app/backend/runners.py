@@ -591,6 +591,9 @@ def has_branch(capability: str, provider: str) -> bool:
     if capability == "video":
         return provider in ("fastmetal", "mlx-video")
     if capability == "image":
+        # comfyui **故意不在**这里：它只有探测器、没有 workflow 契约
+        # （见 `adapters._COMFYUI` 的注释）。加它进这张名单等于对提交框
+        # 承诺"这一档能出图"，而 `build()` 里并没有对应分支。
         return provider in ("mflux", "draw_things")
     if capability == "tts":
         return provider in ("voxcpm2", "voxcpm")

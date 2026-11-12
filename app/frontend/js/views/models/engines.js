@@ -295,8 +295,11 @@ export function pageEngines() {
       <tbody>${engineRows}${unintegrated}</tbody>
     </table></div>
     <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" ><b>未接入那一排没有「测试连接」按钮</b>：
-        平台里没有它们的适配器，点了也不会有真结果。接 ComfyUI 是独立工作包。</p>
+      <p class="note flush" ><b>「只接探测」的那几档没有「提交」入口</b>：
+        平台能连上它们、看得见通不通，但没有执行契约，所以拿不出可信的参数表，
+        也就不会摆一个点了没用的按钮。今天是 ComfyUI：它收的是一整张
+        workflow 节点图，不是一张平坦参数表——接执行要单独定 workflow 模板与
+        参数注入点，是独立工作包。未接入那一排则是连探测器都没有的那几家。</p>
     </div>
   </div>
 
@@ -694,7 +697,7 @@ export function engineInstancesCard() {
   }).join('');
 
   const empty = items.length ? '' : `<tr><td colspan="6"><span class="hint">
-    还没有启用中的引擎实例。Draw Things、Ollama 这类"跑成一台常驻服务"的引擎，
+    还没有启用中的引擎实例。Draw Things、Ollama、ComfyUI 这类"跑成一台常驻服务"的引擎，
     要先在这里写一条端点（例如 <code>http://127.0.0.1:7860</code>），
     模型仓库那边才查得到它的健康状况。</span></td></tr>`;
 

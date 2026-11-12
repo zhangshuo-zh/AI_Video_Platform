@@ -686,23 +686,36 @@ def test_顶部四数与目录同一口径(as_admin, clean_registrations):
 
 
 def test_未接入引擎单独列出不计入引擎数(as_admin, clean_registrations):
-    """ComfyUI 本机装了但平台零引用：必须出现在页面上，
-    但不能混进"引擎总数"，更不能有一个能点的连接按钮。
+    """未接入名单与清单侧 `items` **互斥**，且名单里每一项都真的"未接入"。
 
-    Draw Things 已从这张名单里出去（2026-11-06 W-B 接入），所以这里同时钉住
-    反方向的那半件事：它现在必须在清单侧的 `items` 里，而不是在未接入名单里。
-    只测"comfyui 还在"是不够的——那等于允许有人把已接入的引擎一直挂着"未接入"。
+    2026-11-13 起 ComfyUI 也从这张名单里出去了：它有了适配器壳与自述端点
+    （`adapters._COMFYUI`、`engines._INFO_PATHS["comfyui"]`），引擎页能看见它
+    通不通。**但它只接探测、不接执行**——所以下面第二条断言钉住那件事：
+    它在 `items` 里（看得见），却不在 `runners.has_branch()` 的名单里
+    （提交不出来）。只说"它不在未接入名单"是不够的，那会让人以为能出图。
+
+    这张名单今天为空（两个曾经的代表都已接进来），但常量与断言都留着：
+    这是一个"未来还会有"的位置，删掉它等于下次加引擎时重新发明一遍。
     """
     body = as_admin.get("/api/models").json()
     s = as_admin.get("/api/models/stats").json()
     codes = {e["code"] for e in body["unintegrated_engines"]}
-    assert "comfyui" in codes
-    assert "draw-things" not in codes, "Draw Things 已接入，别再挂在未接入名单里"
+    # 名单与清单互斥：任何"既在清单里、又在未接入里"的引擎都是自相矛盾
     assert codes.isdisjoint({i["engine_code"] for i in body["items"]})
     assert codes.isdisjoint({i["provider"] for i in body["items"]})
-    assert any(i["provider"] == "draw_things" for i in body["items"])
     for e in s["unintegrated_engines"]:
         assert "未接入" in e["note"]
+
+    # ComfyUI：进得了清单（看得见），出不了作业（没有执行分支）
+    assert "comfyui" not in codes, "ComfyUI 已有探测器，不该再挂在未接入名单里"
+    assert any(i["provider"] == "comfyui" for i in body["items"]), \
+        "ComfyUI 必须在清单侧看得见，否则引擎页连它通不通都问不了"
+    import runners
+    assert not runners.has_branch("image", "comfyui"), \
+        "ComfyUI 没有 workflow 契约：一旦有了执行分支，这条断言就该翻面"
+
+    # Draw Things 是反方向的那半件事：真接进来了，就必须在清单里
+    assert any(i["provider"] == "draw_things" for i in body["items"])
 
 
 def test_响应里不出现任何密钥值(as_admin, clean_registrations, monkeypatch):

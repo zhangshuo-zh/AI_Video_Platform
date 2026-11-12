@@ -454,3 +454,51 @@ def test_撤实例时探测历史跟着走(as_role):
         left = conn.execute("SELECT COUNT(*) FROM engine_probe_log WHERE instance_id = ?",
                             (iid,)).fetchone()[0]
     assert left == 0, "实例撤了，探测历史还在（外键没生效？）"
+
+
+# ---------- ComfyUI：只接探测，不接执行（2026-11-13） ----------
+
+def test_comfyui_只接探测不接执行():
+    """这一档的存在意义只有"看得见它通不通"。
+
+    三条断言各自钉一件事，缺任何一条都会让"只接探测"变成一句注释：
+      ① 它在 `SERVICE_ENGINES` 里——否则 `probe()` 第一句就 return unknown，
+         引擎页永远显示"暂无法检查"，等于没接。
+      ② 它有自述端点——否则 `_get_info_for()` 回"没有已核实的自述端点"，
+         同样探不出东西。选 `/system_stats` 而不是 `/object_info` 的理由写在
+         `engines._INFO_PATHS` 旁边（后者是几 MB 的节点规格表）。
+      ③ 它在 `runners.build()` 里**没有**分支——否则提交框会列出它，
+         而它并没有 workflow 契约，等于对用户承诺一件做不到的事。
+    """
+    assert "comfyui" in engines.SERVICE_ENGINES
+    assert "comfyui" in engines._INFO_PATHS
+    assert engines._INFO_PATHS["comfyui"] == "/system_stats"
+    assert not runners.has_branch("image", "comfyui")
+
+
+def test_comfyui的自述被翻译成人话(monkeypatch):
+    """`/system_stats` 的两种形态都要认：新版本看 `system.devices[]`，
+    老版本看 `system.memory.total/free`。读不到就说读不到，不编一个数。
+    """
+    payload = {"system": {"comfyui_version": "0.3.40",
+                          "python_version": "3.12.8",
+                          "devices": [{"name": "mps", "type": "mps",
+                                       "vram_total": 17_179_869_184,
+                                       "vram_free": 5_368_709_120}]}}
+    out = engines._describe("comfyui", payload)
+    assert "0.3.40" in out["detail"]
+    assert "16.0 GB" in out["detail"]        # 17179869184 B
+    assert "5.0 GB" in out["detail"]         # 5368709120 B
+    # 这一档必须自己说清"只接探测"——不然"服务在线"会被读成"能出图"
+    assert "只接探测" in out["detail"]
+
+    # 老版本形态：没有 devices，内存落在 system.memory
+    legacy = {"system": {"comfyui_version": "0.2.0",
+                         "memory": {"total": 8_589_934_592, "free": 4_294_967_296}}}
+    out2 = engines._describe("comfyui", legacy)
+    assert "8.0 GB" in out2["detail"] and "4.0 GB" in out2["detail"]
+
+    # 两个形态都读不到：如实说，不填 0
+    out3 = engines._describe("comfyui", {"system": {}})
+    assert "读不到" in out3["detail"]
+    assert "0.0 GB" not in out3["detail"]

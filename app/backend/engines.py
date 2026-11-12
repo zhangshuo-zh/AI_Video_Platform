@@ -40,7 +40,10 @@ from repositories.engine_instances import engine_instances
 # 清单与界面都用这个集合判断该走哪条探测路，避免出现第二份名单。
 # 2026-11-06 加入 ollama：本机常驻 HTTP 服务，与 Draw Things 同一族探测形状
 # （目标机实测 GET /api/tags 回 200 与 models[]）。
-SERVICE_ENGINES = frozenset({"draw_things", "ollama"})
+# 2026-11-13 加 comfyui：它是**只探测**的一档（`adapters._COMFYUI` 的 models 为空）。
+# 进这个集合只意味着"平台会去打它的端点看通不通"，**不意味着能提交作业**——
+# 后者由 `runners.build()` 有没有分支决定，而 ComfyUI 没有（要 workflow 契约）。
+SERVICE_ENGINES = frozenset({"draw_things", "ollama", "comfyui"})
 
 # 其中**只有一个当前模型**的那一小族，才需要提交前核对"引擎现在选的是哪一档"。
 # Ollama 不在这一族里：它的模型名是每次请求里带的，不存在"引擎自己选着别的档"
@@ -51,7 +54,11 @@ MODEL_GATED_ENGINES = frozenset({"draw_things"})
 
 # 各引擎的"自述端点"。只有实测存在的才列进来：Draw Things 实测没有
 # /sdapi/v1/sd-models（404），所以这里不写一个不存在的端点凑数。
-_INFO_PATHS = {"draw_things": "/sdapi/v1/options", "ollama": "/api/tags"}
+# comfyui 的自述端点选 `/system_stats` 而不是 `/object_info`：官方路由文档把它列在
+# 核心 API 第一条（用途＝取系统信息、设备与显存），而 `/object_info` 是几 MB 的
+# 节点规格表——用来判"服务在不在"太贵。本地与 Comfy Cloud 同名，只差前缀。
+_INFO_PATHS = {"draw_things": "/sdapi/v1/options", "ollama": "/api/tags",
+               "comfyui": "/system_stats"}
 
 _TIMEOUT_SECONDS = 5.0
 # 公开别名：显式探测档的超时只有这一把尺。cloud_probe 原来自己抄了一份 5.0，
@@ -237,6 +244,39 @@ def _describe(engine_code: str, payload: dict) -> dict:
     options 表里的 `model` 键（实测），Ollama 回的是 `models[]` 数组
     （实测），两者没有任何共同结构。写成"通用解析"就会变成对其中一家说谎。
     """
+    if engine_code == "comfyui":
+        # `/system_stats` 的实测形态（本地与 Cloud 同构）：
+        #   {"system": {"comfyui_version": "...", "python_version": "...",
+        #               "devices": [{"name","type","vram_total","vram_free"}]}}
+        # 老版本把内存落在 `system.memory.total/free`、没有 `devices` 数组，
+        # 所以两处都认；都读不到就如实说"读不到显存"，不编一个数。
+        system = payload.get("system")
+        system = system if isinstance(system, dict) else {}
+        version = str(system.get("comfyui_version") or "")
+        devices = system.get("devices")
+        devices = devices if isinstance(devices, list) else []
+        vram_total = vram_free = None
+        if devices and isinstance(devices[0], dict):
+            vram_total = devices[0].get("vram_total")
+            vram_free = devices[0].get("vram_free")
+        else:
+            memory = system.get("memory")
+            if isinstance(memory, dict):
+                vram_total = memory.get("total")
+                vram_free = memory.get("free")
+        bits = ["服务在线"]
+        if version:
+            bits.append(f"ComfyUI {version}")
+        if isinstance(vram_total, (int, float)) and vram_total > 0:
+            used = ""
+            if isinstance(vram_free, (int, float)):
+                used = f"、空闲 {vram_free / 1024 ** 3:.1f} GB"
+            bits.append(f"显存 {vram_total / 1024 ** 3:.1f} GB{used}")
+        if not version and not devices:
+            bits.append("自述里读不到版本与设备（老版本？）")
+        return {"model": "", "models": [],
+                "detail": "，".join(bits) + "。**这一档只接探测**："
+                          "平台没有 ComfyUI 的 workflow 契约，所以没有提交入口"}
     if engine_code == "ollama":
         rows = payload.get("models")
         names = [str(m.get("name")) for m in rows

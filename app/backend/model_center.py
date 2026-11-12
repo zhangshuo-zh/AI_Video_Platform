@@ -39,8 +39,14 @@ IMAGE_TAG = {"image": "图生图", "video": "图生视频"}
 # 写死在这里而不是编进 ADAPTERS，是为了不让它意外走进 health()/runners.build()——
 # 一个假的 adapter 会让"选了就能跑"变成谎言。
 UNINTEGRATED_ENGINES = [
-    {"code": "comfyui", "label": "ComfyUI", "kind": "本机应用",
-     "note": "本机 /Applications 已装；平台无适配器、无 HTTP 客户端、无 workflow 契约 → 未接入"},
+    # ComfyUI 于 2026-11-13 从这张名单里摘出去了（清单 `comfyui`）：
+    # 它现在有适配器壳与自述端点，引擎页能看见它通不通。
+    # **但"未接入"这个词对它仍然半真**——接的是探测，不是执行。
+    # 所以它出现在清单里（`_engine_only_row`，models 为空那一档），
+    # 由 `adapters._COMFYUI` 的 note 与 `engines._describe()` 的结语
+    # 把"只接探测、没有提交入口"说两遍（列表页与探测结论各一次）。
+    # 这里留空数组而不是删掉常量：`stats()` 与前端都读这个键，
+    # 删了会变成"少一个字段"而不是"没有未接入引擎"。
     # Draw Things 在 2026-11-06 的 W-B 里接进来了（清单 `draw_things`、0040 实例表、
     # `engine_http_run.py` 真出图跑通），所以从这张名单里摘掉——再留着就是一份
     # 会过期的第二真相：同一件事在清单里说"有这一档引擎"，这里说"未接入"。
