@@ -168,9 +168,12 @@ auth = sorted(p for p in ops if "/auth/" in p or p.rstrip("/").endswith("/auth")
 auth_ops = sum(len(ops[p]) for p in health + auth)
 con = sqlite3.connect(os.environ["FASTVIDEO_DB"])
 tables = con.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone()[0]
+# `ops` 进 facts 是**稳定契约**（2026-11-13 起）：门禁 b 拿它和《系统设计》§11 的双向比对。
+# 只给归一后的 {路径: [方法...]}，不带 query 串——`?confirm=1` 那类不是路由身份。
 print(json.dumps({"paths": paths, "operations": operations,
                   "health": health, "auth": auth,
-                  "business": operations - auth_ops, "tables": tables}))
+                  "business": operations - auth_ops, "tables": tables,
+                  "ops": {p: sorted(v) for p, v in ops.items()}}))
 """
     # 不用 TemporaryDirectory：它在退出时删目录，受限环境里删除会被拦，
     # 于是整个门禁被一个"临时文件没清掉"噎死（traceback 盖住真正的检查结果）。
@@ -496,6 +499,76 @@ def build_md(facts: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# 门禁 b 的白名单：这些是**在跑但故意不列进 §11 表格**的路由。
+# 每一条都要写明为什么不列——白名单是给人看的例外清单，不是"抓不到就放过"。
+ROUTE_DOC_EXEMPT = {
+    "/files/{}": "不在 /api 前缀下，§11 用散文单列（§11.13 末尾那句，"
+                 "因为它是静态资源读取而不是业务接口）",
+}
+
+
+def _norm_route(path: str) -> str:
+    """路由身份归一：占位符名字两边不一样（表里写 {p}，openapi 里 {project_id}）。"""
+    return re.sub(r"\{[^}]*\}", "{}", path.split("?")[0])
+
+
+def _spec11_routes() -> set[tuple[str, str]]:
+    """《系统设计》§11 章内所有端点表行，归一成 (方法, 路径)。
+
+    只在 `## 11.` 与 `## 12.` 之间取——正文别处的端点上文（散文、§8 的设计节）
+    不算"列进目录"，它们会在重构时被删掉而没人发现。
+    """
+    text = (DOCS / "系统设计说明书.md").read_text(encoding="utf-8")
+    lines = text.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.startswith("## 11. API 目录")), None)
+    end = next((i for i, l in enumerate(lines) if l.startswith("## 12. ")), None)
+    if start is None or end is None or end < start:
+        return set()
+    out = set()
+    for line in lines[start:end]:
+        m = re.match(r"^\|\s*(GET|POST|PUT|PATCH|DELETE)\s*\|\s*`(/[^`]*)`", line)
+        if m:
+            out.add((m.group(1), _norm_route("/api" + m.group(2))))
+    return out
+
+
+def check_routes(facts: dict) -> list[str]:
+    """门禁 b：`openapi()` 的真实路由与《系统设计》§11 端点目录**双向**比对。
+
+    为什么这是最值钱的一条：§11 是那册唯一"逐条点名在跑什么接口"的地方，
+    而它此前**没有任何门禁**——加接口时忘了登一行，读者照目录写客户端就会
+    404；反过来删了接口却留着目录，读者会以为那条还在。
+    `make_release_baseline.py` 现算的 `business` 只查**总数**，总数相等而
+    具体条目错位（删一条加一条）它看不出来。
+
+    跳过条件：探针降级（拿不到 ops）时直接跳过——拿基线文件的旧数去比
+    目录，只会把一次性故障变成一堆假红。
+    """
+    ops = facts.get("ops")
+    if not ops:
+        return []
+    # 只排除 health：§11.17 对它是散文（"`/api/health` 不需要登录"），
+    # 而 auth 那四条**是**列在 §11.1 表里的，一侧排除就会变成四条假红。
+    real = set()
+    for path, methods in ops.items():
+        if path == "/api/health":
+            continue
+        for m in methods:
+            real.add((m.upper(), _norm_route(path)))
+    doc = _spec11_routes()
+    if not doc:
+        return ["系统设计说明书.md：§11 一节端点都读不到"
+                "（标题被改过？门禁按 `## 11. API 目录` 与 `## 12. ` 定界）"]
+    fails = []
+    for m, p in sorted(real - doc):
+        if p in ROUTE_DOC_EXEMPT:
+            continue
+        fails.append(f"系统设计说明书.md §11：接口在跑但没登记 —— {m} {p}")
+    for m, p in sorted(doc - real):
+        fails.append(f"系统设计说明书.md §11：登记了但接口不存在 —— {m} {p}")
+    return fails
+
+
 def check_docs(facts: dict) -> int:
     """说明书关键数字对齐基线。谁声明的数字谁被查；不声明的只查残留。
 
@@ -587,6 +660,9 @@ def check_docs(facts: dict) -> int:
     if not browser_rows:
         fails.append("发布基线.md: §4 一条「真浏览器验收」记录都没有了"
                      "（这一节是人工登记，不该被删空）")
+    # 门禁 b：§11 端点目录 vs 现算路由（双向）。放在最后，让它排在数字后面——
+    # 数字对不上是"重跑一次生成"就能修好的，目录对不上是"漏登了一条接口"。
+    fails.extend(check_routes(facts))
     if fails:
         print("与基线不一致：")
         for f in fails:
@@ -650,6 +726,9 @@ def main() -> None:
              # 「四份说明书关键数字与基线一致」并且 exit=0。
              # 一个会在应用挂掉时变绿的门禁比没有门禁更糟——
              # 它给了"已验证"的错觉。
+             # 门禁 b 要用它做 §11 目录的双向比对。降级时探针没有这个键，
+             # `check_routes` 见空即跳过——拿基线文件的旧路由去比目录没有意义。
+             "ops": probe.get("ops", {}),
              "degraded": probe.get("degraded", "")}
     if check:
         # 探针降级时**拒绝判定**：这一趟根本没验证到应用，路由/表数全是

@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""文档结构门禁：查《写作与引用规范》§11 那六件事（外加锚点有效性）。
+"""文档结构门禁：查《写作与引用规范》§11 那十件事（含锚点、版本一致性、唯一 H1）。
 
 为什么要有这个脚本而不是"写完就算了"：这一轮把修订记录拆成速览＋详录、给每册加目录、
 把 84 处裸 `§N` 补成 `《册名》§N`。这些全是排版约束，**没有工具守着就会漂**——
 上一轮"视图里又抄了一份枚举表"就是这么来的。规矩只有变成能红的检查才算立住。
 
-五件事（任一件红就 exit 1）：
+十件事（任一件红就 exit 1）：
   1. 该有目录的册必须有目录，且条目数＝`## ` 标题数 − 1（目录自己不列进目录）。
+  1b. 目录里每个锚点都真能跳到位（改标题不重生成锚点，条目数照样对得上）。
   2. 主干册头部必须有 `- 版本：vX.Y（YYYY-MM-DD）`，格式能被《发布基线》读到。
+  2b. 那个号必须等于本册速览表的最大号、日期成对、`对应设计稿 vX.Y` 真有一行
+      （2026-11-13 加；上线当天在《设计稿》抓到头部落后六个版本）。
+  2c. 围栏外只许一个 `# `：目录只数 `## `，误写成 H1 的「附录 N」它看不见。
   3. 修订速览表：一行 ≤120 字，且「详见」列非空、指向能解析。
   4. `§N` 引用：裸写只许指本册；写 `《册名》§N` 的目标小节必须真的存在。
-  5. 图：正文引用的文件必须存在；`文档/assets/` 里没被引用的图必须在历史表里有名。
+  5. 速览与《附录 X 变更详录》逐条对账（搬丢一条就永远补不回来）。
+  5b. `文档/开发/**` 的留档头部必须写「历史留档」＋指回现行册。
+  6. 图：正文引用的文件必须存在；`文档/assets/` 里没被引用的图必须在历史表里有名。
 
 再加一条只对拆过的册生效的：**速览与《附录 A 变更详录》逐条对账**——
 本轮把 250 多条修订记录搬成"一句话＋原文归档"，搬丢一条就永远补不回来，
@@ -171,6 +177,100 @@ def check_version_head(files: list[Path]) -> list[str]:
         head = f.read_text(encoding="utf-8")[:800]
         if not VER_RE.search(head):
             fails.append(f"{rel}：头部缺「- 版本：vX.Y（YYYY-MM-DD）」，《发布基线》读不到")
+    return fails
+
+
+def _top_rev_block(text: str) -> list[tuple[str, str]]:
+    """顶部速览表里的 (版本, 日期)，按出现顺序。附录详录不在此列。"""
+    lines = text.split("\n")
+    start = next((i for i, l in enumerate(lines) if REV_ROW_RE.match(l)), None)
+    if start is None:
+        return []
+    out = []
+    for i in range(start, len(lines)):
+        m = REV_ROW_RE.match(lines[i])
+        if not m:
+            if lines[i].startswith("|"):
+                continue
+            break
+        out.append((m.group(2), m.group(1)))      # (版本, 日期)
+    return out
+
+
+def _vkey(ver: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in ver.lstrip("v").split("."))
+
+
+def check_version_consistency(files: list[Path]) -> list[str]:
+    """头部版本号必须等于**本册速览表里的最大版本**，且日期与它配对。
+
+    为什么单开一条：`check_version_head` 只查格式，于是写代码那一轮加了
+    v0.123 的速览行却忘了改头部时，设计稿自己印 v0.122、《发布基线》印
+    v0.123，`--check` 全绿——它比的是「基线头部 vs 现算的速览最大值」，
+    被比的两个数都不是"这一册自己的头部"。规范 §11 把它列在
+    「门禁查不到、只能靠人守」里；这里把它变成机器能查的。
+
+    两条子规则：
+      1. 头部 vX.Y 是速览表里最大的那个版本（速览为空则跳过——短册、README 没有速览表）；
+      2. 头部那行的日期 == 最大版本那一行的日期（版本与日期必须成对）。
+    """
+    # 先收《设计稿》自己的速览版本全集：别的册子要按它校验"对应设计稿 vX.Y"
+    design_rows: set[tuple[int, ...]] | None = None
+    for f in files:
+        if str(f.relative_to(ROOT)) == "设计稿.md":
+            design_rows = {_vkey(v) for v, _ in _top_rev_block(
+                prose(f.read_text(encoding="utf-8")))}
+            break
+    fails = []
+    for f in files:
+        rel = str(f.relative_to(ROOT))
+        if rel not in TRUNK:
+            continue
+        text = prose(f.read_text(encoding="utf-8"))
+        m = VER_RE.search(text)
+        if not m:
+            continue                      # 缺头部由 check_version_head 报，这里不重复
+        head_ver, head_date = m.group(1), m.group(2)
+        rows = _top_rev_block(text)
+        if not rows:
+            continue                      # 没有速览表：无从配对，跳过
+        top_ver, top_date = max(rows, key=lambda r: _vkey(r[0]))
+        if _vkey(head_ver) != _vkey(top_ver):
+            fails.append(f"{rel}：头部写 {head_ver}，速览表最大是 {top_ver}"
+                         "（改了正文就该同步头部，否则《发布基线》印的是旧号）")
+        elif head_date != top_date:
+            fails.append(f"{rel}：头部写 {head_ver}（{head_date}），"
+                         f"速览里 {top_ver} 是 {top_date}（版本与日期必须成对）")
+
+        # 子规则 3：`对应设计稿 vX.Y` 指向的版本必须在《设计稿》里真有一行。
+        # 写一个不存在的小节号是断链的另一种形态——读者按它去查"当时怎么定的"
+        # 会翻不到，而正文看起来完全正常。
+        ptr = re.search(r"对应设计稿\s*(v[\d.]+)", text)
+        if ptr and design_rows is not None and _vkey(ptr.group(1)) not in design_rows:
+            fails.append(f"{rel}：头部写「对应设计稿 {ptr.group(1)}」，"
+                         f"但《设计稿》速览里没有这个版本（有 "
+                         f"v{'.'.join(map(str, max(design_rows)))} 及更早）")
+    return fails
+
+
+def check_single_h1(files: list[Path]) -> list[str]:
+    """每份文档在围栏外**只能有一个** `# ` 一级标题。
+
+    为什么单开一条：目录检查只数 `## `，于是「附录 N」这种被误写成 `# 附录 N`
+    的行既不在目录里、也不被任何一道门禁看见——它会让侧栏/大纲里多出一份
+    并列的"根标题"，读者以为文档在那里重新开始了。真踩过：综合优化轮 02
+    那册把七个附录写成 H1，门禁全绿。
+    """
+    fails = []
+    for f in files:
+        rel = str(f.relative_to(ROOT))
+        text = prose(f.read_text(encoding="utf-8"))
+        h1 = [(i + 1, l.strip()) for i, l in enumerate(text.split("\n"))
+              if re.match(r"^# \S", l)]
+        if len(h1) > 1:
+            extra = "；".join(f"第 {n} 行「{s[:24]}」" for n, s in h1[1:4])
+            fails.append(f"{rel}：{len(h1)} 个一级标题（应只有 1 个），多出 {extra}"
+                         "——附录与细目该用 `## `")
     return fails
 
 
@@ -367,7 +467,8 @@ def check_images(files: list[Path]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="文档结构门禁")
     ap.add_argument("--report", action="store_true", help="只报计数，不判红")
-    ap.add_argument("--only", default="", help="逗号分隔：toc,version,revision,refs,images")
+    ap.add_argument("--only", default="",
+                    help="逗号分隔：toc,version,vercons,h1,revision,refs,history,archive,images")
     args = ap.parse_args()
 
     files = all_docs()
@@ -384,6 +485,10 @@ def main() -> int:
         sections.append(("1b 目录锚点", check_toc_anchors(files)))
     if not wanted or "version" in wanted:
         sections.append(("2 头部版本号", check_version_head(files)))
+    if not wanted or "vercons" in wanted:
+        sections.append(("2b 版本一致性", check_version_consistency(files)))
+    if not wanted or "h1" in wanted:
+        sections.append(("2c 唯一一级标题", check_single_h1(files)))
     if not wanted or "revision" in wanted:
         sections.append(("3 修订速览", check_revision_rows(files)))
     if not wanted or "refs" in wanted:
