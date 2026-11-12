@@ -1,3 +1,5 @@
+import { submissionIdentity } from '../submission.js';
+const jobSubmission = submissionIdentity();
 /**
  * 生成中心：唯一队列 + 成本账的唯一出口。
  *
@@ -1619,7 +1621,9 @@ export default {
 
         // 按钮在这里**已经**灰了（入口处），不必再 disabled 一次。
         try {
+          body.idempotency_key = jobSubmission.key(body);
           const job = await api.submitJob(body);
+          jobSubmission.clear();
           closeJobModal();
           await refresh();
           openDrawer(job.id);
@@ -2097,5 +2101,11 @@ export default {
       refresh({ quiet: true });
     };
     document.addEventListener('visibilitychange', visHandler);
+    return () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+      if (visHandler) document.removeEventListener('visibilitychange', visHandler);
+      visHandler = null;
+    };
   },
 };

@@ -1,3 +1,5 @@
+import { guardEdit } from './edit-session.js';
+import { store } from './store.js';
 /** 路由：按 id 渲染视图并同步侧栏高亮、地址栏 hash。 */
 import { loadView, hasView } from './views/index.js';
 import { getParam, getSub, setParam, setSub } from './navstate.js';
@@ -12,6 +14,8 @@ let firstPaint = true;
 // 各视图自己判 `isConnected` 只能挡住"往死节点上写"，挡不住"晚到的整页覆盖新页"。
 // 这里是所有渲染的唯一入口，所以在这一处判一次，十四个视图一起受益。
 let renderSeq = 0;
+let disposeView = null;
+function disposeCurrent() { disposeView?.(); disposeView = null; }
 
 /**
  * 重绘会替换整个 `#view-root`，焦点与滚动位置默认一起丢。
@@ -65,6 +69,8 @@ export function closeDetail(viewId) {
 
 export async function renderView(id) {
   const seq = ++renderSeq;
+  if (!(await guardEdit({ view: id, project: store.currentId, sub: getSub(id) ?? (id === 'writing' ? 2 : 0), document: id === 'writing' ? getParam(id) : undefined }))) return;
+  if (seq !== renderSeq) return;
   // 视图按需加载（2026-11-11 审计 F-06）。这一句必须在**任何** DOM 改动之前
   // await：取模块要走一次网络，中途人可能已经点了别处，等它回来再看 seq。
   // 所以「拿视图」放在最前面，拿不到就不必再动屏幕。
@@ -82,6 +88,7 @@ export async function renderView(id) {
     console.error(`[router] ${id} 视图模块加载失败`, err);
     const root0 = document.getElementById('view-root');
     root0.classList.toggle('cold', false);
+    disposeCurrent();
     root0.innerHTML = `<section class="view on">
       <div class="page-head"><h1>${escapeHtml(MODULES.find((m) => m.id === id)?.label || id)}</h1></div>
       <div class="card"><div class="empty">
@@ -169,6 +176,7 @@ export async function renderView(id) {
     if (seq !== renderSeq) return;
     console.error(`[router] ${id} 渲染失败`, err);
     root.classList.toggle('cold', false);
+    disposeCurrent();
     root.innerHTML = `<section class="view on">
       <div class="page-head"><h1>${escapeHtml(MODULES.find((m) => m.id === id)?.label || id)}</h1></div>
       <div class="card"><div class="empty">
@@ -181,8 +189,10 @@ export async function renderView(id) {
     return;
   }
   if (seq !== renderSeq) { dropMoveWatch(); return; }  // 已有更晚的导航在跑，这份作废
+  disposeCurrent();
   root.innerHTML = html;
-  view.mount?.(root);          // 视图自己绑事件，路由不掺和
+  const cleanup = view.mount?.(root);
+  disposeView = typeof cleanup === 'function' ? cleanup : null;          // 视图自己绑事件，路由不掺和
   // 夜间主题的把 `<select>` 换成自绘下拉，必须**在这一次渲染里就做完**。
   // 原来只靠 `app.js` 的 MutationObserver 补，带 80ms 去抖——于是每次重绘
   // （包括切项目）都先摆出原生 select、80ms 后才换成自绘的那个，两者宽度不同

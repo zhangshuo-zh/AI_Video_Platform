@@ -309,7 +309,17 @@ def main():
         check("引用段点名了这条资产", P.body_has(cdp, "阿昭"))
         check("没有产物时不假装：预览区写「还没有签过通过的正式视频」",
               P.body_has(cdp, "还没有签过通过的正式视频"))
-        check("音频段照实说未接入", P.body_has(cdp, "只能登记，不能真出声"))
+        audio_engines = api(f"/api/shots/{shot_id}/workbench", token)["audio"]["engines"]
+        tts = audio_engines.get("tts") or {}
+        music = audio_engines.get("music") or {}
+        if tts.get("provider") and tts.get("runner_wired"):
+            expected_audio = "配音与音乐都能提交执行" if music.get("provider") and music.get("runner_wired") else "配音能提交执行"
+        elif tts.get("provider"):
+            expected_audio = "配音默认轨配了，但执行器没有这一条分支"
+        else:
+            expected_audio = "音频执行这一腿还没接线"
+        check("音频段结论与后端默认轨及执行分支一致",
+              P.body_has(cdp, expected_audio), expected_audio)
         check("音频段不给提交入口（只有跳转，没有会失败的按钮）",
               P.eval_js(cdp, """(() => {
                 const card = [...document.querySelectorAll('#view-root .card')]

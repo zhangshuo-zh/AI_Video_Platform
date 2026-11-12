@@ -685,6 +685,7 @@ export function mountMonitor(root) {
     tick();
   };
   document.addEventListener('visibilitychange', visHandler);
+  return stopPoll;
 }
 
 /** 计时器与 document 监听一起收。只清计时器会留下一个拿着旧 alive 闭包的监听。 */

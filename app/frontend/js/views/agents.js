@@ -1,3 +1,4 @@
+import { submissionIdentity } from '../submission.js';
 /**
  * 智能体中心（0041／《智能体管理中心》说明书）。四个工作区：
  *   0 总览        四个数 ＋ 两条腿摘要 ＋ 运行列表
@@ -604,6 +605,8 @@ async function refreshRoute(modal) {
 }
 
 function bindModal(modal, refresh) {
+  const submission = submissionIdentity();
+  let busy = false;
   const errEl = modal.querySelector('#ag-modal-err');
   const close = () => { modal.hidden = true; modal.remove(); };
   modal.querySelector('[data-ag-close]').addEventListener('click', close);
@@ -612,10 +615,14 @@ function bindModal(modal, refresh) {
     el.addEventListener(id === 'ag-goal' ? 'input' : 'change', () => refreshRoute(modal));
   });
   modal.querySelector('[data-ag-submit]').addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    const submit = modal.querySelector('[data-ag-submit]');
+    submit.disabled = true;
     const cloud = modal.querySelector('#ag-cloud');
     errEl.hidden = true;
     try {
-      const out = await api.createAgentRun({
+      const body = {
         project_id: store.current.id,
         episode_id: modal.querySelector('#ag-ep').value
           ? Number(modal.querySelector('#ag-ep').value) : null,
@@ -623,10 +630,10 @@ function bindModal(modal, refresh) {
         scene_key: modal.querySelector('#ag-scene').value,
         approval_valid_seconds: Number(modal.querySelector('#ag-valid').value),
         user_confirmed_cloud: cloud ? cloud.checked : false,
-        // 幂等键带项目与时间：连点两次在同一个弹窗里算同一件事（同一秒内），
-        // 隔天再发同样的目标则是新一次运行——与产线那条键同一思路
-        idempotency_key: `ag-ui:${store.current.id}:${Math.floor(Date.now() / 1000)}`,
-      });
+      };
+      body.idempotency_key = submission.key(body);
+      const out = await api.createAgentRun(body);
+      submission.clear();
       openRunId = out.run.id;
       setParam('agents', openRunId);
       close();
@@ -634,7 +641,7 @@ function bindModal(modal, refresh) {
     } catch (e) {
       errEl.hidden = false;
       errEl.textContent = e.message;
-    }
+    } finally { busy = false; submit.disabled = false; }
   });
   refreshRoute(modal);
 }

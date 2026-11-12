@@ -45,8 +45,8 @@ function headCard(ov, board) {
         <b>${cur ? `第 ${cur.seq} 集` : '未选'}</b>
         <span class="hint">${cur ? `${cur.shots} 镜 · 有片 ${cur.videos_succeeded}` : '在顶栏选一集'}</span></span>
       <span class="st">这一集镜头 <b>${board.shots || 0}</b></span>
-      <span class="st-caliber">数字全部现算：镜头数取分镜表、有片数取每镜最新成功作业、
-        签字数取审核记录、成片数取版本表。这一页不写任何东西。</span>
+      <details class="st-caliber"><summary>统计口径</summary>数字全部现算：镜头数取分镜表、有片数取每镜最新成功作业、
+        签字数取审核记录、成片数取版本表。这一页不写任何东西。</details>
     </div>
   </div>`;
 }

@@ -1,3 +1,4 @@
+import { guardEdit } from './edit-session.js';
 /**
  * 前端唯一的状态源：项目列表、类型字典、当前选中的项目。
  * 视图只读 store，改状态一律走这里再派发 app:refresh。
@@ -6,6 +7,13 @@ import { api } from './api.js';
 
 // 换项目的序号：每次 select() 加一，在飞的旧链靠它判断自己是否已经作废
 let selectSeq = 0;
+let contextSeq = 0;
+let contextWrites = Promise.resolve();
+function writeContext(project, episode) {
+  const request = contextWrites.then(() => api.setContext(project, episode));
+  contextWrites = request.catch(() => {});
+  return request;
+}
 
 export const store = {
   projects: [],
@@ -21,6 +29,7 @@ export const store = {
   roles: [],
   // worker 在线状态与队列长度：顶栏、侧栏脚、首页共用这一份，别各拉各的
   worker: null,
+  workerError: null,
 
   /** 拉当前用户。抛出的 error 带 status：401 表示没登录 */
   async loadMe() {
@@ -56,12 +65,13 @@ export const store = {
     return this.projects.filter((p) => p.status !== 'archived');
   },
 
-  /** 拉 worker 状态。读不到就当离线——状态条不该因为一次失败把主界面弄坏 */
+  /** 拉 worker 状态。读失败保留上一份数据，并单独标记状态过期，避免误报离线 */
   async loadWorker() {
     try {
       this.worker = await api.workerStatus();
-    } catch {
-      this.worker = null;
+      this.workerError = null;
+    } catch (err) {
+      this.workerError = err.message || '无法读取运行状态';
     }
     return this.worker;
   },
@@ -128,12 +138,15 @@ export const store = {
   },
 
   /** 换集：先本地重绘，再上报服务端。失败要回滚，否则顶栏说的和服务端存的不是一回事。 */
-  selectEpisode(id) {
+  async selectEpisode(id) {
+    if (!(await guardEdit({ project: this.currentId, episode: id }))) return;
+    const seq = ++contextSeq;
     const before = this.currentEpisodeId;
     this.currentEpisodeId = id;
     window.dispatchEvent(new CustomEvent('app:refresh'));
-    api.setContext(this.currentId, id)
+    writeContext(this.currentId, id)
       .catch(() => {
+        if (seq !== contextSeq) return;
         this.currentEpisodeId = before;
         window.dispatchEvent(new CustomEvent('app:refresh'));
         window.dispatchEvent(new CustomEvent('app:toast', {
@@ -141,7 +154,9 @@ export const store = {
       });
   },
 
-  select(id) {
+  async select(id) {
+    if (!(await guardEdit({ project: id }))) return;
+    ++contextSeq;
     // 换项目＝换项目的所有并发请求作废。
     //
     // 原来三条链（setContext / loadEpisodes / openProject）各跑各的、回来就无条件
@@ -159,11 +174,11 @@ export const store = {
     this.currentEpisodeId = null;
     // 先立刻重绘：切项目这件事不该等网络
     window.dispatchEvent(new CustomEvent('app:refresh'));
-    if (!id) return;
+    if (!id) { writeContext(null, null).catch(() => {}); return; }
     // setContext 失败不再静默吞掉：它和 selectEpisode 是同一件事（都是写服务端
     // 上下文），那边失败会回滚 + 提示，这里至少要说一句，否则「选了项目但没记住」
     // 这个事实只能靠人下次刷新时自己发现。
-    api.setContext(id, null).catch(() => {
+    writeContext(id, null).catch(() => {
       if (!alive()) return;
       window.dispatchEvent(new CustomEvent('app:toast', {
         detail: { text: '这个项目没记住：上下文写回失败，可能是项目已不可见',

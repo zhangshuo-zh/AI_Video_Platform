@@ -32,6 +32,15 @@ function paintWorker() {
   const queue = document.getElementById('queue-label');
   if (!dot || !label) return;
 
+  if (store.workerError) {
+    dot.className = 'dot idle';
+    label.textContent = 'worker 状态读取失败';
+    label.title = store.workerError;
+    if (queue) queue.textContent = '队列 状态待更新';
+    if (queueDot) queueDot.className = 'dot idle';
+    return;
+  }
+  label.title = '';
   const online = !!w?.online;
   dot.className = 'dot ' + (online ? 'live' : 'idle');
   label.textContent = online ? '本地 worker 在线' : '本地 worker 未接入';

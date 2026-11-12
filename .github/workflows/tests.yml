@@ -109,6 +109,10 @@ jobs:
         working-directory: .
         run: python tools/js_load_check.py
 
+      - name: 编辑状态与提交标识回归
+        working-directory: .
+        run: python tools/editor_state_browser_check.py
+
       # 第四道门：三套真浏览器验收。它们起真实服务 + 无头 Chrome，
       # 量的是"页面真的能点、数字与服务端一致"，不是只 import 一下。
       # 此前只在本机跑，所以本轮 4 个前端问题都是手点才发现的。

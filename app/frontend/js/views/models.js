@@ -281,6 +281,6 @@ export default {
     // 看起来"没报错"，实际是两块配置都不响应。
     if (sub === 1) { mountEngines(root); mountEngineInstances(root); }
     if (sub === 2) mountPolicies(root);
-    if (sub === 3) mountMonitor(root);
+    if (sub === 3) return mountMonitor(root);
   },
 };

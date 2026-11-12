@@ -1,3 +1,4 @@
+import { guardEdit, setEditSession } from '../edit-session.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, errorBox, errorLine, formatMoney, run, subChipRow,
@@ -426,10 +427,7 @@ function extractModalHtml() {
 function mountDocs(root, tab) {
   const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
   bindSubChips(root, async (i) => {
-    if (i !== tab && dirty && !(await confirmDanger({
-      title: '切换文档类型', body: '当前正文还有未保存的改动，切换会丢弃这些改动。',
-      okText: '丢弃并切换',
-    }))) return;
+    if (!(await guardEdit({ view: 'writing', project: store.currentId, sub: i }))) return;
     if (i !== tab) resetEditor();          // 换的是另一类文档，草稿不能跟着带过去
     setSub('writing', i);
     refresh();
@@ -445,11 +443,7 @@ function mountDocs(root, tab) {
       if (e.target.closest('button')) return;
       const id = Number(el.dataset.doc);
       if (id === pickedDocId) return;
-      if (dirty && !(await confirmDanger({
-        title: '切换文档',
-        body: '这一份还有<b>没保存的改动</b>，切过去就丢了（后端没有它，工作区里也没有）。',
-        okText: '丢掉并切换',
-      }))) return;
+      if (!(await guardEdit({ view: 'writing', project: store.currentId, sub: tab, document: id }))) return;
       resetEditor();
       pickedDocId = id;
       openDetail('writing', id);           // 地址带上文档 id，刷新/粘贴回得来
@@ -567,15 +561,21 @@ function mountDocs(root, tab) {
     if (ok) refresh();
   });
 
+  let saving = false;
   const save = async () => {
+    if (saving) return false;
+    saving = true;
+    const submitted = ta.value;
+    const version = draftVersion;
     if (saveBtn) saveBtn.disabled = true;
     notice = '';
     try {
-      const out = await api.saveDocContent(docId, ta.value, draftVersion);
+      const out = await api.saveDocContent(docId, submitted, version);
+      if (draftFor !== docId || !ta.isConnected) return false;
       draft = ta.value;
       draftVersion = out.version;
       serverCopy = null;
-      setDirty(false);
+      setDirty(ta.value !== submitted);
       // 底部那行"当前提交 / 改动"要当场换掉：不换的话刚存完还写着旧的提交号与旧时间，
       // 人对着它没法判断这次到底存没存上（提示条只活到下一次操作）
       const commitEl = root.querySelector('#doc-commit');
@@ -590,12 +590,14 @@ function mountDocs(root, tab) {
       notice = out.changed
         ? `已保存并提交（${(out.git_commit || '').slice(0, 8)}）`
         : '内容和上一版一样，没有产生新提交';
+      if (dirty) notice += '；保存期间的新改动尚未保存';
       lockWarn = '';
       // 按钮自己亮一下：这一屏的保存是高频动作，每次弹 toast 会烦；
       // 而只靠「未保存」chip 从琥珀变绿，人未必往那儿看。
       pulseSaved(saveBtn);
       await store.load();
     } catch (err) {
+      if (draftFor !== docId || !ta.isConnected) return false;
       if (err.status === 409) {
         // 不覆盖、也不自动合并：把人正在写的东西留着，另把盘上那份取下来对照
         notice = '';
@@ -608,10 +610,18 @@ function mountDocs(root, tab) {
         lockWarn = `${err.message}`;
       }
     } finally {
+      saving = false;
       if (saveBtn) saveBtn.disabled = false;
-      paintBars(root);
+      if (ta.isConnected) paintBars(root);
     }
+    return !dirty;
   };
+  const editorProject = store.currentId;
+  setEditSession({
+    dirty: () => dirty || saving,
+    matches: (target) => target.view === 'writing' && target.project === editorProject && target.sub === tab && (target.document == null || target.document === docId),
+    save, discard: resetEditor, cancel: () => { setSub('writing', tab); setParam('writing', undefined); window.dispatchEvent(new CustomEvent('app:refresh')); },
+  });
   saveBtn?.addEventListener('click', save);
   ta.addEventListener('keydown', (e) => {
     // Cmd/Ctrl+S：写稿的人一定会按它。浏览器自己的"保存网页"不能放出来

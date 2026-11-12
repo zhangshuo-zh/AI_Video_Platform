@@ -872,7 +872,7 @@ def test_切项目不连发三次整页重绘():
     from pathlib import Path
 
     js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "store.js").read_text()
-    seg = js[js.index("  select(id) {"):]
+    seg = js[js.index("  async select(id) {"):]
     seg = seg[:seg.index("\n  },")]
     n = seg.count("app:refresh")
     assert n <= 3, f"select() 派了 {n} 次 app:refresh，每次都是整页重写"
