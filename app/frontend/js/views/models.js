@@ -229,7 +229,7 @@ export default {
     });
     root.querySelector('#mc-check-all')?.addEventListener('click', async () => {
       const filled = cache.providers.filter((r) => r.provider);
-      if (!filled.length) { alertNotify('十条能力轨都还没填 provider，没有可检查的对象。'); return; }
+      if (!filled.length) { alertNotify('十条能力轨都还没填 provider，没有可检查的对象。', 'warn'); return; }
       const btn = root.querySelector('#mc-check-all');
       btn.disabled = true;
       let engineList = null;

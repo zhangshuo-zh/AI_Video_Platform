@@ -716,6 +716,6 @@ async function loadOlderValidations(root, btn) {
     }
   } catch (err) {
     btn.disabled = false;
-    alertNotify(`更早的验证记录读不到：${err.message}`);
+    alertNotify(`更早的验证记录读不到：${err.message}`, 'err');
   }
 }

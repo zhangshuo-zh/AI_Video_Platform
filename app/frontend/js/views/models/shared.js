@@ -431,14 +431,26 @@ export const MODALS = `
 
 /* 轻提示：三个模块都会用（入口的「检查引擎连接」、引擎实例的校验、监控页翻页）。
    为什么不用 util 里的 run()：那一个是"包住异步动作、失败弹错误"的口袋，
-   这一句是"操作成功但有一句话要说"，两者语义不同，不能混。 */
-export function alertNotify(text) {
-  const el = document.createElement('div');
-  el.className = 'chip amber';
-  el.textContent = text;
-  el.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:40;padding:10px 14px';
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2600);
+   这一句是"操作成功但有一句话要说"，两者语义不同，不能混。
+
+   **2026-11-12 改成走全站那套 app:toast**（app.js:365 的 toast()）。
+   原来这里自己造了一个 chip amber 浮层，2600ms 后 remove()——与全站
+   那套比，缺了一堆本该白拿的东西，而且每一处缺失都有代价：
+     · 没有语气分级：成功和失败长一个样（都是 amber 小胶囊）；
+     · 失败也会自己消失：报错只活 2.6 秒，人还没读完就没了；
+     · 没有关闭按钮：想留着看只能截图；
+     · 没有同文合并：批量失败一次弹五个一模一样的；
+     · 不播报：用读屏的人完全听不到这句「已保存」；
+     · z-index 写 40，比 --z-pop(60) / --z-scrim(70) 都低——弹窗开着时
+       提示被压在遮罩下面，人看不见，还以为操作没反应。
+   现在统一派事件，语气由第二个参数决定（info/ok/warn/err），
+   失败类不自动消失、带关闭按钮、有读屏播报。 */
+export function alertNotify(text, kind = 'info') {
+  const body = String(text || '').trim();
+  if (!body) return;
+  window.dispatchEvent(new CustomEvent('app:toast', {
+    detail: { text: body, kind },
+  }));
 }
 
 /* ================= 验证记录弹窗（引擎页与模型仓库共用） =================

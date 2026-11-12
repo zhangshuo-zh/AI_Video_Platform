@@ -1832,4 +1832,46 @@ def test_启动本机引擎的配方必须是常量且只认回环():
     assert "subprocess.Popen(" in mod_code, "没有真的执行命令的那一步（扫描口径变了？）"
 
 
+def test_轻提示必须走全站_toast_而不是自造浮层():
+    """模型中心那几个页面的「成功/失败一句话」必须派 app:toast，不许自己造浮层。
 
+    2026-11-12：shared.js 里 alertNotify 原来是自建的 chip 浮层，
+    position:fixed + z-index:40 + 2600ms 后 remove()。与 app.js:365 那套
+    全站 toast 比，缺的东西每一处都有代价：
+
+      · 没有语气分级——成功和失败长一个样；
+      · 失败也自己消失——报错只活 2.6 秒，人还没读完；
+      · 没有关闭按钮；
+      · 不同文合并——批量失败一次弹五个一模一样的；
+      · 不播报——读屏用户完全听不到「已保存」；
+      · z-index 40 比 --z-pop(60)/--z-scrim(70) 都低，**弹窗开着时
+        提示被压在遮罩下面**，人看不见还以为操作没反应。
+
+    判据三段：
+      A 函数体里派的是 app:toast 事件；
+      B 不再自己 appendChild 一个带固定 z-index 的节点；
+      C 失败类调用点带 'err' 语气（否则失败提示 4.2 秒后就没了）。
+    """
+    shared = code_lines((FRONTEND / "js" / "views" / "models" / "shared.js").read_text(encoding="utf-8"))
+    assert "app:toast" in shared, "alertNotify 没有走全站 toast"
+    assert re.search(r"export function alertNotify\(text, kind", shared), (
+        "alertNotify 少了 kind 参数：失败提示没法标成 err，会被当成成功一样自动消失")
+    # B：不许再有自造浮层
+    assert "position:fixed;right:24px;bottom:24px" not in shared, (
+        "alertNotify 又自己造浮层了：那样会绕过语气分级、读屏播报与层级")
+    assert "setTimeout(() => el.remove(), 2600)" not in shared, (
+        "又出现了固定 2600ms 自动移除：失败提示不该自己消失")
+
+    # C：失败类调用点要标 err。只扫明确的失败措辞，避免误伤正常提示。
+    fails = []
+    for f in sorted((FRONTEND / "js" / "views").rglob("*.js")):
+        for i, line in enumerate(code_lines(f.read_text(encoding="utf-8")).splitlines(), 1):
+            if "alertNotify(" not in line:
+                continue
+            if not re.search(r"失败|不能为空|读不到|没跑成|不能空|没有可选", line):
+                continue
+            if "'err'" in line:
+                continue
+            fails.append(f"{f.relative_to(FRONTEND / 'js').as_posix()}:{i}")
+    assert not fails, ("这些失败提示没标 'err'，会在 4.2 秒后自动消失，人读不完：\n  - "
+                       + "\n  - ".join(fails))

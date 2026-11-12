@@ -789,7 +789,7 @@ export function mountEngines(root) {
         }[out.state] || `被拒绝：${out.detail}`;
         alertNotify(msg);
       } catch (err) {
-        alertNotify(`测试没跑成：${err.message}`);
+        alertNotify(`测试没跑成：${err.message}`, 'err');
       } finally {
         btn.disabled = false;
         btn.textContent = old;
@@ -996,8 +996,8 @@ export function mountEngineInstances(root) {
       shared_secret_env: root.querySelector('#eng-secret').value.trim(),
       note: root.querySelector('#eng-note').value.trim(),
     };
-    if (!body.engine_code) { alertNotify('先选一个引擎：清单里现在没有可选的一档。'); return; }
-    if (!body.endpoint) { alertNotify('端点不能空——这一行的全部意义就是「这一档引擎在哪个地址」。'); return; }
+    if (!body.engine_code) { alertNotify('先选一个引擎：清单里现在没有可选的一档。', 'err'); return; }
+    if (!body.endpoint) { alertNotify('端点不能空——这一行的全部意义就是「这一档引擎在哪个地址」。', 'err'); return; }
     addBtn.disabled = true;
     let out = null;
     const ok = await run('加实例', async () => { out = await api.createEngine(body); });

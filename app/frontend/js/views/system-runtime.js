@@ -124,7 +124,7 @@ export function mountSecretValues(root) {
         alertNotify(`已删除库里保存的 ${name}。`);
       } catch (err) {
         del.disabled = false;
-        alertNotify(`删除失败：${err.message}`);
+        alertNotify(`删除失败：${err.message}`, 'err');
       }
       return;
     }
@@ -133,7 +133,7 @@ export function mountSecretValues(root) {
       const name = save.dataset.svSave;
       const input = card.querySelector(`[data-sv-input="${name}"]`);
       const value = input ? input.value.trim() : '';
-      if (!value) { alertNotify('密钥不能为空'); return; }
+      if (!value) { alertNotify('密钥不能为空', 'err'); return; }
       save.disabled = true;
       try {
         await api.saveSecretValue(name, value);
@@ -144,7 +144,7 @@ export function mountSecretValues(root) {
         alertNotify(`已保存 ${name}（密文）。下一单生效。`);
       } catch (err) {
         save.disabled = false;
-        alertNotify(`保存失败：${err.message}`);
+        alertNotify(`保存失败：${err.message}`, 'err');
       }
     }
   });
@@ -234,7 +234,7 @@ export function mountRuntimePaths(root) {
         : `已清除 ${envName} 的页面配置。`);
     } catch (err) {
       btn.disabled = false;
-      alertNotify(`保存失败：${err.message}`);
+      alertNotify(`保存失败：${err.message}`, 'err');
     }
   }, { once: false });
 }
