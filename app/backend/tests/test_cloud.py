@@ -92,6 +92,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(429, {"error": {"message": "rate limited",
                                            "code": "rate_limit"}})
                 return
+            if scenario == "deepseek_receipt_lost":
+                # 请求已被服务端记录，故意不发回执，模拟受理后断线。
+                self.close_connection = True
+                return
             if scenario == "deepseek_500_with_id":
                 # 5xx **并且带 request_id**：供应商侧任务可能已经建立、甚至已计费。
                 # 这一档要落 needs_attention（待核对），不能按普通失败建议重试。
@@ -349,7 +353,12 @@ def test_worker_云端文本端到端写请求ID与用量(tmp_path, monkeypatch,
     assert done["result_paths_json"] != "[]"
 
 
-def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, mock_api,
+@pytest.mark.parametrize("scenario, request_id, error_code", [
+    ("deepseek_500_with_id", "chatcmpl-500-1", "provider_unavailable"),
+    ("deepseek_receipt_lost", None, "provider_cloud_run_error"),
+])
+def test_云端结果未知进待核对而不是普通失败(scenario, request_id, error_code,
+                                             monkeypatch, mock_api,
                                              provider_state, clean_queue, fresh_project,
                                              register_tier):
     """错误码前缀不能拼两次——拼两次会让"结果未知"伪装成"失败，可重试"。
@@ -362,7 +371,7 @@ def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, m
     monkeypatch.setenv("DEEPSEEK_API_KEY", SECRET)
     monkeypatch.setenv("DEEPSEEK_BASE_URL", _base(mock_api))
     monkeypatch.setenv("no_proxy", "127.0.0.1")
-    mock_api.scenario = "deepseek_500_with_id"
+    mock_api.scenario = scenario
     register_tier("text", "cloud", "deepseek", "deepseek-flash")
 
     import db
@@ -384,11 +393,14 @@ def test_云端5xx带请求ID时进待核对而不是普通失败(monkeypatch, m
     assert worker.run_once("w-uncertain") == row["id"]
 
     done = job_repo.get(row["id"])
-    assert done["error_code"] == "provider_unavailable", done["error_code"]
+    assert done["error_code"] == error_code, done["error_code"]
     assert not done["error_code"].startswith("provider_provider_")
     assert done["status"] == "needs_attention", done["status"]
     assert done["billable_status"] == "pending_reconciliation"
-    assert done["provider_request_id"] == "chatcmpl-500-1"
+    assert done["provider_request_id"] == request_id
+    assert len([c for c in mock_api.calls if c[0] == "POST"]) == 1
+    assert worker.run_once("no-repeat-after-lost-receipt") is None
+    assert len([c for c in mock_api.calls if c[0] == "POST"]) == 1
     assert "云端调用结果未知" in (done["attention_reason"] or "")
 
 

@@ -175,7 +175,7 @@ def test_recover_stale_云端有请求ID挂待核对(fresh_project, clean_queue)
     assert done["error_code"] == "worker_lost"
 
 
-def test_recover_stale_云端无请求ID算failed(fresh_project, clean_queue):
+def test_recover_stale_运行中云端无请求ID也先核对(fresh_project, clean_queue):
     pid = fresh_project("editor")
     row = job_repo.create({
         "project_id": pid, "capability": "text", "kind": "text",
@@ -189,7 +189,7 @@ def test_recover_stale_云端无请求ID算failed(fresh_project, clean_queue):
                       lease_until=datetime('now','localtime','-1 hour'),
                       worker_id='ghost' WHERE id=?""", (row["id"],))
     job_repo.recover_stale()
-    assert job_repo.get(row["id"])["status"] == "failed"
+    assert job_repo.get(row["id"])["status"] == "needs_attention"
 
 
 def test_recover_stale_取消了但云端有请求ID也必须挂待核对(fresh_project, clean_queue):
@@ -219,12 +219,8 @@ def test_recover_stale_取消了但云端有请求ID也必须挂待核对(fresh_
     assert done["error_code"] == "worker_lost"
 
 
-def test_recover_stale_取消且云端无请求ID仍正常取消(fresh_project, clean_queue):
-    """反向钉子：没拿到请求 ID 就说明供应商一次都没被调到，这笔钱不该进账。
-
-    这条防的是"为了让上一条绿，索性把所有 cancel_requested 都判待核对"——
-    那会把正常的取消变成一堆需要人核对的垃圾。
-    """
+def test_recover_stale_取消且云端无请求ID也先核对(fresh_project, clean_queue):
+    """缺请求 ID 也可能是回执丢失，取消意愿不能证明供应商未受理。"""
     pid = fresh_project("editor")
     row = job_repo.create({
         "project_id": pid, "capability": "text", "kind": "text",
@@ -239,8 +235,8 @@ def test_recover_stale_取消且云端无请求ID仍正常取消(fresh_project, 
                       worker_id='ghost' WHERE id=?""", (row["id"],))
     job_repo.recover_stale()
     done = job_repo.get(row["id"])
-    assert done["status"] == "cancelled"
-    assert done["error_code"] == "cancelled"
+    assert done["status"] == "needs_attention"
+    assert done["error_code"] == "worker_lost"
 
 
 # ---------- retry-preview：重试前把账摆给人看 ----------
@@ -519,3 +515,95 @@ def test_worker_status_只报自己看得见的正在跑的作业(
                                    error_code='test_cleanup'
                          WHERE status='running' AND project_id IN (?, ?)""",
                      (mine, other))
+
+
+@pytest.mark.parametrize("supplier_result, expected_status", [
+    ({"cancelled": True}, "cancelled"),
+    ({"cancelled": False, "reason": "running"}, "needs_attention"),
+    ({"cancelled": False, "reason": "network"}, "needs_attention"),
+])
+def test_worker_云端取消按供应商回执收尾(
+        fresh_project, clean_queue, monkeypatch, supplier_result, expected_status):
+    """走真实领取与 process，用假执行器模拟已受理后用户取消。"""
+    from types import SimpleNamespace
+    import worker
+
+    pid = fresh_project("editor")
+    row = job_repo.create({
+        "project_id": pid, "capability": "text", "kind": "text",
+        "execution_mode": "cloud", "provider_code": "deepseek",
+        "model_code": "deepseek-flash", "params": {}, "input_refs": [],
+        "cost_micros": 16000, "currency": "CNY",
+        "billable_status": "pending_reconciliation", "user_confirmed_cloud": True,
+    })
+    spec = SimpleNamespace(meta={"result_path": "fake-receipt"},
+                           pass_env=("DEEPSEEK_API_KEY",))
+    monkeypatch.setattr(worker, "_validate", lambda job, outputs: ({}, spec))
+    calls = []
+
+    def execute(job, *args):
+        job_repo.request_cancel(job["id"])
+        raise worker.Cancelled("云端执行中取消")
+
+    def cancel(**kwargs):
+        calls.append(kwargs)
+        return supplier_result
+
+    monkeypatch.setattr(worker, "_run_spec", execute)
+    monkeypatch.setattr(worker.runners, "provider_receipt",
+                        lambda spec: {"request_id": "req-cancel-worker"})
+    monkeypatch.setattr(worker.cloud_run, "cancel_task", cancel)
+    assert worker.run_once("cancel-test") == row["id"]
+    assert calls == [{"provider": "deepseek", "request_id": "req-cancel-worker",
+                      "key_env": "DEEPSEEK_API_KEY"}]
+    done = job_repo.get(row["id"])
+    assert done["status"] == expected_status
+    assert done["provider_request_id"] == "req-cancel-worker"
+    assert done["cost_micros"] == 16000
+    assert done["worker_id"] is None
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("provider_network", "needs_attention"),
+    ("provider_timeout", "needs_attention"),
+    ("provider_auth", "failed"),
+])
+def test_worker_回执无请求ID不能证明未计费(
+        fresh_project, clean_queue, monkeypatch, code, expected):
+    from types import SimpleNamespace
+    import worker
+
+    row = job_repo.create({
+        "project_id": fresh_project("editor"), "capability": "text", "kind": "text",
+        "execution_mode": "cloud", "provider_code": "deepseek", "model_code": "m",
+        "params": {}, "input_refs": [], "cost_micros": 16000, "currency": "CNY",
+        "billable_status": "pending_reconciliation", "user_confirmed_cloud": True,
+    })
+    calls = []
+    monkeypatch.setattr(worker, "_validate",
+                        lambda job, outputs: ({}, SimpleNamespace(meta={})))
+
+    def accepted_without_receipt(*args):
+        calls.append(row["id"])
+        raise worker.JobFailure(code, "模拟供应商已受理但回执丢失")
+
+    monkeypatch.setattr(worker, "_run_spec", accepted_without_receipt)
+    assert worker.run_once("lost-receipt") == row["id"]
+    assert calls == [row["id"]]
+    done = job_repo.get(row["id"])
+    assert done["status"] == expected
+    assert done["provider_request_id"] is None
+    assert done["cost_micros"] == 16000
+    assert worker.run_once("no-auto-resubmit") is None
+    assert calls == [row["id"]]
+
+
+def test_recover_stale_尚未执行且无请求ID的云端可普通失败(fresh_project, clean_queue):
+    row = job_repo.create({
+        "project_id": fresh_project("editor"), "capability": "text", "kind": "text",
+        "execution_mode": "cloud", "provider_code": "deepseek", "model_code": "m",
+        "params": {}, "input_refs": [],
+    })
+    assert job_repo.claim_next("before-dispatch", -1)["id"] == row["id"]
+    job_repo.recover_stale()
+    assert job_repo.get(row["id"])["status"] == "failed"

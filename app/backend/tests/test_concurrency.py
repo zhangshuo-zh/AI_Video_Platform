@@ -169,3 +169,19 @@ def test_心跳能列出多个worker与各自上限(as_role):
         conn.execute("UPDATE worker_node SET heartbeat_at = "
                      "datetime('now','localtime','-1 day') "
                      "WHERE worker_id LIKE 'e1-node-%'")
+
+
+def test_重型作业取消请求未收尾时其他worker不能提前领取(queue):
+    first = _job(queue["pid"], queue["uid"], capability="video")
+    second = _job(queue["pid"], queue["uid"], capability="video")
+    assert job_repo.claim_next("cancel-owner", 60)["id"] == first["id"]
+    job_repo.set_running(first["id"], "cancel-owner")
+    job_repo.request_cancel(first["id"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda wid: job_repo.claim_next(wid, 60),
+                                ["cancel-contender-1", "cancel-contender-2"]))
+    assert len(results) == 2
+    assert results == [None, None]
+    job_repo.cancelled(first["id"], "cancel-owner")
+    assert job_repo.claim_next("after-cancel", 60)["id"] == second["id"]
+    _finish(second["id"], "after-cancel")

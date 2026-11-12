@@ -75,6 +75,8 @@ CLOUD_UNCERTAIN_CODES = {
     "adapter_failed", "empty_output", "run_timeout", "worker_stopped",
     "provider_timeout", "provider_network", "provider_empty_response",
     "provider_empty_output", "provider_error", "provider_unavailable",
+    # 受理后断线或响应 JSON 损坏也可能没有 request_id。
+    "provider_cloud_run_error",
     "cancelled_unconfirmed",
 }
 
@@ -809,9 +811,11 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     return [jobfiles.relative(p) for p in paths], elapsed, request_id
 
 
-def _cloud_uncertain(job, code: str, request_id: str | None) -> bool:
-    """云端调用结果未知：供应商任务可能已建立，不能按普通失败建议重试。"""
-    return bool(job["execution_mode"] == "cloud" and request_id
+def _cloud_uncertain(job, code: str, request_id: str | None,
+                     *, submitted: bool = False) -> bool:
+    """无请求 ID 也可能已受理；执行前取消仍可直接收尾。"""
+    evidence = request_id or submitted or code != "cancelled_unconfirmed"
+    return bool(job["execution_mode"] == "cloud" and evidence
                 and code in CLOUD_UNCERTAIN_CODES)
 
 
@@ -917,7 +921,7 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                 _key_envs = [e for e in (spec.pass_env or ())
                              if e.endswith(("_API_KEY", "_KEY", "_TOKEN"))]
                 supplier_cancel = cloud_run.cancel_task(
-                    provider=str((job.get("provider_code") or "")),
+                    provider=str(job["provider_code"] or ""),
                     request_id=str(cancel_request_id),
                     key_env=(_key_envs[0] if _key_envs else ""))
                 extra["supplier_cancel"] = supplier_cancel
@@ -927,7 +931,8 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                     ensure_ascii=False))
             supplier_cancelled = bool(supplier_cancel.get("cancelled"))
             if (not supplier_cancelled) and _cloud_uncertain(
-                    job, "cancelled_unconfirmed", cancel_request_id):
+                    job, "cancelled_unconfirmed", cancel_request_id,
+                    submitted=spec is not None):
                 reason = str(supplier_cancel.get("reason") or "")
                 if reason == "running":
                     _write(log, "状态：needs_attention（取消，但供应商任务已在运行，取消不了）")

@@ -2,13 +2,44 @@ from __future__ import annotations
 
 import sqlite3
 
+from asset_generation_refs import parse_refs
 from config import RESOURCE_CLASSES
 from db import get_conn
 
-from .common import RESOURCE_CLASS_SQL
+from .common import RESOURCE_CLASS_SQL, clamp_limit
 
 
 class JobsQueryMixin:
+
+    def recent_asset_generations(self, project_id: int, operations: tuple[str, ...],
+                                 *, asset_id: int | None = None,
+                                 limit: int = 12) -> list[sqlite3.Row]:
+        """归属条件先于 LIMIT；沿用同一个解析器兼容旧 JSON 与重复引用。
+
+        用连接局部的确定性 SQL 函数避免再实现一份 JSON 解析语义：旧引用的
+        顺序、空白、数字写法和脏项处理都与预览一致。项目条件仍走现有索引，
+        按 id 倒序返回（SQLite 可使用临时排序）；不取固定候选窗口，也不加索引。
+        """
+        wanted = frozenset(operations)
+        target = int(asset_id) if asset_id is not None else None
+
+        def matches(raw):
+            ref = parse_refs({"input_refs_json": raw})
+            return (ref["operation"] in wanted
+                    and (target is None or ref["asset_id"] == target))
+
+        with get_conn() as conn:
+            conn.create_function("asset_generation_matches", 1, matches, deterministic=True)
+            try:
+                return conn.execute(
+                    """SELECT * FROM job WHERE project_id = ?
+                         AND asset_generation_matches(input_refs_json)
+                       ORDER BY id DESC LIMIT ?""",
+                    (int(project_id), clamp_limit(limit)),
+                ).fetchall()
+            finally:
+                conn.create_function("asset_generation_matches", 1, None)
+
 
     def _latest_by_shot(self, episode_id: int, capability: str,
                         statuses: tuple[str, ...] | None = None

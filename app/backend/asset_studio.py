@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+from asset_generation_refs import parse_refs
 import re
 import shutil
 import uuid
@@ -162,35 +164,6 @@ def build_refs(operation: str, asset_id: int | None,
     if variant_id is not None:
         refs.append(f"variant:{variant_id}")
     return refs
-
-
-def parse_refs(job) -> dict:
-    """从作业里读出归属。读不出 op 就说明这不是资产生成作业。"""
-    try:
-        refs = json.loads(job["input_refs_json"] or "[]")
-    except (TypeError, ValueError):
-        refs = []
-    out = {"operation": "", "asset_id": None, "variant_id": None,
-           "mode": "", "fields": []}
-    for item in refs if isinstance(refs, list) else []:
-        if not isinstance(item, str) or ":" not in item:
-            continue
-        key, value = item.split(":", 1)
-        if key == "op":
-            out["operation"] = value
-        elif key == "mode":
-            out["mode"] = value
-        elif key == "sec":
-            out["fields"].append(value)
-        elif key in ("asset", "variant"):
-            try:
-                out[f"{key}_id"] = int(value)
-            except ValueError:
-                pass
-    # 这里只报**行里写了什么**：图像作业本来就没有模式这一层，替它填一个
-    # "full" 会让列表里出现"图像作业按完整设定模式跑"这种没发生过的事。
-    # 需要默认值的调用方（文字回稿的段落切分）自己在用的那一层补，见 generation_view。
-    return out
 
 
 # ---------- 人物档案 ----------
@@ -463,31 +436,10 @@ def generation_summary(job, ref: dict | None = None) -> dict:
 
 def recent_generations(project_id: int, asset_id: int | None = None,
                       limit: int = 12) -> list[dict]:
-    """这个项目（可选：这条资产）最近的资产生成作业。
-
-    为什么要有这一条：页面把"在飞的作业"存在内存里，刷新一次就没了——
-    人刚生成的候选看不见，会以为没跑。状态本来就在 `job` 表里，
-    把它读回来比在浏览器里攒一份副本诚实。
-    归属信息住在 `input_refs` 里（job 表没有 asset_id 列，也不该为一类目标加一列），
-    所以**过滤下推到 SQL**：只取 refs 以 `["op:` 开头的那些行。
-    以前是"取最近 40~48 条任意 kind 再在 Python 里筛"——同一个项目里视频与文档 AI
-    作业一多，要的 12 条就整个落在窗口外面，界面显示"还没有生成记录"，
-    而这是**假空态**（本轮评审点名的复发风险）。按目标资产再筛一遍仍是本地的，
-    窗口因此还留着，但挤出去的前提变成"同项目 160 条**资产生成**作业"，量级不同。
-    """
-    rows = job_repo.list([project_id], limit=max(int(limit) * 4, 40),
-                         refs_prefix='["op:')
-    out = []
-    for row in rows:
-        ref = parse_refs(row)
-        if ref["operation"] not in ASSET_GEN_OPERATIONS:
-            continue
-        if asset_id is not None and ref["asset_id"] != int(asset_id):
-            continue
-        out.append(generation_summary(row, ref))
-        if len(out) >= limit:
-            break
-    return out
+    """先按项目、操作和资产归属筛选，再按 Job id 倒序取 limit。"""
+    rows = job_repo.recent_asset_generations(
+        project_id, tuple(ASSET_GEN_OPERATIONS), asset_id=asset_id, limit=limit)
+    return [generation_summary(row) for row in rows]
 
 
 def submit_generation(project_id: int, payload, created_by: int | None) -> dict:

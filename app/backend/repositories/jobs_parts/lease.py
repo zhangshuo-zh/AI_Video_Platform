@@ -116,7 +116,8 @@ class JobsLeaseMixin:
 
         判据是租约过期，不是进程号：PID 会被复用，租约时间不会。
 
-        云端那条多一个分支：**已经拿到供应商请求 ID 的作业不能直接算 failed**。
+        云端那条多一个分支：已进入 running 或已有请求 ID 的作业不能直接算 failed。
+        回执可能在落库前丢失；没有请求 ID 不能证明供应商未受理。
         供应商那边可能已经建了任务、甚至已经计了费；failed 的默认建议是重试，
         而那正好可能造成第二次调用。这里把它挂成 needs_attention，交给人核对。
         """
@@ -131,7 +132,7 @@ class JobsLeaseMixin:
                           updated_at = datetime('now','localtime')
                     WHERE status IN ('starting','running')
                       AND execution_mode = 'cloud'
-                      AND provider_request_id IS NOT NULL
+                      AND (provider_request_id IS NOT NULL OR status = 'running')
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount
@@ -145,17 +146,8 @@ class JobsLeaseMixin:
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount
-            # **`cancel_requested` 也要走那条"云端可能已计费"的保护**（2026-11-10 自查）。
-            #
-            # 原来只有 `starting/running` 那条带 `provider_request_id` 保护，
-            # `cancel_requested` 一律收成 `cancelled`。但这两个分支面对的是
-            # 同一件事实：作业已经拿到供应商请求 ID，钱可能已经花了。
-            # 「用户点过取消」并不能让供应商那边撤销——取消只是**本地意愿**，
-            # `cancel_job()` 的注释也写着跑着的作业只记意愿、模型不响应中断。
-            #
-            # 后果不是少一条记录：`cancelled` 在 `RETRYABLE` 里，界面上直接给出
-            # 「重试」，一键就再调一次供应商 → 重复扣费。而 `needs_attention`
-            # 会要求先核对账本。这正是上面那段 docstring 的规则，之前只落了一半。
+            # 取消意愿不能证明供应商未受理；此状态也不保留取消前是
+            # starting 还是 running。租约失效后，即使请求 ID 缺失也先核对。
             attention_cancelled = conn.execute(
                 """UPDATE job SET status = 'needs_attention',
                           error_code = 'worker_lost',
@@ -166,7 +158,6 @@ class JobsLeaseMixin:
                           updated_at = datetime('now','localtime')
                     WHERE status = 'cancel_requested'
                       AND execution_mode = 'cloud'
-                      AND provider_request_id IS NOT NULL
                       AND (lease_until IS NULL
                            OR lease_until < datetime('now','localtime'))"""
             ).rowcount

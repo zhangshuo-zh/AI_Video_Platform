@@ -923,3 +923,56 @@ def test_脏的图片清单不会把删除卡成半套(as_role, fresh_project, t
     assert not good.exists(), "在本目录里的那张该跟着资产走"
     assert outside.exists(), "越出 FILES_DIR 的路径不是本平台资产，动不得"
     assert not (FILES_DIR / "逃逸.png").exists(), "上跳一层不能把文件落进上传目录"
+
+
+def test_指定资产历史不会被其他资产挤掉且兼容旧引用(as_role, studio, fresh_project):
+    pid, aid = studio["pid"], studio["aid"]
+    old = _make_job(pid, "image", ["op:asset_image", f"asset:{aid}"])
+    # 旧数据没有 mode/sec，op 不必排首位，JSON 空白也不影响归属。
+    legacy = _make_job(pid, "text", [f"asset:{aid}", "op:character_profile"])
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET input_refs_json=? WHERE id=?",
+                     (json.dumps([f"asset:{aid}", "op:character_profile"], indent=2),
+                      legacy["id"]))
+    other = _new_asset(pid)
+    for _ in range(55):
+        _make_job(pid, "image", asset_studio.build_refs("asset_image", other, None))
+    _make_job(pid, "image", ["op:asset_image", f"asset:{aid}0"])
+    _make_job(fresh_project("editor"), "image", ["op:asset_image", f"asset:{aid}"])
+    c = as_role("editor")
+    response = c.get(f"/api/projects/{pid}/asset-generations",
+                     params={"target_asset_id": aid, "limit": 12})
+    assert response.status_code == 200, response.text
+    assert [r["job_id"] for r in response.json()] == [legacy["id"], old["id"]]
+    latest = c.get(f"/api/projects/{pid}/asset-generations",
+                   params={"target_asset_id": aid, "limit": 1})
+    assert [r["job_id"] for r in latest.json()] == [legacy["id"]]
+
+
+def test_资产历史匹配沿用解析语义并在限量前排除脏引用(studio):
+    pid, aid = studio["pid"], studio["aid"]
+    expected = []
+    project_expected = []
+    refs_list = [
+        [f"asset:{aid}", "op:asset_image"],
+        ["op:asset_image", f"asset:0{aid}", "asset:bad"],
+        ["op:unknown", "op:character_profile", f"asset: +{aid}"],
+        ["op:asset_image", f"asset:{aid}", "asset:99999999"],
+        ["op:asset_image", "op:unknown", f"asset:{aid}"],
+        {"op": "asset_image", "asset": aid},
+    ]
+    for refs in refs_list:
+        row = _make_job(pid, "image", refs)
+        parsed = asset_studio.parse_refs(row)
+        if parsed["operation"] in asset_studio.ASSET_GEN_OPERATIONS:
+            project_expected.append(row["id"])
+        if (parsed["asset_id"] == aid
+                and parsed["operation"] in asset_studio.ASSET_GEN_OPERATIONS):
+            expected.append(row["id"])
+    broken = _make_job(pid, "image", [])
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET input_refs_json='broken' WHERE id=?", (broken["id"],))
+    rows = asset_studio.recent_generations(pid, aid, limit=2)
+    assert [r["job_id"] for r in rows] == list(reversed(expected))[:2]
+    all_rows = asset_studio.recent_generations(pid, limit=50)
+    assert [r["job_id"] for r in all_rows] == list(reversed(project_expected))
