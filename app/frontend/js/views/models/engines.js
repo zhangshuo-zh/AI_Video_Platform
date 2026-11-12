@@ -441,53 +441,20 @@ export function openProbeResults(payload, cloudRows) {
     const cloud = Array.isArray(cloudRows2) ? cloudRows2 : [];
     const cloudMissing = cloudRows2 === undefined || cloudRows2 === null
       || !Array.isArray(cloudRows2);
-  const rowsNow = items.map((it) => {
-    const name = it.display_name || it.engine_label || it.engine_code;
-    const served = service.has(it.engine_code);
-    // 三档分开：停用/没有探测分支的是「没查」，不是「连不上」。
-    let chip;
-    if (!it.enabled) {
-      chip = '<span class="chip gray">已停用</span>';
-    } else if (it.probe_unsupported) {
-      chip = '<span class="chip amber" title="连接方式还没有探测分支，平台不拿一次 HTTP 的结论冒充它">探测未实现</span>';
-    } else {
-      // 这一屏人问的就是"连上没有"，所以直接用这两个词，不再叠全局徽章的
-      // 通用译名（`missing` 在别处叫「缺东西」，那是清单/密钥那一侧的语境；
-      // 摆在这里会变成"连不上 缺东西"两句说同一件事）。口径说明放进 title，
-      // 想看的人 hover 得到。
-      chip = it.health_state === 'ok'
-        ? `<span class="chip green" title="${escapeHtml(it.health_detail || '')}">连上了</span>`
-        : it.health_state === 'missing'
-          ? `<span class="chip red" title="${escapeHtml(it.health_detail || '')}">连不上</span>`
-          : `<span class="chip amber" title="${escapeHtml(it.health_detail || '')}">查不了</span>`;
-    }
-    const queried = it.enabled && !it.probe_unsupported;
-    // 备注并进第一列（2026-11-12）。它写的是「本机常驻服务；端点无路径无查询串」
-    // 这类静态说明，与这一屏的问题（通不通）关系不大，却占着 24% 的宽度，
-    // 把「状态」列挤到长模型名要折三行。并过来之后状态列拿回那部分宽度。
-    // 引擎码与标题完全相同时不再重复显示（2026-11-12 截图：
-    // draw_things 上面一行是它、下面一行还是它）。有 display_name 时才补一行码。
-    const codeLine = it.engine_code && it.engine_code !== name
-      ? `<div class="hint mono">${escapeHtml(it.engine_code)}${served ? '' : ' · 非服务型'}</div>`
-      : (served ? '' : '<div class="hint">非服务型</div>');
-    return `<tr>
-      <td class="t-strong">${escapeHtml(name)}
-        ${codeLine}
-        ${it.note ? `<div class="hint">${escapeHtml(it.note)}</div>` : ''}</td>
-      <td><code>${escapeHtml(it.endpoint || '—')}</code>
-        <div class="hint">${escapeHtml(it.connection_type || '')}</div></td>
-      <td>${chip}
-        ${/* 模型名只在 detail 里出现一次。原来这里还单独画一行 engine_model，
-              而 detail 的内容是「服务在线，当前模型 xxx.ckpt」——同一个名字
-              连着显示两遍（2026-11-12 截图里一眼可见）。 */ ''}
-        <div class="hint">${escapeHtml(it.health_detail || '')}</div></td>
-      <td class="c" style="white-space:nowrap">
-        ${it.launch_ready
-          ? `<button class="btn xs" data-act-launch="${it.id}"
-                     title="${escapeHtml(it.launch_note || '按内置配方启动这台本机服务')}">启动服务</button>`
-          : '<span class="hint">—</span>'}
-      </td>
-    </tr>`;
+  const rank = (it) => !it.enabled || it.probe_unsupported ? 2 : it.health_state === 'ok' ? 1 : 0;
+  const details = (text) => `<details class="probe-details"><summary>查看详情</summary><div>${escapeHtml(text || '暂无详细信息')}</div></details>`;
+  const hasActions = items.some((it) => !it.enabled || it.launch_ready);
+  const rowsNow = [...items].sort((a, b) => rank(a) - rank(b)).map((it) => {
+    const ok = it.health_state === 'ok';
+    const skipped = !it.enabled || it.probe_unsupported;
+    const label = !it.enabled ? '已停用' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
+    const tone = skipped ? 'gray' : ok ? 'green' : 'red';
+    const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
+    return `<tr><td><strong>${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</strong>
+      <div class="hint mono probe-endpoint">${escapeHtml(it.endpoint || '未配置端点')}</div></td>
+      <td><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
+      ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</td>
+      ${hasActions ? `<td>${!it.enabled ? `<button class="btn xs" data-probe-enable="${it.id}">启用</button>` : it.launch_ready ? `<button class="btn xs" data-act-launch="${it.id}">启动服务</button>` : '<span class="hint">—</span>'}</td>` : ''}</tr>`;
   }).join('');
 
   const queried = items.filter((it) => it.enabled && !it.probe_unsupported);
@@ -499,44 +466,27 @@ export function openProbeResults(payload, cloudRows) {
   // 说明文字只留一句。原来这里连弹窗底部的注，把「连上≠可用」讲了三遍
   // （2026-11-12 用户反馈「注释、提醒字数太多，简略一些」）。结论本身一句就够，
   // 剩下的细节放进 title，想追的人 hover 得到。
-  const verdict = !items.length
-    ? `<p class="note" style="margin:0 0 10px"><b>还没有登记过引擎实例。</b>
-      先到「引擎管理」给它写一条端点（如 <code>http://127.0.0.1:7860</code>）。</p>`
-    : `<p class="note" style="margin:0 0 10px">
-      <b>现查 ${queried.length} 台：通 ${okN}${badN ? `，不通 ${badN}` : ''}。</b>
-      ${skipped ? `另有 ${skipped} 台没查（已停用或暂无探测分支）。` : ''}
-      <span title="连上只说明引擎进程在线、端点答话；那一档模型能不能用还要过验证那几关。">连上只说明端点答话，不等于模型可用。</span></p>`;
-
-  // 这张表必须用 table.tbl-fixed（2026-11-12 用户反馈截图）：
-  // 自动布局下四列按内容抢宽度，而 th 带 white-space:nowrap，
-  // 「备注」那一列被挤成一行一个字（截图里是竖排的"本机常驻服务"）。
-  // tbl-fixed 让列宽由 app.css 里的百分比说了算，长句在格子里换行。
-  const body = items.length
-    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-4"><thead><tr>
-        <th>引擎实例</th><th>端点</th><th>状态</th><th class="c">操作</th>
-      </tr></thead><tbody>${rowsNow}</tbody></table></div>`
-    : '';
+  const unknownN = queried.length - okN - badN;
+  const verdict = `<div class="probe-summary"><strong>本地 ${queried.length} 项检查 · ${okN} 项通过 · ${badN + unknownN} 项异常</strong>
+    <p class="hint">${skipped ? `另有 ${skipped} 项未检查。` : ''}连接成功仅表示端点响应，不代表模型可用。</p></div>`;
+  const body = items.length ? `<h3 class="probe-section">本地引擎</h3><div class="table-wrap"><table class="tbl-fixed probe-table ${hasActions ? '' : 'probe-table-no-actions'}"><thead><tr><th>引擎 / 端点</th><th>检查结果</th>${hasActions ? '<th>操作</th>' : ''}</tr></thead><tbody>${rowsNow}</tbody></table></div>` : '<p class="note">尚未登记引擎实例，请进入引擎管理添加端点。</p>';
 
   // 云端一段：逐家供应商一行，结论来自 cloud_probe（去供应商网关问一次）。
   // 五档各说各的，chip 用的就是"要不要动、动什么"的词，不互相冒充。
   const CLOUD_CHIP = {
-    ok: ['green', '路通、钥匙被接受'],
+    ok: ['green', '端点可达 · 鉴权通过'],
     auth_rejected: ['red', '路通、钥匙被拒'],
     unreachable: ['red', '连不上'],
     no_key: ['amber', '没配密钥'],
     no_endpoint: ['amber', '无可探端点'],
   };
-  const cloudRowsNow = cloud.map((c) => {
+  const cloudRowsNow = [...cloud].sort((a, b) => Number(a.state === 'ok') - Number(b.state === 'ok')).map((c) => {
     const [tone, word] = CLOUD_CHIP[c.state] || ['amber', c.state || '未知'];
-    const where = c.url ? `<code>${escapeHtml(c.url)}</code>`
-                        : `<span class="hint">${escapeHtml(c.key_env || '')}</span>`;
-    return `<tr>
-      <td class="t-strong">${escapeHtml(c.label || c.provider)}
-        <div class="hint mono">${escapeHtml(c.provider)} · ${escapeHtml(c.capability || '')}</div></td>
-      <td>${where}</td>
-      <td><span class="chip ${tone}" title="${escapeHtml(c.detail || '')}">${escapeHtml(word)}</span>
-        <div class="hint">${escapeHtml(c.detail || '')}</div></td>
-    </tr>`;
+    let endpoint = c.key_env || '未配置端点';
+    try { endpoint = new URL(c.url).origin; } catch { /* 无有效地址时显示配置项 */ }
+    return `<tr><td><strong>${escapeHtml(c.label || c.provider)}</strong><div class="hint mono probe-endpoint">${escapeHtml(endpoint)}</div></td>
+      <td><span class="chip ${tone}">${escapeHtml(word)}</span><div class="hint">${c.state === 'ok' ? '未验证实际生成' : '请检查连接或配置'}</div>${details([c.provider, c.capability, c.url, c.detail].filter(Boolean).join(' · '))}</td>
+      </tr>`;
   }).join('');
 
   const cloudVerdict = cloud.length
@@ -550,19 +500,19 @@ export function openProbeResults(payload, cloudRows) {
           重启进程即可。<b>别把"没显示"当成"都是好的"。</b></p>`
       : '';
   const cloudBody = cloud.length
-    ? `<div class="table-wrap"><table class="tbl-fixed modal-tbl-3"><thead><tr>
-        <th>云端引擎</th><th>探测目标</th><th>状态</th>
+    ? `<div class="table-wrap"><table class="tbl-fixed probe-table probe-table-no-actions"><thead><tr>
+        <th>引擎 / 端点</th><th>检查结果</th>
       </tr></thead><tbody>${cloudRowsNow}</tbody></table></div>`
     : '';
     return { verdict, body, cloudVerdict, cloudBody, cloud };
   }
 
   const host = document.createElement('div');
-  host.className = 'modal';
+  host.className = 'modal probe-results';
   host.innerHTML = `<div class="modal-box wide">
-      <div class="modal-head neutral">引擎连接检查 · 结果</div>
+      <div class="modal-head neutral">引擎连接检查</div>
       <div class="modal-body" data-probe-body></div>
-      <div class="modal-actions"><button class="btn" data-close-probe-res>关闭</button></div>
+      <div class="modal-actions"><span role="status" data-probe-status></span><button class="btn" data-manage-engines>进入引擎管理 →</button><button class="btn" data-recheck>重新检查</button><button class="btn" data-close-probe-res>关闭</button></div>
     </div>`;
   document.body.appendChild(host);
   const close = () => host.remove();
@@ -571,10 +521,7 @@ export function openProbeResults(payload, cloudRows) {
   // 原来的实现是 alertNotify + 派 app:refresh + close()——close() 直接把节点删了，
   // 而 app:refresh 又重绘整页，人根本看不到这一轮的结果（2026-11-12 用户反馈
   // 「点了启动服务弹窗就直接消失了，不能在原来的弹窗刷新吗」）。
-  const footerNote = `
-        <p class="note" style="margin:12px 0 0"
-           title="本机实例用各自端点，列表档超时 0.8 秒；服务半死时可能被判成不通，要问到底请到「引擎管理」点那一行的探测（5 秒档，留历史）。云端这一轮真去供应商网关发了一次 GET（5 秒档），探的是路通不通、钥匙对不对。">
-          本轮现查结论。要问到底：去「引擎管理」点那一行的<b>探测</b>（5 秒档，留历史）。</p>`;
+  const footerNote = '';
   // 屏内结论行（启动结果写在这里，重画后仍然保留）
   let noticeLine = '';
   const bodyEl = host.querySelector('[data-probe-body]');
@@ -583,9 +530,32 @@ export function openProbeResults(payload, cloudRows) {
     const d = derive(inst2 === undefined ? payload : inst2,
                      cloudRows2 === undefined ? cloudRows : cloudRows2);
     bodyEl.innerHTML = d.verdict + d.body
-      + (d.cloud.length ? '<div class="modal-head neutral" style="margin-top:16px">云端引擎 · 现查</div>' : '')
+      + (d.cloud.length ? '<h3 class="probe-section">云端引擎</h3>' : '')
       + d.cloudVerdict + d.cloudBody + footerNote
       + (noticeLine ? `<p class="note" data-launch-notice style="margin:10px 0 0">${noticeLine}</p>` : '');
+    bodyEl.querySelectorAll('[data-probe-enable]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = '启用中…';
+        const status = host.querySelector('[data-probe-status]');
+        let enabled = false;
+        try {
+          await api.patchEngine(btn.dataset.probeEnable, { enabled: true });
+          enabled = true;
+          payload = await api.engines();
+          if (!host.isConnected) return;
+          paint();
+          status.textContent = '实例已启用，连接状态已更新';
+        } catch (err) {
+          status.textContent = enabled
+            ? `实例已启用，但状态刷新失败，请重新检查：${err.message}`
+            : `启用失败：${err.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '启用';
+        }
+      });
+    });
     bindLaunch();
   };
   const paint = () => paintWith(payload, cloudRows);
@@ -594,6 +564,23 @@ export function openProbeResults(payload, cloudRows) {
     if (e.target === host || e.target.closest('[data-close-probe-res]')) close();
   });
   host.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  host.querySelector('[data-manage-engines]').addEventListener('click', () => {
+    close(); setSub('models', 1);
+    window.dispatchEvent(new CustomEvent('app:go', { detail: 'models' }));
+  });
+  host.querySelector('[data-recheck]').addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    const status = host.querySelector('[data-probe-status]');
+    btn.disabled = true; status.textContent = '正在检查…';
+    try {
+      const result = await api.probeModels(true);
+      const fresh = await api.engines();
+      payload = fresh; cloudRows = result?.cloud;
+      if (host.isConnected) { paint(); status.textContent = '检查已更新'; }
+    } catch (err) { status.textContent = `检查失败：${err.message}`; }
+    finally { btn.disabled = false; }
+  });
 
   // 启动按钮的点击要绑在**这个弹窗自己**身上（2026-11-12 修）。
   // 它由这里 append 到 body、不在 #view-root 里，所以 mountEngineInstances
@@ -631,6 +618,7 @@ export function openProbeResults(payload, cloudRows) {
         // 重画要的是**全部实例**的新状态，而 launch 只回这一台，所以再取一次列表。
         try {
           const fresh = await api.engines();
+          payload = fresh;
           paintWith(fresh);
         } catch {
           paint();     // 取不到新数据就至少把结论行画出来

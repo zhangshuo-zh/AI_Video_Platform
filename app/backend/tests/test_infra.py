@@ -1055,6 +1055,9 @@ def test_视图里的_window_监听必须成对解绑():
 
     views = Path(__file__).resolve().parents[2] / "frontend" / "js" / "views"
     allowed = {
+        # ES 模块只初始化一次；监听不在 mount 中注册，不随切页叠加。
+        # 草稿保存在模块中，离开创作页仍可能未保存，因此关闭窗口保护须跨视图保留。
+        "writing.js": "模块初始化一次的 beforeunload，保护跨视图保留的未保存草稿",
         "projects.js": "行菜单的 scroll/resize 由 armRowMenu 挂、disarmRowMenu 解",
         # `visibilitychange` 只在 `document` 上派发，**不冒泡到普通元素**，
         # 所以除了 document 没有别处可挂（挂 root 收不到）。成对解绑已实现：

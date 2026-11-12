@@ -870,21 +870,21 @@ def main():
               'ollama' in txt and 'draw_things' in txt,
               f"窗内 {'含两台' if ('ollama' in txt and 'draw_things' in txt) else txt[:120]}")
         check("结果窗顶部给了一句汇总结论（不用自己数徽章）",
-              '本次现查' in txt and '通' in txt,
-              next((s for s in txt.split('  ') if '本次现查' in s), '')[:80])
+              '项检查' in txt and '项通过' in txt and '项异常' in txt,
+              txt[:100])
         check("结果窗写明「连上 ≠ 模型可用」这层边界",
-              '不等于' in txt and '可用' in txt,
+              '不代表模型可用' in txt,
               "连通性只证明进程在线，可用还要过验证")
-        check("结果窗交代了超时档与历史在哪查",
-              '0.8' in txt and '探测' in txt,
-              "列表档超时说明 + 指向引擎管理的手动探测")
+        check("结果窗提供详情与引擎管理入口",
+              bool(P.eval_js(cdp, "!!(document.querySelector('.probe-results .probe-details summary') && document.querySelector('.probe-results [data-manage-engines]'))")),
+              "技术详情可展开，管理入口可达")
         # 假网关指在 DEEPSEEK_BASE_URL 上（deepseek 钥匙对 → 路通档），wan 故意
         # 没配 base → 无可探端点档。两档同时出现才说明各档结论各说各话。
         check("结果窗有云端一段，登记过的供应商逐家列行",
               '云端' in txt and 'deepseek' in txt and 'wan' in txt,
               f"窗内 {'齐' if ('deepseek' in txt and 'wan' in txt) else txt[:120]}")
         check("云端结论分档：钥匙被接受与无可探端点各说各的",
-              '路通、钥匙被接受' in txt and '无可探端点' in txt,
+              '端点可达 · 鉴权通过' in txt and '无可探端点' in txt,
               "deepseek 走假网关回 200，wan 没配 base 如实报没得探")
         check("旧口径「云端只查密钥变量在不在」的说明已改掉",
               '密钥变量在不在' not in txt,
@@ -934,15 +934,15 @@ def main():
         miss_txt = d.get('missing', '')
         pres_txt = d.get('present', '')
         check("后端没回 cloud 段时，结果窗必须明说「没查」而不是沉默",
-              '没拿到云端结论' in miss_txt and '都没查' in miss_txt,
-              f"{'已明说' if '没拿到云端结论' in miss_txt else '静默省略'} / {miss_txt[:90]}")
+              '后端没返回' in miss_txt and '没查' in miss_txt,
+              f"{'已明说' if '后端没返回' in miss_txt else '静默省略'} / {miss_txt[:90]}")
         check("拿到 cloud 段时不许出现「没拿到」那句话（防永远绿）",
-              '云端 2 家' in pres_txt and '没拿到云端结论' not in pres_txt,
+              '云端 2 家' in pres_txt and '后端没返回' not in pres_txt,
               f"2 家档 {'正常' if '云端 2 家' in pres_txt else pres_txt[:90]}")
-        check("缺 cloud 段时底部不再宣称「真去网关发了一次 GET」",
-              '真去供应商网关发了一次 GET' not in miss_txt
-              and '真去供应商网关发了一次 GET' in pres_txt,
-              "无云端结论时那段话必须收起来，有结论时才说")
+        check("云端缺失与配置未完成显示不同结论",
+              '后端没返回' in miss_txt and '后端没返回' not in pres_txt
+              and '没配密钥' in pres_txt and '无可探端点' in pres_txt,
+              "缺少响应与配置缺项必须区分")
         # 出网的是后端，不是浏览器：页面资源日志里不许出现假网关端口的直连。
         gw_port = str(gateway.server_address[1])
         page_hits = [u for u in P.eval_js(cdp, "performance.getEntriesByType('resource')"
@@ -1439,6 +1439,12 @@ def go(cdp, url):
     cdp.cmd("Page.reload", ignoreCache=True)
     time.sleep(1.6)
 
+
+# 2026-11-12 弹窗语义断言的变异取证（在临时前端副本执行，不改工作区）：
+MUTATIONS = {
+    "后端没返回 <code>cloud</code> 段 → 云端检查完成":
+        "后端没回 cloud 段时，结果窗必须明说「没查」而不是沉默",
+}
 
 if __name__ == "__main__":
     sys.exit(main())
