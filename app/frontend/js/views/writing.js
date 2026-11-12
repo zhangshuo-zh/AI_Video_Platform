@@ -493,17 +493,15 @@ function mountDocs(root, tab) {
     const create = async () => {
       const title = titleEl.value.trim();
       if (!title) { titleEl.focus(); return; }
-      saveBtn.disabled = true;
-      let created = null;
+            let created = null;
       const ok = await run('新建', async () => {
         created = await api.createDocument(store.currentId, {
           kind: TAB_KIND[tab],
           title,
           episode_id: epEl.value ? Number(epEl.value) : null,
           content: bodyEl.value,
-        });
+        }, { btn: saveBtn });
       });
-      saveBtn.disabled = false;
       if (!ok || !created) return;           // 失败时弹窗留着，填的字还在
       close();
       resetEditor();
@@ -1657,9 +1655,7 @@ function mountShots(root) {
       const createEpisode = async () => {
         const title = epTitle.value.trim();
         if (!title) { epTitle.focus(); return; }
-        epBtn.disabled = true;
-        const ok = await run('新建', () => api.createEpisode(store.currentId, title));
-        epBtn.disabled = false;
+        const ok = await run('新建', () => api.createEpisode(store.currentId, title), { btn: epBtn });
         if (!ok) return;
         refresh();
       };
@@ -1886,13 +1882,11 @@ function mountShots(root) {
         variant_ids: [...shotEdit.sel],
       };
       const saveBtn = root.querySelector('#sm-save');
-      saveBtn.disabled = true;
-      errEl.textContent = '';
+            errEl.textContent = '';
       const editing = shotEdit.id;
       const ok = editing
         ? await run('保存镜头', () => api.updateShot(editing, body))
-        : await run('新建镜头', () => api.createShot(pickedEpisodeId, body));
-      saveBtn.disabled = false;
+        : await run('新建镜头', () => api.createShot(pickedEpisodeId, body), { btn: saveBtn });
       if (!ok) return;          // 失败时弹窗留着，填的字还在
       closeShot();
       refresh();

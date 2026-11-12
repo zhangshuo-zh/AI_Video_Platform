@@ -1875,3 +1875,74 @@ def test_轻提示必须走全站_toast_而不是自造浮层():
             fails.append(f"{f.relative_to(FRONTEND / 'js').as_posix()}:{i}")
     assert not fails, ("这些失败提示没标 'err'，会在 4.2 秒后自动消失，人读不完：\n  - "
                        + "\n  - ".join(fails))
+
+
+def test_异步按钮必须显示进行中态():
+    """点下去之后按钮要有「进行中」的可见反馈，不能只是变灰。
+
+    2026-11-12 前端体验优化第二刀：全站 68 处 btn.disabled = true，
+    改过文案的只有 2 处（models/engines.js 的启动服务）。其余 66 处点下去
+    只是变灰——用户看不出「正在处理」还是「点坏了」，于是会再点一次；
+    而按钮已经 disabled，第二次点击没有任何反应，体验上等于卡死。
+
+    修法是把按钮交给 run() 管：await run('保存', fn, { btn }) 会走 withBusy，
+    自动做完「禁用 + 换文案 + aria-busy + 结束后还原」，抛错也保证还原
+    （否则一次网络抖动就把按钮永久废掉）。
+
+    判据四段：
+      A withBusy 做到改文案、aria-busy、finally 还原；
+      B 有子元素的按钮不改文案（改了会把图标吃掉）；
+      C run() 第三参能传 btn 且真的走 withBusy；
+      D 视图里不再有「手写 disabled + run」的邻接形态。
+    """
+    util = code_lines((FRONTEND / 'js' / 'util.js').read_text(encoding='utf-8'))
+
+    assert 'export async function withBusy(' in util, 'withBusy 不见了'
+    start = util.index('export async function withBusy(')
+    tail = util[start:]
+    close = re.search(r'^}' + chr(36), tail, re.M)
+    body = tail[:close.start()] if close else tail
+    assert 'btn.textContent = doing' in body, '进行中没换文案'
+    assert "btn.setAttribute('aria-busy', 'true')" in body, '没有给按钮标 aria-busy'
+    assert 'finally' in body, '没有 finally：抛错时按钮会永久停在禁用态'
+    assert 'btn.children.length' in body, (
+        '没判子元素：带图标的按钮改 textContent 会把图标吃掉')
+
+    assert re.search(r'export async function run\(label, fn, opts\)', util), (
+        'run() 没有第三参 opts，调用点没法把按钮交进来')
+    assert re.search(r'withBusy\(\s*busy', util), 'run() 收到 btn 却没走 withBusy'
+
+    views = FRONTEND / 'js' / 'views'
+    stragglers = []
+    for f in sorted(views.rglob('*.js')):
+        text = code_lines(f.read_text(encoding='utf-8'))
+        for m in re.finditer(r'(\w+)\.disabled = true;\s*\n\s*(const \w+ = await run\()',
+                             text):
+            line = text[:m.start()].count(chr(10)) + 1
+            stragglers.append(f.relative_to(views).as_posix() + ':' + str(line))
+    assert not stragglers, (
+        '这些地方还是手写「变灰 + run」，没传 { btn }，用户看不到进行中：'
+        + chr(10) + '  - ' + (chr(10) + '  - ').join(stragglers))
+
+
+def test_按钮进行中态必须真的传给了_run():
+    """每条 run(...) 只要原先是手写禁用按钮的，就必须把按钮传进去。
+
+    上一版按「全站总数 >= 15」兜底，被变异测试证伪：只把一个文件里的
+    { btn } 全拆掉，总数仍然够 15，判据照样绿。改成**按文件**看：
+    实测有这种形态的十个文件，每个都必须至少一处传了 btn。
+    这样「某一个页面整批退化」一定会红，而不是被别的页面摊平。
+    """
+    views = FRONTEND / 'js' / 'views'
+    SITES = ['review.js', 'system-users.js', 'asset-detail.js', 'asset-triage.js',
+             'projects.js', 'shot-workbench.js', 'writing.js', 'system-roles.js',
+             'models/repo.js', 'models/engines.js']
+    missing = []
+    for name in SITES:
+        text = code_lines((views / name).read_text(encoding='utf-8'))
+        if not re.search(r'\{ btn:?\s', text):
+            missing.append(name)
+    assert not missing, (
+        '这些页面一处都没把按钮交给 run()/withBusy，点下去不会显示进行中：'
+        + chr(10) + '  - ' + (chr(10) + '  - ').join(missing))
+

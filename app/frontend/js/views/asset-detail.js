@@ -357,7 +357,6 @@ export function mountDetail(root, id) {
     const name = root.querySelector('#ad-name').value.trim();
     if (!name) { root.querySelector('#ad-name').focus(); return; }
     const globalEl = root.querySelector('#ad-global');
-    saveBtn.disabled = true;
     const ok = await run('保存', () => api.updateAsset(id, {
       kind: root.querySelector('#ad-kind').value,
       name,
@@ -370,8 +369,7 @@ export function mountDetail(root, id) {
       // 失败时 run() 把服务端的整句话弹出来，其中就写了"这次没有保存、下一步做什么"，
       // 而弹窗不关、字段里的字都还在。
       seen_version: a.version || '',
-    }));
-    saveBtn.disabled = false;
+    }), { btn: saveBtn });
     if (ok) refresh();
   });
 
@@ -380,9 +378,7 @@ export function mountDetail(root, id) {
   root.querySelector('#ad-upload')?.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    e.target.disabled = true;
-    const ok = await run('上传', () => api.uploadAssetImage(id, file));
-    e.target.disabled = false;
+    const ok = await run('上传', () => api.uploadAssetImage(id, file), { btn: e.target });
     e.target.value = '';
     if (ok) refresh();
   });
@@ -411,9 +407,12 @@ export function mountDetail(root, id) {
   // 才收得到 keydown，而打开这个确认框时焦点还留在外面那张卡片上。
   if (delModal) bindModalDismiss(delModal, closeDel);
   delOk?.addEventListener('click', async () => {
-    delOk.disabled = true;
-    const ok = await run('删除资产', () => api.deleteAsset(id));
-    if (!ok) { delOk.disabled = false; return; }
+    // 按钮交给 run 管进行中态：点下去会显示「删除资产中…」并禁用，
+    // 结束（成功或失败）自动还原。原来这里只在失败分支手动放开，
+    // 成功分支靠 closeDel() 把弹窗整个移除——看起来没问题，但一旦
+    // closeDel 之后还有别的路径回到这个按钮，它就会停在禁用态。
+    const ok = await run('删除资产', () => api.deleteAsset(id), { btn: delOk });
+    if (!ok) return;
     closeDel();
     back();                      // 删完停在列表，别停在这条已经不存在的详情上
     refresh();

@@ -292,12 +292,10 @@ export default {
     });
     detail.querySelectorAll('[data-sign]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const ok = await run('签字', () => api.reviewSign(openDocId, {
+      const ok = await run('签字', () => api.reviewSign(openDocId, {
           anchor: btn.dataset.anchor, decision: btn.dataset.sign,
           note: signNote,
-        }));
-        btn.disabled = false;
+        }), { btn: btn });
         if (ok) refresh();
       });
     });
@@ -443,11 +441,9 @@ export default {
       </div>`;
     detail.querySelectorAll('[data-check]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const ok = await run('记录清单', () => api.saveJobChecklist(openJobId, {
+      const ok = await run('记录清单', () => api.saveJobChecklist(openJobId, {
           items: [{ code: btn.dataset.check, state: btn.dataset.state, note: '' }],
-        }));
-        btn.disabled = false;
+        }), { btn: btn });
         if (ok) refresh();
       });
     });
@@ -456,11 +452,9 @@ export default {
     });
     detail.querySelectorAll('[data-jsign]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const ok = await run('签字', () => api.jobReviewSign(openJobId, {
+      const ok = await run('签字', () => api.jobReviewSign(openJobId, {
           anchor: btn.dataset.anchor, decision: btn.dataset.jsign, note: jobNote,
-        }));
-        btn.disabled = false;
+        }), { btn: btn });
         if (ok) refresh();
       });
     });

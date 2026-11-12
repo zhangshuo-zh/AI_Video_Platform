@@ -957,12 +957,10 @@ export function mountEngines(root) {
       btn.onclick = async () => {
         const slot = rowsCache.find((r) => String(r.id) === btn.dataset.envCheck);
         if (!slot) return;
-        btn.disabled = true;
         const ok = await run('环境检查', () => api.validateProvider({
           capability: slot.capability, backend: slot.backend,
           provider: slot.provider, kind: 'env_check',
-        }));
-        btn.disabled = false;
+        }), { btn });
         if (ok) await reloadRows().catch(() => {});
       };
     });
@@ -1066,10 +1064,8 @@ export function mountEngineInstances(root) {
   root.querySelectorAll('[data-act-toggle]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const on = btn.dataset.to === '1';
-      btn.disabled = true;
       const ok = await run(on ? '启用' : '停用',
-        () => api.patchEngine(btn.dataset.actToggle, { enabled: on }));
-      btn.disabled = false;
+        () => api.patchEngine(btn.dataset.actToggle, { enabled: on }), { btn });
       if (ok) repaint();
     });
   });

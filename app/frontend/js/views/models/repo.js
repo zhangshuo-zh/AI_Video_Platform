@@ -281,9 +281,7 @@ export function openDetail(root, it, val) {
   }
   const close = () => { root.querySelector('#mc-detail').hidden = true; };
   acts.querySelector('[data-act-check]')?.addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    const ok = await run('检查', () => api.checkModel(Number(e.target.dataset.actCheck)));
-    e.target.disabled = false;
+  const ok = await run('检查', () => api.checkModel(Number(e.target.dataset.actCheck)), { btn: e.target });
     if (ok) { close(); window.dispatchEvent(new CustomEvent('app:refresh')); }
   });
   // 验证记录：先关详情面板再开验证弹窗，避免两层 modal 叠着。target 不带 validation

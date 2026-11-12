@@ -199,11 +199,9 @@ export default {
         if (!username) { root.querySelector('#nu-username').focus(); return; }
         if (password.length < 6) { root.querySelector('#nu-pass').focus(); return; }
 
-        createBtn.disabled = true;
-        const ok = await run('新建用户', () => api.createUser({
+                const ok = await run('新建用户', () => api.createUser({
           username, display_name: display, password, roles,
-        }));
-        createBtn.disabled = false;
+        }), { btn: createBtn });
         if (!ok) return;
         refresh();
       });
@@ -227,9 +225,7 @@ export default {
           title: '停用账号', danger: false, okText: '停用',
           body: '停用后该账号<b>立刻掉线</b>，重新启用前无法登录。',
         }))) return;
-        btn.disabled = true;
-        const ok = await run(next ? '启用' : '停用', () => api.updateUser(id, { is_active: next }));
-        btn.disabled = false;
+        const ok = await run(next ? '启用' : '停用', () => api.updateUser(id, { is_active: next }), { btn: btn });
         if (!ok) return;
         refresh();
       });
@@ -258,9 +254,7 @@ export default {
       if (editingUser === null) return;
       const roles = [...rmRoles.querySelectorAll('input:checked')].map((el) => el.dataset['edit-role']);
       const saveBtn = root.querySelector('#rm-save');
-      saveBtn.disabled = true;
-      const ok = await run('保存', () => api.setUserRoles(editingUser, roles));
-      saveBtn.disabled = false;
+      const ok = await run('保存', () => api.setUserRoles(editingUser, roles), { btn: saveBtn });
       if (!ok) return;
       closeRoles();
       refresh();
@@ -290,9 +284,7 @@ export default {
       const value = root.querySelector('#pw-new').value;
       if (value.length < 6) { root.querySelector('#pw-new').focus(); return; }
       const saveBtn = root.querySelector('#pw-save');
-      saveBtn.disabled = true;
-      const ok = await run('重置口令', () => api.resetUserPassword(pwUser, value));
-      saveBtn.disabled = false;
+      const ok = await run('重置口令', () => api.resetUserPassword(pwUser, value), { btn: saveBtn });
       if (!ok) return;
       closePw();
       refresh();
@@ -341,11 +333,9 @@ export default {
     duOk.addEventListener('click', async () => {
       if (delUser === null) return;
       const mode = delModal.querySelector('input[name="du-mode"]:checked').value;
-      duOk.disabled = true;
       const ok = await run('删除', () => api.deleteUser(delUser, mode === 'delete'
         ? { delete_projects: true }
-        : { transfer_to: Number(duTarget.value) }));
-      duOk.disabled = false;
+        : { transfer_to: Number(duTarget.value) }), { btn: duOk });
       if (!ok) return;
       closeDel();
       refresh();

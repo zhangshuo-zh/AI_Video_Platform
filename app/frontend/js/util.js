@@ -12,7 +12,17 @@ export function escapeHtml(text) {
  * 刷新不包进来——有的流程要先 store.load() 再刷新，硬塞进来反而别扭。
  * 需要把错误显示在页面里的地方（例如弹窗内联提示）不要用这个，继续自己 catch。
  */
-export async function run(label, fn) {
+export async function run(label, fn, opts) {
+  // opts.btn：把按钮交给 run 一起管忙碌态（见 withBusy）。这样调用点只要
+  // 把 `btn.disabled = true` 换成传参，文案与 aria-busy 都跟着走，
+  // 不用在每个视图里手写一遍「变灰 + 改文案 + 还原」。
+  const busy = opts && opts.btn;
+  const doing = (opts && opts.doing) || `${label}中…`;
+  if (busy) return withBusy(busy, doing, () => runInner(label, fn));
+  return runInner(label, fn);
+}
+
+async function runInner(label, fn) {
   try {
     await fn();
     return true;
@@ -751,4 +761,50 @@ export function skeleton(rows = 3, kind = 'card') {
     <span class="sr-only">正在读取</span>
     <div aria-hidden="true">${body}</div>
   </div>`;
+}
+
+/**
+ * 按钮「进行中」态：禁用它、把文案换成进行时、结束再原样还回去。
+ *
+ * 为什么要有这个（2026-11-12 前端体验优化）：全站 68 处 `btn.disabled = true`，
+ * 其中改过文案的只有 2 处（models/engines.js 的启动服务）。其余 66 处点下去
+ * 只是变灰——用户看不出「正在处理」还是「点坏了」，于是会再点一次；
+ * 而按钮已经 disabled，第二次点击没有任何反应，体验上等于卡死。
+ *
+ * 用法（与 run 配套，两者职责不混）：
+ *
+ *     const ok = await run('保存', () => api.save(x), { btn: saveBtn, doing: '保存中…' });
+ *
+ * 也可以单独用 `withBusy(btn, '保存中…', () => ...)` 包任意异步动作。
+ *
+ * 三个细节：
+ *  1. 用 `dataset.busy` 记原文案，不用变量——同一个按钮可能被两条路径先后点，
+ *     记在 DOM 上才不会互相覆盖；
+ *  2. `finally` 里无条件还原：抛错时按钮必须回到可点状态，否则一次网络抖动
+ *     就把这个按钮永久废掉了；
+ *  3. 只改 textContent、不改 innerHTML：按钮里可能有图标（`.i-sun` 之类），
+ *     整块重写会把它们弄丢。所以先量一下：**有子元素的按钮不动文案**，
+ *     只做 disabled + aria-busy，免得把图标吃了。
+ */
+export async function withBusy(btn, doing, fn) {
+  if (!btn) return fn();
+  // 有子元素（图标、计数器）的按钮不改文案，只标记忙碌态
+  const textOnly = btn.children.length === 0;
+  if (textOnly) {
+    btn.dataset.busyText = btn.textContent;
+    btn.textContent = doing;
+  }
+  btn.disabled = true;
+  // aria-busy 让读屏知道这个控件正忙——光变灰对屏幕阅读器没有区别
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    return await fn();
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+    if (textOnly && btn.dataset.busyText !== undefined) {
+      btn.textContent = btn.dataset.busyText;
+      delete btn.dataset.busyText;
+    }
+  }
 }

@@ -1167,12 +1167,10 @@ export default {
             + (joined ? '' : '对方还没加入这个项目，交接会直接把他变成所有人。<br>')
             + '你会变成协作人：仍然能看和改，但删项目、管协作人归对方。',
       }))) return;
-      btn.disabled = true;
       const ok = await run('转移', async () => {
-        await api.transferProject(memId, uid);
+        await api.transferProject(memId, uid, { btn: btn });
         await store.load();
       });
-      btn.disabled = false;
       if (!ok) {
         // 失败要留在原地让人换个人：弹窗已经被 run() 的一句话说明白，
         // 但名单可能刚变过，重取一次再让他挑
@@ -1199,8 +1197,7 @@ export default {
       modal.hidden = true;
       pending = null;
       confirmEl.value = '';
-      okBtn.disabled = true;
-    };
+          };
 
     async function openDelete(id, name) {
       pending = { id, name };
@@ -1238,7 +1235,7 @@ export default {
       });
       if (!ok) return;
       const done = await run('归档', async () => {
-        await api.setProjectStatus(id, 'archived');
+        await api.setProjectStatus(id, 'archived', { btn: okBtn });
         // 当前项目正是它时，store 会退到第一个在产项目——顶栏不会指着一个归档项目
         await store.load();
       });
@@ -1280,7 +1277,6 @@ export default {
         // 这里再自己挑一次 projects[0] 等于绕过那条规则
         await store.load();
       });
-      okBtn.disabled = false;
       if (!ok) return;
       closeModal();
       // 新建、归档、恢复、批量都有提示条，删除原来没有——删掉的东西本来就该

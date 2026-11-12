@@ -253,9 +253,7 @@ export default {
       btn.addEventListener('click', async () => {
         const host = btn.closest('[data-item]');
         const name = host?.querySelector('b')?.textContent || '';
-        btn.disabled = true;
-        const ok = await run('接受候选', () => api.extractAccept(Number(btn.dataset.accept), {}));
-        btn.disabled = false;
+        const ok = await run('接受候选', () => api.extractAccept(Number(btn.dataset.accept), {}), { btn: btn });
         if (ok) {
           notice = `「${name}」已建成资产。要补定妆图或一致性提示词，去资产库点开它。`;
           refresh();
@@ -286,17 +284,13 @@ export default {
           });
           if (!go) return;
         }
-        btn.disabled = true;
-        const ok = await run('合并候选', () => api.extractMerge(Number(btn.dataset.merge), Number(sel.value)));
-        btn.disabled = false;
+        const ok = await run('合并候选', () => api.extractMerge(Number(btn.dataset.merge), Number(sel.value)), { btn: btn });
         if (ok) { notice = '已合并：只补空字段，别名与标签去重，不覆盖已填内容。'; refresh(); }
       });
     });
     root.querySelectorAll('[data-reject]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const ok = await run('拒绝候选', () => api.extractReject(Number(btn.dataset.reject), ''));
-        btn.disabled = false;
+      const ok = await run('拒绝候选', () => api.extractReject(Number(btn.dataset.reject), ''), { btn: btn });
         if (ok) refresh();
       });
     });

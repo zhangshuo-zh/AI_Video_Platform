@@ -149,9 +149,7 @@ export default {
         const codes = [...root.querySelectorAll(`input[data-role="${roleId}"]`)]
           .filter((el) => el.checked)
           .map((el) => el.dataset.perm);
-        btn.disabled = true;
-        const ok = await run('保存', () => api.setRolePermissions(roleId, codes));
-        btn.disabled = false;
+          const ok = await run('保存', () => api.setRolePermissions(roleId, codes), { btn: btn });
         if (!ok) return;
         btn.textContent = '已保存';
         setTimeout(refresh, 400);

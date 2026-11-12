@@ -319,20 +319,16 @@ export default {
     };
     root.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', async () => {
       if (!swReviewJob) return;
-      b.disabled = true;
       const ok = await run('记录清单', () => api.saveJobChecklist(swReviewJob, {
         items: [{ code: b.dataset.check, state: b.dataset.state, note: '' }],
-      }));
-      b.disabled = false;
+      }), { btn: b });
       if (ok) renderView('shot');
     }));
     root.querySelectorAll('[data-jsign]').forEach((b) => b.addEventListener('click', async () => {
       const jobId = Number(b.dataset.job);
-      b.disabled = true;
       const ok = await run('签字', () => api.jobReviewSign(jobId, {
         anchor: 'artifact', decision: b.dataset.jsign, note: '',
-      }));
-      b.disabled = false;
+      }), { btn: b });
       if (ok) renderView('shot');
     }));
     root.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
