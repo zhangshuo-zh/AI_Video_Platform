@@ -1,3 +1,4 @@
+import { chatgptUsageHtml, mountChatGPTUsage } from './chatgpt-usage.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { escapeHtml } from '../util.js';
@@ -29,6 +30,7 @@ export function chatgptPlanCard() {
       <p class="note" data-cg-notice role="status"></p>
       <div data-cg-result hidden></div>
       <button class="btn sm" data-cg-accept hidden>确认计划，创建暂停的运行</button>
+      ${chatgptUsageHtml()}
     </div></div>`;
 }
 
@@ -36,6 +38,7 @@ export function mountChatGPTPlan(root, onAccepted) {
   const card = root.querySelector('[data-chatgpt-plan]');
   if (!card) return;
   const projectId = store.current.id;
+  const refreshUsage = mountChatGPTUsage(card, projectId);
   const $ = (name) => card.querySelector(`[data-cg-${name}]`);
   const note = (text) => { if (card.isConnected) $('notice').textContent = text; };
   const key = `fv.chatgpt.draft.${store.user?.id}.${projectId}`;
@@ -118,7 +121,7 @@ export function mountChatGPTPlan(root, onAccepted) {
         episode_id: $('episode').value ? Number($('episode').value) : null,
         goal: $('goal').value.trim(), model: $('model').value, confirmed: $('consent').checked }));
     } catch (e) { note(`${e.message}。可查询上次结果，重新生成将使用新的请求。`); }
-    finally { busy = false; if (card.isConnected) ready(); }
+    finally { busy = false; if (card.isConnected) { ready(); refreshUsage(); } }
   });
   $('recover').hidden = !lastId;
   $('recover').addEventListener('click', recover);

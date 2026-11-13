@@ -337,6 +337,7 @@ ROUTES = [
     # 审批队列＝review:read、签字＝review:sign——**一个新权限点都没加**。
     # outsider 有 job:submit／review:read，所以会一路走到归属判定，拿 404。
     # ChatGPT 连接属于当前登录用户，草案还必须通过项目可见性检查。
+    ("GET", "/api/agent/chatgpt/usage", None, 200),
     ("GET", "/api/agent/chatgpt/connection", None, 200),
     ("POST", "/api/agent/chatgpt/authorize", {"new_account": False}, 200),
     ("DELETE", "/api/agent/chatgpt/connection", None, 200),

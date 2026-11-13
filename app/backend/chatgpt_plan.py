@@ -271,13 +271,15 @@ def models(user_id):
             for item in data.get('models', []) if item.get('visibility') == 'list' and item.get('slug')]
 
 
-def infer(user_id, model, prompt):
+def infer(user_id, model, prompt, *, metrics=None):
     token = access_token(user_id)
     body = {'model': model, 'store': False, 'stream': True,
             'instructions': '根据用户提供的生产工具清单返回制作计划，只输出 JSON 数组。',
             'input': [{'role': 'user', 'content': prompt}]}
     request = Request(RESOURCE + '/responses', json.dumps(body).encode(),
                       {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    metrics = metrics if metrics is not None else {}
+    metrics['response_state'] = 'unconfirmed'
     chunks = []
     started = time.monotonic()
     try:
@@ -297,11 +299,23 @@ def infer(user_id, model, prompt):
                 if kind == 'response.output_text.delta':
                     chunks.append(event.get('delta', ''))
                 elif kind == 'response.completed':
+                    usage = event.get('response', {}).get('usage') or {}
+                    for field in ('input_tokens', 'output_tokens'):
+                        value = usage.get(field)
+                        if type(value) is int and value >= 0:
+                            metrics[field] = value
+                    metrics['response_state'] = 'completed'
                     return ''.join(chunks)
                 elif kind in ('response.failed', 'response.incomplete', 'error'):
+                    metrics['response_state'] = 'failed'
                     code = (event.get('response', {}).get('error') or event.get('error') or {}).get('code', '')
                     raise ChatGPTError('ChatGPT 生成未完成，可能已达套餐额度或授权失效。请在 ChatGPT 设置查看用量。' if 'subscription' in code else 'ChatGPT 未完成本次计划，请检查账号状态')
-    except (HTTPError, URLError, OSError, ValueError, UnicodeError):
+    except ChatGPTError:
+        raise
+    except HTTPError as exc:
+        metrics['response_state'] = 'failed'
+        raise ChatGPTError(f'ChatGPT 请求被拒绝（{exc.code}），请检查账号或套餐用量') from None
+    except (URLError, OSError, ValueError, UnicodeError):
         raise ChatGPTError('ChatGPT 连接中断，结果未确认。本次请求不会自动重发，请查看套餐用量后决定是否重新生成') from None
     raise ChatGPTError('连接结束但未收到完成确认，请重新检查账号状态')
 

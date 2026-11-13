@@ -328,6 +328,7 @@ export const api = {
   chatgptConnection: () => get('/api/agent/chatgpt/connection'),
   chatgptAuthorize: (body) => send('POST', '/api/agent/chatgpt/authorize', body),
   chatgptDisconnect: () => send('DELETE', '/api/agent/chatgpt/connection'),
+  chatgptUsage: (qs) => get('/api/agent/chatgpt/usage?' + qs),
   chatgptModels: () => get('/api/agent/chatgpt/models'),
   chatgptGenerate: (body) => send('POST', '/api/agent/chatgpt/drafts', body),
   chatgptDraft: (id) => get('/api/agent/chatgpt/drafts/' + id),

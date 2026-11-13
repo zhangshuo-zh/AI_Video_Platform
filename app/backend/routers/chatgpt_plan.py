@@ -5,13 +5,14 @@ import time
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 import access
 import agents
 import agent_tools
 import chatgpt_plan as chatgpt
+import chatgpt_usage
 from db import transaction
 from deps import require_permission
 from repositories.agents import STEP_PENDING, agent_runs
@@ -95,16 +96,20 @@ def generate(payload: DraftIn, user=Depends(require_permission('job:submit'))):
             return _view(existing)
         draft = {**fields, 'fingerprint': fingerprint, 'state': 'generating', 'created_at': time.time()}
         chatgpt._write(name, draft)
+    started = time.monotonic()
+    metrics = {}
     try:
         if payload.model not in {row['id'] for row in chatgpt.models(user['id'])}:
             raise chatgpt.ChatGPTError('所选模型当前不可用，请刷新模型列表')
         prompt = agents.plan_prompt(payload.goal, episode,
             {'shots': len(shots.list_by_episode(payload.episode_id)) if episode else 0})
-        text = chatgpt.infer(user['id'], payload.model, prompt)
+        text = chatgpt.infer(user['id'], payload.model, prompt, metrics=metrics)
         draft.update(state='ready', steps=agents.parse_plan(text))
     except (chatgpt.ChatGPTError, agents.AgentInvalid) as exc:
         draft.update(state='failed', error=str(exc))
     finally:
+        draft['duration_ms'] = round((time.monotonic() - started) * 1000)
+        draft['metrics'] = metrics
         # 失败和断流也记住请求，HTTP 重试不会重复消耗套餐。
         with chatgpt._lock(name):
             chatgpt._write(name, draft)
@@ -159,3 +164,16 @@ def accept(key: UUID, payload: AcceptIn, user=Depends(require_permission('job:su
             draft['run_id'] = run['id']
         chatgpt._write(name, draft)
     return {'run_id': run['id'], 'note': '已创建暂停的运行。查看步骤后，可在运行详情中恢复执行。'}
+
+
+@router.get('/usage')
+def usage(days: int = Query(7, ge=1, le=30), project_id: int | None = None,
+          user=Depends(require_permission('job:submit'))):
+    if days not in (7, 30):
+        raise HTTPException(422, '统计范围支持最近 7 天或 30 天')
+    if project_id is not None:
+        access.ensure(user, project_id, 'read')
+        project_ids = {project_id}
+    else:
+        project_ids = access.visible_project_ids(user)
+    return chatgpt_usage.summarize(user['id'], days, project_ids)
