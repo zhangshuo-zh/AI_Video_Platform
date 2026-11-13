@@ -278,12 +278,12 @@ body{
   border-right:1px solid var(--line);
   display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
 }
-/* 品牌行：图标 34px、两行文字 15/11px，行高留够，别让标题被上沿切掉 */
+/* 品牌行：40px 图标配单行名称，去掉部署规模副标题。 */
 .brand{padding:16px 16px 16px;border-bottom:1px solid var(--line);
-  display:flex;align-items:center;gap:12px;flex:none;
+  display:flex;align-items:center;gap:10px;flex:none;
 }
 .brand-mark{
-  width:34px;height:34px;flex:none;
+  width:40px;height:40px;flex:none;
   /* 图是用户自己提供的，抠透明后另存 brand-user-alpha.png，原来那张白底没动。
      抠法是从四边往里漫填，只去和外框连成一片的白——全局去白会把白围裙、
      白蕾丝头饰一起打穿。
@@ -292,8 +292,7 @@ body{
   background:url("/img/brand-user-alpha.png") center / contain no-repeat;
 }
 .brand-text{min-width:0}
-.brand b,.gate-brand b{display:block;font-size:14px;line-height:1.35;letter-spacing:-.01em;font-weight:650;white-space:nowrap}
-.brand span,.gate-brand span{display:block;font-size:11px;line-height:1.4;color:var(--ink-2);margin-top:2px;white-space:nowrap}
+.brand b,.gate-brand b{display:block;font-size:16px;line-height:1.35;letter-spacing:-.01em;font-weight:650;white-space:nowrap}
 
 /* 项目切换器已挪到顶栏面包屑（见下方 .proj-pick / .proj-menu），
    侧栏这里原来那套常驻 select 的样式整块删掉。 */
@@ -2358,6 +2357,9 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .probe-table td{vertical-align:top;overflow-wrap:anywhere}
 .probe-endpoint{margin-top:6px;overflow-wrap:anywhere}
 .probe-details{font-size:12px;margin-top:8px;overflow-wrap:anywhere}
+.probe-results .probe-result-stack{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.probe-results .probe-result-stack>.hint{margin:0;line-height:1.6}
+.probe-results .probe-result-stack>.probe-details{margin:0;align-self:stretch}
 .probe-details summary{cursor:pointer;color:var(--ink)}
 .probe-details[open] div{padding:8px 0;line-height:1.6;user-select:text}
 @media(max-width:640px){.probe-results table.tbl-fixed.probe-table > thead > tr > th:nth-child(1){width:34%}.probe-results table.tbl-fixed.probe-table > thead > tr > th:nth-child(2){width:auto}.probe-results table.tbl-fixed.probe-table > thead > tr > th:nth-child(3){width:88px}}
@@ -2365,6 +2367,4 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .probe-results .modal-actions > [data-manage-engines]{justify-self:start;border-color:transparent;background:transparent;box-shadow:none;padding-left:0;color:var(--ink)}
 .probe-results .modal-actions > [data-recheck]{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
 .probe-results .modal-actions > [data-recheck]:hover{background:var(--accent-tint)}
-.probe-results table.tbl-fixed.probe-table-no-actions > thead > tr > th:nth-child(1){width:44%}
-.probe-results table.tbl-fixed.probe-table-no-actions > thead > tr > th:nth-child(2){width:56%}
 @media(max-width:480px){.probe-results .modal-actions{gap:8px}.probe-results .modal-actions > .btn{font-size:12px;padding:0 10px}}

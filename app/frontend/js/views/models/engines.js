@@ -476,8 +476,8 @@ export function openProbeResults(payload, cloudRows) {
     const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
     return `<tr><td><strong>${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</strong>
       <div class="hint mono probe-endpoint">${escapeHtml(it.endpoint || '未配置端点')}</div></td>
-      <td><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
-      ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</td>
+      <td><div class="probe-result-stack"><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
+      ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</div></td>
       ${hasActions ? `<td>${!it.enabled ? `<button class="btn xs" data-probe-enable="${it.id}">启用</button>` : it.launch_ready ? `<button class="btn xs" data-act-launch="${it.id}">启动服务</button>` : '<span class="hint">—</span>'}</td>` : ''}</tr>`;
   }).join('');
 
@@ -509,7 +509,7 @@ export function openProbeResults(payload, cloudRows) {
     let endpoint = c.key_env || '未配置端点';
     try { endpoint = new URL(c.url).origin; } catch { /* 无有效地址时显示配置项 */ }
     return `<tr><td><strong>${escapeHtml(c.label || c.provider)}</strong><div class="hint mono probe-endpoint">${escapeHtml(endpoint)}</div></td>
-      <td><span class="chip ${tone}">${escapeHtml(word)}</span><div class="hint">${c.state === 'ok' ? '未验证实际生成' : '请检查连接或配置'}</div>${details([c.provider, c.capability, c.url, c.detail].filter(Boolean).join(' · '))}</td>
+      <td><div class="probe-result-stack"><span class="chip ${tone}">${escapeHtml(word)}</span><div class="hint">${c.state === 'ok' ? '未验证实际生成' : '请检查连接或配置'}</div>${details([c.provider, c.capability, c.url, c.detail].filter(Boolean).join(' · '))}</div></td>
       </tr>`;
   }).join('');
 
