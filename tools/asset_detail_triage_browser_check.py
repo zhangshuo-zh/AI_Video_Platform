@@ -118,10 +118,14 @@ def _admin_id() -> int:
 def mint_admin_session(token_hash: str, admin_id: int) -> None:
     from datetime import datetime, timedelta
 
+    from db import get_conn
     from repositories.users import sessions
 
     sessions.create(token_hash, admin_id,
                     (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"))
+    # 仅初始化临时验收库的会话；空库新建的 admin 尚未改密，业务接口会被 403 拦住。
+    with get_conn() as conn:
+        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE id = ?", (admin_id,))
 
 
 def seed_db() -> dict:
@@ -582,7 +586,7 @@ def main() -> int:
                    : null;
         })()""")
         check("页内工作区顺序与侧栏二级导航一字不差",
-              chips_txt == nav_txt == ["资产库", "资产创作", "文本提取"],
+              chips_txt == nav_txt == ["资产总览", "资产创作", "文本提取"],
               f"页内={chips_txt} / 侧栏={nav_txt}")
         active = P.eval_js(cdp, "[...document.querySelectorAll('[data-sub]')]"
                                 ".findIndex(e => e.classList.contains('blue'))")

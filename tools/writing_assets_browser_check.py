@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -116,10 +115,14 @@ def _admin_id() -> int:
 def mint_admin_session(token_hash: str, admin_id: int) -> None:
     from datetime import datetime, timedelta
 
+    from db import get_conn
     from repositories.users import sessions
 
     sessions.create(token_hash, admin_id,
                     (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"))
+    # 仅初始化临时验收库的会话；空库新建的 admin 尚未改密，业务接口会被 403 拦住。
+    with get_conn() as conn:
+        conn.execute("UPDATE app_user SET must_change_password = 0 WHERE id = ?", (admin_id,))
 
 
 def seed_db() -> dict:
@@ -147,8 +150,8 @@ def seed_db() -> dict:
 
     # 正文走服务层的 create_document：路径定法、落盘、_tend 规范化都在里面，
     # 自己拼 rel_path 就是在种子数据里复刻一份容易走样的规则。
-    doc = doc_service.create_document(project_id, None, "novel", "第一集",
-                                      DOC_BODY, actor="seed")
+    doc_service.create_document(project_id, None, "novel", "第一集",
+                                DOC_BODY, actor="seed")
     doc_row = doc_repo.list_by_project(project_id)[0]
 
     # 资产：名称／别名／标签／简介都故意让"搜得到"与"搜不到"各有落点，
@@ -414,7 +417,7 @@ def main() -> int:
         check("刷新后签新版成功且落一条签字",
               fresh_sign["status"] == 200 and state["counts"]["approved"] == 1)
 
-        errors = P.eval_js(cdp, "(window.__fvErrors||[])") 
+        errors = P.eval_js(cdp, "(window.__fvErrors||[])")
         check("整轮没有 JS 异常", not errors, str(errors)[:220])
     finally:
         if chrome is not None:

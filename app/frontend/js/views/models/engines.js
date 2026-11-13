@@ -150,7 +150,7 @@ export function slotDetail(r, adapter) {
     <td colspan="6"><div class="form-grid">
       <label class="top">清单</label>
       <span class="hint mc-src">${noteText(adapter, r.provider)}</span>
-      <label>允许参数</label>${params}
+      <label>允许参数</label><div class="mc-params">${params}</div>
       <label>密钥</label>${keyLine}
       <label>健康说明</label><div class="mc-detail-actions">
         <span class="hint">${escapeHtml(r.health.detail || '没有健康检查记录')}</span></div>
@@ -161,22 +161,20 @@ export function slotDetail(r, adapter) {
 
 export function slotRow(r, providerLists) {
   const adapter = adapterOf(cache.manifest, r.capability, r.backend, r.provider);
-  const providerOptions = (providerLists[`${r.capability}|${r.backend}`] || [])
-    .map((a) => `<option value="${escapeHtml(a.code)}">${escapeHtml(a.label)}</option>`).join('');
-  const modelOptions = (adapter?.models || [])
-    .map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.label)}</option>`).join('');
+  const providers = providerLists[`${r.capability}|${r.backend}`] || [];
+  const providerOptions = '<option value="">— 选择引擎 —</option>'
+    + (r.provider && !providers.some((a) => a.code === r.provider)
+      ? `<option value="${escapeHtml(r.provider)}" selected>${escapeHtml(r.provider)}（清单未登记）</option>` : '')
+    + providers.map((a) => `<option value="${escapeHtml(a.code)}"${a.code === r.provider ? ' selected' : ''}>${escapeHtml(a.label)}</option>`).join('')
+    + '<option value="__manual__">手动填写其他引擎…</option>';
   const videoCloud = r.capability === 'video' && r.backend === 'cloud';
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
     <td class="t-strong">${r.capability_label}</td>
     <td><span class="chip ${r.backend === 'local' ? 'plain' : 'blue'}">${r.backend_label}</span></td>
     <td><div class="mc-picks">
-        <input class="ctl sm" data-f="provider" list="prov-${r.id}"
-               value="${escapeHtml(r.provider)}" placeholder="provider 标识">
-        <input class="ctl sm" data-f="model" list="model-${r.id}"
-               value="${escapeHtml(r.model)}" placeholder="模型 ID">
-        <datalist id="prov-${r.id}">${providerOptions}</datalist>
-        <datalist id="model-${r.id}">${modelOptions}</datalist>
+        <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
+        ${slotModelPick(adapter, r.model)}
       </div></td>
     <td>${statusCell(r)}</td>
     <td class="c"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}></td>
@@ -185,6 +183,29 @@ export function slotRow(r, providerLists) {
              ${videoCloud ? 'title="云端视频只能逐镜头显式选择，不能设为默认"' : ''}></td>
   </tr>`;
   return main + (slotOpen.has(r.id) ? slotDetail(r, adapter) : '');
+}
+
+function slotModelPick(adapter, model) {
+  const models = adapter?.models || [];
+  if (!models.length) return `<input class="ctl sm" data-f="model" value="${escapeHtml(model || '')}" placeholder="模型 ID（清单未提供，请手填）" aria-label="模型">`;
+  const extra = model && !models.some((m) => m.code === model)
+    ? `<option value="${escapeHtml(model)}" selected>${escapeHtml(model)}（清单未登记）</option>` : '';
+  return `<select class="ctl sm" data-f="model" aria-label="模型"><option value="">— 选择模型 —</option>${extra}${models.map((m) => `<option value="${escapeHtml(m.code)}"${m.code === model ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}</select>`;
+}
+
+// 启动可能比后端的短等待慢；继续检查这一台，直到连接成功或等候期结束。
+// 使用实例探测接口取得真实状态，不能把 started 当成就绪。
+async function waitForStartedEngine(id, out, active, waiting) {
+  if (!out?.started || out.reachable) return out;
+  const deadline = Date.now() + 60000;
+  waiting();
+  while (active() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (!active()) return out;
+    const probe = await api.probeEngine(id);
+    if (probe.state === 'ok') return { ...out, reachable: true, message: '服务已连接，就绪。' };
+  }
+  return { ...out, message: '服务已请求启动，但尚未连接。请检查应用中的 HTTP API Server 是否已开启。' };
 }
 
 /* 没填 provider 的轨折成一行灰字。十行里本机只填了三行，
@@ -606,9 +627,14 @@ export function openProbeResults(payload, cloudRows) {
         let err = null;
         try {
           out = await api.launchEngine(id);
+          out = await waitForStartedEngine(id, out, () => host.isConnected, () => {
+            btn.textContent = '等待连接…';
+            host.querySelector('[data-probe-status]').textContent = '应用正在启动，连接成功后自动更新状态…';
+          });
         } catch (e) {
           err = e;
         }
+        if (!host.isConnected) return;
         btn.disabled = false;
         btn.textContent = label;
 
@@ -621,8 +647,11 @@ export function openProbeResults(payload, cloudRows) {
         // 重画要的是**全部实例**的新状态，而 launch 只回这一台，所以再取一次列表。
         try {
           const fresh = await api.engines();
+          if (!host.isConnected) return;
           payload = fresh;
           paintWith(fresh);
+          host.querySelector('[data-probe-status]').textContent = out?.reachable ? '服务已连接，就绪。' : '';
+          window.dispatchEvent(new CustomEvent('app:refresh'));
         } catch {
           paint();     // 取不到新数据就至少把结论行画出来
         }
@@ -811,15 +840,15 @@ export function mountEngines(root) {
 
   // 改 provider/model 只刷新这一行的提示，不重绘整页——重绘会丢输入框焦点
   root.querySelectorAll('tr.slot').forEach((tr) => {
-    const refresh = () => {
+    const refresh = (providerChanged = false) => {
       const provider = tr.querySelector('[data-f="provider"]').value;
-      const model = tr.querySelector('[data-f="model"]').value;
       const adapter = adapterOf(cache.manifest, tr.dataset.cap, tr.dataset.backend, provider);
-      const dl = tr.querySelector(`datalist[id="model-${tr.dataset.id}"]`);
-      if (dl) {
-        dl.innerHTML = (adapter?.models || [])
-          .map((m) => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.label)}</option>`).join('');
+      if (providerChanged) {
+        const previous = tr.querySelector('[data-f="model"]');
+        // 夜间控件有自绘外壳；一并换掉，避免旧按钮仍显示上一家的模型。
+        (previous.closest('.fv-pick') || previous).outerHTML = slotModelPick(adapter, adapter?.models?.[0]?.code || '');
       }
+      const model = tr.querySelector('[data-f="model"]').value;
       // 展开态才有细节行；没展开就只等下一次重绘
       const detail = root.querySelector(`tr.mc-detail[data-detail-for="${tr.dataset.id}"]`);
       if (detail) {
@@ -833,8 +862,21 @@ export function mountEngines(root) {
       tr.querySelector('.mc-health').innerHTML =
         '<span class="chip gray">待保存</span><span class="hint">保存后按新 provider 重新检查</span>';
     };
-    tr.querySelector('[data-f="provider"]').addEventListener('input', refresh);
-    tr.querySelector('[data-f="model"]').addEventListener('input', refresh);
+    tr.addEventListener('change', (e) => {
+      if (e.target.matches('[data-f="provider"], [data-f="model"]')) {
+        if (e.target.dataset.f === 'provider' && e.target.value === '__manual__') {
+          const previous = e.target;
+          (previous.closest('.fv-pick') || previous).outerHTML = '<input class="ctl sm" data-f="provider" aria-label="引擎" placeholder="自定义 provider 标识">';
+          tr.querySelector('[data-f="provider"]').focus();
+        }
+        refresh(e.target.dataset.f === 'provider');
+      }
+    });
+    tr.addEventListener('input', (e) => {
+      if (e.target.matches('input[data-f="model"], input[data-f="provider"]')) {
+        refresh(e.target.dataset.f === 'provider');
+      }
+    });
   });
 
   saveBtn.addEventListener('click', async () => {
@@ -867,7 +909,7 @@ export function mountEngines(root) {
         enabled: tr.querySelector('[data-f="enabled"]').checked,
         is_default: tr.querySelector('[data-f="default"]').checked,
         key_env: detail
-          ? detail.querySelector('[data-f="key_env"]').value
+          ? (detail.querySelector('[data-f="key_env"]')?.value ?? saved.key_env_custom ?? saved.key_env ?? '')
           : (saved.key_env_custom ?? saved.key_env ?? ''),
         notes: detail ? detail.querySelector('[data-n="notes"]').value : (saved.notes ?? ''),
         // 弱版本闸：带回"我打开时看到的那一版"。服务端一比就知道有没有人插进来改过——
@@ -1014,7 +1056,11 @@ export function mountEngineInstances(root) {
       let out = null;
       const ok = await run('启动服务', async () => {
         out = await api.launchEngine(id);
+        out = await waitForStartedEngine(id, out, () => root.isConnected && btn.isConnected, () => {
+          btn.textContent = '等待连接…';
+        });
       });
+      if (!root.isConnected || !btn.isConnected) return;
       btn.textContent = label;
       btn.disabled = false;
       if (!ok || !out) { repaint(); return; }

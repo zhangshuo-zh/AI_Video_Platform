@@ -800,7 +800,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
    全进横跨整表的备注带。 */
 .mc-picks{display:flex;gap:6px;flex-wrap:wrap}
-.mc-picks input.ctl{flex:1 1 132px;min-width:132px}
+.mc-picks input.ctl,.mc-picks select.ctl{flex:1 1 132px;min-width:132px;max-width:100%}
 .mc-status{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
 .mc-health,.mc-validation{display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0}
 /* 调用策略的状态列：徽章在上、看候选在下。
