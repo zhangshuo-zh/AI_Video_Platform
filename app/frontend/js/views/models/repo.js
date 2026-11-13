@@ -258,11 +258,11 @@ export function openDetail(root, it, val) {
       <div class="kv"><dt>能力标签</dt><dd>${tagChips(it.tags)}</dd></div>
       <div class="kv"><dt>计价</dt><dd>${priceChips(it.prices)}</dd></div>
       <div class="kv"><dt>目录变量</dt><dd class="mono">${escapeHtml(it.home_env || '不适用')}</dd></div>
-      <div class="kv"><dt>清单说明</dt><dd class="t-desc">${escapeHtml(it.manifest_note || '无')}</dd></div>
+      <div class="kv kv-wide"><dt>清单说明</dt><dd class="t-desc">${escapeHtml(it.manifest_note || '无')}</dd></div>
       <div class="kv"><dt>验证出处</dt><dd>${(it.validation_kinds || []).map((k) =>
         `<span class="chip green">${escapeHtml(VAL_KIND_LABEL[k] || k)}</span>`).join(' ')
         || '<span class="hint">一条验证记录都没有</span>'}</dd></div>
-      <div class="kv"><dt>备注</dt><dd class="t-desc">${escapeHtml(it.note || '无')}</dd></div>
+      <div class="kv kv-wide"><dt>备注</dt><dd class="t-desc">${escapeHtml(it.note || '无')}</dd></div>
     </div>
     ${params ? `<h3 class="drawer-h">允许参数（来自清单）</h3><div class="kv-grid">${params}</div>` : ''}`;
 

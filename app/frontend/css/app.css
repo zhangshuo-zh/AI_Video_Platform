@@ -1597,11 +1597,21 @@ table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(4){width:18%}
   border-radius:12px;padding:10px 12px;margin-bottom:16px}
 .drawer-err b{font-family:var(--mono);font-size:11.5px;color:var(--bad)}
 .drawer-err p{margin:4px 0 0;font-size:12px;line-height:1.65;color:var(--ink-2)}
-.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px 16px;margin-bottom:4px}
-.kv{display:grid;grid-template-columns:86px minmax(0,1fr);gap:8px;font-size:12px;
-  align-items:baseline}
-.kv dt{color:var(--ink-3);font-size:11.5px}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px 32px;margin-bottom:4px}
+/* 长文字段（清单说明、备注这类动辄三四行的）横跨整行：
+   留在半栏里时，并排的短字段会被它撑高，行内留下大片空白。 */
+.kv-wide{grid-column:1 / -1}
+.kv{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;font-size:12.5px;
+  align-items:start;line-height:1.55}
+.kv dt{color:var(--ink-3);font-size:12px;line-height:1.5}
 .kv dd{margin:0;color:var(--ink);word-break:break-word;font-variant-numeric:tabular-nums}
+/* 详情面板里的说明必须能读完（2026-11-13 用户反馈「文字排版很紧凑不方便看」）。
+   根子在 .t-desc 是 white-space:nowrap + 单行省略号——那套是为**表格里一行
+   摘要**定的（防止项目介绍把整表行高拉垮），搬到详情面板就成了「写着
+   mlx-audio 入口在；权重首次运行… 然后没了」。
+   面板里没有「行高」顾虑，这里覆盖回正常换行 + 去掉宽度上限。 */
+.kv dd .t-desc, .kv dd.t-desc{white-space:normal;overflow:visible;text-overflow:clip;
+  max-width:none;line-height:1.6;margin-top:3px}
 .code-block{margin:0 0 12px;padding:12px 12px;border:1px solid var(--line);
   border-radius:12px;background:var(--field);color:var(--ink-2);
   font-family:var(--mono);font-size:11.5px;line-height:1.65;
