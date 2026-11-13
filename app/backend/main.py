@@ -18,7 +18,7 @@ from config import (CORS_ORIGINS, DOCS_ENABLED, FILES_DIR, FRONTEND_DIR,
                     HOST, PORT)
 from gitrepo import GitError
 from migrate import migrate
-from routers import (agents as agents_api, audio, auth, compositions, content,
+from routers import (agents as agents_api, chatgpt_plan as chatgpt_plan_api, audio, auth, compositions, content,
                      dashboard, documents, extraction, files, jobs,
                      model_center as model_center_api,
                      pipeline as pipeline_api, profiles, production as production_api,
@@ -146,6 +146,7 @@ def create_app() -> FastAPI:
     # 自己一行配置都不存。签字入口仍然在审核中心（`routers/review.py`），
     # 这里只有"看"和"发起／暂停／取消"
     app.include_router(agents_api.router)
+    app.include_router(chatgpt_plan_api.router)
     app.include_router(settings.router)
     app.include_router(system.router)
     app.include_router(users.router)

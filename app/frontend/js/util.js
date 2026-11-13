@@ -442,6 +442,7 @@ export function bindModalDismiss(modal, close) {
     const open = [...document.querySelectorAll('.modal:not([hidden])')];
     if (!open.length) return;
     const top = open[open.length - 1];
+    if (e.key === 'Escape' && e.target.closest?.('.fv-pick-btn[aria-expanded="true"]')) return;
     if (e.key === 'Escape') {
       const fn = closers.get(top);
       if (fn) { e.preventDefault(); fn(); }

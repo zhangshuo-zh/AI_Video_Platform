@@ -308,7 +308,8 @@ function editorHtml(doc) {
                   title="起草／扩写／续写／润色／剧本化／提示词；结果先看 diff，确认后才写回">AI 改写</button>
           <button class="btn sm" id="doc-extract"
                   title="从正文抽取角色／场景／道具／镜头候选；证据要逐字对得上，人确认后才入资产">抽取</button>
-          <button class="btn sm primary" id="doc-save" ${canWrite ? '' : 'disabled'}>保存</button>`
+          <span class="doc-save-group"><span class="chip ${dirty ? 'amber' : 'green'}" id="doc-dirty" role="status">${dirty ? '未保存' : '与盘上一致'}</span>
+          <button class="btn sm primary" id="doc-save" ${canWrite ? '' : 'disabled'}>保存</button></span>`
         : `<span class="chip gray" title="只读角色没有编辑文档的权限">${label}</span>`}
         <button class="btn sm" id="doc-hist">版本</button>
       </div>
@@ -343,7 +344,6 @@ function editorHtml(doc) {
     <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px;
          display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <span class="sub" id="doc-count">${charCount(draft)} 字</span>
-      <span class="chip ${dirty ? 'amber' : 'green'}" id="doc-dirty">${dirty ? '未保存' : '与盘上一致'}</span>
       <span class="sub" id="doc-commit">${doc.git_commit ? '当前提交 ' + doc.git_commit.slice(0, 8) : '还没有提交记录'}</span>
       <span class="sub" id="doc-updated" data-created="${escapeHtml(doc.created_at)}"
             style="margin-left:auto">创建 ${escapeHtml(doc.created_at)}
@@ -567,7 +567,10 @@ function mountDocs(root, tab) {
     saving = true;
     const submitted = ta.value;
     const version = draftVersion;
-    if (saveBtn) saveBtn.disabled = true;
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = '保存中';
+    }
     notice = '';
     try {
       const out = await api.saveDocContent(docId, submitted, version);
@@ -611,7 +614,10 @@ function mountDocs(root, tab) {
       }
     } finally {
       saving = false;
-      if (saveBtn) saveBtn.disabled = false;
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '保存';
+      }
       if (ta.isConnected) paintBars(root);
     }
     return !dirty;

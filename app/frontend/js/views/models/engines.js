@@ -491,7 +491,10 @@ export function openProbeResults(payload, cloudRows) {
   // （2026-11-12 用户反馈「注释、提醒字数太多，简略一些」）。结论本身一句就够，
   // 剩下的细节放进 title，想追的人 hover 得到。
   const unknownN = queried.length - okN - badN;
-  const verdict = `<div class="probe-summary"><strong>本地 ${queried.length} 项检查 · ${okN} 项通过 · ${badN + unknownN} 项异常</strong>
+  const cloudOk = cloud.filter((row) => row.state === 'ok').length;
+  const cloudSummary = cloudMissing ? '云端未检查' : cloud.length
+    ? `云端 ${cloud.length} 家 · ${cloudOk} 家鉴权通过` : '云端尚未登记';
+  const verdict = `<div class="probe-summary"><strong>本地 ${queried.length} 项检查 · ${okN} 项通过 · ${badN + unknownN} 项异常</strong><strong>${cloudSummary}</strong>
     <p class="hint">${skipped ? `另有 ${skipped} 项未检查。` : ''}连接成功仅表示端点响应，不代表模型可用。</p></div>`;
   const body = items.length ? `<h3 class="probe-section">本地引擎</h3><div class="table-wrap"><table class="tbl-fixed probe-table ${hasActions ? '' : 'probe-table-no-actions'}"><thead><tr><th>引擎 / 端点</th><th>检查结果</th>${hasActions ? '<th>操作</th>' : ''}</tr></thead><tbody>${rowsNow}</tbody></table></div>` : '<p class="note">尚未登记引擎实例，请进入引擎管理添加端点。</p>';
 
@@ -513,16 +516,9 @@ export function openProbeResults(payload, cloudRows) {
       </tr>`;
   }).join('');
 
-  const cloudVerdict = cloud.length
-    ? `<p class="note" style="margin:14px 0 10px">
-        <b>云端 ${cloud.length} 家。</b>
-        <span title="这里只回答路通不通、钥匙被不被接受，不等于那一档模型能用。「没配密钥」「无可探端点」两档没发出请求，是配置事实不是网络故障。">只回答路通不通、钥匙对不对。</span></p>`
-    : cloudMissing
-      ? `<p class="note" style="margin:14px 0 10px">
-          <span class="chip red">没查</span>
-          <b>后端没返回 <code>cloud</code> 段</b>——跑着的服务不是带云端现查的那一版，
-          重启进程即可。<b>别把"没显示"当成"都是好的"。</b></p>`
-      : '';
+  const cloudVerdict = cloudMissing
+    ? '<p class="note"><span class="chip red">没查</span> 后端没返回 <code>cloud</code> 段，请检查服务版本并重启。</p>'
+    : '';
   const cloudBody = cloud.length
     ? `<div class="table-wrap"><table class="tbl-fixed probe-table probe-table-no-actions"><thead><tr>
         <th>引擎 / 端点</th><th>检查结果</th>

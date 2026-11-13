@@ -325,6 +325,13 @@ export const api = {
   // 智能体中心（0041）
   // 这一族的读接口分两档：配置／工具表要 system:config，运行与待审批按项目可见范围。
   // 签字**不在这里**——批准与驳回走 `signAgentStep`，它落在审核中心（不变量 3）。
+  chatgptConnection: () => get('/api/agent/chatgpt/connection'),
+  chatgptAuthorize: (body) => send('POST', '/api/agent/chatgpt/authorize', body),
+  chatgptDisconnect: () => send('DELETE', '/api/agent/chatgpt/connection'),
+  chatgptModels: () => get('/api/agent/chatgpt/models'),
+  chatgptGenerate: (body) => send('POST', '/api/agent/chatgpt/drafts', body),
+  chatgptDraft: (id) => get('/api/agent/chatgpt/drafts/' + id),
+  chatgptAccept: (id) => send('POST', '/api/agent/chatgpt/drafts/' + id + '/accept', {}),
   agentOverview: () => get('/api/agent/overview'),
   agentConfigs: () => get('/api/agent/configs'),
   agentTools: () => get('/api/agent/tools'),

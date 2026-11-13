@@ -588,6 +588,15 @@ def config_cards() -> dict:
             "manifest_version": adapters.MANIFEST_VERSION}
 
 
+def _approval_route(run) -> dict:
+    snapshot = loads(run["model_snapshot_json"], {})
+    if snapshot.get("route_source") == "chatgpt_oauth":
+        # ChatGPT 只产出计划草案，付费步骤仍使用平台当前文本默认轨。
+        route = plan_route()
+        return {**route, "cost_note": route.get("cost_note") or route.get("reason", "")}
+    return snapshot
+
+
 # ---------- 待审批 ----------
 def pending_approvals(project_ids: list[int], limit: int = 50) -> list[dict]:
     """正在等人选的步骤。审核中心那一页从这里取，**签字仍写进 `review_item`**。"""
@@ -597,20 +606,21 @@ def pending_approvals(project_ids: list[int], limit: int = 50) -> list[dict]:
         if run is None:
             continue
         args = loads(step["args_json"], {})
+        snapshot = _approval_route(run)
         view = step_view(step)
         view.update({
             "goal": run["goal"], "project_id": run["project_id"],
             "episode_id": run["episode_id"],
-            "backend": loads(run["model_snapshot_json"], {}).get("backend", ""),
-            "provider": loads(run["model_snapshot_json"], {}).get("provider", ""),
-            "model": loads(run["model_snapshot_json"], {}).get("model", ""),
+            "backend": snapshot.get("backend", ""),
+            "provider": snapshot.get("provider", ""),
+            "model": snapshot.get("model", ""),
             "data_out": (agent_tools.TOOLS.get(step["tool_code"]) or {}).get(
                 "data_out", ""),
-            "cost_note": agent_tools.cost_note(
+            "cost_note": snapshot.get("cost_note") or agent_tools.cost_note(
                 "text",
-                loads(run["model_snapshot_json"], {}).get("provider", ""),
-                loads(run["model_snapshot_json"], {}).get("model", ""),
-                loads(run["model_snapshot_json"], {}).get("backend", "")),
+                snapshot.get("provider", ""),
+                snapshot.get("model", ""),
+                snapshot.get("backend", "")),
             "full_args": args,
         })
         out.append(view)
@@ -628,7 +638,7 @@ def approval_view(step_id: int, user) -> dict:
     if run is None:
         raise AgentNotFound(f"这一步所属的运行已经不在了：#{step['run_id']}")
     access.ensure(user, int(run["project_id"]), "read")
-    snapshot = loads(run["model_snapshot_json"], {})
+    snapshot = _approval_route(run)
     tool = agent_tools.TOOLS.get(step["tool_code"]) or {}
     signs = reviews.signs(reviews.AGENT_ACTION, int(step["id"]), step["args_hash"])
     return {
@@ -639,7 +649,7 @@ def approval_view(step_id: int, user) -> dict:
         "args_hash": step["args_hash"],
         "data_out": tool.get("data_out", ""),
         "verify": tool.get("verify", ""),
-        "cost_note": agent_tools.cost_note("text", snapshot.get("provider", ""),
+        "cost_note": snapshot.get("cost_note") or agent_tools.cost_note("text", snapshot.get("provider", ""),
                                           snapshot.get("model", ""),
                                           snapshot.get("backend", "")),
         "model_snapshot": snapshot,

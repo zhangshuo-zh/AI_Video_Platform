@@ -27,3 +27,5 @@ pydantic>=2.9,<3
 #
 # 上界照旧：`<47` 是当前 46.x 这一代（AESGCM 接口自 3.1 起稳定）。
 cryptography>=42,<47
+# ChatGPT 登录回调的签名、issuer、audience 和 nonce 校验。
+PyJWT[crypto]>=2.10,<3

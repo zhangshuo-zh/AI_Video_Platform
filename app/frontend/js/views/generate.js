@@ -192,13 +192,11 @@ function jobCostCell(job) {
 function emptyHtml() {
   if (state.q || state.status || state.capability || state.mode || state.projectId) {
     return emptyBox('没有符合条件的作业',
-      '<p>换一个状态或项目看看；作业一提交就会出现在这里。</p>');
+      '<p>试试其他关键词，或查看全部项目的作业。</p><button class="btn sm" data-clear-filters>清除筛选</button>');
   }
   return emptyBox('队列是空的', `
-    <p>到分镜里挑一条镜头提交，或在这里直接提交一条作业。本地一次只跑一个，
-       云端可并发提交、串行落库；配音与音乐也排这一条队。</p>
-    <p><button class="btn primary" data-new-job>提交第一条作业</button></p>
-    <p class="hint">提交前先跑一遍基准清单，速度数字才是真的。</p>`);
+    <p>提交后的作业会在这里显示进度和结果。</p>
+    ${store.can('job:submit') ? '<button class="btn primary" data-new-job>提交第一条作业</button>' : ''}`);
 }
 
 /**
@@ -217,13 +215,15 @@ function pagerHtml() {
   // 而它们在表格里默认是折叠的。所以「已显示」必须按真正列出来的行算，
   // 否则会出现「已显示 146」但屏幕上只有 133 行——那是我这版最不该犯的错，
   // 与原来那格停在 100 的假数字是同一类。
-  const visible = showOrphanJobs || state.projectId === '__orphan__'
+  const auditOnly = state.projectId === '__orphan__';
+  const visible = auditOnly ? state.jobs.filter((j) => j.project_id == null).length : showOrphanJobs
     ? loaded
     : state.jobs.filter((j) => j.project_id != null).length;
   const more = total > loaded;
   const left = Math.max(0, total - loaded);
-  const hiddenOrphans = loaded - visible;
-  const count = `<span class="t-desc">已显示 ${visible} / 共 ${total} 条`
+  const hiddenOrphans = auditOnly ? 0 : loaded - visible;
+  const count = (auditOnly ? `<span class="t-desc">已找到 ${visible} 条无主作业 · 已读取 ${loaded} / ${total} 条作业`
+    : `<span class="t-desc">已显示 ${visible} / 共 ${total} 条`)
     + (hiddenOrphans > 0 ? `（另有 ${hiddenOrphans} 条无主作业折叠中）` : '')
     + '</span>';
   if (!more && !state.ended && loaded <= PAGE_SIZE) return '';
@@ -236,7 +236,7 @@ function pagerHtml() {
 }
 
 function statsHtml() {
-  const q = state.worker?.queue || { queued: 0, running: 0 };
+  const q = state.worker?.queue;
   const costs = state.costs;
   const pending = (costs?.currencies || []).reduce((n, c) => n + c.pending, 0);
   const unpriced = costs?.unpriced_jobs || 0;
@@ -248,17 +248,18 @@ function statsHtml() {
   // 走的是 `_scope(project_ids)`），它不知道 `q`／`status`／`capability`／`mode`。
   // 所以一旦有额外筛选，两者口径就不是一回事（"共 N" 会变成项目总数，
   // 而显示的是搜索结果），那种情况下宁可不显示，也不能给假分母。
-  const shown = state.jobs.length;
+  const shown = state.projectId === '__orphan__'
+    ? state.jobs.filter((j) => j.project_id == null).length : state.jobs.length;
   const total = Number(costs?.total_jobs) || 0;
-  const narrowed = Boolean(state.q || state.status || state.capability || state.mode);
+  const narrowed = Boolean(state.projectId === '__orphan__' || state.q || state.status || state.capability || state.mode);
   const totalNote = (!narrowed && total > shown)
     ? ` <i class="t-desc">／共 ${total}</i>` : '';
   return `
-    <span class="gen-stat"><b>${q.queued}</b> 等待</span>
-    <span class="gen-stat"><b>${q.running}</b> 运行</span>
-    <span class="gen-stat"><b>${state.jobs.length}</b> 当前筛选${totalNote}</span>
-    <span class="gen-stat"><b>${pending}</b> 笔待核对</span>
-    <span class="gen-stat"><b>${machineTime(costs?.local?.elapsed_ms)}</b> 本地机时</span>
+    <span class="gen-stat"><b>${q?.queued ?? '—'}</b> 等待</span>
+    <span class="gen-stat"><b>${q?.running ?? '—'}</b> 运行</span>
+    <span class="gen-stat"><b>${state.error ? '—' : shown}</b> 当前筛选${state.error ? '' : totalNote}</span>
+    <span class="gen-stat"><b>${costs ? pending : '—'}</b> 笔待核对</span>
+    <span class="gen-stat"><b>${costs ? machineTime(costs.local?.elapsed_ms) : '—'}</b> 本地机时</span>
     ${unpriced ? `<span class="chip amber">${unpriced} 笔云端作业没记价</span>` : ''}`;
 }
 
@@ -329,11 +330,11 @@ function filtersHtml() {
   const modeOpts = [['', '全部执行方式'], ['local', '本地'], ['cloud', '云端']]
     .map(([v, l]) => `<option value="${v}" ${v === state.mode ? 'selected' : ''}>${l}</option>`);
   return `
-    <select id="gen-project" class="ctl">${projectOpts.join('')}</select>
-    <select id="gen-status" class="ctl">${statusOpts.join('')}</select>
-    <select id="gen-capability" class="ctl">${capOpts.join('')}</select>
-    <select id="gen-mode" class="ctl">${modeOpts.join('')}</select>
-    <input id="gen-q" class="ctl" placeholder="搜作业号或提示词" value="${escapeHtml(state.q)}">
+    <select id="gen-project" aria-label="按项目筛选" class="ctl">${projectOpts.join('')}</select>
+    <select id="gen-status" aria-label="按状态筛选" class="ctl">${statusOpts.join('')}</select>
+    <select id="gen-capability" aria-label="按能力筛选" class="ctl">${capOpts.join('')}</select>
+    <select id="gen-mode" aria-label="按执行方式筛选" class="ctl">${modeOpts.join('')}</select>
+    <input id="gen-q" aria-label="搜索作业号或提示词" class="ctl" placeholder="搜作业号或提示词" value="${escapeHtml(state.q)}">
     <button class="btn xs" id="gen-refresh">刷新</button>`;
 }
 
@@ -346,7 +347,7 @@ export default {
         <h1>生成中心</h1>
         <p>唯一队列 · 本地优先 · 云端逐条确认成本</p>
         <div class="right">
-          <span class="gen-worker" id="gen-worker"><span class="dot idle"></span> worker 未接入</span>
+          <span class="gen-worker" id="gen-worker"><span class="dot idle"></span> 正在读取 worker 状态</span>
           <button class="btn" id="gen-profiles">参数模板</button>
           ${canSubmit ? '<button class="btn primary" id="gen-new">提交作业</button>' : ''}
         </div>
@@ -523,6 +524,10 @@ export default {
     // 上一次挂到 document 上的 visibilitychange 闭包（用来成对解绑，见下面轮询段）
     let visHandler = null;
     let profileProjectId = null;
+    let filterRevision = 0;
+    let costError = '';
+    let pagingError = '';
+    state.paging = false;
     let refreshing = false;
     let pendingRefresh = false;   // "在飞期间又有人要过一次数据"，一轮结束补发
     // 分镜带过来的关联；只对这一次提交生效，关掉弹窗就清
@@ -546,7 +551,7 @@ export default {
       if (!el) return;
       const online = !!state.worker?.online;
       el.innerHTML = `<span class="dot ${online ? 'live' : 'idle'}"></span>
-        ${online ? 'worker 在线' : 'worker 未接入'}`;
+        ${!state.worker ? 'worker 状态读取失败' : online ? 'worker 在线' : 'worker 未接入'}`;
     }
 
     function paintError() {
@@ -574,14 +579,14 @@ export default {
       const auditOnly = state.projectId === '__orphan__';
       if (auditOnly) showOrphanJobs = true;
       if (orphanBar) {
-        orphanBar.innerHTML = (orphans.length && !auditOnly) ? `
+        orphanBar.innerHTML = (!state.error && orphans.length && !auditOnly) ? `
           <button class="btn xs" id="gen-orphan-toggle">
             ${showOrphanJobs ? '收起无主作业'
               : `另有 ${orphans.length} 条无主作业 · 所属项目已删除（点开看）`}</button>
           <span class="t-desc">作业与成本账不会随项目删除而消失（迁移 0039 改 SET NULL 就是为了保住这笔账）。
             它们不进任何项目的成本汇总，也不占日常列表——项目已经不在了，硬算进谁的账都是假账。</span>` : '';
       }
-      const shown = showOrphanJobs ? state.jobs : live;
+      const shown = auditOnly ? orphans : showOrphanJobs ? state.jobs : live;
       if (state.error) {
         rows.innerHTML = '';
         empty.innerHTML = '';
@@ -591,7 +596,8 @@ export default {
         empty.innerHTML = (orphans.length && !showOrphanJobs)
           ? emptyBox('这个范围内只有无主作业',
               `<p>${orphans.length} 条所属项目已删除的作业收在下面，点开看。</p>`)
-          : emptyHtml();
+          : auditOnly && state.jobs.length < state.total
+            ? emptyBox('已读取的作业中没有无主记录', '<p>可以继续查看更早的作业。</p>') : emptyHtml();
       } else {
         empty.innerHTML = '';
         // 走 animateRows：轮询每 3 秒重画一次，新作业进来、跑完的换状态时，
@@ -600,14 +606,22 @@ export default {
         animateRows(rows, () => { rows.innerHTML = shown.map(rowHtml).join(''); }, 'data-job');
       }
       // 翻页条跟着列表一起重画：轮询改了 total（有人新提交作业）也要跟着变。
-      if (moreHost) moreHost.innerHTML = state.error ? '' : pagerHtml();
-      cost.innerHTML = costHtml();
+      if (moreHost) {
+        moreHost.innerHTML = state.error ? '' : pagingError
+          ? `<div class="gen-inline-err"><span>更早的作业读取失败 · ${escapeHtml(pagingError)}</span>
+              <button class="btn xs" data-more>重试</button></div>` : pagerHtml();
+      }
+      cost.innerHTML = costError
+        ? `<div class="gen-inline-err"><span>成本账读取失败 · ${escapeHtml(costError)}</span>
+            <button class="btn xs" data-retry-cost>重试</button></div>` : costHtml();
     }
 
     /** 筛选变了就回到第一页：留着上一次翻出来的行，会让人以为新筛选有那些数据。
      *  轮询**不能**走这一条（它每 3 秒跑一次，走一次就把翻页打回原点）。
      */
     function resetPaging() {
+      filterRevision++;
+      pagingError = '';
       state.ended = false;
       state.paging = false;
       state.total = 0;
@@ -622,10 +636,12 @@ export default {
       // 人改了筛选或按了「重试」，原来这里直接 return，那一次意图就永远不会再发——
       // 列表停在旧筛选上，最长要等下一次轮询（3 秒）才像"自己好了"。
       // 改成补一轮：只记"还欠一次"，不排队滚出一串请求。
+      if (!alive()) return;
       if (refreshing) { pendingRefresh = true; return; }
       refreshing = true;
+      const revision = filterRevision;
       try {
-        const [page, costs, worker] = await Promise.all([
+        const [jobsResult, costsResult, workerResult] = await Promise.allSettled([
           api.jobs({
             // __orphan__ 是前端哨兵值，别传给后端（它不认识，会当成项目 id）
             project_id: state.projectId === '__orphan__' ? '' : state.projectId,
@@ -633,12 +649,17 @@ export default {
             capability: state.capability, execution_mode: state.mode,
             q: state.q, limit: PAGE_SIZE,
           }),
-          // 成本汇总同样不能吃哨兵值：__orphan__ 传给后端会 404，
-          // 而 Promise.all 里一条失败整批失败——那样队列也会跟着空白。
+          // 成本汇总同样不能吃哨兵值：__orphan__ 传给后端会 404。
           // 无主作业不进任何项目的账（迁移 0039 的口径），所以这里传 undefined。
           api.jobCosts(state.projectId === '__orphan__' ? undefined : (state.projectId || undefined)),
           api.workerStatus(),
         ]);
+        if (!alive() || revision !== filterRevision) return;
+        state.worker = workerResult.status === 'fulfilled' ? workerResult.value : null;
+        state.costs = costsResult.status === 'fulfilled' ? costsResult.value : null;
+        costError = costsResult.status === 'rejected' ? (costsResult.reason?.message || '连接失败') : '';
+        if (jobsResult.status === 'rejected') throw jobsResult.reason;
+        const page = jobsResult.value;
         // 轮询只重取**第一页**。已经翻出来的更早那些页要留着——否则人翻到第 3 页，
         // 3 秒后轮询一跑就把他弹回第一页，等于翻页根本不能用。
         // 第一页的行按 id 覆盖刷新（状态会从 queued 变 running 再变成功），
@@ -647,16 +668,14 @@ export default {
         // 只保留「比第一页更早」的行：第一页本身按 id 覆盖刷新。
         // 这里同时起到筛选切换后的清场作用——旧筛选的行不会被拼进来，
         // 因为 resetPaging 会把它们从 state.jobs 里剔掉（见 resetPaging 调用点）。
-        const older = state.jobs.filter((j) => !first.some((f) => f.id === j.id));
+        const oldest = first.at(-1)?.id;
+        const older = first.length === PAGE_SIZE ? state.jobs.filter((j) => j.id < oldest) : [];
         state.jobs = first.concat(older);
         state.total = page.total || state.jobs.length;
         // 第一页没取满，说明本来就没有更多了
-        if (first.length < PAGE_SIZE) state.ended = true;
-        state.costs = costs;
-        state.worker = worker;
+        state.ended = state.jobs.length >= state.total;
+        if (state.ended) pagingError = '';
         state.error = null;
-        // 请求回来的时候人可能已经切走了：这一轮不画，也不去开抽屉
-        if (!alive()) return;
         paint();
         if (openJobId && !drawer.hidden && jobModal.hidden && profileModal.hidden
             && reconcileModal.hidden) {
@@ -667,7 +686,8 @@ export default {
       } catch (err) {
         // 读失败画在页内，不弹 alert：轮询每 3 秒一次，弹窗会把人挡在页面外，
         // 而且 alert 会阻塞主线程，连"重试"按钮都点不到。
-        state.error = err.message || '未知错误';
+        if (!alive() || revision !== filterRevision) return;
+        state.error = err?.message || '队列读取失败';
         paint();
       } finally {
         refreshing = false;
@@ -777,7 +797,9 @@ export default {
       const err = job.error_code ? `<div class="drawer-err">
         <b>${escapeHtml(job.error_label || job.error_code)}</b>
         <span class="t-dim">${escapeHtml(job.error_code)}</span>
-        <p>${escapeHtml(job.error_message || '没有更多说明')}</p></div>` : '';
+        ${job.error_message?.length > 160
+          ? `<details><summary>查看完整错误</summary><p>${escapeHtml(job.error_message)}</p></details>`
+          : `<p>${escapeHtml(job.error_message || '没有更多说明')}</p>`}</div>` : '';
       const attention = job.attention_reason ? `<div class="drawer-err warn">
         <b>待核对原因</b><p>${escapeHtml(job.attention_reason)}</p></div>` : '';
       const canMarkAttention = job.execution_mode === 'cloud'
@@ -949,11 +971,8 @@ export default {
     async function askRetry(id) {
       // 先取预览：云端重试会多一笔预计计费，不弹这一屏，重试就只是"再点一次"
       let preview;
-      try { preview = await api.retryPreview(id); } catch (err) {
-        // 读不到预览就走页内错误条，不弹 alert：统一错误出口只在 util.js 一处
-        if (err.status !== 401) { state.error = `重试预览读不到：${err.message}`; paint(); }
-        return;
-      }
+      const ready = await run('读取重试预览', async () => { preview = await api.retryPreview(id); });
+      if (!ready || !alive()) return;
       const chainRows = (preview.chain || []).map((c) =>
         `<tr><td>#${c.id}</td><td>${escapeHtml(c.status_label)}</td>
          <td>第 ${c.attempt} 次</td>
@@ -1604,6 +1623,15 @@ export default {
             const blockers = (check.items || []).filter((i) => i.level === '阻塞');
             if (blockers.length) {
               errEl.textContent = '预检阻塞：' + blockers.map((b) => b.text).join('；');
+              if (store.can('system:config') && blockers.some((b) => b.locate?.module === 'models' && b.locate.sub === 1)) {
+                const link = document.createElement('a');
+                link.className = 'btn xs';
+                link.href = '#models/1';
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = '在新标签页查看引擎';
+                errEl.append(' ', link);
+              }
               return;
             }
             const warns = (check.items || []).filter((i) => i.level === '警告');
@@ -1815,6 +1843,8 @@ export default {
       if (state.paging || state.ended) return;
       const last = state.jobs[state.jobs.length - 1];
       if (!last) return;
+      const revision = filterRevision;
+      pagingError = '';
       state.paging = true;
       if (moreHost) moreHost.innerHTML = pagerHtml();   // 立刻显示「正在取」
       try {
@@ -1824,6 +1854,7 @@ export default {
           capability: state.capability, execution_mode: state.mode,
           q: state.q, limit: PAGE_SIZE, before_id: last.id,
         });
+        if (!alive() || revision !== filterRevision) return;
         // 去重：翻页期间可能有作业被删（或游标边界正好落在并发写入上），
         // 列表里出现两行同一个 id 会让人以为重复入库了。
         const seen = new Set(state.jobs.map((j) => j.id));
@@ -1832,11 +1863,11 @@ export default {
         state.total = page.total || state.total;
         if (page.items.length < PAGE_SIZE) state.ended = true;
         state.paging = false;
-        if (!alive()) return;
         paint();
       } catch (err) {
+        if (!alive() || revision !== filterRevision) return;
         state.paging = false;
-        state.error = err.message || '未知错误';
+        pagingError = err.message || '连接失败';
         paint();
       }
     }
@@ -1907,10 +1938,20 @@ export default {
     });
 
     empty.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-clear-filters]')) {
+        clearTimeout(searchTimer);
+        resetPaging();
+        state.q = state.projectId = state.status = state.mode = state.capability = '';
+        showOrphanJobs = false;
+        root.querySelectorAll('.gen-filters select, #gen-q').forEach((el) => { el.value = ''; });
+        root.querySelector('#gen-q').focus();
+        refresh();
+      }
       if (e.target.closest('[data-new-job]')) openJobModal();
       if (e.target.closest('[data-retry]')) refresh();
     });
     cost.addEventListener('click', (e) => {
+      if (e.target.closest('[data-retry-cost]')) refresh();
       if (e.target.closest('[data-new-job]')) openJobModal();
     });
 
@@ -2060,7 +2101,9 @@ export default {
       } catch (err) {
         state.optionsError = err.message;
       }
+      if (!alive()) return;
       await refresh({ quiet: true });
+      if (!alive()) return;
       // 从分镜点「生成」过来：打开提交框并预填。只消费一次，
       // 刷新页面不会再弹；参数仍走服务端白名单与默认轨。
       const prefill = takeJobPrefill();
@@ -2102,6 +2145,7 @@ export default {
     };
     document.addEventListener('visibilitychange', visHandler);
     return () => {
+      clearTimeout(searchTimer);
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
       if (visHandler) document.removeEventListener('visibilitychange', visHandler);

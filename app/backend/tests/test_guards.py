@@ -336,6 +336,15 @@ ROUTES = [
     # 其余按业务点走：发起＝job:submit、暂停恢复取消＝job:cancel、
     # 审批队列＝review:read、签字＝review:sign——**一个新权限点都没加**。
     # outsider 有 job:submit／review:read，所以会一路走到归属判定，拿 404。
+    # ChatGPT 连接属于当前登录用户，草案还必须通过项目可见性检查。
+    ("GET", "/api/agent/chatgpt/connection", None, 200),
+    ("POST", "/api/agent/chatgpt/authorize", {"new_account": False}, 200),
+    ("DELETE", "/api/agent/chatgpt/connection", None, 200),
+    ("GET", "/api/agent/chatgpt/models", None, 422),
+    ("POST", "/api/agent/chatgpt/drafts", {"request_id": "{cg}", "project_id": "{p}",
+      "goal": "越权的制作目标", "model": "test", "confirmed": True}, 404),
+    ("GET", "/api/agent/chatgpt/drafts/{cg}", None, 404),
+    ("POST", "/api/agent/chatgpt/drafts/{cg}/accept", {}, 404),
     ("GET", "/api/agent/overview", None, 403),
     ("GET", "/api/agent/configs", None, 403),
     ("GET", "/api/agent/tools", None, 403),
@@ -371,7 +380,7 @@ def ids(seeded, people):
     """表里那些占位符对应的真实 id。角色 id 现查，不写死 1/2/3。"""
     with get_conn() as conn:
         role_id = conn.execute("SELECT id FROM role WHERE code = 'viewer'").fetchone()["id"]
-    return {"p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
+    return {"cg": "00000000-0000-0000-0000-000000000001", "p": seeded["project_id"], "e": seeded["episode_id"], "s": seeded["shot_id"],
             "a": seeded["asset_id"], "u": people["viewer"]["id"], "r": role_id,
             "d": seeded["document_id"], "c": seeded["commit"],
             "j": seeded["job_id"], "g": seeded["profile_id"], "i": 0,

@@ -58,7 +58,7 @@ function stageTable(board) {
   }
   const rows = board.stages.map((s) => `
     <tr>
-      <td class="t-strong">${escapeHtml(s.label)}</td>
+      <td class="t-strong${s.key === board.next_tasks?.[0]?.stage ? ' pb-priority-stage' : ''}">${escapeHtml(s.label)}</td>
       <td>${stageChip(s.status)}</td>
       <td class="c">${s.done}／${s.total}</td>
       <td class="c">${s.pending || '—'}</td>
@@ -80,13 +80,13 @@ function taskList(board) {
   if (!tasks.length) {
     return `<div class="card-body"><p class="note flush" >
       <b>这一集现在没有待办</b>：九阶段里没有阻塞、失败或未处理的数量。
-      要往下做就直接点上面任一阶段。</p></div>`;
+      可以从下方生产阶段选择入口。</p></div>`;
   }
-  return `<div class="card-body"><ul class="hint flush" >
+  return `<div class="card-body"><ul class="pb-tasks flush">
     ${tasks.map((t) => `<li>
       <span class="chip ${TONE[t.status] || 'gray'}">${escapeHtml(t.status)}</span>
-      <b>${escapeHtml(t.label)}</b>：${escapeHtml(t.note || '')}
-      <button class="btn xs" data-goto="${escapeHtml(JSON.stringify(t.entry))}">去做</button>
+      <div class="pb-task-copy"><b>${escapeHtml(t.label)}</b><span>${escapeHtml(t.note || '')}</span></div>
+      <button class="btn xs" data-goto="${escapeHtml(JSON.stringify(t.entry))}">进入${escapeHtml(t.label)}</button>
     </li>`).join('')}</ul></div>`;
 }
 
@@ -293,7 +293,7 @@ export default {
       return `<section class="view on"><div class="page-head"><h1>项目工作台</h1>
         <p>${escapeHtml(project.name)}</p></div>
         <div class="card"><div class="empty"><div class="empty-t">读不到生产进度</div>
-        <p>${escapeHtml(err.message || '未知错误')}</p></div></div></section>`;
+        <p>${escapeHtml(err.message || '未知错误')}</p><button class="btn sm" id="pb-reload">重试</button></div></div></section>`;
     }
     const ov = data.overview;
     const stats = data.stats || null;
@@ -304,7 +304,7 @@ export default {
     <section class="view on">
       <div class="page-head">
         <h1>项目工作台</h1>
-        <p>${escapeHtml(project.name)} · 从剧本到成片走到哪一步、下一步做什么</p>
+        <p>${escapeHtml(project.name)} · 生产进度</p>
         <div class="right">
           <select class="ctl" id="pb-episode" aria-label="当前集">
             ${(ov.per_episode || []).map((e) => `<option value="${e.episode_id}"
@@ -313,6 +313,16 @@ export default {
           </select>
           <button class="btn" id="pb-refine">精细制作</button>
           <button class="btn" id="pb-pipeline">产线生产</button>
+        </div>
+      </div>
+      <div class="card mb-card" >
+        <div class="card-head"><h2>下一步</h2>
+          <span class="sub">本集待办</span>
+          ${retryBtn(board, stats)}</div>
+        ${taskList(board)}
+        <div class="card-body" ${retryNotice ? '' : 'hidden'}>
+          <p class="bar ${retryTone}" id="pb-retry-out"${retryNotice ? '' : ' hidden'}>`
+            + escapeHtml(retryNotice) + `</p>
         </div>
       </div>
       ${headCard(ov, board)}
@@ -326,16 +336,6 @@ export default {
             真正会拦人的只有两处：提交生成前的预检，和发起成片合成前的检查。</p>
         </div>
       </div>
-      <div class="card mb-card" >
-        <div class="card-head"><h2>下一步</h2>
-          <span class="sub">按真实缺口排：阻塞 → 失败 → 待处理</span>
-          ${retryBtn(board, stats)}</div>
-        ${taskList(board)}
-        <div class="card-body" style="border-top:1px solid var(--line)">
-          <p class="bar ${retryTone}" id="pb-retry-out"${retryNotice ? '' : ' hidden'}>`
-            + escapeHtml(retryNotice) + `</p>
-        </div>
-      </div>
       <div class="card">
         <div class="card-head"><h2>各集进度</h2>
           <span class="sub">项目级只看这几列；点开某一集才算九阶段</span></div>
@@ -346,6 +346,7 @@ export default {
   },
 
   mount(root) {
+    root.querySelector('#pb-reload')?.addEventListener('click', () => window.dispatchEvent(new CustomEvent('app:refresh')));
     const go = (entry) => {
       gotoEntry(entry);
     };

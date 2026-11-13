@@ -1,3 +1,4 @@
+import { chatgptPlanCard, mountChatGPTPlan } from './chatgpt-plan.js';
 import { submissionIdentity } from '../submission.js';
 /**
  * 智能体中心（0041／《智能体管理中心》说明书）。四个工作区：
@@ -439,6 +440,7 @@ export default {
     } catch (e) { err = e; }
     if (openRunId && !runs.some((r) => r.id === openRunId)) openRunId = getParam('agents') ? openRunId : null;
     return `
+      ${chatgptPlanCard()}
       ${err ? `<div class="card mb-card" >${errorBox('读运行列表', err)}</div>` : ''}
       <div class="card mb-card" >
         <div class="card-head"><h2>这个项目的运行</h2>
@@ -466,6 +468,11 @@ export default {
 
   async mount(root) {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+    mountChatGPTPlan(root, (id) => {
+      openRunId = id;
+      setParam('agents', id);
+      refresh();
+    });
     bindSubChips(root, (i) => { setSub('agents', i); refresh(); });
 
     // 错误卡上那颗「重试」必须接上（2026-11-10 自查修的真 bug）。

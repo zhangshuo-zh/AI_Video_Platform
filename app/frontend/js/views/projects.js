@@ -112,23 +112,25 @@ function tagCell(tags) {
 function tagChips(tags, active) {
   return tags.map((t) => `
     <button type="button" class="chip ${t === active ? 'blue' : 'plain'}"
-            data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('');
+            aria-pressed="${t === active}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('');
 }
 
 function statusChips(current) {
   return Object.entries(STATUS_LABELS).map(([key, label]) => `
     <button type="button" class="chip ${key === current ? 'blue' : 'plain'}"
-            data-status="${key}">${label}</button>`).join('');
+            aria-pressed="${key === current}" data-status="${key}">${label}</button>`).join('');
 }
 
 /** 筛选条整段。点 chip 后只重画这一段——不重建表格，搜索框里的词也就不会被洗掉 */
 function filtersHtml(allTags) {
   return `
-    <span class="note" style="margin-right:4px">状态</span>${statusChips(activeStatus)}
-    <span class="note" style="margin-left:14px;margin-right:4px">标签</span>
-    ${allTags.length ? tagChips(allTags, activeTag)
-      : '<span class="t-dim">还没有标签 —— 用「修改」给项目加，加完这里就能点着筛</span>'}
-    ${activeTag ? '<button type="button" class="chip gray" data-tag="">清除</button>' : ''}`;
+    <div class="proj-filter-group" role="group" aria-label="状态">
+      <span class="note">状态</span>${statusChips(activeStatus)}
+    </div>
+    ${allTags.length ? `<div class="proj-filter-group" role="group" aria-label="标签">
+      <span class="note">标签</span>${tagChips(allTags, activeTag)}
+      ${activeTag ? '<button type="button" class="chip gray" data-tag="">清除标签</button>' : ''}
+    </div>` : ''}`;
 }
 
 function rowsFor(projects) {
@@ -228,9 +230,12 @@ export default {
   async render() {
     // 每次进项目中心都重拉一次：集/镜/资产的计数和成本累计都会变，
     // 只靠启动那一份快照，生成中心跑完几条作业再回到这里，看到的还是旧账。
+    let loadError = '';
     try {
       await store.load();
-    } catch { /* 读不到就先用上一次的列表，别把整页打空 */ }
+    } catch (err) {
+      loadError = err.message || '连接失败';
+    }
     const projects = store.projects;
     const cur = store.current;
     const flashText = flash;   // 只带出一次：下一轮渲染就清掉
@@ -252,7 +257,7 @@ export default {
       .filter((p) => (p.costs || []).some((c) => (c.pending || 0) > 0)).length;
 
     return `
-    <section class="view on">
+    <section class="view on projects-view">
       <div class="page-head">
         <h1>项目中心</h1>
         <p>管理项目、查看进展、继续制作。集与分镜在创作中心，花费在生成中心</p>
@@ -262,13 +267,17 @@ export default {
         </div>
       </div>
 
-      <div class="proj-stats">
+      ${loadError ? `<div class="project-load-error" role="status">
+        <span><b>项目列表刷新失败</b> · ${escapeHtml(loadError)}${projects.length ? '。当前显示上次读取的项目。' : ''}</span>
+        <button class="btn xs" id="proj-reload">重试</button>
+      </div>` : ''}
+      <div class="proj-stats" ${loadError && !projects.length ? 'hidden' : ''}>
         <div class="stat"><span class="stat-n">${activeCount}</span><span class="stat-l">在产项目</span></div>
         <div class="stat"><span class="stat-n">${archivedCount}</span><span class="stat-l">已归档</span></div>
         <div class="stat ${pendingProjects ? 'warn' : ''}"><span class="stat-n">${pendingProjects}</span><span class="stat-l">有待核对账单的项目</span></div>
       </div>
 
-      <div class="card">
+      <div class="card" ${loadError && !projects.length ? 'hidden' : ''}>
         <div class="card-head">
           <h2>项目</h2><span class="sub" id="proj-count">共 ${projects.length} 个</span>
           <div class="right">
@@ -276,12 +285,11 @@ export default {
               ${SORTS.map((k) => `<option value="${k}"${k === sortMode ? ' selected' : ''}>${
                 { opened: '最近打开', updated: '最近修改', name: '项目名称' }[k]}</option>`).join('')}
             </select>
-            <input id="proj-search" class="ctl sm" placeholder="搜项目名或标签"
-                   style="width:200px" value="${escapeHtml(keyword)}">
+            <input id="proj-search" class="ctl sm" aria-label="搜索项目" placeholder="搜索项目、标签或所有人" value="${escapeHtml(keyword)}">
           </div>
         </div>
-        <div class="card-body" style="padding:10px 14px;border-bottom:1px solid var(--line)">
-          <div class="row" id="proj-filters" style="gap:6px;flex-wrap:wrap">
+        <div class="proj-filter-bar">
+          <div id="proj-filters">
             ${filtersHtml(allTags)}
           </div>
         </div>
@@ -297,7 +305,8 @@ export default {
         </div>
         <div class="empty" id="no-match" hidden style="padding:26px 20px">
           <div class="empty-t">没有匹配的项目</div>
-          <p id="no-match-hint">换个关键词或清掉标签筛选。</p>
+          <p id="no-match-hint"></p>
+          <button class="btn sm" id="proj-clear">清除筛选</button>
         </div>` : `
         <div class="empty">
           <div class="empty-t">还没有项目</div>
@@ -469,6 +478,7 @@ export default {
 
   mount(root) {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+    root.querySelector('#proj-reload')?.addEventListener('click', refresh);
     const goWriting = () => window.dispatchEvent(new CustomEvent('app:go', { detail: 'writing' }));
     // 页面级提示（新建成功、归档／恢复完成）：说一句话就够，不打断操作
     const noteEl = root.querySelector('#proj-msg');
@@ -588,8 +598,9 @@ export default {
         empty.hidden = shown > 0;
         // 归档的东西"不见了"最容易被当成丢了，空结果里主动说一句去哪找
         const hint = root.querySelector('#no-match-hint');
-        if (hint && !shown && activeStatus === 'active' && archivedCount) {
-          hint.textContent = `没有在产项目。有 ${archivedCount} 个已归档，切到上面「已归档」看看。`;
+        if (hint && !shown) {
+          hint.textContent = !kw && !activeTag && activeStatus === 'active' && archivedCount
+            ? `目前只有已归档项目，共 ${archivedCount} 个。` : '试试其他关键词，或清除筛选查看全部项目。';
         }
       }
       // 筛完再定一次焦点锚点：锚点那行可能被筛掉了，得换一条可见的
@@ -708,23 +719,33 @@ export default {
     if (filters) {
       // 只重画筛选条这一小段 + 重新筛行。原来这里走的是整页 refresh，两个毛病：
       // 搜索框会被重绘清空（词悄悄丢了），而且筛选本来就是纯前端的，不该为它重建表格
-      const bindChips = () => {
-        filters.querySelectorAll('[data-status],[data-tag]').forEach((chip) => {
-          chip.addEventListener('click', () => {
-            if (chip.dataset.status !== undefined) {
-              activeStatus = chip.dataset.status;
-              savePref('status', activeStatus);
-            } else {
-              activeTag = chip.dataset.tag;
-            }
-            keepOrder = false;
-            filters.innerHTML = filtersHtml(allTags);
-            bindChips();
-            applyFilter();
-          });
-        });
-      };
-      bindChips();
+      filters.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-status],[data-tag]');
+        if (!chip) return;
+        const isStatus = chip.hasAttribute('data-status');
+        if (isStatus) {
+          activeStatus = chip.dataset.status;
+          savePref('status', activeStatus);
+        } else {
+          activeTag = chip.dataset.tag;
+        }
+        keepOrder = false;
+        filters.innerHTML = filtersHtml(allTags);
+        const selected = [...filters.querySelectorAll('[aria-pressed="true"]')];
+        (selected.find((el) => el.hasAttribute(isStatus ? 'data-status' : 'data-tag')) || searchEl)?.focus();
+        applyFilter();
+      });
+      root.querySelector('#proj-clear')?.addEventListener('click', () => {
+        activeStatus = 'all';
+        activeTag = '';
+        searchEl.value = keyword = '';
+        savePref('q', '');
+        savePref('status', activeStatus);
+        keepOrder = false;
+        filters.innerHTML = filtersHtml(allTags);
+        applyFilter();
+        searchEl.focus();
+      });
     }
 
     if (pickAll) {

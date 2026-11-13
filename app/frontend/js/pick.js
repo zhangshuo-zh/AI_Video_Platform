@@ -13,11 +13,14 @@ import { escapeHtml } from './util.js';
 
 const MARK = 'fvPick';
 let active = null;
+let nextListId = 0;
+const observers = new WeakMap();
 
 function closeActive() {
   if (!active) return;
   active.list.hidden = true;
   active.btn.setAttribute('aria-expanded', 'false');
+  active.btn.removeAttribute('aria-activedescendant');
   active = null;
 }
 
@@ -86,7 +89,9 @@ document.addEventListener('click', (e) => {
   if (active.wrap.contains(e.target) || active.list.contains(e.target)) return;
   closeActive();
 }, true);
-window.addEventListener('scroll', closeActive, true);
+window.addEventListener('scroll', (e) => {
+  if (active && (!(e.target instanceof Node) || !active.list.contains(e.target))) closeActive();
+}, true);
 window.addEventListener('resize', closeActive);
 
 export function enhanceSelect(sel) {
@@ -119,6 +124,7 @@ export function enhanceSelect(sel) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'fv-pick-btn';
+  btn.setAttribute('role', 'combobox');
   btn.setAttribute('aria-haspopup', 'listbox');
   btn.setAttribute('aria-expanded', 'false');
   // 高度与原生控件一致：外壳定了高，按钮填满它（box-sizing:border-box 见 CSS）。
@@ -127,6 +133,8 @@ export function enhanceSelect(sel) {
 
   const list = document.createElement('div');
   list.className = 'fv-pick-list';
+  list.id = `fv-pick-list-${++nextListId}`;
+  btn.setAttribute('aria-controls', list.id);
   list.setAttribute('role', 'listbox');
   list.hidden = true;
   wrap.appendChild(list);
@@ -137,7 +145,7 @@ export function enhanceSelect(sel) {
     // 停在哪一项」，两者不是一个概念，不能互相顶替。
     const hi = active && active.sel === sel ? active.index : -1;
     list.innerHTML = [...sel.options].map((o, i) => (
-      `<button type="button" role="option" id="fv-pick-opt-${i}" class="fv-pick-opt${o.selected ? ' on' : ''}${i === hi ? ' hi' : ''}"`
+      `<button type="button" role="option" tabindex="-1" id="${list.id}-opt-${i}" class="fv-pick-opt${o.selected ? ' on' : ''}${i === hi ? ' hi' : ''}"`
       + ` data-i="${i}"${o.disabled ? ' disabled' : ''}`
       + `${o.selected ? ' aria-selected="true"' : ''}`
       + `${i === hi ? ' aria-current="true"' : ''}>${escapeHtml(o.textContent)}</button>`
@@ -148,6 +156,9 @@ export function enhanceSelect(sel) {
     const opt = sel.options[sel.selectedIndex];
     btn.textContent = opt ? opt.textContent : '';
     btn.disabled = sel.disabled;
+    const label = sel.getAttribute('aria-label');
+    if (label) btn.setAttribute('aria-label', label);
+    else btn.removeAttribute('aria-label');
     // 有些表单按分支隐藏原生 select（编辑时切成手填），外壳必须跟着藏。
     wrap.hidden = sel.hidden;
     if (!list.hidden) paint();
@@ -179,7 +190,9 @@ export function enhanceSelect(sel) {
     if (sel.disabled) return;
     if (active && active.sel === sel) { closeActive(); return; }
     closeActive();
+    active = { sel, btn, list, wrap, index: sel.selectedIndex };
     paint();
+    if (sel.selectedIndex >= 0) btn.setAttribute('aria-activedescendant', `${list.id}-opt-${sel.selectedIndex}`);
     list.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     // 先按宽度与方位摆好再量高度：放不下时向上翻。
@@ -187,14 +200,17 @@ export function enhanceSelect(sel) {
     // 最长那条选项要多宽（含左右内边距 10+10 与圆角余量 4）
     const longest = Math.max(0, ...[...sel.options]
       .map((o) => measureText(o.textContent || ''))) + 24;
-    list.style.minWidth = `${Math.max(Math.round(r.width), longest)}px`;
-    list.style.left = `${Math.round(r.left)}px`;
-    const h = list.offsetHeight;
-    const below = window.innerHeight - r.bottom - 8;
-    list.style.top = (h > below && r.top > h + 8)
-      ? `${Math.round(r.top - h - 4)}px`
-      : `${Math.round(r.bottom + 4)}px`;
-    active = { sel, btn, list, wrap, index: sel.selectedIndex };
+    const gutter = 8;
+    const width = Math.min(Math.max(Math.round(r.width), longest), document.documentElement.clientWidth - 2 * gutter);
+    list.style.minWidth = list.style.width = `${width}px`;
+    list.style.left = `${Math.max(gutter, Math.min(r.left, document.documentElement.clientWidth - gutter - width))}px`;
+    list.style.maxHeight = '';
+    const below = window.innerHeight - r.bottom - gutter - 4;
+    const above = r.top - gutter - 4;
+    const upwards = list.offsetHeight > below && above > below;
+    list.style.maxHeight = `${Math.max(0, Math.min(list.offsetHeight, upwards ? above : below))}px`;
+    list.style.top = `${upwards ? r.top - list.offsetHeight - 4 : r.bottom + 4}px`;
+
   };
 
   btn.addEventListener('click', open);
@@ -206,20 +222,30 @@ export function enhanceSelect(sel) {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     closeActive();
     sync();
+    btn.focus();
   });
-  // 原生 select 被藏起来了（视觉上），但它仍持有焦点，键盘事件先到这里。
-  // 用 listboxKeys 处理方向键/Home/End/Enter，Escape 与 Tab 仍走原来的收起。
-  // 注意：只有浮层开着时才接管方向键，否则会抢走原生 select 自己的选择行为。
-  sel.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeActive(); return; }
-    if (!active || active.sel !== sel) return;
+  btn.addEventListener('keydown', (e) => {
+    if (active?.sel !== sel) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        open();
+      }
+      return;
+    }
+    if (e.key === 'Tab') { closeActive(); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeActive();
+      return;
+    }
     const opts = [...sel.options];
-    listboxKeys(e, opts, active.index,
+    const handled = listboxKeys(e, opts, active.index,
       (i) => {
         active.index = i;
         paint();
         active.list.querySelector(`[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
-        sel.setAttribute('aria-activedescendant', `fv-pick-opt-${i}`);
+        btn.setAttribute('aria-activedescendant', `${list.id}-opt-${i}`);
       },
       (i) => {
         sel.selectedIndex = i;
@@ -228,6 +254,7 @@ export function enhanceSelect(sel) {
         sync();
         btn.focus();
       });
+    if (handled) e.preventDefault();
   });
 
   // options 重建、值被程序化改写、禁用/隐藏切换都要让按钮跟上。
@@ -263,9 +290,11 @@ export function enhanceSelect(sel) {
   syncAccessor('value');
   syncAccessor('selectedIndex');
 
-  new MutationObserver(sync).observe(sel, {
+  const observer = new MutationObserver(sync);
+  observers.set(sel, observer);
+  observer.observe(sel, {
     childList: true, subtree: true, attributes: true,
-    attributeFilter: ['selected', 'disabled', 'hidden', 'label'],
+    attributeFilter: ['selected', 'disabled', 'hidden', 'label', 'aria-label'],
   });
   sync();
 }
@@ -278,6 +307,8 @@ export function applyPicks(root = document) {
 export function restorePicks(root = document) {
   closeActive();
   root.querySelectorAll('[data-fv-pick]').forEach((sel) => {
+      observers.get(sel)?.disconnect();
+      observers.delete(sel);
       const wrap = sel.closest('.fv-pick');
       if (wrap) {
         wrap.parentNode.insertBefore(sel, wrap);
