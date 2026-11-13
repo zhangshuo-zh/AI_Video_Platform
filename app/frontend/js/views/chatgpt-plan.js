@@ -10,7 +10,7 @@ export function chatgptPlanCard() {
     <div class="card-head"><h2>ChatGPT 制作计划草案</h2><span class="sub">个人套餐</span></div>
     <div class="card-body chatgpt-plan-body">
       <p>根据制作目标拆解工具与步骤，预览确认后可创建运行。</p>
-      <div class="row"><span data-cg-account role="status">正在读取连接状态…</span>
+      <div class="row chatgpt-plan-conn"><span data-cg-account role="status">正在读取连接状态…</span>
         <button class="btn sm" data-cg-connect data-oai-siwc-button>Continue with ChatGPT</button>
         <button class="btn sm" data-cg-switch hidden>更换账号</button>
         <button class="btn sm" data-cg-status>刷新连接</button>
@@ -24,7 +24,7 @@ export function chatgptPlanCard() {
         placeholder="例：盘点当前集缺少的资产，并安排人物履历与分镜准备步骤"></textarea></label>
       <label class="chatgpt-plan-consent"><input type="checkbox" data-cg-consent>
         <span>同意发送目标、集号、镜头数和平台工具清单给 OpenAI，并使用个人 ChatGPT 套餐额度。</span></label>
-      <div class="row"><button class="btn primary sm" data-cg-generate disabled>生成计划草案</button>
+      <div class="chatgpt-plan-actions"><button class="btn primary sm" data-cg-generate disabled>生成计划草案</button>
         <button class="btn sm" data-cg-recover hidden>查询上次结果</button>
         <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">查看套餐用量 ↗</a></div>
       <p class="note" data-cg-notice role="status"></p>

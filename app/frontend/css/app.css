@@ -2416,14 +2416,28 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   .pb-tasks button{grid-column:2;justify-self:start}
 }
 
-.chatgpt-plan-body{display:grid;gap:12px}
+.chatgpt-plan-body{display:grid;gap:16px}
+/* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
+   账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
+   与下面的表单分开——它们是两件事：先连上，再填目标。 */
+.chatgpt-plan-conn{padding-bottom:12px;border-bottom:1px solid var(--line)}
+/* 同意条款离主按钮近一点：它是提交的前提，不该和按钮之间隔着 16px。 */
+.chatgpt-plan-consent{margin-top:-4px}
+/* 外链与主按钮分开：主操作在左，外部跳转退成文字链并靠右。 */
+.chatgpt-plan-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.chatgpt-plan-actions>:last-child{margin-left:auto}
 .chatgpt-plan-body>.row{flex-wrap:wrap;gap:8px}
 .chatgpt-plan-body>[data-cg-accept]{justify-self:start}
 .chatgpt-plan-body [data-cg-account]{overflow-wrap:anywhere;min-width:0}
 .chatgpt-plan-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .chatgpt-plan-body label{display:grid;gap:6px;min-width:0}
 .chatgpt-plan-body .ctl{width:100%;min-width:0}
-.chatgpt-plan-body label.chatgpt-plan-consent{display:flex;align-items:flex-start;gap:8px;color:var(--ink-2)}
+.chatgpt-plan-body label.chatgpt-plan-consent{display:flex;align-items:flex-start;gap:10px;
+  color:var(--ink-2);padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--field);line-height:1.55;cursor:pointer}
+/* 勾上之后把边框点亮：这是提交的前提，光靠一个小方框看不出「必须勾」。 */
+.chatgpt-plan-body label.chatgpt-plan-consent:has(input:checked){border-color:var(--ok-line);
+  background:var(--ok-soft)}
 .chatgpt-plan-consent input{margin-top:4px;flex:none}
 .chatgpt-plan-steps{padding-left:24px;display:grid;gap:12px}
 .chatgpt-plan-steps li{line-height:1.6;overflow-wrap:anywhere}
