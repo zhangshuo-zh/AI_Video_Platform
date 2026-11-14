@@ -50,6 +50,7 @@ RECIPES: dict[str, dict] = {
         "label": "Draw Things 应用",
         "app_name": "Draw Things",
         "process_keyword": "drawthings",
+        "process_keywords": ["drawthings", "draw things", "draw_things", "drawthing"],
         # 起完之后需要人做的事：这些不是失败，是产品本身的形状。
         "note": "Draw Things 的 API Server 要在应用内设置里手动开启（默认关）。"
                 "应用起来了但端口不答话，通常是这个开关没打开。",
@@ -58,6 +59,7 @@ RECIPES: dict[str, dict] = {
         "argv": ["ollama", "serve"],
         "label": "ollama serve",
         "process_keyword": "ollama",
+        "process_keywords": ["ollama"],
         "note": "",
     },
     # ComfyUI 是第三种形状：装的是 Electron 外壳（`/Applications/Comfy Desktop.app`），
@@ -73,6 +75,7 @@ RECIPES: dict[str, dict] = {
         "label": "Comfy Desktop",
         "app_name": "Comfy Desktop",
         "process_keyword": "comfy",
+        "process_keywords": ["comfy", "comfyui", "comfy desktop"],
         "note": "ComfyUI 在 Electron 外壳里起，首次要下载本体与模型，可能几分钟。"
                 "先在 Dock 里看它是否真的打开了界面，再回来点「探测」——"
                 "外壳起来但服务没 listen，通常是它还在下载或卡在首启配置。",
@@ -189,8 +192,11 @@ def launch(engine_code: str, endpoint: str) -> LaunchResult:
                                " 应用可能还在冷启动，稍后再点一次探测。"))
 
 
-def _find_pid_by_port(port: int, keyword: str) -> list[int]:
+def _find_pid_by_port(port: int, keywords: list[str] | str) -> list[int]:
     """通过端口查找匹配关键词的进程 PID，绝不误杀无关进程。"""
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    kw_list = [k.lower() for k in keywords if k]
     try:
         out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
         if not out:
@@ -202,7 +208,11 @@ def _find_pid_by_port(port: int, keyword: str) -> list[int]:
                 comm = subprocess.check_output(
                     ["ps", "-p", str(pid), "-o", "comm="], text=True
                 ).strip().lower()
-                if keyword.lower() in comm:
+                args = subprocess.check_output(
+                    ["ps", "-p", str(pid), "-o", "args="], text=True
+                ).strip().lower()
+                target_str = f"{comm} {args}"
+                if any(k in target_str for k in kw_list):
                     matched.append(pid)
             except Exception:
                 pass
@@ -239,22 +249,34 @@ def stop(engine_code: str, endpoint: str) -> StopResult:
     except Exception:
         port = None
 
-    keyword = recipe.get("process_keyword", engine_code)
+    keywords = recipe.get("process_keywords") or [recipe.get("process_keyword", engine_code)]
     if port:
-        pids = _find_pid_by_port(port, keyword)
+        pids = _find_pid_by_port(port, keywords)
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:
                 pass
 
-    # 等待端口释放（最多 3 秒）
-    deadline = time.monotonic() + 3.0
+    # 等待端口释放（最多 6 秒）
+    # 大模型服务或原生 App 退出、保存快照与释放显存需要 2~5 秒
+    deadline = time.monotonic() + 6.0
+    halfway_handled = False
     while time.monotonic() < deadline:
         time.sleep(POLL_EVERY)
         if not _already_answering(engine_code, endpoint):
             return StopResult(True, engine_code, True,
                               f"已成功关闭 {recipe['label']} 服务进程。")
+        # 过了 3.5 秒如果还在运行，且有对应 port，补发一次退出信号
+        if not halfway_handled and (deadline - time.monotonic() < 2.5):
+            halfway_handled = True
+            if port:
+                remained_pids = _find_pid_by_port(port, keywords)
+                for pid in remained_pids:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
 
     if not _already_answering(engine_code, endpoint):
         return StopResult(True, engine_code, True,
