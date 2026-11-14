@@ -163,6 +163,7 @@ export function enhanceSelect(sel) {
     const label = sel.getAttribute('aria-label');
     if (label) btn.setAttribute('aria-label', label);
     else btn.removeAttribute('aria-label');
+    btn.classList.toggle('is-blank', !sel.value);
     // 有些表单按分支隐藏原生 select（编辑时切成手填），外壳必须跟着藏。
     wrap.hidden = sel.hidden;
     if (!list.hidden) paint();

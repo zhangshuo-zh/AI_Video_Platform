@@ -918,6 +918,16 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   width:108px;min-width:108px;box-sizing:border-box;
 }
 
+.policy{
+  transition:background var(--fast) var(--ease);
+}
+.policy:hover{
+  background:rgba(255,255,255,.025);
+}
+[data-theme="day"] .policy:hover{
+  background:rgba(0,0,0,.02);
+}
+
 .policy select.ctl,
 .policy .fv-pick,
 .policy .fv-pick-btn{
@@ -929,6 +939,98 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 }
 .policy .fv-pick-btn::after{top:50% !important;transform:translateY(-50%) rotate(45deg) !important}
 .policy select.ctl{padding:5px 10px !important;line-height:20px !important;width:100%}
+
+/* 未指定占位文字柔和暗调弱化 */
+.policy select.ctl.is-blank,
+.policy .fv-pick-btn.is-blank{
+  color:var(--ink-3) !important;
+}
+
+/* 必需能力交互磁吸胶囊标签 */
+.mc-req-group{display:flex;flex-wrap:wrap;gap:5px;align-items:center;max-width:240px}
+.mc-req-tag{display:inline-flex;position:relative;cursor:pointer;user-select:none}
+.mc-req-tag input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.mc-req-pill{
+  display:inline-flex;align-items:center;padding:3px 8px;border-radius:6px;
+  font-size:11.5px;background:rgba(255,255,255,.04);color:var(--ink-2);
+  border:1px solid var(--line-strong);transition:all var(--fast) var(--ease);
+}
+.mc-req-tag:hover .mc-req-pill{
+  border-color:var(--line-hover);background:var(--hover-soft);color:var(--ink);
+}
+.mc-req-tag input:checked + .mc-req-pill{
+  background:var(--accent-tint);color:var(--accent);
+  border-color:var(--accent-line);font-weight:600;
+  box-shadow:0 0 0 1px var(--accent-line), 0 1px 3px rgba(0,0,0,.15);
+}
+.mc-req-tag input:checked + .mc-req-pill::before{
+  content:'✓';margin-right:4px;font-size:10px;font-weight:800;color:currentColor;
+}
+.mc-req-tag input:focus-visible + .mc-req-pill{
+  outline:2px solid var(--accent);outline-offset:1px;
+}
+.mc-req-tag.impossible .mc-req-pill{
+  opacity:.45;text-decoration:line-through;cursor:not-allowed;
+}
+
+/* 微型滑动开关 (Mini Switch) */
+.switch-ui{
+  position:relative;display:inline-block;width:34px;height:18px;vertical-align:middle;cursor:pointer;
+}
+.switch-ui input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.switch-slider{
+  position:absolute;inset:0;border-radius:18px;
+  background:rgba(255,255,255,.12);border:1px solid var(--line-strong);
+  transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease);
+}
+.switch-slider::before{
+  content:'';position:absolute;top:1px;left:1px;width:14px;height:14px;
+  border-radius:50%;background:#888;box-shadow:0 1px 2px rgba(0,0,0,.3);
+  transition:transform var(--fast) var(--ease),background var(--fast) var(--ease);
+}
+.switch-ui:hover .switch-slider{
+  border-color:var(--line-hover);background:rgba(255,255,255,.18);
+}
+.switch-ui input:checked + .switch-slider{
+  background:var(--warn-soft);border-color:var(--warn-line);
+}
+.switch-ui input:checked + .switch-slider::before{
+  transform:translateX(16px);background:var(--warn);
+}
+.switch-ui.switch-green input:checked + .switch-slider{
+  background:var(--ok-soft);border-color:var(--ok-line);
+}
+.switch-ui.switch-green input:checked + .switch-slider::before{
+  transform:translateX(16px);background:var(--ok);
+}
+.switch-ui input:focus-visible + .switch-slider{
+  outline:2px solid var(--accent);outline-offset:2px;
+}
+
+/* 操作列与看候选微按键 */
+.policy-status-wrap{
+  display:flex;flex-direction:column;align-items:flex-start;gap:6px;
+}
+.btn-resolve{
+  display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:11px;
+  background:rgba(255,255,255,.05);border:1px solid var(--line-strong);border-radius:5px;
+  color:var(--ink-2);transition:all var(--fast) var(--ease);cursor:pointer;
+}
+.btn-resolve .i-eye{
+  width:12px;height:12px;opacity:.75;transition:transform var(--fast);
+}
+.btn-resolve:hover{
+  background:var(--hover-strong);color:var(--accent);border-color:var(--accent-line);
+}
+.btn-resolve:hover .i-eye{
+  opacity:1;transform:scale(1.1);
+}
+
+/* 保存按钮反馈 */
+.btn-saved{
+  background:var(--ok) !important;color:#fff !important;border-color:var(--ok-line) !important;
+  box-shadow:0 0 8px var(--ok-soft) !important;
+}
 /* 模型仓库顶上「全部类型／全部来源」两个筛选：原生 <select> 按最短选项算宽，
    实测只给 92px，自绘按钮照抄后就折成两行。给足一行文字＋箭头的宽度。 */
 .repo-filter{width:120px;flex:none}
@@ -1184,6 +1286,19 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .chip.amber{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
 .chip.red{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
 .chip.plain{background:var(--field);color:var(--ink-2);border-color:var(--line-strong)}
+/* 能力专属胶囊徽章（轻量透光微胶囊） */
+.chip.cap-text{background:rgba(56,189,248,.12);color:#38bdf8;border-color:rgba(56,189,248,.28)}
+.chip.cap-image{background:rgba(168,85,247,.12);color:#c084fc;border-color:rgba(168,85,247,.28)}
+.chip.cap-video{background:rgba(251,191,36,.12);color:#fbbf24;border-color:rgba(251,191,36,.28)}
+.chip.cap-audio{background:rgba(52,211,153,.12);color:#34d399;border-color:rgba(52,211,153,.28)}
+.chip.cap-compose{background:rgba(244,114,182,.12);color:#f472b6;border-color:rgba(244,114,182,.28)}
+
+/* 白天主题对比度自适应增强 */
+[data-theme="day"] .chip.cap-text{background:rgba(2,132,199,.1);color:#0284c7;border-color:rgba(2,132,199,.25)}
+[data-theme="day"] .chip.cap-image{background:rgba(147,51,234,.1);color:#7e22ce;border-color:rgba(147,51,234,.25)}
+[data-theme="day"] .chip.cap-video{background:rgba(217,119,6,.1);color:#b45309;border-color:rgba(217,119,6,.25)}
+[data-theme="day"] .chip.cap-audio{background:rgba(5,150,105,.1);color:#047857;border-color:rgba(5,150,105,.25)}
+[data-theme="day"] .chip.cap-compose{background:rgba(219,39,119,.1);color:#be185d;border-color:rgba(219,39,119,.25)}
 /* 后端/位置专属胶囊（.chip-backend）：锁定 54px 宽度等宽居中，本地与云端尺寸与结构完全对称对齐 */
 .chip-backend{
   min-width:54px;justify-content:center;box-sizing:border-box;text-align:center;

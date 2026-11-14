@@ -65,12 +65,16 @@ export function pagePolicies() {
   const requiredPicker = (p) => (p.producible || []).map((tag) => {
     const on = p.required.includes(tag);
     const impossible = (p.impossible_required || []).includes(tag);
-    return `<label class="pf-check mc-req" title="${escapeHtml(
+    return `<label class="mc-req-tag ${impossible ? 'impossible' : ''}" title="${escapeHtml(
       impossible ? '清单里没有任何一档能产出它；勾了也不会有候选' : '作为这一场景的必需能力')}">
       <input type="checkbox" data-req="${escapeHtml(tag)}" ${on ? 'checked' : ''}>
-      <span ${impossible ? 'style="text-decoration:line-through;opacity:.55"' : ''}>${
-        escapeHtml(tag)}${impossible ? '（清单缺来源）' : ''}</span></label>`;
-  }).join('') || '<span class="hint">这一轴清单里还没有任何可声明的标签</span>';
+      <span class="mc-req-pill">${escapeHtml(tag)}${impossible ? '（缺来源）' : ''}</span>
+    </label>`;
+  }).join('') || '<span class="hint">无可选标签</span>';
+
+  const enabledCount = items.filter((x) => x.enabled).length;
+  const totalCount = items.length;
+  const configText = `${totalCount} 个场景 · ${enabledCount} 已就绪 · ${totalCount - enabledCount} 待配置`;
 
   const rows = items.map((p) => {
     const cur = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
@@ -78,9 +82,8 @@ export function pagePolicies() {
     return `<tr class="policy" data-key="${escapeHtml(p.scene_key)}">
       <td><b>${escapeHtml(p.scene_label || p.scene_key)}</b>
         <div class="hint mono">${escapeHtml(p.scene_key)}</div></td>
-      <td>${escapeHtml(p.capability_label)}</td>
-      <td><div class="param-chips" style="flex-direction:column;align-items:flex-start;max-width:220px">
-        ${requiredPicker(p)}</div></td>
+      <td><span class="chip cap-${escapeHtml(p.capability)}">${escapeHtml(p.capability_label)}</span></td>
+      <td><div class="mc-req-group">${requiredPicker(p)}</div></td>
       <td class="policy-slot-col"><select class="ctl sm policy-slot-pick" data-f="slot">
           <option value="">— 不指定 —</option>${candidatesOf(p.capability)}</select></td>
       <td class="policy-pref-col"><select class="ctl sm policy-pref-pick" data-f="pref">
@@ -89,18 +92,38 @@ export function pagePolicies() {
         </select></td>
       <td class="policy-fallback-col"><select class="ctl sm policy-fallback-pick" data-f="fallback">
           <option value="">— 无 —</option>${candidatesOf(p.capability)}</select></td>
-      <td class="c"><input type="checkbox" data-f="cloud" ${p.cloud_confirm_required ? 'checked' : ''}></td>
-      <td class="c"><input type="checkbox" data-f="on" ${p.enabled ? 'checked' : ''}></td>
-      <td>${policyStateChip(p)}
-        <div><button class="btn xs" data-resolve="${escapeHtml(p.scene_key)}">看候选</button></div></td>
+      <td class="c">
+        <label class="switch-ui" title="${p.cloud_confirm_required ? '已开启云端确认计费' : '未开启云端确认计费'}">
+          <input type="checkbox" data-f="cloud" ${p.cloud_confirm_required ? 'checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </td>
+      <td class="c">
+        <label class="switch-ui switch-green" title="${p.enabled ? '已启用该策略' : '未启用该策略'}">
+          <input type="checkbox" data-f="on" ${p.enabled ? 'checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </td>
+      <td class="policy-act-col">
+        <div class="policy-status-wrap">
+          ${policyStateChip(p)}
+          <button class="btn xs btn-resolve" data-resolve="${escapeHtml(p.scene_key)}" title="查看符合该场景能力约束的候选模型">
+            <svg class="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+            <span>看候选</span>
+          </button>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 
   return `
   <div class="card">
     <div class="card-head">
-      <div style="display:flex;align-items:center">
+      <div style="display:flex;align-items:center;gap:10px">
         <h2>任务调用策略</h2>
+        <span class="chip plain mono" style="font-size:11px;padding:2px 8px">${configText}</span>
         <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
@@ -139,6 +162,19 @@ export function mountPolicies(root) {
     tr.querySelector('[data-f="pref"]').value = p.preference;
   });
 
+  const updateDimming = (sel) => {
+    const isBlank = !sel.value;
+    sel.classList.toggle('is-blank', isBlank);
+    const wrap = sel.closest('.fv-pick');
+    if (wrap) {
+      wrap.querySelector('.fv-pick-btn')?.classList.toggle('is-blank', isBlank);
+    }
+  };
+  root.querySelectorAll('.policy select.ctl').forEach((sel) => {
+    updateDimming(sel);
+    sel.addEventListener('change', () => updateDimming(sel));
+  });
+
   root.querySelector('#save-policies').addEventListener('click', async () => {
     const rows = [...root.querySelectorAll('tr.policy')].map((tr) => {
       const p = cache.policies.items.find((x) => x.scene_key === tr.dataset.key);
@@ -164,6 +200,13 @@ export function mountPolicies(root) {
     try {
       await api.saveModelPolicies(rows);
       btn.disabled = false;
+      const origText = btn.textContent;
+      btn.textContent = '✓ 已保存';
+      btn.classList.add('btn-saved');
+      setTimeout(() => {
+        btn.textContent = origText;
+        btn.classList.remove('btn-saved');
+      }, 2000);
       window.dispatchEvent(new CustomEvent('app:refresh'));
     } catch (err) {
       btn.disabled = false;
