@@ -445,6 +445,14 @@ export function openProbeHistory(data) {
  * 会让人以为本机有台机器没连上。
  */
 export function openProbeResults(payload, cloudRows) {
+  // ---- 即时开窗优化（2026-11-14）----
+  // 支持两种调用姿势：
+  //   1. openProbeResults(null, null)  — 加载态：瞬间弹窗 + 骨架流光屏
+  //   2. openProbeResults(payload, cloudRows)  — 原有的数据态
+  // 调用方可以拿返回的 handle 在数据就绪后 handle.update(payload, cloudRows)，
+  // 弹窗就地平滑替换为真实内容，不闪不抖。
+  const loading = payload === null || payload === undefined;
+
   const inst = payload || {};
   const items = inst.items || [];
   const service = new Set(inst.service_engines || []);
@@ -537,6 +545,18 @@ export function openProbeResults(payload, cloudRows) {
   document.body.appendChild(host);
   const close = () => host.remove();
 
+  // ---- 骨架加载态（2026-11-14）----
+  // 加载态下先画流光骨架屏，让用户瞬间看到弹窗在干活；
+  // 数据到了再用 paintWith 一次性替换为真实内容。
+  const skeletonHTML = `<div class="probe-loading">
+    <p style="margin:0 0 16px;color:var(--fg2)">正在探测引擎连接与云端网关…</p>
+    <div class="skeleton-shimmer" style="height:14px;border-radius:6px;margin-bottom:12px;width:70%"></div>
+    <div class="skeleton-shimmer" style="height:44px;border-radius:8px;margin-bottom:10px"></div>
+    <div class="skeleton-shimmer" style="height:44px;border-radius:8px;margin-bottom:10px"></div>
+    <div class="skeleton-shimmer" style="height:44px;border-radius:8px;margin-bottom:10px"></div>
+    <div class="skeleton-shimmer" style="height:14px;border-radius:6px;margin-top:18px;width:45%"></div>
+  </div>`;
+
   // 主体内容抽成函数：启动服务之后要**就地重画这一屏**，不是关掉弹窗。
   // 原来的实现是 alertNotify + 派 app:refresh + close()——close() 直接把节点删了，
   // 而 app:refresh 又重绘整页，人根本看不到这一轮的结果（2026-11-12 用户反馈
@@ -579,7 +599,14 @@ export function openProbeResults(payload, cloudRows) {
     bindLaunch();
   };
   const paint = () => paintWith(payload, cloudRows);
-  paint();      // 首次绘制
+  // 首次绘制：加载态画骨架，数据态直接画内容
+  if (loading) {
+    bodyEl.innerHTML = skeletonHTML;
+    host.querySelector('[data-probe-status]').textContent = '正在探测…';
+    host.querySelector('[data-recheck]').disabled = true;
+  } else {
+    paint();
+  }
   host.addEventListener('click', (e) => {
     if (e.target === host || e.target.closest('[data-close-probe-res]')) close();
   });
@@ -594,8 +621,11 @@ export function openProbeResults(payload, cloudRows) {
     const status = host.querySelector('[data-probe-status]');
     btn.disabled = true; status.textContent = '正在检查…';
     try {
-      const result = await api.probeModels(true);
-      const fresh = await api.engines();
+      // 并发化（2026-11-14）：两条出网请求同时发，总耗时 = max(T1, T2) 而非 T1 + T2
+      const [result, fresh] = await Promise.all([
+        api.probeModels(true),
+        api.engines(),
+      ]);
       payload = fresh; cloudRows = result?.cloud;
       if (host.isConnected) { paint(); status.textContent = '检查已更新'; }
     } catch (err) { status.textContent = `检查失败：${err.message}`; }
@@ -654,6 +684,22 @@ export function openProbeResults(payload, cloudRows) {
       });
     }
   }
+
+  // 返回控制句柄：调用方拿到后可以用 update() 从加载态平滑切换到真实内容，
+  // 也可以用 isAlive() 判断弹窗是否还在 DOM 里（用户可能提前手动关掉）。
+  return {
+    /** 用真实数据替换骨架屏（加载态 → 数据态）。 */
+    update(newPayload, newCloudRows) {
+      payload = newPayload;
+      cloudRows = newCloudRows;
+      if (!host.isConnected) return;
+      paintWith(newPayload, newCloudRows);
+      host.querySelector('[data-probe-status]').textContent = '';
+      host.querySelector('[data-recheck]').disabled = false;
+    },
+    /** 弹窗是否仍挂在 DOM 上。 */
+    isAlive() { return host.isConnected; },
+  };
 }
 
 /** 两条探测之间隔了多久。数字都是秒；负值（同一秒内）当 0。 */

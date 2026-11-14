@@ -232,35 +232,50 @@ export default {
       if (!filled.length) { alertNotify('十条能力轨都还没填 provider，没有可检查的对象。', 'warn'); return; }
       const btn = root.querySelector('#mc-check-all');
       btn.disabled = true;
-      let engineList = null;
-      let cloudRows = [];
-      const ok = await run('环境检查', async () => {
-        // 先请后端**现查**一次服务型引擎（fresh=1 绕过缓存）：打开页面时那一格是
-        // "待现查"，只有显式动作才去连网——这一颗按钮就是那个显式动作。
-        // 它只读、不建 Job、不改配置，结论随整张目录一起回来。
-        // 现在它还替云端轨各去供应商网关问一次（`cloud` 段，见 cloud_probe.py）：
-        // 按钮原来只现查本机，点一下云端一格不动，用起来怪。
-        const probeRes = await api.probeModels(true);
-        cloudRows = probeRes?.cloud || [];
-        // 再取一遍引擎实例列表：`GET /api/engines` 逐台按**它自己的端点**
-        // 现查一次（列表档 0.8 秒），这才是"引擎列表通不通"的权威口径。
-        // 不用 probeModels 的 probed：那个数组按 engine_code 去重，
-        // 同一家登记了两台机器时只看得到第一台，另一台的死活它不知道。
-        // （云端段不受这条影响：云端引擎不是实例表里的行，只有这一路有结论。）
-        engineList = await api.engines();
-        // 逐条走和列表页同一个接口：不发请求、不加载权重，只留痕
-        for (const r of filled) {
-          await api.validateProvider({ capability: r.capability, backend: r.backend,
-                                       provider: r.provider, kind: 'env_check' });
+
+      // ---- 即时开窗优化（2026-11-14）----
+      // 点击瞬间（0 ms）立刻弹出弹窗，内部展示流光骨架屏：
+      // 用户不再干等 3~5 秒的空白禁用按钮。弹窗自己 append 到 body，
+      // 不在 #view-root 里，后续 app:refresh 重绘整页也不会把它闪掉。
+      const handle = openProbeResults(null, null);
+
+      try {
+        // 两条出网请求**并发**发出（原来是串行瀑布 T1 + T2，现在 max(T1, T2)）：
+        //   · probeModels(true)：现查服务型引擎 + 云端网关
+        //   · engines()：引擎实例列表，逐台按自己的端点探活
+        const [probeRes, engineList] = await Promise.all([
+          api.probeModels(true),
+          api.engines(),
+        ]);
+
+        // 弹窗就地平滑替换为真实数据（骨架 → 结果，不闪不抖）
+        if (handle.isAlive()) {
+          handle.update(engineList, probeRes?.cloud || []);
         }
-      });
-      btn.disabled = false;
-      if (ok) {
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-        // 弹窗放在重绘**之后**：整页重绘会重建 DOM，先弹窗会被下一次装载
-        // 的骨架闪一下；重绘完再 append 到 body 的弹窗不受影响。
-        openProbeResults(engineList, cloudRows);
+
+        // 十条能力轨的环境检查留痕**全并发在后台跑**，绝不阻塞用户读弹窗。
+        // 原来是 for-await 串行十次 HTTP（~1 秒），现在 ~100 ms 全部发出。
+        // 留痕只写库不改配置，并发无冲突。
+        Promise.all(
+          filled.map((r) => api.validateProvider({
+            capability: r.capability, backend: r.backend,
+            provider: r.provider, kind: 'env_check',
+          }))
+        ).then(() => {
+          // 留痕写完后静默刷新页面数据，让概览卡的数字与时间戳更新。
+          // 弹窗已挂在 body 上，不受 app:refresh 重绘影响。
+          window.dispatchEvent(new CustomEvent('app:refresh'));
+        }).catch(() => {
+          // 留痕失败不影响弹窗展示，静默忽略
+        });
+      } catch (err) {
+        // 探测主请求失败：骨架屏替换为错误提示
+        if (handle.isAlive()) {
+          handle.update({ items: [], service_engines: [] }, []);
+        }
+        alertNotify(`引擎探测失败：${err.message}`, 'error');
       }
+      btn.disabled = false;
     });
 
     // 关闭统一走 closeModal：它先播 150ms 退场再提交 hidden，
