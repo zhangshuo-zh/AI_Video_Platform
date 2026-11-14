@@ -146,13 +146,20 @@ export function enhanceSelect(sel) {
     // aria-selected 只标「已选中的值」，aria-activedescendant 标「复选框中此刻
     // 停在哪一项」，两者不是一个概念，不能互相顶替。
     const hi = active && active.sel === sel ? active.index : -1;
-    list.innerHTML = [...sel.options].map((o, i) => (
-      `<button type="button" role="option" tabindex="-1" id="${list.id}-opt-${i}" class="fv-pick-opt${o.selected ? ' on' : ''}${i === hi ? ' hi' : ''}"`
-      + ` data-i="${i}"${o.disabled ? ' disabled' : ''}`
-      + `${o.selected ? ' aria-selected="true"' : ''}`
-      + `${i === hi ? ' aria-current="true"' : ''}`
-      + ` title="${escapeHtml(o.textContent || '')}">${escapeHtml(o.textContent)}</button>`
-    )).join('') || '<span class="fv-pick-none">没有可选项</span>';
+    list.innerHTML = [...sel.options]
+      .map((o, i) => ({ o, i }))
+      .filter(({ o }) => !o.hidden)
+      .map(({ o, i }) => {
+        const isSel = o.selected && !o.disabled;
+        const isHi = i === hi && !o.disabled;
+        return (
+          `<button type="button" role="option" tabindex="-1" id="${list.id}-opt-${i}" class="fv-pick-opt${isSel ? ' on' : ''}${isHi ? ' hi' : ''}"`
+          + ` data-i="${i}"${o.disabled ? ' disabled' : ''}`
+          + `${isSel ? ' aria-selected="true"' : ''}`
+          + `${isHi ? ' aria-current="true"' : ''}`
+          + ` title="${escapeHtml(o.textContent || '')}">${escapeHtml(o.textContent)}</button>`
+        );
+      }).join('') || '<span class="fv-pick-none">没有可选项</span>';
   };
 
   const sync = () => {
@@ -190,9 +197,13 @@ export function enhanceSelect(sel) {
     if (sel.disabled) return;
     if (active && active.sel === sel) { closeActive(); return; }
     closeActive();
-    active = { sel, btn, list, wrap, index: sel.selectedIndex };
+    let initIndex = sel.selectedIndex;
+    if (initIndex < 0 || sel.options[initIndex]?.hidden || sel.options[initIndex]?.disabled) {
+      initIndex = [...sel.options].findIndex((o) => !o.hidden && !o.disabled);
+    }
+    active = { sel, btn, list, wrap, index: initIndex };
     paint();
-    if (sel.selectedIndex >= 0) btn.setAttribute('aria-activedescendant', `${list.id}-opt-${sel.selectedIndex}`);
+    if (initIndex >= 0) btn.setAttribute('aria-activedescendant', `${list.id}-opt-${initIndex}`);
     list.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     // 先按宽度与方位摆好再量高度：放不下时向上翻。
@@ -237,16 +248,19 @@ export function enhanceSelect(sel) {
       closeActive();
       return;
     }
-    const opts = [...sel.options];
-    const handled = listboxKeys(e, opts, active.index,
-      (i) => {
-        active.index = i;
+    const visibleOpts = [...sel.options].filter((o) => !o.hidden);
+    const visibleIndex = visibleOpts.findIndex((o) => o === sel.options[active.index]);
+    const handled = listboxKeys(e, visibleOpts, visibleIndex,
+      (idx) => {
+        const realIdx = [...sel.options].indexOf(visibleOpts[idx]);
+        active.index = realIdx;
         paint();
-        active.list.querySelector(`[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
-        btn.setAttribute('aria-activedescendant', `${list.id}-opt-${i}`);
+        active.list.querySelector(`[data-i="${realIdx}"]`)?.scrollIntoView({ block: 'nearest' });
+        btn.setAttribute('aria-activedescendant', `${list.id}-opt-${realIdx}`);
       },
-      (i) => {
-        sel.selectedIndex = i;
+      (idx) => {
+        const realIdx = [...sel.options].indexOf(visibleOpts[idx]);
+        sel.selectedIndex = realIdx;
         sel.dispatchEvent(new Event('change', { bubbles: true }));
         closeActive();
         sync();

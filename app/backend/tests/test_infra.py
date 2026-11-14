@@ -996,6 +996,19 @@ def test_下拉浮层宽度与按钮等宽锁定且长选项单行截断带悬�
     assert ".fv-pick-opt" in css and "text-overflow:ellipsis" in css, "选项没有加单行截断"
     assert "overflow-wrap:anywhere" not in css.split(".fv-pick-opt")[1].split("}")[0], "选项又被设置了任意处折行"
 
+def test_能力轨下拉占位符不可选中且已选时删除():
+    """能力轨的引擎与模型下拉占位符（选择引擎/选择模型）绝不可被选中：
+    未选时带 disabled hidden 仅作 placeholder；已选时彻底不生成该 option。
+    """
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "views" / "models" / "engines.js").read_text()
+    pick_js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "pick.js").read_text()
+    assert '<option value="">— 选择引擎 —</option>' not in js, "引擎下拉仍存在可点击的裸占位符"
+    assert '<option value="">— 选择模型 —</option>' not in js, "模型下拉仍存在可点击的裸占位符"
+    assert 'disabled selected hidden' in js, "占位符未设置 disabled 与 hidden 属性"
+    assert '!o.hidden' in pick_js, "pick.js 渲染未过滤 hidden 项"
+
 def test_带布局属性的排版类不许直接用在单元格上():
     """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
 

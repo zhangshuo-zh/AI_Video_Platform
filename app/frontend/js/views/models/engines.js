@@ -162,7 +162,8 @@ export function slotDetail(r, adapter) {
 
 export function slotProviderOptions(capability, backend, selectedProvider, cachedList) {
   const providers = cachedList || (cache.manifest?.adapters || []).filter((a) => a.capability === capability && a.backend === backend);
-  return '<option value="">— 选择引擎 —</option>'
+  const placeholder = !selectedProvider ? '<option value="" disabled selected hidden>— 选择引擎 —</option>' : '';
+  return placeholder
     + (selectedProvider && !providers.some((a) => a.code === selectedProvider)
       ? `<option value="${escapeHtml(selectedProvider)}" selected>${escapeHtml(selectedProvider)}（清单未登记）</option>` : '')
     + providers.map((a) => `<option value="${escapeHtml(a.code)}"${a.code === selectedProvider ? ' selected' : ''}>${escapeHtml(a.label)}</option>`).join('')
@@ -243,7 +244,8 @@ function slotModelPick(adapter, model) {
   if (!models.length) return `<input class="ctl sm" data-f="model" value="${escapeHtml(model || '')}" placeholder="模型 ID（清单未提供，请手填）" aria-label="模型">`;
   const extra = model && !models.some((m) => m.code === model)
     ? `<option value="${escapeHtml(model)}" selected>${escapeHtml(model)}（清单未登记）</option>` : '';
-  return `<select class="ctl sm" data-f="model" aria-label="模型"><option value="">— 选择模型 —</option>${extra}${models.map((m) => `<option value="${escapeHtml(m.code)}"${m.code === model ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}</select>`;
+  const placeholder = !model ? '<option value="" disabled selected hidden>— 选择模型 —</option>' : '';
+  return `<select class="ctl sm" data-f="model" aria-label="模型">${placeholder}${extra}${models.map((m) => `<option value="${escapeHtml(m.code)}"${m.code === model ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}</select>`;
 }
 
 // ---------------- 引擎拉起后的后台自动探活看门狗 (2026-11-14) ----------------
@@ -1383,6 +1385,10 @@ export function mountEngines(root) {
       const provider = tr.querySelector('[data-f="provider"]').value;
       const adapter = adapterOf(cache.manifest, tr.dataset.cap, tr.dataset.backend, provider);
       if (providerChanged) {
+        const provSel = tr.querySelector('select[data-f="provider"]');
+        if (provSel && provSel.value) {
+          provSel.querySelector('option[value=""]')?.remove();
+        }
         const previous = tr.querySelector('[data-f="model"]');
         // 夜间控件有自绘外壳；一并换掉，避免旧按钮仍显示上一家的模型。
         (previous.closest('.fv-pick') || previous).outerHTML = slotModelPick(adapter, adapter?.models?.[0]?.code || '');
@@ -1429,6 +1435,9 @@ export function mountEngines(root) {
             </div>`;
           tr.querySelector('input[data-f="provider"]').focus();
         }
+        if (e.target.dataset.f === 'model' && e.target.value) {
+          e.target.querySelector('option[value=""]')?.remove();
+        }
         refresh(e.target.dataset.f === 'provider');
       }
     });
@@ -1451,6 +1460,9 @@ export function mountEngines(root) {
     });
     tr.addEventListener('input', (e) => {
       if (e.target.matches('input[data-f="model"], input[data-f="provider"]')) {
+        if (e.target.dataset.f === 'model' && e.target.value) {
+          e.target.querySelector('option[value=""]')?.remove();
+        }
         refresh(e.target.dataset.f === 'provider');
       }
     });

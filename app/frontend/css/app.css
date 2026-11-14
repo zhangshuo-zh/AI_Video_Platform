@@ -1703,7 +1703,7 @@ input.ctl:disabled:hover,select.ctl:disabled:hover,textarea.ctl:disabled:hover{b
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box}
 .fv-pick-opt:hover{background:var(--accent-tint)}
 .fv-pick-opt.on{background:var(--accent-tint);font-weight:600}
-.fv-pick-opt:disabled{opacity:.45;cursor:not-allowed}
+.fv-pick-opt:disabled{opacity:.45;cursor:not-allowed;background:none !important;box-shadow:none !important;pointer-events:none}
 /* 键盘停在的项（aria-current）：与「已选中」(.on) 是两件事，一个是「值是什么」
    一个是「方向键现在指到哪」，所以底色深浅之外再加一道左侧竖条区分。 */
 .fv-pick-opt.hi{background:var(--accent-tint);box-shadow:inset 2px 0 0 var(--accent)}
