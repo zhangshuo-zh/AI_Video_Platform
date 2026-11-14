@@ -141,7 +141,7 @@ export function pagePolicies() {
       <span class="right"><button class="btn primary" id="save-policies">保存策略</button></span>
     </div>
     <div class="table-wrap">
-      <table>
+      <table class="policy-table">
         <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th class="policy-slot-col">建议轨</th>
           <th class="policy-pref-col">偏好</th><th class="policy-fallback-col">备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th>状态</th></tr></thead>
         <tbody>${rows}</tbody>

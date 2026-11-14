@@ -908,24 +908,56 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    那一颗会把整张表撑宽、把最后一列顶出视口）。按钮仍不折。 */
 .policy td:last-child .chip{white-space:nowrap}
 .policy td:last-child .btn{white-space:nowrap}
-/* 调用策略表格：为建议轨、偏好、备用轨规划充裕对称的宽度与规范 32px 高度，
-   彻底解决备用轨被挤压导致文字被小箭头遮挡及文字下缘裁切问题。 */
+/* 调用策略表格精雕（方案 C：规整行高律动、左侧琥珀聚焦流线与排版微雕） */
+.policy-table{
+  border-collapse:collapse;width:100%;min-width:1164px;
+}
+.policy-table th{
+  padding:11px 14px;font-size:11.5px;font-weight:600;letter-spacing:.02em;
+  color:var(--ink-3);border-bottom:1.5px solid var(--line-strong);background:rgba(255,255,255,.015);
+  white-space:nowrap;
+}
+.policy td{
+  padding:10px 14px;vertical-align:middle;border-bottom:1px solid var(--line);
+  box-sizing:border-box;transition:background var(--fast) var(--ease);
+}
+.policy td:first-child{
+  position:relative;min-width:170px;
+}
+.policy td:first-child b{
+  font-size:13px;font-weight:650;color:var(--ink);letter-spacing:-.01em;display:block;
+}
+.policy td:first-child .hint.mono{
+  font-size:11px;color:var(--ink-3);margin-top:3px;letter-spacing:-.01em;
+}
+.policy td:nth-child(2),
+.policy-table th:nth-child(2){
+  text-align:center;min-width:68px;
+}
+
+/* 鼠标悬停聚焦流线与微光薄雾（Active Row Accent Bar） */
+.policy:hover td{
+  background:rgba(245,158,11,.035);
+}
+.policy:hover td:first-child::before{
+  content:'';position:absolute;left:0;top:8px;bottom:8px;width:3.5px;
+  border-radius:0 3px 3px 0;background:var(--accent);
+  box-shadow:0 0 10px rgba(245,158,11,.5);
+}
+[data-theme="day"] .policy:hover td{
+  background:rgba(2,132,199,.03);
+}
+[data-theme="day"] .policy:hover td:first-child::before{
+  background:var(--accent);
+  box-shadow:0 0 8px rgba(2,132,199,.4);
+}
+
 .policy-slot-col,
 .policy-fallback-col{
   width:196px;min-width:196px;box-sizing:border-box;
 }
 .policy-pref-col{
   width:108px;min-width:108px;box-sizing:border-box;
-}
-
-.policy{
-  transition:background var(--fast) var(--ease);
-}
-.policy:hover{
-  background:rgba(255,255,255,.025);
-}
-[data-theme="day"] .policy:hover{
-  background:rgba(0,0,0,.02);
 }
 
 .policy select.ctl,
