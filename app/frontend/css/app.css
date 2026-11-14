@@ -801,6 +801,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
    全进横跨整表的备注带。 */
 .mc-picks{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;width:100%;overflow:hidden}
+.mc-picks select.ctl,.mc-picks .fv-pick-btn{min-height:2.4em;padding-block:0}
 .mc-picks > .fv-pick{overflow:hidden;border-radius:var(--r-ctl)}
 /* 第一个控件（引擎 Provider）：保持 192px 充足宽度 */
 .mc-picks > select:first-child,
