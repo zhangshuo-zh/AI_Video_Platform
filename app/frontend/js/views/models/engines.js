@@ -1398,7 +1398,7 @@ export function mountEngineInstances(root) {
         await navigator.clipboard.writeText(text);
         alertNotify(`已复制端点：${text}`, 'info');
       } catch {
-        alertNotify('复制失败，请手动选取复制', 'warn');
+        alertNotify('复制失败，请手动选取复制', 'err');
       }
     });
   });

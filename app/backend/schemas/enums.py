@@ -3,6 +3,19 @@ from typing import Literal
 import job_state
 
 
+# ---------- 数据标准核心代码集（CodeSet Type Aliases） ----------
+# 对应《数据字典.md》§4.0.1 核心数据元码值标准目录，应用层 Pydantic 强类型防守基线
+Capability = Literal["text", "image", "video", "tts", "music"]
+DispatchMode = Literal["local", "cloud"]
+HostingSource = Literal["local", "cloud", "remote"]
+PolicyPreference = Literal["local", "cloud", "remote", "any"]
+ConnectionType = Literal["local_http", "grpc", "cli"]
+SupportedConnectionType = Literal["local_http"]
+ValidationKind = Literal["env_check", "mock", "real_call", "target_machine", "artifact_review"]
+ValidationState = Literal["ok", "missing", "unknown", "unconfigured", "unregistered", "failed"]
+ProbeState = Literal["ok", "missing", "unknown"]
+
+
 # 五类能力：固定，前端按这个顺序渲染，不靠库里查出来的顺序
 CAPABILITIES: dict[str, str] = {
     "text": "文本",

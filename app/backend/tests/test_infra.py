@@ -1992,3 +1992,33 @@ def test_空状态必须给出下一步():
         '这些空状态按钮画出来了但没绑点击，点了没反应（比不画更糟）：'
         + chr(10) + '  - ' + (chr(10) + '  - ').join(unbound))
 
+
+def test_数据标准核心代码集与Pydantic强类型落标():
+    """核心数据元码值在 schemas.enums 中定义，且 Pydantic 模型使用强类型约束。
+
+    对应《数据字典.md》§4.0.1 核心数据元码值标准目录：
+    1. Literal 允许值与常量字典的 keys 完全对齐，不能多也不能少；
+    2. ModelRegistrationIn / ValidationIn 等核心入参模型杜绝裸 str 回退。
+    """
+    import typing
+    import models
+    from schemas.model_center import ModelRegistrationIn
+    from schemas.costs import ValidationIn
+
+    # 1. 码值集合对齐
+    assert set(typing.get_args(models.Capability)) == set(models.CAPABILITIES.keys())
+    assert set(typing.get_args(models.DispatchMode)) == set(models.BACKENDS.keys())
+    assert set(typing.get_args(models.HostingSource)) == set(models.REG_SOURCES.keys())
+    assert set(typing.get_args(models.ValidationKind)) == set(models.VALIDATION_KINDS.keys())
+
+    # 2. Pydantic 模型强类型落标守卫：字段类型注解不能是裸 str
+    reg_annotations = ModelRegistrationIn.__annotations__
+    assert reg_annotations["capability"] is models.Capability, "ModelRegistrationIn.capability 未使用 Capability 强类型"
+    assert reg_annotations["backend"] is models.HostingSource, "ModelRegistrationIn.backend 未使用 HostingSource 强类型"
+
+    val_annotations = ValidationIn.__annotations__
+    assert val_annotations["capability"] is models.Capability, "ValidationIn.capability 未使用 Capability 强类型"
+    assert val_annotations["backend"] is models.HostingSource, "ValidationIn.backend 未使用 HostingSource 强类型"
+    assert val_annotations["kind"] is models.ValidationKind, "ValidationIn.kind 未使用 ValidationKind 强类型"
+
+

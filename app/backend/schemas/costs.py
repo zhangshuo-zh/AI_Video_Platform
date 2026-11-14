@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .enums import CAPABILITIES, VALIDATION_KINDS
+from .enums import CAPABILITIES, VALIDATION_KINDS, Capability, HostingSource, ValidationKind
 
 
 # ---------- 成本账与参数模板（W08） ----------
@@ -120,11 +120,11 @@ class ValidationIn(BaseModel):
     `job.execution_mode CHECK IN ('local','cloud')` 没放开，remote 登记
     实际跑起来仍折回本地子进程，两条轴不是一回事，别一起改。
     """
-    capability: Literal["text", "image", "video", "tts", "music"]
-    backend: Literal["local", "cloud", "remote"]
+    capability: Capability
+    backend: HostingSource
     provider: str = Field(default="", max_length=40)
     model: str = Field(default="", max_length=120)
-    kind: Literal["env_check", "mock", "real_call", "target_machine", "artifact_review"]
+    kind: ValidationKind
     job_id: int | None = None
     passed: bool | None = None          # 只有 artifact_review 用：True=通过，False=不通过
     paid_confirmed: bool = False

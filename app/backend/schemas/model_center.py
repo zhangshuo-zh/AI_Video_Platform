@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+from .enums import Capability, ConnectionType, HostingSource, PolicyPreference
 
 
 # ---------- 模型中心（0035） ----------
@@ -18,14 +22,14 @@ POLICY_PREFERENCES: dict[str, str] = {"local": "优先本地", "cloud": "优先�
 class ModelRegistrationIn(BaseModel):
     """新增登记。provider/model_code 是**指向清单的键**，不是自由文本：
     路由层会拿 adapters.find() 比一遍，清单里没有就要求显式确认。"""
-    capability: str
-    backend: str
+    capability: Capability
+    backend: HostingSource
     provider: str
     model_code: str
     display_name: str = ""
     # 空串＝"跟着 backend 走"。默认写死 "local" 会让云端登记在仓库页显示成
     # 本地——界面只传 backend，source 是给人看的第二口径，不该和它打架。
-    source: str = ""
+    source: HostingSource | Literal[""] = ""
     engine_code: str = ""
     version: str = ""
     artifact_path: str = ""
@@ -40,7 +44,7 @@ class ModelRegistrationIn(BaseModel):
 class ModelRegistrationPatch(BaseModel):
     """逐字段更新：没出现的键不动。"""
     display_name: str | None = None
-    source: str | None = None
+    source: HostingSource | Literal[""] | None = None
     engine_code: str | None = None
     version: str | None = None
     artifact_path: str | None = None
@@ -58,7 +62,7 @@ class EngineInstanceIn(BaseModel):
     engine_code: str
     endpoint: str
     display_name: str = ""
-    connection_type: str = "local_http"
+    connection_type: ConnectionType = "local_http"
     shared_secret_env: str = ""
     enabled: bool = True
     note: str = ""
@@ -70,7 +74,7 @@ class EngineInstancePatch(BaseModel):
     """逐字段更新。`engine_code` 与 `endpoint` 是这一行的键，改不了——
     与登记弹窗那两格同一口径：改键＝换一台机器，应该新建一条再停旧的。"""
     display_name: str | None = None
-    connection_type: str | None = None
+    connection_type: ConnectionType | None = None
     shared_secret_env: str | None = None
     enabled: bool | None = None
     note: str | None = None
@@ -100,6 +104,12 @@ class EngineInstanceOut(BaseModel):
 
 
 class ModelPolicyIn(BaseModel):
+    """保存策略入参。
+
+    注：`capability` 与 `preference` 保持为 str 而不用 Literal，是因为
+    save_policies 需要执行「一次说清所有问题」的整批汇总业务校验
+    （见 test_策略校验一次说清所有问题），在路由层统一收集场景、能力、偏好等全部报错。
+    """
     scene_key: str
     scene_label: str = ""
     capability: str

@@ -77,7 +77,8 @@ from .enums import (
     ERROR_LABELS, ProjectStatus, EpisodeStatus, JOB_STATUSES, JOB_RUNNING, JOB_FINISHED,
     ASSET_KINDS, AssetKind, VARIANT_KINDS, VariantType, ASSET_GEN_OPERATIONS,
     AssetGenOperation, DOC_KINDS, DocKind, DocStatus, DocAiOperation, ExtractItemKind,
-    AudioKind
+    AudioKind, Capability, DispatchMode, HostingSource, PolicyPreference, ConnectionType,
+    SupportedConnectionType, ValidationKind, ValidationState, ProbeState
 )
 
 from .extraction import (
@@ -174,8 +175,10 @@ __all__ = [
     "BACKEND_ORDER",
     "BILLABLE_LABELS",
     "CAPABILITIES",
+    "Capability",
     "CompositionIn",
     "CompositionOut",
+    "ConnectionType",
     "ContextIn",
     "CostBucket",
     "CostCurrencyOut",
@@ -185,6 +188,7 @@ __all__ = [
     "DashboardBucket",
     "DashboardCostRow",
     "DashboardSignBucket",
+    "DispatchMode",
     "DocAiApplyOut",
     "DocAiJobOut",
     "DocAiOperation",
@@ -222,6 +226,7 @@ __all__ = [
     "GenerationProfileOut",
     "GenerationProfileUpdateIn",
     "HealthOut",
+    "HostingSource",
     "JOB_FINISHED",
     "JOB_RUNNING",
     "JOB_STATUSES",
@@ -254,6 +259,8 @@ __all__ = [
     "PipelineRunSummaryOut",
     "PipelineTemplateNodeOut",
     "PipelineTemplateOut",
+    "PolicyPreference",
+    "ProbeState",
     "ProductionAssets",
     "ProductionBoard",
     "ProductionCounts",
@@ -315,6 +322,7 @@ __all__ = [
     "ShotIn",
     "ShotOut",
     "SubtitleFileOut",
+    "SupportedConnectionType",
     "UNITS",
     "UserCreateIn",
     "UserDeleteIn",
@@ -324,7 +332,9 @@ __all__ = [
     "VALIDATION_KINDS",
     "VARIANT_KINDS",
     "ValidationIn",
+    "ValidationKind",
     "ValidationOut",
+    "ValidationState",
     "VariantIn",
     "VariantOut",
     "VariantType",

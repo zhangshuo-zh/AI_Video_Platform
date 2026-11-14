@@ -287,7 +287,7 @@ export default {
         if (handle.isAlive()) {
           handle.update({ items: [], service_engines: [] }, []);
         }
-        alertNotify(`引擎探测失败：${err.message}`, 'error');
+        alertNotify(`引擎探测失败：${err.message}`, 'err');
       }
       btn.disabled = false;
     });
