@@ -169,6 +169,16 @@ export function slotProviderOptions(capability, backend, selectedProvider, cache
     + '<option value="__manual__">手动填写其他引擎…</option>';
 }
 
+export function slotParamBadge(r, adapter) {
+  const model = adapter?.models?.find((m) => m.code === r.model);
+  const paramCount = model?.params?.length || 0;
+  const isOpen = slotOpen.has(r.id);
+  if (paramCount > 0) {
+    return `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="该模型支持 ${paramCount} 项参数配置，点击展开/收起细节">⚙ ${paramCount}项参数 ${isOpen ? '▴' : '▾'}</button>`;
+  }
+  return `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="点击查看配置与参数详情" style="opacity:.7">⚙ 详情 ${isOpen ? '▴' : '▾'}</button>`;
+}
+
 export function slotRow(r, providerLists) {
   const adapter = adapterOf(cache.manifest, r.capability, r.backend, r.provider);
   const providers = providerLists[`${r.capability}|${r.backend}`];
@@ -181,6 +191,7 @@ export function slotRow(r, providerLists) {
     <td><div class="mc-picks">
         <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
         ${slotModelPick(adapter, r.model)}
+        <span class="mc-pick-extra">${slotParamBadge(r, adapter)}</span>
       </div></td>
     <td>${statusCell(r)}</td>
     <td class="c"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}></td>
@@ -871,6 +882,13 @@ export function mountEngines(root) {
     slotOpen.add(Number(b.dataset.openEmpty));   // 去配置的人下一步就是要填细节
     repaint();
   }));
+  root.querySelectorAll('[data-toggle-slot]').forEach((btn) => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const id = Number(btn.dataset.toggleSlot);
+    if (slotOpen.has(id)) slotOpen.delete(id);
+    else slotOpen.add(id);
+    repaint();
+  }));
   root.querySelector('#slots-expand')?.addEventListener('click', () => {
     if (slotOpen.size) {
       slotOpen.clear();
@@ -897,6 +915,17 @@ export function mountEngines(root) {
         (previous.closest('.fv-pick') || previous).outerHTML = slotModelPick(adapter, adapter?.models?.[0]?.code || '');
       }
       const model = tr.querySelector('[data-f="model"]').value;
+      const extra = tr.querySelector('.mc-pick-extra');
+      if (extra) {
+        extra.innerHTML = slotParamBadge({ id: Number(tr.dataset.id), model }, adapter);
+        extra.querySelector('[data-toggle-slot]')?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = Number(tr.dataset.id);
+          if (slotOpen.has(id)) slotOpen.delete(id);
+          else slotOpen.add(id);
+          repaint();
+        });
+      }
       // 展开态才有细节行；没展开就只等下一次重绘
       const detail = root.querySelector(`tr.mc-detail[data-detail-for="${tr.dataset.id}"]`);
       if (detail) {
