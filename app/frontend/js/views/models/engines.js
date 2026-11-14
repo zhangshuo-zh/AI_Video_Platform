@@ -169,14 +169,48 @@ export function slotProviderOptions(capability, backend, selectedProvider, cache
     + '<option value="__manual__">手动填写其他引擎…</option>';
 }
 
-export function slotParamBadge(r, adapter) {
+export function slotParamDisplay(r, adapter) {
   const model = adapter?.models?.find((m) => m.code === r.model);
-  const paramCount = model?.params?.length || 0;
+  const params = model?.params || [];
+  const paramCount = params.length;
   const isOpen = slotOpen.has(r.id);
-  if (paramCount > 0) {
-    return `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="该模型支持 ${paramCount} 项参数配置，点击展开/收起细节">⚙ ${paramCount}项参数 ${isOpen ? '▴' : '▾'}</button>`;
+
+  if (!adapter && !r.provider) {
+    return `<div class="mc-param-flow"><span class="mc-flow-hint">选择引擎后配置</span></div>`;
   }
-  return `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="点击查看配置与参数详情" style="opacity:.7">⚙ 详情 ${isOpen ? '▴' : '▾'}</button>`;
+
+  let pillsHtml = '';
+  if (paramCount > 0) {
+    const topParams = params.slice(0, 3);
+    pillsHtml = topParams.map((p) => {
+      let valStr = '';
+      if (p.default !== null && p.default !== undefined) {
+        valStr = `=${p.default}`;
+      } else if (p.min !== undefined && p.max !== undefined) {
+        valStr = `:${p.min}—${p.max}`;
+      }
+      const title = [p.name, p.type, valStr, p.note || ''].filter(Boolean).join(' · ');
+      return `<span class="mc-chip-mini" data-toggle-slot="${r.id}" title="${escapeHtml(title)}"><span class="k">${escapeHtml(p.name)}</span>${valStr ? `<span class="v">${escapeHtml(valStr)}</span>` : ''}</span>`;
+    }).join('');
+  }
+
+  const badgeHtml = `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="${paramCount > 0 ? `该模型支持 ${paramCount} 项参数配置，点击展开/收起` : '点击查看配置与参数详情'}">${paramCount > 0 ? `⚙ ${paramCount}项参数 ${isOpen ? '▴' : '▾'}` : `⚙ 详情 ${isOpen ? '▴' : '▾'}`}</button>`;
+
+  if (paramCount === 0 && adapter) {
+    return `<div class="mc-param-flow">
+      <span class="mc-flow-hint" data-toggle-slot="${r.id}" style="cursor:pointer" title="该模型无需额外调参，开箱即用；点击可查看密钥与环境详情">⚡ 开箱即用</span>
+      ${badgeHtml}
+    </div>`;
+  }
+
+  return `<div class="mc-param-flow">
+    ${pillsHtml}
+    ${badgeHtml}
+  </div>`;
+}
+
+export function slotParamBadge(r, adapter) {
+  return slotParamDisplay(r, adapter);
 }
 
 export function slotRow(r, providerLists) {
@@ -191,7 +225,7 @@ export function slotRow(r, providerLists) {
     <td><div class="mc-picks">
         <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
         ${slotModelPick(adapter, r.model)}
-        <span class="mc-pick-extra">${slotParamBadge(r, adapter)}</span>
+        <span class="mc-pick-extra">${slotParamDisplay(r, adapter)}</span>
       </div></td>
     <td>${statusCell(r)}</td>
     <td class="c"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}></td>
@@ -312,7 +346,7 @@ export function pageEngines() {
       <colgroup>
         <col style="width:64px">
         <col style="width:72px">
-        <col style="width:530px">
+        <col style="width:auto">
         <col style="width:370px">
         <col style="width:48px">
         <col style="width:48px">
@@ -925,14 +959,14 @@ export function mountEngines(root) {
       const model = tr.querySelector('[data-f="model"]').value;
       const extra = tr.querySelector('.mc-pick-extra');
       if (extra) {
-        extra.innerHTML = slotParamBadge({ id: Number(tr.dataset.id), model }, adapter);
-        extra.querySelector('[data-toggle-slot]')?.addEventListener('click', (e) => {
+        extra.innerHTML = slotParamDisplay({ id: Number(tr.dataset.id), model }, adapter);
+        extra.querySelectorAll('[data-toggle-slot]').forEach((el) => el.addEventListener('click', (e) => {
           e.stopPropagation();
           const id = Number(tr.dataset.id);
           if (slotOpen.has(id)) slotOpen.delete(id);
           else slotOpen.add(id);
           repaint();
-        });
+        }));
       }
       // 展开态才有细节行；没展开就只等下一次重绘
       const detail = root.querySelector(`tr.mc-detail[data-detail-for="${tr.dataset.id}"]`);
