@@ -2529,11 +2529,11 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .mc-engine-inst-table td{vertical-align:middle;padding:10px 14px}
 .mc-engine-inst-table td.inst-actions{white-space:nowrap;display:flex;align-items:center;gap:5px;justify-content:flex-end}
 
-/* 启动服务按钮（消除黄色实心突兀感，采用协调的琥珀微幽灵质感） */
+/* 拉起进程按钮（消除黄色实心突兀感，采用协调的琥珀微幽灵质感） */
 .btn-launch-engine{
-  display:inline-flex;align-items:center;gap:3px;
+  display:inline-flex;align-items:center;gap:4px;
   background:rgba(230,160,40,.12);border:1px solid rgba(230,160,40,.38);
-  color:var(--accent);padding:3px 8px;font-size:11px;font-weight:600;
+  color:var(--accent);padding:3px 9px;font-size:11px;font-weight:600;
   border-radius:5px;cursor:pointer;transition:all var(--fast);white-space:nowrap;line-height:1.2;
 }
 .btn-launch-engine:hover{

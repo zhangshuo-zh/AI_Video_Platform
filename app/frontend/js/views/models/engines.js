@@ -564,14 +564,14 @@ export function openProbeResults(payload, cloudRows) {
   const rowsNow = [...items].sort((a, b) => rank(a) - rank(b)).map((it) => {
     const ok = it.health_state === 'ok';
     const skipped = !it.enabled || it.probe_unsupported;
-    const label = !it.enabled ? '已停用' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
+    const label = !it.enabled ? '已暂停调度' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
     const tone = skipped ? 'gray' : ok ? 'green' : 'red';
     const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
     return `<tr><td><strong>${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</strong>
       <div class="hint mono probe-endpoint">${escapeHtml(it.endpoint || '未配置端点')}</div></td>
       <td><div class="probe-result-stack"><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
       ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</div></td>
-      ${hasActions ? `<td>${!it.enabled ? `<button class="btn xs" data-probe-enable="${it.id}">启用</button>` : it.launch_ready ? `<button class="btn xs" data-act-launch="${it.id}">启动服务</button>` : '<span class="hint">—</span>'}</td>` : ''}</tr>`;
+      ${hasActions ? `<td>${!it.enabled ? `<button class="btn xs" data-probe-enable="${it.id}" title="恢复该实例接入模型中心调度">恢复调度</button>` : it.launch_ready ? `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>` : '<span class="hint">—</span>'}</td>` : ''}</tr>`;
   }).join('');
 
   const queried = items.filter((it) => it.enabled && !it.probe_unsupported);
@@ -661,7 +661,7 @@ export function openProbeResults(payload, cloudRows) {
     bodyEl.querySelectorAll('[data-probe-enable]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        btn.textContent = '启用中…';
+        btn.textContent = '恢复中…';
         const status = host.querySelector('[data-probe-status]');
         let enabled = false;
         try {
@@ -670,14 +670,14 @@ export function openProbeResults(payload, cloudRows) {
           payload = await api.engines();
           if (!host.isConnected) return;
           paint();
-          status.textContent = '实例已启用，连接状态已更新';
+          status.textContent = '实例已恢复调度，连接状态已更新';
         } catch (err) {
           status.textContent = enabled
-            ? `实例已启用，但状态刷新失败，请重新检查：${err.message}`
-            : `启用失败：${err.message}`;
+            ? `实例已恢复调度，但状态刷新失败，请重新检查：${err.message}`
+            : `恢复调度失败：${err.message}`;
         } finally {
           btn.disabled = false;
-          btn.textContent = '启用';
+          btn.textContent = '恢复调度';
         }
       });
     });
@@ -803,7 +803,7 @@ export function engineInstStatusCell(it) {
     ? (it.probe_unsupported
         ? '<span class="chip amber">探测未实现</span>'
         : healthChip({ state: it.health_state, detail: it.health_detail }))
-    : '<span class="chip gray">已停用</span>';
+    : '<span class="chip gray">已暂停调度</span>';
 
   // 避免模型名称重复打印：如果 health_detail 已经包含 engine_model，则不单列模型行
   let modelLine = '';
@@ -880,12 +880,13 @@ export function engineInstancesCard() {
       <td class="c inst-actions">
         ${it.health_state === 'ok' || !it.launch_ready ? ''
           : `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}"
-                     title="${escapeHtml(it.launch_note || '')}">启动服务</button>`}
-        <button class="btn xs" data-act-probe="${it.id}">探测</button>
-        <button class="btn xs ghost" data-act-probes="${it.id}">看历史</button>
-        <button class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}">${
-          it.enabled ? '停用' : '启用'}</button>
-        <button class="btn xs danger ghost" data-act-uninst="${it.id}">撤实例</button>
+                     title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>`}
+        <button class="btn xs" data-act-probe="${it.id}" title="对该端点发起 HTTP 探活并记录探测留痕">探测</button>
+        <button class="btn xs ghost" data-act-probes="${it.id}" title="查看最近探测留痕记录">看历史</button>
+        <button class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}"
+                title="${it.enabled ? '暂停该实例调度（不终止后台运行中的进程）' : '恢复该实例接入模型中心调度'}">${
+          it.enabled ? '暂停调度' : '恢复调度'}</button>
+        <button class="btn xs danger ghost" data-act-uninst="${it.id}" title="注销该实例登记">撤实例</button>
       </td>
     </tr>`;
   }).join('');
@@ -912,7 +913,7 @@ export function engineInstancesCard() {
               <li><b>实例定义</b>：记录常驻服务运行的主机与端口。健康状态每次现查，不落库。</li>
               <li><b>端点不可修改</b>：端点是实例历史作业绑定的核心业务主键；换机器请新建实例再停用旧实例，确保审计留痕准确。</li>
               <li><b>连接协议支持</b>：当前仅开放 <code>local_http</code> 协议探测与调用；gRPC 与 CLI 分支建设中。</li>
-              <li><b>现查探活与启动</b>：服务掉线时点击「启动服务」可拉起本地进程并等待连接就绪，点击「探测」可实时探活。</li>
+              <li><b>现查探活与拉起进程</b>：服务掉线时点击「🚀 拉起进程」可启动本地常驻物理进程并等待连接就绪，点击「探测」可实时探活；「暂停/恢复调度」用于控制平台是否派发任务给该实例，不影响后台物理进程。</li>
             </ul>
           </span>
         </span>
@@ -924,11 +925,11 @@ export function engineInstancesCard() {
     <div class="table-wrap"><table class="tbl-fixed mc-engine-inst-table">
       <colgroup>
         <col style="width:160px">
-        <col style="width:240px">
+        <col style="width:230px">
         <col style="width:130px">
+        <col style="width:270px">
+        <col style="width:150px">
         <col style="width:290px">
-        <col style="width:160px">
-        <col style="width:220px">
       </colgroup>
       <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
         <th>状态</th><th>备注</th><th class="c" style="text-align:right">操作</th></tr></thead>
@@ -1319,9 +1320,9 @@ export function mountEngineInstances(root) {
       const id = btn.dataset.actLaunch;
       btn.disabled = true;
       const label = btn.textContent;
-      btn.textContent = '启动中…';   // 后端最多等 6 秒，必须有可见反馈
+      btn.textContent = '拉起中…';   // 后端最多等 6 秒，必须有可见反馈
       let out = null;
-      const ok = await run('启动服务', async () => {
+      const ok = await run('拉起进程', async () => {
         out = await api.launchEngine(id);
         out = await waitForStartedEngine(id, out, () => root.isConnected && btn.isConnected, () => {
           btn.textContent = '等待连接…';
@@ -1368,7 +1369,7 @@ export function mountEngineInstances(root) {
   root.querySelectorAll('[data-act-toggle]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const on = btn.dataset.to === '1';
-      const ok = await run(on ? '启用' : '停用',
+      const ok = await run(on ? '恢复调度' : '暂停调度',
         () => api.patchEngine(btn.dataset.actToggle, { enabled: on }), { btn });
       if (ok) repaint();
     });
