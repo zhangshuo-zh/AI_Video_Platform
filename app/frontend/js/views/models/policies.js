@@ -81,13 +81,13 @@ export function pagePolicies() {
       <td>${escapeHtml(p.capability_label)}</td>
       <td><div class="param-chips" style="flex-direction:column;align-items:flex-start;max-width:220px">
         ${requiredPicker(p)}</div></td>
-      <td><select class="ctl sm" data-f="slot">
+      <td class="policy-slot-col"><select class="ctl sm policy-slot-pick" data-f="slot">
           <option value="">— 不指定 —</option>${candidatesOf(p.capability)}</select></td>
-      <td><select class="ctl sm" data-f="pref">
+      <td class="policy-pref-col"><select class="ctl sm policy-pref-pick" data-f="pref">
           ${Object.entries(cache.policies.preference_labels)
             .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}
         </select></td>
-      <td><select class="ctl sm" data-f="fallback">
+      <td class="policy-fallback-col"><select class="ctl sm policy-fallback-pick" data-f="fallback">
           <option value="">— 无 —</option>${candidatesOf(p.capability)}</select></td>
       <td class="c"><input type="checkbox" data-f="cloud" ${p.cloud_confirm_required ? 'checked' : ''}></td>
       <td class="c"><input type="checkbox" data-f="on" ${p.enabled ? 'checked' : ''}></td>
@@ -119,8 +119,8 @@ export function pagePolicies() {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th>建议轨</th>
-          <th>偏好</th><th>备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th>状态</th></tr></thead>
+        <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th class="policy-slot-col">建议轨</th>
+          <th class="policy-pref-col">偏好</th><th class="policy-fallback-col">备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th>状态</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
