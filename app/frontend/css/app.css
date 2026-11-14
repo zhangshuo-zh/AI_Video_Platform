@@ -2527,20 +2527,72 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .mc-engine-inst-table > thead > tr > th:nth-child(n){width:auto}
 .mc-engine-inst-table th{white-space:nowrap}
 .mc-engine-inst-table td{vertical-align:middle;padding:10px 14px}
-.mc-engine-inst-table td.inst-actions{white-space:nowrap;display:flex;align-items:center;gap:5px;justify-content:flex-end}
+.mc-engine-inst-table td.inst-actions{white-space:nowrap;padding:8px 12px;text-align:right}
+.inst-actions-grid{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
 
-/* 拉起进程按钮（消除黄色实心突兀感，采用协调的琥珀微幽灵质感） */
-.btn-launch-engine{
+/* 左侧大号主控按钮（拉起 / 关闭 / 占位） */
+.btn-control-engine{
+  height:52px;width:76px;min-width:76px;
+  display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;border-radius:6px;cursor:pointer;transition:all var(--fast);
+  white-space:nowrap;box-sizing:border-box;padding:0 4px;user-select:none;
+}
+.btn-control-engine .ctrl-icon{font-size:15px;line-height:1}
+.btn-control-engine .ctrl-label{font-size:11px;font-weight:600;line-height:1.2}
+
+/* 琥珀拉起态 */
+.btn-control-engine.btn-launch-engine{
+  background:rgba(230,160,40,.12);border:1px solid rgba(230,160,40,.42);color:var(--accent);
+}
+.btn-control-engine.btn-launch-engine:hover{
+  background:rgba(230,160,40,.24);border-color:var(--accent);color:#fff;
+  box-shadow:0 0 12px rgba(230,160,40,.35);transform:translateY(-1px);
+}
+
+/* 玫瑰红关闭态 */
+.btn-control-engine.btn-stop-engine{
+  background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.38);color:#f87171;
+}
+.btn-control-engine.btn-stop-engine:hover{
+  background:rgba(239,68,68,.22);border-color:#f87171;color:#fff;
+  box-shadow:0 0 12px rgba(239,68,68,.35);transform:translateY(-1px);
+}
+
+/* 外部服务无配方占位态（保障所有行高度网格 100% 对齐） */
+.btn-control-engine.btn-ctrl-placeholder{
+  background:var(--subtle,rgba(128,128,128,.05));border:1px dashed var(--line);
+  color:var(--ink-2);opacity:0.4;cursor:not-allowed;
+}
+.btn-control-engine:active{transform:scale(.97)}
+
+/* 右侧 2x2 四宫格按钮组 */
+.inst-actions-subgrid{
+  display:grid;grid-template-columns:repeat(2, 64px);gap:4px;
+}
+.inst-actions-subgrid .btn{
+  height:24px;line-height:22px;padding:0 3px;font-size:11px;
+  text-align:center;justify-content:center;white-space:nowrap;box-sizing:border-box;
+}
+
+/* 弹窗小控制按钮 */
+.btn.xs.btn-launch-engine{
   display:inline-flex;align-items:center;gap:4px;
   background:rgba(230,160,40,.12);border:1px solid rgba(230,160,40,.38);
   color:var(--accent);padding:3px 9px;font-size:11px;font-weight:600;
   border-radius:5px;cursor:pointer;transition:all var(--fast);white-space:nowrap;line-height:1.2;
 }
-.btn-launch-engine:hover{
+.btn.xs.btn-launch-engine:hover{
   background:rgba(230,160,40,.24);border-color:var(--accent);color:#fff;
   box-shadow:0 0 10px rgba(230,160,40,.35);transform:translateY(-1px);
 }
-.btn-launch-engine:active{transform:scale(.96)}
+.btn.xs.btn-stop-engine{
+  background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.38);color:#f87171;
+  padding:3px 9px;font-size:11px;font-weight:600;border-radius:5px;
+}
+.btn.xs.btn-stop-engine:hover{
+  background:rgba(239,68,68,.22);border-color:#f87171;color:#fff;
+  box-shadow:0 0 10px rgba(239,68,68,.35);
+}
 
 /* 端点微胶囊与复制/打开链接（强制单行，彻底根治端口号折行） */
 .inst-endpoint-cell{display:inline-flex;align-items:center;gap:5px;max-width:100%;white-space:nowrap}

@@ -21,9 +21,12 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +48,8 @@ RECIPES: dict[str, dict] = {
     "draw_things": {
         "argv": ["open", "-a", "Draw Things"],
         "label": "Draw Things 应用",
+        "app_name": "Draw Things",
+        "process_keyword": "drawthings",
         # 起完之后需要人做的事：这些不是失败，是产品本身的形状。
         "note": "Draw Things 的 API Server 要在应用内设置里手动开启（默认关）。"
                 "应用起来了但端口不答话，通常是这个开关没打开。",
@@ -52,6 +57,7 @@ RECIPES: dict[str, dict] = {
     "ollama": {
         "argv": ["ollama", "serve"],
         "label": "ollama serve",
+        "process_keyword": "ollama",
         "note": "",
     },
     # ComfyUI 是第三种形状：装的是 Electron 外壳（`/Applications/Comfy Desktop.app`），
@@ -65,6 +71,8 @@ RECIPES: dict[str, dict] = {
     "comfyui": {
         "argv": ["open", "-a", "Comfy Desktop"],
         "label": "Comfy Desktop",
+        "app_name": "Comfy Desktop",
+        "process_keyword": "comfy",
         "note": "ComfyUI 在 Electron 外壳里起，首次要下载本体与模型，可能几分钟。"
                 "先在 Dock 里看它是否真的打开了界面，再回来点「探测」——"
                 "外壳起来但服务没 listen，通常是它还在下载或卡在首启配置。",
@@ -94,6 +102,16 @@ class LaunchResult:
     engine_code: str
     started: bool
     reachable: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class StopResult:
+    """一次关闭尝试的结论。"""
+
+    ok: bool
+    engine_code: str
+    stopped: bool
     message: str
 
 
@@ -169,3 +187,78 @@ def launch(engine_code: str, endpoint: str) -> LaunchResult:
     return LaunchResult(False, engine_code, True, False,
                         msg + ((" " + note) if note else
                                " 应用可能还在冷启动，稍后再点一次探测。"))
+
+
+def _find_pid_by_port(port: int, keyword: str) -> list[int]:
+    """通过端口查找匹配关键词的进程 PID，绝不误杀无关进程。"""
+    try:
+        out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
+        if not out:
+            return []
+        pids = [int(p) for p in out.splitlines() if p.strip()]
+        matched = []
+        for pid in pids:
+            try:
+                comm = subprocess.check_output(
+                    ["ps", "-p", str(pid), "-o", "comm="], text=True
+                ).strip().lower()
+                if keyword.lower() in comm:
+                    matched.append(pid)
+            except Exception:
+                pass
+        return matched
+    except Exception:
+        return []
+
+
+def stop(engine_code: str, endpoint: str) -> StopResult:
+    """按配方或端口优雅关闭这一档本机引擎。"""
+    recipe = recipe_for(engine_code)
+    if recipe is None:
+        return StopResult(False, engine_code, False,
+                          f"{engine_code} 没有内置控制配方：平台不会执行未登记的关闭命令。")
+
+    # 如果本来就没有在答话，说明服务未在运行
+    if not _already_answering(engine_code, endpoint):
+        return StopResult(True, engine_code, False,
+                          f"{recipe['label']} 未在运行或未监听端口，无需关闭。")
+
+    # 优先尝试 AppleScript 优雅退出原生 App（如 Draw Things 或 ComfyUI 外壳）
+    app_name = recipe.get("app_name")
+    if app_name:
+        try:
+            subprocess.run(["osascript", "-e", f'quit app "{app_name}"'],
+                           capture_output=True, text=True, timeout=5)
+        except Exception:
+            pass
+
+    # 解析端口，针对服务型进程（如 ollama）或未能通过 quit 释放的进程进行精准 SIGTERM
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        port = parsed.port
+    except Exception:
+        port = None
+
+    keyword = recipe.get("process_keyword", engine_code)
+    if port:
+        pids = _find_pid_by_port(port, keyword)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    # 等待端口释放（最多 3 秒）
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        time.sleep(POLL_EVERY)
+        if not _already_answering(engine_code, endpoint):
+            return StopResult(True, engine_code, True,
+                              f"已成功关闭 {recipe['label']} 服务进程。")
+
+    if not _already_answering(engine_code, endpoint):
+        return StopResult(True, engine_code, True,
+                          f"已成功关闭 {recipe['label']} 服务进程。")
+
+    return StopResult(False, engine_code, False,
+                      f"已发出关闭信号，但 {recipe['label']} 端口仍在响应，可能正在处理未完作业，请稍后重试。")

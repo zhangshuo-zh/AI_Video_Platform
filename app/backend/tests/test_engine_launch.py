@@ -240,3 +240,55 @@ def test_comfyui起来但没答话时把等待说明一起给(monkeypatch, spawn
     assert "Comfy Desktop" in result.message, result.message
     # note 里那句"先去 Dock 里看它有没有真的打开"必须传到人眼前
     assert "下载" in result.message or "分钟" in result.message, result.message
+
+
+# ---------- 进程关闭（2026-11-14 加） ----------
+
+def test_未运行的服务关闭直接报告无需关闭(monkeypatch):
+    monkeypatch.setattr(engine_launch, "_already_answering", lambda c, e: False)
+    res = engine_launch.stop("draw_things", SLOT)
+    assert res.ok is True and res.stopped is False
+    assert "无需关闭" in res.message
+
+
+def test_无配方的引擎关闭必须拒绝():
+    res = engine_launch.stop("non_exist_engine", SLOT)
+    assert res.ok is False and res.stopped is False
+    assert "没有内置控制配方" in res.message
+
+
+def test_关闭接口非回环来源必须403(as_role):
+    row = _instance("draw_things", SLOT)
+    try:
+        resp = as_role("admin").post(f"/api/engines/{row['id']}/stop")
+        assert resp.status_code == 403, resp.text
+        assert "这台机器" in resp.json()["detail"]
+    finally:
+        engine_instances.delete(row["id"])
+
+
+def test_关闭接口成功关闭流程(as_role, monkeypatch):
+    row = _instance("draw_things", SLOT)
+    try:
+        monkeypatch.setattr(engine_launch, "LOOPBACK", frozenset({"testclient"}))
+        state = {"answering": True}
+
+        def fake_answering(c, e):
+            return state["answering"]
+
+        monkeypatch.setattr(engine_launch, "_already_answering", fake_answering)
+
+        def fake_run(*args, **kwargs):
+            state["answering"] = False
+
+            class _R:
+                returncode = 0
+            return _R()
+
+        monkeypatch.setattr(engine_launch.subprocess, "run", fake_run)
+
+        r = as_role("admin").post(f"/api/engines/{row['id']}/stop")
+        assert r.status_code == 200, r.text
+        assert r.json()["stopped"] is True
+    finally:
+        engine_instances.delete(row["id"])

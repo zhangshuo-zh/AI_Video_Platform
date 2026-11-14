@@ -560,18 +560,28 @@ export function openProbeResults(payload, cloudRows) {
       || !Array.isArray(cloudRows2);
   const rank = (it) => !it.enabled || it.probe_unsupported ? 2 : it.health_state === 'ok' ? 1 : 0;
   const details = (text) => `<details class="probe-details"><summary>查看详情</summary><div>${escapeHtml(text || '暂无详细信息')}</div></details>`;
-  const hasActions = items.some((it) => !it.enabled || it.launch_ready);
+  const hasActions = items.some((it) => !it.enabled || it.can_control || it.launch_ready);
   const rowsNow = [...items].sort((a, b) => rank(a) - rank(b)).map((it) => {
     const ok = it.health_state === 'ok';
     const skipped = !it.enabled || it.probe_unsupported;
     const label = !it.enabled ? '已暂停调度' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
     const tone = skipped ? 'gray' : ok ? 'green' : 'red';
     const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
+    let actBtn = '<span class="hint">—</span>';
+    if (!it.enabled) {
+      actBtn = `<button class="btn xs" data-probe-enable="${it.id}" title="恢复该实例接入模型中心调度">恢复调度</button>`;
+    } else if (it.can_control || it.launch_ready) {
+      if (ok) {
+        actBtn = `<button class="btn xs btn-stop-engine" data-probe-stop="${it.id}" title="关闭本机常驻服务物理进程（优雅退出）">🛑 关闭进程</button>`;
+      } else {
+        actBtn = `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>`;
+      }
+    }
     return `<tr><td><strong>${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</strong>
       <div class="hint mono probe-endpoint">${escapeHtml(it.endpoint || '未配置端点')}</div></td>
       <td><div class="probe-result-stack"><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
       ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</div></td>
-      ${hasActions ? `<td>${!it.enabled ? `<button class="btn xs" data-probe-enable="${it.id}" title="恢复该实例接入模型中心调度">恢复调度</button>` : it.launch_ready ? `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>` : '<span class="hint">—</span>'}</td>` : ''}</tr>`;
+      ${hasActions ? `<td>${actBtn}</td>` : ''}</tr>`;
   }).join('');
 
   const queried = items.filter((it) => it.enabled && !it.probe_unsupported);
@@ -682,6 +692,7 @@ export function openProbeResults(payload, cloudRows) {
       });
     });
     bindLaunch();
+    bindStop();
   };
   const paint = () => paintWith(payload, cloudRows);
   // 首次绘制：加载态画骨架，数据态直接画内容
@@ -765,6 +776,43 @@ export function openProbeResults(payload, cloudRows) {
           window.dispatchEvent(new CustomEvent('app:refresh'));
         } catch {
           paint();     // 取不到新数据就至少把结论行画出来
+        }
+      });
+    }
+  }
+
+  async function bindStop() {
+    for (const btn of host.querySelectorAll('[data-probe-stop]')) {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.probeStop;
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '关闭中…';
+        let out = null;
+        let err = null;
+        try {
+          out = await api.stopEngine(id);
+        } catch (e) {
+          err = e;
+        }
+        if (!host.isConnected) return;
+        btn.disabled = false;
+        btn.textContent = label;
+
+        noticeLine = (err
+          ? '关闭失败：' + (err && err.message ? err.message : String(err))
+          : (out && out.message) || '已请求关闭。')
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+        try {
+          const fresh = await api.engines();
+          if (!host.isConnected) return;
+          payload = fresh;
+          paintWith(fresh);
+          host.querySelector('[data-probe-status]').textContent = out?.stopped ? '服务已停止运行。' : '';
+          window.dispatchEvent(new CustomEvent('app:refresh'));
+        } catch {
+          paint();
         }
       });
     }
@@ -878,15 +926,36 @@ export function engineInstancesCard() {
       <td>${engineInstStatusCell(it)}</td>
       <td class="t-dim">${escapeHtml(it.note || '')}</td>
       <td class="c inst-actions">
-        ${it.health_state === 'ok' || !it.launch_ready ? ''
-          : `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}"
-                     title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>`}
-        <button class="btn xs" data-act-probe="${it.id}" title="对该端点发起 HTTP 探活并记录探测留痕">探测</button>
-        <button class="btn xs ghost" data-act-probes="${it.id}" title="查看最近探测留痕记录">看历史</button>
-        <button class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}"
-                title="${it.enabled ? '暂停该实例调度（不终止后台运行中的进程）' : '恢复该实例接入模型中心调度'}">${
-          it.enabled ? '暂停调度' : '恢复调度'}</button>
-        <button class="btn xs danger ghost" data-act-uninst="${it.id}" title="注销该实例登记">撤实例</button>
+        <div class="inst-actions-grid">
+          ${(it.can_control ?? (it.launch_ready || it.connection_type === 'local_http')) ? (
+            (it.is_running ?? (it.health_state === 'ok')) ? `
+              <button type="button" class="btn-control-engine btn-stop-engine" data-act-stop="${it.id}"
+                      title="关闭本机常驻服务物理进程（优雅退出）">
+                <span class="ctrl-icon">🛑</span>
+                <span class="ctrl-label">关闭进程</span>
+              </button>
+            ` : `
+              <button type="button" class="btn-control-engine btn-launch-engine" data-act-launch="${it.id}"
+                      title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">
+                <span class="ctrl-icon">🚀</span>
+                <span class="ctrl-label">拉起进程</span>
+              </button>
+            `
+          ) : `
+            <div class="btn-control-engine btn-ctrl-placeholder" title="该实例为远程或无控制配方服务，不支持本机进程启停">
+              <span class="ctrl-icon">☁</span>
+              <span class="ctrl-label">外部服务</span>
+            </div>
+          `}
+          <div class="inst-actions-subgrid">
+            <button type="button" class="btn xs" data-act-probe="${it.id}" title="对该端点发起 HTTP 探活并记录探测留痕">探测</button>
+            <button type="button" class="btn xs ghost" data-act-probes="${it.id}" title="查看最近探测留痕记录">看历史</button>
+            <button type="button" class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}"
+                    title="${it.enabled ? '暂停该实例调度（不终止后台运行中的进程）' : '恢复该实例接入模型中心调度'}">${
+              it.enabled ? '暂停调度' : '恢复调度'}</button>
+            <button type="button" class="btn xs danger ghost" data-act-uninst="${it.id}" title="注销该实例登记">撤实例</button>
+          </div>
+        </div>
       </td>
     </tr>`;
   }).join('');
@@ -913,7 +982,7 @@ export function engineInstancesCard() {
               <li><b>实例定义</b>：记录常驻服务运行的主机与端口。健康状态每次现查，不落库。</li>
               <li><b>端点不可修改</b>：端点是实例历史作业绑定的核心业务主键；换机器请新建实例再停用旧实例，确保审计留痕准确。</li>
               <li><b>连接协议支持</b>：当前仅开放 <code>local_http</code> 协议探测与调用；gRPC 与 CLI 分支建设中。</li>
-              <li><b>现查探活与拉起进程</b>：服务掉线时点击「🚀 拉起进程」可启动本地常驻物理进程并等待连接就绪，点击「探测」可实时探活；「暂停/恢复调度」用于控制平台是否派发任务给该实例，不影响后台物理进程。</li>
+              <li><b>现查探活与进程启停</b>：支持「🚀 拉起进程」与「🛑 关闭进程」直控本地服务；「探测」可实时探活；「暂停/恢复调度」用于控制平台是否派发任务给该实例，不影响后台物理进程。</li>
             </ul>
           </span>
         </span>
@@ -927,9 +996,9 @@ export function engineInstancesCard() {
         <col style="width:160px">
         <col style="width:230px">
         <col style="width:130px">
-        <col style="width:270px">
-        <col style="width:150px">
         <col style="width:290px">
+        <col style="width:150px">
+        <col style="width:260px">
       </colgroup>
       <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
         <th>状态</th><th>备注</th><th class="c" style="text-align:right">操作</th></tr></thead>
@@ -1319,7 +1388,7 @@ export function mountEngineInstances(root) {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.actLaunch;
       btn.disabled = true;
-      const label = btn.textContent;
+      const label = btn.innerHTML;
       btn.textContent = '拉起中…';   // 后端最多等 6 秒，必须有可见反馈
       let out = null;
       const ok = await run('拉起进程', async () => {
@@ -1329,11 +1398,30 @@ export function mountEngineInstances(root) {
         });
       });
       if (!root.isConnected || !btn.isConnected) return;
-      btn.textContent = label;
+      btn.innerHTML = label;
       btn.disabled = false;
       if (!ok || !out) { repaint(); return; }
       // 无论成败都把后端那句话原样给出去：它已经分清了「起来了」与「能用了」。
       alertNotify(out.message, out.reachable ? 'info' : 'warn');
+      repaint();
+    });
+  });
+
+  root.querySelectorAll('[data-act-stop]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.actStop;
+      btn.disabled = true;
+      const label = btn.innerHTML;
+      btn.textContent = '关闭中…';
+      let out = null;
+      const ok = await run('关闭进程', async () => {
+        out = await api.stopEngine(id);
+      });
+      if (!root.isConnected || !btn.isConnected) return;
+      btn.innerHTML = label;
+      btn.disabled = false;
+      if (!ok || !out) { repaint(); return; }
+      alertNotify(out.message, out.stopped ? 'info' : 'warn');
       repaint();
     });
   });

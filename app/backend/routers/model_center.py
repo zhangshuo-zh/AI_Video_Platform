@@ -560,10 +560,11 @@ def list_engines(_=Depends(require_permission("system:config"))) -> dict:
             "engine_model": status.values.get("model", "") if row["enabled"] else "",
             **_last_probe_fields(last_probe.get(row["id"])),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
-            # 「启动服务」按钮的两格（2026-11-11）：界面据此决定要不要画那颗按钮。
-            # launch_ready 只在这一档有内置启动配方、连的是本机 HTTP、
-            # 而且当前没在答话时为真——已经在跑的服务不该再给一个启动入口。
-            # 判定放在服务端：配方表在后端，界面不该自己维护第二份名单。
+            # 「启动/关闭服务」控制按钮字段（2026-11-14 升级）
+            "can_control": bool(
+                row["connection_type"] in SUPPORTED_CONNECTION_TYPES
+                and engine_launch.recipe_for(row["engine_code"]) is not None),
+            "is_running": bool(status.state == "ok"),
             "launch_ready": bool(
                 row["connection_type"] in SUPPORTED_CONNECTION_TYPES
                 and row["enabled"]
@@ -748,6 +749,37 @@ def launch_engine(instance_id: int, request: Request,
     return {"id": row["id"], "engine_code": row["engine_code"],
             "started": result.started, "reachable": result.reachable,
             "message": result.message}
+
+
+@router.post("/engines/{instance_id}/stop")
+def stop_engine(instance_id: int, request: Request,
+                user=Depends(require_permission("system:config"))) -> dict:
+    """按内置配方优雅关闭这一台本机服务。
+
+    通过 AppleScript 或基于端口号安全定位进程 PID 并向其发送退出信号，
+    绝不误杀无关进程。
+    """
+    client = request.client.host if request.client else ""
+    if client not in engine_launch.LOOPBACK:
+        raise HTTPException(
+            status_code=403,
+            detail="只能在运行平台的这台机器上关闭本机引擎（当前请求来自 "
+                   f"{client}）。请在服务器本机操作。")
+
+    row = engine_instances.instance(instance_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"没有这条引擎实例：#{instance_id}")
+    if row["connection_type"] not in SUPPORTED_CONNECTION_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="这一档连接方式不是本机 HTTP 服务，平台不会按控制配方关闭它")
+
+    result = engine_launch.stop(row["engine_code"], row["endpoint"])
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+
+    return {"id": row["id"], "engine_code": row["engine_code"],
+            "stopped": result.stopped, "message": result.message}
 
 
 def _age_seconds(stamp: str) -> int | None:
