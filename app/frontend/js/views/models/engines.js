@@ -620,86 +620,200 @@ export function openProbeResults(payload, cloudRows) {
     const cloud = Array.isArray(cloudRows2) ? cloudRows2 : [];
     const cloudMissing = cloudRows2 === undefined || cloudRows2 === null
       || !Array.isArray(cloudRows2);
-  const rank = (it) => !it.enabled || it.probe_unsupported ? 2 : it.health_state === 'ok' ? 1 : 0;
-  const details = (text) => `<details class="probe-details"><summary>查看详情</summary><div>${escapeHtml(text || '暂无详细信息')}</div></details>`;
-  const hasActions = items.some((it) => !it.enabled || it.can_control || it.launch_ready);
-  const rowsNow = [...items].sort((a, b) => rank(a) - rank(b)).map((it) => {
-    const ok = it.health_state === 'ok';
-    const skipped = !it.enabled || it.probe_unsupported;
-    const label = !it.enabled ? '已暂停调度' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
-    const tone = skipped ? 'gray' : ok ? 'green' : 'red';
-    const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
-    let actBtn = '<span class="hint">—</span>';
-    if (!it.enabled) {
-      actBtn = `<button class="btn xs" data-probe-enable="${it.id}" title="恢复该实例接入模型中心调度">恢复调度</button>`;
-    } else if (it.can_control || it.launch_ready) {
-      if (ok) {
-        actBtn = `<button class="btn xs btn-stop-engine" data-probe-stop="${it.id}" title="关闭本机常驻服务物理进程（优雅退出）">🛑 关闭进程</button>`;
-      } else if (isEngineProbing(it.id)) {
-        actBtn = `<button class="btn xs btn-probing-engine" data-probe-probing="${it.id}" title="已拉起服务，后台正在持续自动探测中（最长3分钟）…点击可立即手动探测">⏳ 探测中…</button>`;
-      } else {
-        actBtn = `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>`;
+    const rank = (it) => !it.enabled || it.probe_unsupported ? 2 : it.health_state === 'ok' ? 1 : 0;
+    const details = (text) => `<details class="probe-details"><summary>查看诊断信息 ▾</summary><div>${escapeHtml(text || '暂无详细信息')}</div></details>`;
+    const rowsNow = [...items].sort((a, b) => rank(a) - rank(b)).map((it) => {
+      const ok = it.health_state === 'ok';
+      const skipped = !it.enabled || it.probe_unsupported;
+      const label = !it.enabled ? '已暂停调度' : it.probe_unsupported ? '探测未实现' : ok ? '连接成功' : it.health_state === 'missing' ? '连接失败' : '暂无法检查';
+      const tone = skipped ? 'gray' : ok ? 'green' : 'red';
+      const reason = /Connection refused/i.test(it.health_detail || '') ? '服务未启动或端口未监听' : ok ? '端点已响应，模型可用性需另行验证' : '请查看详情确认原因';
+      let actBtn = '<span class="hint">—</span>';
+      if (!it.enabled) {
+        actBtn = `<button type="button" class="btn sm" data-probe-enable="${it.id}" title="恢复该实例接入模型中心调度">恢复调度</button>`;
+      } else if (it.can_control || it.launch_ready) {
+        if (ok) {
+          actBtn = `<button type="button" class="btn-probe-action btn-stop-engine" data-probe-stop="${it.id}" title="关闭本机常驻服务物理进程（优雅退出）">
+            <span class="act-icon">🛑</span><span>关闭进程</span>
+          </button>`;
+        } else if (isEngineProbing(it.id)) {
+          actBtn = `<button type="button" class="btn-probe-action btn-probing-engine" data-probe-probing="${it.id}" title="已拉起服务，后台正在持续自动探测中（最长3分钟）…点击可立即手动探测">
+            <span class="act-icon rotating-spin">⏳</span><span>自动探测中…</span>
+          </button>`;
+        } else {
+          actBtn = `<button type="button" class="btn-probe-action btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">
+            <span class="act-icon">🚀</span><span>拉起进程</span>
+          </button>`;
+        }
       }
-    }
-    return `<tr><td><strong>${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</strong>
-      <div class="hint mono probe-endpoint">${escapeHtml(it.endpoint || '未配置端点')}</div></td>
-      <td><div class="probe-result-stack"><span class="chip ${tone}">${label}</span><div class="hint">${skipped ? '本轮未检查' : reason}</div>
-      ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}</div></td>
-      ${hasActions ? `<td>${actBtn}</td>` : ''}</tr>`;
-  }).join('');
-
-  const queried = items.filter((it) => it.enabled && !it.probe_unsupported);
-  const okN = queried.filter((it) => it.health_state === 'ok').length;
-  const badN = queried.filter((it) => it.health_state === 'missing').length;
-  const skipped = items.length - queried.length;
-
-  // 一句结论：人想知道的首先就是"通了没有"，不该让他去数徽章。
-  // 说明文字只留一句。原来这里连弹窗底部的注，把「连上≠可用」讲了三遍
-  // （2026-11-12 用户反馈「注释、提醒字数太多，简略一些」）。结论本身一句就够，
-  // 剩下的细节放进 title，想追的人 hover 得到。
-  const unknownN = queried.length - okN - badN;
-  const cloudOk = cloud.filter((row) => row.state === 'ok').length;
-  const cloudSummary = cloudMissing ? '云端未检查' : cloud.length
-    ? `云端 ${cloud.length} 家 · ${cloudOk} 家鉴权通过` : '云端尚未登记';
-  const verdict = `<div class="probe-summary"><strong>本地 ${queried.length} 项检查 · ${okN} 项通过 · ${badN + unknownN} 项异常</strong><strong>${cloudSummary}</strong>
-    <p class="hint">${skipped ? `另有 ${skipped} 项未检查。` : ''}连接成功仅表示端点响应，不代表模型可用。</p></div>`;
-  const body = items.length ? `<h3 class="probe-section">本地引擎</h3><div class="table-wrap"><table class="tbl-fixed probe-table ${hasActions ? '' : 'probe-table-no-actions'}"><thead><tr><th>引擎 / 端点</th><th>检查结果</th>${hasActions ? '<th>操作</th>' : ''}</tr></thead><tbody>${rowsNow}</tbody></table></div>` : '<p class="note">尚未登记引擎实例，请进入引擎管理添加端点。</p>';
-
-  // 云端一段：逐家供应商一行，结论来自 cloud_probe（去供应商网关问一次）。
-  // 五档各说各的，chip 用的就是"要不要动、动什么"的词，不互相冒充。
-  const CLOUD_CHIP = {
-    ok: ['green', '端点可达 · 鉴权通过'],
-    auth_rejected: ['red', '路通、钥匙被拒'],
-    unreachable: ['red', '连不上'],
-    no_key: ['amber', '没配密钥'],
-    no_endpoint: ['amber', '无可探端点'],
-  };
-  const cloudRowsNow = [...cloud].sort((a, b) => Number(a.state === 'ok') - Number(b.state === 'ok')).map((c) => {
-    const [tone, word] = CLOUD_CHIP[c.state] || ['amber', c.state || '未知'];
-    let endpoint = c.key_env || '未配置端点';
-    try { endpoint = new URL(c.url).origin; } catch { /* 无有效地址时显示配置项 */ }
-    return `<tr><td><strong>${escapeHtml(c.label || c.provider)}</strong><div class="hint mono probe-endpoint">${escapeHtml(endpoint)}</div></td>
-      <td><div class="probe-result-stack"><span class="chip ${tone}">${escapeHtml(word)}</span><div class="hint">${c.state === 'ok' ? '未验证实际生成' : '请检查连接或配置'}</div>${details([c.provider, c.capability, c.url, c.detail].filter(Boolean).join(' · '))}</div></td>
+      return `<tr>
+        <td class="probe-col-name">
+          <div class="probe-engine-name">${escapeHtml(it.display_name || it.engine_label || it.engine_code)}</div>
+          <div class="probe-endpoint-badge mono" title="服务监听端点">${escapeHtml(it.endpoint || '未配置端点')}</div>
+        </td>
+        <td class="probe-col-result">
+          <div class="probe-result-stack">
+            <div class="probe-chip-row">
+              <span class="chip ${tone}">${label}</span>
+              <span class="probe-reason-text">${skipped ? '本轮未检查' : escapeHtml(reason)}</span>
+            </div>
+            ${details([it.health_detail, it.engine_code, it.connection_type, it.note].filter(Boolean).join(' · '))}
+          </div>
+        </td>
+        <td class="probe-col-action">
+          <div class="probe-action-box">${actBtn}</div>
+        </td>
       </tr>`;
-  }).join('');
+    }).join('');
 
-  const cloudVerdict = cloudMissing
-    ? '<p class="note"><span class="chip red">没查</span> 后端没返回 <code>cloud</code> 段，请检查服务版本并重启。</p>'
-    : '';
-  const cloudBody = cloud.length
-    ? `<div class="table-wrap"><table class="tbl-fixed probe-table probe-table-no-actions"><thead><tr>
-        <th>引擎 / 端点</th><th>检查结果</th>
-      </tr></thead><tbody>${cloudRowsNow}</tbody></table></div>`
-    : '';
+    const queried = items.filter((it) => it.enabled && !it.probe_unsupported);
+    const okN = queried.filter((it) => it.health_state === 'ok').length;
+    const badN = queried.filter((it) => it.health_state === 'missing').length;
+    const skipped = items.length - queried.length;
+    const unknownN = queried.length - okN - badN;
+    const cloudOk = cloud.filter((row) => row.state === 'ok').length;
+    const cloudSummary = cloudMissing ? '云端未检查' : cloud.length
+      ? `云端 ${cloud.length} 家 · ${cloudOk} 家鉴权通过` : '云端尚未登记';
+    const badTotal = badN + unknownN;
+
+    const verdict = `<div class="probe-summary-card">
+      <div class="summary-stat-grid">
+        <div class="summary-metric">
+          <span class="metric-label">本地服务概况</span>
+          <div class="metric-tags">
+            <span class="stat-pill pill-total">${queried.length} 项检查</span>
+            <span class="stat-pill ${okN > 0 ? 'pill-green' : 'pill-gray'}">
+              <span class="pill-dot"></span>${okN} 项正常在线
+            </span>
+            ${badTotal > 0 ? `
+              <span class="stat-pill pill-red">
+                <span class="pill-dot"></span>${badTotal} 项未连通
+              </span>
+            ` : `
+              <span class="stat-pill pill-green-soft">全部就绪</span>
+            `}
+          </div>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-metric">
+          <span class="metric-label">云端网关鉴权</span>
+          <div class="metric-tags">
+            <span class="stat-pill ${cloudOk > 0 ? 'pill-gold' : 'pill-gray'}">
+              <span class="pill-dot"></span>${cloudSummary}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="summary-footer-tip">
+        <span class="tip-icon">ℹ</span>
+        <span>${skipped ? `另有 ${skipped} 项已暂停调度未予探测。` : ''}连接成功仅表示服务监听端点已响应，不代表模型进入生产可用。</span>
+      </div>
+    </div>`;
+
+    const colgroup = `<colgroup>
+      <col style="width:36%">
+      <col style="width:44%">
+      <col style="width:20%">
+    </colgroup>`;
+
+    const body = items.length ? `
+      <div class="probe-section-head">
+        <h3 class="probe-section-title"><span class="section-dot dot-local"></span>本地常驻引擎</h3>
+        <span class="section-hint">管理本机服务物理进程与端点连通性</span>
+      </div>
+      <div class="table-wrap">
+        <table class="tbl-fixed probe-table">
+          ${colgroup}
+          <thead><tr><th>引擎 / 端点</th><th>检查结果与诊断</th><th style="text-align:right;padding-right:18px">操作</th></tr></thead>
+          <tbody>${rowsNow}</tbody>
+        </table>
+      </div>` : '<p class="note">尚未登记引擎实例，请进入引擎管理添加端点。</p>';
+
+    // 云端一段：逐家供应商一行，结论来自 cloud_probe（去供应商网关问一次）。
+    const CLOUD_CHIP = {
+      ok: ['green', '端点可达 · 鉴权通过'],
+      auth_rejected: ['red', '路通、钥匙被拒'],
+      unreachable: ['red', '连不上'],
+      no_key: ['amber', '没配密钥'],
+      no_endpoint: ['amber', '无可探端点'],
+    };
+    const cloudRowsNow = [...cloud].sort((a, b) => Number(a.state === 'ok') - Number(b.state === 'ok')).map((c) => {
+      const [tone, word] = CLOUD_CHIP[c.state] || ['amber', c.state || '未知'];
+      let endpoint = c.key_env || '未配置端点';
+      try { endpoint = new URL(c.url).origin; } catch { /* 无有效地址时显示配置项 */ }
+      return `<tr>
+        <td class="probe-col-name">
+          <div class="probe-engine-name">${escapeHtml(c.label || c.provider)}</div>
+          <div class="probe-endpoint-badge mono" title="网关地址或鉴权变量">${escapeHtml(endpoint)}</div>
+        </td>
+        <td class="probe-col-result">
+          <div class="probe-result-stack">
+            <div class="probe-chip-row">
+              <span class="chip ${tone}">${escapeHtml(word)}</span>
+              <span class="probe-reason-text">${c.state === 'ok' ? '网关握手通过，未验证实际生成' : '请检查连接或配置'}</span>
+            </div>
+            ${details([c.provider, c.capability, c.url, c.detail].filter(Boolean).join(' · '))}
+          </div>
+        </td>
+        <td class="probe-col-action">
+          <div class="probe-action-box">
+            <span class="chip-remote-hint" title="云端引擎由供应商网关托管鉴权，无需本地进程操作">外部网关</span>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    const cloudVerdict = cloudMissing
+      ? '<p class="note"><span class="chip red">没查</span> 后端没返回 <code>cloud</code> 段，请检查服务版本并重启。</p>'
+      : '';
+    const cloudBody = cloud.length
+      ? `<div class="probe-section-head" style="margin-top:20px">
+          <h3 class="probe-section-title"><span class="section-dot dot-cloud"></span>云端供应商网关</h3>
+          <span class="section-hint">验证商业 API 供应商网关可达性与密钥鉴权</span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl-fixed probe-table">
+            ${colgroup}
+            <thead><tr><th>引擎 / 端点</th><th>检查结果与诊断</th><th style="text-align:right;padding-right:18px">服务类型</th></tr></thead>
+            <tbody>${cloudRowsNow}</tbody>
+          </table>
+        </div>`
+      : '';
     return { verdict, body, cloudVerdict, cloudBody, cloud };
   }
 
   const host = document.createElement('div');
   host.className = 'modal probe-results';
   host.innerHTML = `<div class="modal-box wide">
-      <div class="modal-head neutral">引擎连接检查</div>
+      <div class="modal-head neutral probe-modal-head">
+        <div class="probe-head-title-wrap">
+          <div class="probe-head-badge-icon">⚡</div>
+          <div>
+            <h2 class="probe-head-main-title">引擎连接检查</h2>
+            <div class="probe-head-sub-title">实时探活本机常驻服务物理进程与云端供应商网关</div>
+          </div>
+        </div>
+        <div class="probe-head-right">
+          <span class="chip plain live-indicator"><span class="live-dot"></span>实时现查</span>
+          <button type="button" class="btn-close-modal" data-close-probe-res title="关闭弹窗">✕</button>
+        </div>
+      </div>
       <div class="modal-body" data-probe-body></div>
-      <div class="modal-actions"><span role="status" data-probe-status></span><button class="btn" data-manage-engines>进入引擎管理 →</button><button class="btn" data-recheck>重新检查</button><button class="btn" data-close-probe-res>关闭</button></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost btn-manage-link" data-manage-engines>
+          <span>进入引擎管理</span>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 12l4-4-4-4"/>
+          </svg>
+        </button>
+        <span role="status" data-probe-status></span>
+        <div class="modal-actions-right">
+          <button type="button" class="btn primary" data-recheck>
+            <span style="display:inline-block;margin-right:4px">↻</span>重新检查
+          </button>
+          <button type="button" class="btn ghost" data-close-probe-res>关闭</button>
+        </div>
+      </div>
     </div>`;
   document.body.appendChild(host);
   const close = () => host.remove();
