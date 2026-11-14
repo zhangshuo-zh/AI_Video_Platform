@@ -79,6 +79,8 @@ export function pageRepo() {
   // 筛选条件留在模块级：切走再切回来不该把人筛的东西重置（和 sub 同一个道理）
   const rows = items.map((it) => {
     const name = it.display_name || it.model_label || it.model_code || '—';
+    const isLocalReady = it.backend === 'local' && it.health_status === 'ready';
+    const sourceCls = it.backend === 'local' ? (isLocalReady ? 'local-ready' : 'plain') : 'blue';
     return `<tr class="repo-row" data-key="${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}"
         data-cap="${escapeHtml(it.capability)}" data-source="${escapeHtml(it.source)}"
         data-name="${escapeHtml((name + ' ' + it.model_code + ' ' + it.provider).toLowerCase())}"
@@ -90,7 +92,7 @@ export function pageRepo() {
         <div class="hint mono">${escapeHtml(it.provider)}/${escapeHtml(it.model_code)}</div></td>
       <td>${escapeHtml(cache.catalog.capabilities[it.capability] || it.capability)}
         <div class="param-chips">${tagChips(it.tags)}</div></td>
-      <td><span class="chip ${it.backend === 'local' ? 'plain' : 'blue'}">${escapeHtml(sourceLabel(it.source))}</span></td>
+      <td><span class="chip chip-backend ${sourceCls}">${escapeHtml(sourceLabel(it.source))}</span></td>
       <td>${escapeHtml(it.engine_label || it.engine_code || '—')}</td>
       <td>${statusHealthChips(it)}</td>
       <td>${it.registration_id
