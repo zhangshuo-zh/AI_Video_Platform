@@ -299,10 +299,12 @@ export function pageEngines() {
     const conn = [...new Set(list.map((a) => a.home_env || a.key_env).filter(Boolean))]
       .map((v) => `<code>${escapeHtml(v)}</code>`).join(' ');
     const checked = lastCheck[code] ? String(lastCheck[code]).slice(0, 16) : '';
+    const backends = [...new Set(list.map((a) => a.backend))];
+    const backendChips = backends.map((b) => `<span class="chip ${b === 'local' ? 'plain' : 'blue'}">${b === 'local' ? '本地' : (b === 'cloud' ? '云端' : b)}</span>`).join(' ');
     return `<tr>
       <td class="t-strong">${escapeHtml(list[0].label)}
         <div class="hint mono">${escapeHtml(code)}</div></td>
-      <td>${list.map((a) => `<span class="chip ${a.backend === 'local' ? 'plain' : 'blue'}">${a.backend}</span>`).join(' ')}</td>
+      <td>${backendChips}</td>
       <td><span class="hint">${[...new Set(list.map((a) => capLabel[a.capability] || a.capability))].join(' · ')}</span></td>
       <td class="c">${tiers || '<span class="chip amber">只登记名字</span>'}</td>
       <td>${list.every((a) => a.params_known)
