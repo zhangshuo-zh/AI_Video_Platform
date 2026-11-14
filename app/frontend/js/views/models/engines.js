@@ -770,6 +770,37 @@ export function fmtGap(seconds) {
   return `${Math.floor(n / 86400)} 天`;
 }
 
+export function engineInstStatusCell(it) {
+  const badge = it.enabled
+    ? (it.probe_unsupported
+        ? '<span class="chip amber">探测未实现</span>'
+        : healthChip({ state: it.health_state, detail: it.health_detail }))
+    : '<span class="chip gray">已停用</span>';
+
+  // 避免模型名称重复打印：如果 health_detail 已经包含 engine_model，则不单列模型行
+  let modelLine = '';
+  if (it.engine_model && (!it.health_detail || !it.health_detail.includes(it.engine_model))) {
+    modelLine = `<div class="inst-model-chip" title="当前加载模型：${escapeHtml(it.engine_model)}"><span class="k">模型</span> <code class="mono">${escapeHtml(it.engine_model)}</code></div>`;
+  }
+
+  let detailLine = '';
+  if (it.health_detail) {
+    const isErr = it.health_state === 'missing' || it.health_state === 'down' || it.health_detail.includes('Errno') || it.health_detail.includes('连不上');
+    if (isErr) {
+      detailLine = `<div class="inst-err-box" title="${escapeHtml(it.health_detail)}"><span class="warn-dot">⚠</span> ${escapeHtml(it.health_detail)}</div>`;
+    } else {
+      detailLine = `<div class="hint t-wrap">${escapeHtml(it.health_detail)}</div>`;
+    }
+  }
+
+  return `<div class="inst-status-wrap">
+    <div class="inst-status-head">${badge}</div>
+    ${modelLine}
+    ${detailLine}
+    ${probeHistoryLine(it)}
+  </div>`;
+}
+
 /** 引擎实例那一张卡（0040 端点表 ＋ 0042 探测留痕）。 */
 export function engineInstancesCard() {
   const inst = cache.engines
@@ -802,26 +833,31 @@ export function engineInstancesCard() {
       <td class="t-strong">${escapeHtml(name)}
         <div class="hint mono">${escapeHtml(it.engine_code)}${
           engine && !engine.served ? ' · 非服务型' : ''}</div></td>
-      <td><code>${escapeHtml(it.endpoint)}</code></td>
+      <td>
+        <div class="inst-endpoint-cell">
+          <code class="mono endpoint-text">${escapeHtml(it.endpoint)}</code>
+          <button type="button" class="btn-copy-mini" data-copy-endpoint="${escapeHtml(it.endpoint)}" title="复制端点地址">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+              <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
+              <path d="M3 11V3a1 1 0 0 1 1-1h8"></path>
+            </svg>
+          </button>
+          ${it.endpoint.startsWith('http://127.0.0.1') || it.endpoint.startsWith('http://localhost')
+            ? `<a href="${escapeHtml(it.endpoint)}" target="_blank" rel="noopener noreferrer" class="link-open-mini" title="在浏览器新标签页测试打开此本地端点">↗</a>` : ''}
+        </div>
+      </td>
       <td><span class="hint">${escapeHtml(it.connection_type)}</span> ${secret}</td>
-      <td>${it.enabled
-          ? (it.probe_unsupported
-              ? '<span class="chip amber">探测未实现</span>'
-              : healthChip({ state: it.health_state, detail: it.health_detail }))
-          : '<span class="chip gray">已停用</span>'}
-        ${it.engine_model ? `<div class="hint mono">${escapeHtml(it.engine_model)}</div>` : ''}
-        ${it.health_detail ? `<div class="hint t-wrap">${escapeHtml(it.health_detail)}</div>` : ''}
-        ${probeHistoryLine(it)}</td>
+      <td>${engineInstStatusCell(it)}</td>
       <td class="t-dim">${escapeHtml(it.note || '')}</td>
-      <td class="c" style="white-space:nowrap">
+      <td class="c inst-actions">
         ${it.health_state === 'ok' || !it.launch_ready ? ''
-          : `<button class="btn xs" data-act-launch="${it.id}"
+          : `<button class="btn xs primary" data-act-launch="${it.id}"
                      title="${escapeHtml(it.launch_note || '')}">启动服务</button>`}
         <button class="btn xs" data-act-probe="${it.id}">探测</button>
-        <button class="btn xs" data-act-probes="${it.id}">看历史</button>
-        <button class="btn xs" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}">${
+        <button class="btn xs ghost" data-act-probes="${it.id}">看历史</button>
+        <button class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}">${
           it.enabled ? '停用' : '启用'}</button>
-        <button class="btn xs danger" data-act-uninst="${it.id}">撤实例</button>
+        <button class="btn xs danger ghost" data-act-uninst="${it.id}">撤实例</button>
       </td>
     </tr>`;
   }).join('');
@@ -835,28 +871,53 @@ export function engineInstancesCard() {
   <div class="card">
     <div class="card-head"><h2>引擎实例</h2>
       <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span></div>
-    <!-- table-fixed：这张表的状态列里有一句 health_detail（可能是
-         "http://127.0.0.1:7860/api/v1/options 连不上：[Errno 61] Connection refused"），
-         而长 URL 没有空格、浏览器按 auto 布局会把它当成"最小内容宽度"，
-         于是一整列被压成一字一行、整张表被一个单元格撑歪（2026-11-11 截图实见）。
-         fixed 之后列宽由我们给的百分比说了算，长句在格子里换行。 -->
-    <div class="table-wrap"><table class="tbl-fixed">
+    <div class="table-wrap"><table class="tbl-fixed mc-engine-inst-table">
+      <colgroup>
+        <col style="width:160px">
+        <col style="width:220px">
+        <col style="width:130px">
+        <col style="width:300px">
+        <col style="width:170px">
+        <col style="width:220px">
+      </colgroup>
       <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
-        <th>状态</th><th>备注</th><th class="c">操作</th></tr></thead>
-      <tbody>${rows}${empty}
-        <tr class="mc-add-inst">
-          <td><select class="ctl sm" id="eng-code">${codeOpts || '<option value="">清单里还没有引擎</option>'}</select></td>
-          <td><input class="ctl sm mono" id="eng-endpoint" maxlength="200"
-                     placeholder="http://127.0.0.1:7860"></td>
-          <td><input class="ctl sm" id="eng-name" maxlength="80" placeholder="显示名（可空）">
-            <input class="ctl sm mono" id="eng-secret" maxlength="60" style="margin-top:4px"
-                   placeholder="密钥变量名（可空，值只从进程环境读）"></td>
-          <td colspan="2"><input class="ctl sm" id="eng-note" maxlength="300"
-                   placeholder="备注：这台是谁的、为什么换机（可空）"></td>
-          <td class="c"><button class="btn xs primary" id="eng-add">加实例</button></td>
-        </tr>
-      </tbody>
+        <th>状态</th><th>备注</th><th class="c" style="text-align:right">操作</th></tr></thead>
+      <tbody>${rows}${empty}</tbody>
     </table></div>
+
+    <div class="mc-add-inst-panel">
+      <div class="mc-add-inst-title">
+        <span class="icon">＋</span>
+        <span>登记新引擎实例</span>
+        <span class="hint">为常驻本地或自建服务配置可用端口与端点地址</span>
+      </div>
+      <div class="mc-add-inst-grid">
+        <div class="field-item">
+          <label>目标引擎</label>
+          <select class="ctl sm" id="eng-code">${codeOpts || '<option value="">清单里还没有引擎</option>'}</select>
+        </div>
+        <div class="field-item">
+          <label>服务端点 URL</label>
+          <input class="ctl sm mono" id="eng-endpoint" maxlength="200" placeholder="http://127.0.0.1:7860">
+        </div>
+        <div class="field-item">
+          <label>实例显示名 <span class="hint">（可空）</span></label>
+          <input class="ctl sm" id="eng-name" maxlength="80" placeholder="例如：M3 Max 本机服务">
+        </div>
+        <div class="field-item">
+          <label>共享密钥变量名 <span class="hint">（可空，从环境读）</span></label>
+          <input class="ctl sm mono" id="eng-secret" maxlength="60" placeholder="例如：COMFYUI_SECRET">
+        </div>
+        <div class="field-item span-full">
+          <label>备注说明 <span class="hint">（可空，记录用途、宿主机或换机原因）</span></label>
+          <div class="field-action-row">
+            <input class="ctl sm" id="eng-note" maxlength="300" placeholder="备注：这台是谁的、为什么换机、部署在哪台宿主机">
+            <button class="btn sm primary" id="eng-add">＋ 登记此实例</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card-body" style="border-top:1px solid var(--line)">
       <p class="note flush" title="端点连同引擎 code 是这一行的键，要换机器请新建一条再停旧的，否则历史作业的「当时打的是哪台」就说不清了。非服务型那几档也能登记（给远程执行器留位置），但暂时没有探测分支。">
         <b>端点改不了</b>——换机器请新建一条再停旧的，否则历史作业说不清打的是哪台。</p>
@@ -1266,6 +1327,19 @@ export function mountEngineInstances(root) {
       if (!yes) return;
       const ok = await run('撤实例', () => api.removeEngine(id));
       if (ok) repaint();
+    });
+  });
+
+  root.querySelectorAll('[data-copy-endpoint]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const text = btn.dataset.copyEndpoint;
+      try {
+        await navigator.clipboard.writeText(text);
+        alertNotify(`已复制端点：${text}`, 'info');
+      } catch {
+        alertNotify('复制失败，请手动选取复制', 'warn');
+      }
     });
   });
 }
