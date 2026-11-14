@@ -1009,6 +1009,19 @@ def test_能力轨下拉占位符不可选中且已选时删除():
     assert 'disabled selected hidden' in js, "占位符未设置 disabled 与 hidden 属性"
     assert '!o.hidden' in pick_js, "pick.js 渲染未过滤 hidden 项"
 
+def test_模型中心核心表格统一共享左侧微光聚焦指示条与薄雾():
+    """模型中心核心数据表格（能力轨、适配器表、引擎实例表、调用策略、模型仓库）
+    必须统一共享家族式悬停聚焦流线（Active Row Accent Bar）与微光薄雾规范。
+    """
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text()
+    assert ".mc-slot-table tr.slot:hover td:first-child::before" in css, "能力轨主行未配置悬停指示条"
+    assert ".mc-adapter-table tbody tr:hover td:first-child::before" in css, "引擎表未配置悬停指示条"
+    assert ".mc-engine-inst-table tbody tr:hover td:first-child::before" in css, "实例表未配置悬停指示条"
+    assert ".policy:hover td:first-child::before" in css, "调用策略表未配置悬停指示条"
+    assert "#repo-rows tr:hover td:first-child::before" in css, "模型仓库未配置悬停指示条"
+
 def test_带布局属性的排版类不许直接用在单元格上():
     """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
 
