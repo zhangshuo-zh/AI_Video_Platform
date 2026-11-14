@@ -150,7 +150,8 @@ export function enhanceSelect(sel) {
       `<button type="button" role="option" tabindex="-1" id="${list.id}-opt-${i}" class="fv-pick-opt${o.selected ? ' on' : ''}${i === hi ? ' hi' : ''}"`
       + ` data-i="${i}"${o.disabled ? ' disabled' : ''}`
       + `${o.selected ? ' aria-selected="true"' : ''}`
-      + `${i === hi ? ' aria-current="true"' : ''}>${escapeHtml(o.textContent)}</button>`
+      + `${i === hi ? ' aria-current="true"' : ''}`
+      + ` title="${escapeHtml(o.textContent || '')}">${escapeHtml(o.textContent)}</button>`
     )).join('') || '<span class="fv-pick-none">没有可选项</span>';
   };
 
@@ -169,16 +170,9 @@ export function enhanceSelect(sel) {
     if (!list.hidden) paint();
   };
 
-  /** 浮层该多宽：至少与按钮等宽，按钮装不下最长选项时再放宽到刚好够。
-   *
-   * 原来这里写死 `${Math.max(width, 160)}px`——160 是个拍出来的下限，
-   * 当时想的是「按钮太窄时浮层别挤成一团」。但它对**按钮本来就够宽**的场合
-   * 是纯多余：模型仓库那两个筛选下拉 120px，浮层被顶到 160px，看着比控件宽一截，
-   * 而里面的字（全部类型/文本/图像…）根本没溢出。
-   *
-   * 现在改成「按钮宽度」与「最长选项文字宽度」取大：按钮够宽就等宽（浮层与控件
-   * 对齐，最好看），按钮太窄才加宽到文字放得下（不会截断选项）。
-   * 量文字用 canvas，不往 DOM 里塞隐藏元素——那会在每次打开时触发一次重排。
+  /** 浮层宽度策略：严格与触发按钮等宽锁定，不向外突兀扩宽破坏表格与网格秩序；
+   * 选项超长时统一单行截断（text-overflow: ellipsis），并通过 title 原生浮层提供悬停全称。
+   * measureText 保留作为文本测宽工具函数。
    */
   const measureText = (text) => {
     const cs = getComputedStyle(list);
@@ -203,12 +197,10 @@ export function enhanceSelect(sel) {
     btn.setAttribute('aria-expanded', 'true');
     // 先按宽度与方位摆好再量高度：放不下时向上翻。
     const r = btn.getBoundingClientRect();
-    // 最长那条选项要多宽（含左右内边距 10+10 与圆角余量 4）
-    const longest = Math.max(0, ...[...sel.options]
-      .map((o) => measureText(o.textContent || ''))) + 24;
     const gutter = 8;
-    const width = Math.min(Math.max(Math.round(r.width), longest), document.documentElement.clientWidth - 2 * gutter);
-    list.style.minWidth = list.style.width = `${width}px`;
+    // 下拉列表宽度严格与触发按钮等宽锁定，绝不向外扩宽突起；超长内容统一走单行截断与悬停全称
+    const width = Math.min(Math.round(r.width), document.documentElement.clientWidth - 2 * gutter);
+    list.style.minWidth = list.style.width = list.style.maxWidth = `${width}px`;
     list.style.left = `${Math.max(gutter, Math.min(r.left, document.documentElement.clientWidth - gutter - width))}px`;
     list.style.maxHeight = '';
     const below = window.innerHeight - r.bottom - gutter - 4;

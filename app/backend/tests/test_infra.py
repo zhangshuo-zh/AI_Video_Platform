@@ -979,23 +979,22 @@ def test_模型仓库筛选下拉有不折行的宽度():
     assert ".repo-filter{width:" in css, "没给显式宽度（原生按最短选项算 92px 会折行）"
     assert "white-space:nowrap" in css, "自绘按钮没压住折行"
 
-def test_下拉浮层宽度跟着按钮与最长选项定():
-    """浮层不该比按钮宽——除非按钮窄到装不下选项文字。
-
-    原来写死 `${Math.max(width, 160)}px`：160 这个下限对按钮本来就够宽的场合
-    是纯多余（模型仓库那两个筛选下拉 120px，浮层被顶到 160px，看着比控件宽一截，
-    而里面的字根本没溢出）。现在改成「按钮宽度」与「最长选项文字宽度」取大。
-
-    这条钉住那个 160 不许回来：它是拍出来的数，不是量出来的。
+def test_下拉浮层宽度与按钮等宽锁定且长选项单行截断带悬停全称():
+    """下拉浮层宽度必须严格与触发按钮等宽锁定，禁止向外扩宽破坏列宽；
+    每个选项必须携带 title 属性，CSS 必须单行截断（text-overflow:ellipsis），
+    鼠标悬停时展示完整全称，杜绝折行撕裂。
     """
     from pathlib import Path
 
     js = (Path(__file__).resolve().parents[2] / "frontend" / "js" / "pick.js").read_text()
+    css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text()
     code = "\n".join(line for line in js.split("\n")
                       if not line.strip().startswith(("//", "*", "/*")))
     assert "Math.max(Math.round(r.width), 160)" not in code, "浮层宽度又写死 160 了"
-    assert "measureText" in code, "没按选项文字量宽度"
-    assert "list.style.minWidth" in code
+    assert "list.style.minWidth = list.style.width" in code or "list.style.width = " in code
+    assert "title=" in code, "选项缺少 title 属性（超长截断时鼠标悬停无法查看全称）"
+    assert ".fv-pick-opt" in css and "text-overflow:ellipsis" in css, "选项没有加单行截断"
+    assert "overflow-wrap:anywhere" not in css.split(".fv-pick-opt")[1].split("}")[0], "选项又被设置了任意处折行"
 
 def test_带布局属性的排版类不许直接用在单元格上():
     """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
