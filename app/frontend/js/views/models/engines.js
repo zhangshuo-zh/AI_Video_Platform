@@ -218,7 +218,7 @@ export function slotRow(r, providerLists) {
   const providers = providerLists[`${r.capability}|${r.backend}`];
   const providerOptions = slotProviderOptions(r.capability, r.backend, r.provider, providers);
   const videoCloud = r.capability === 'video' && r.backend === 'cloud';
-  const isLocalReady = r.backend === 'local' && (r.health?.status === 'ready' || r.health?.ready);
+  const isLocalReady = r.backend === 'local' && (r.health?.state === 'ok' || r.health?.ok);
   const backendCls = r.backend === 'local' ? (isLocalReady ? 'local-ready' : 'plain') : 'blue';
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
@@ -267,7 +267,7 @@ export function slotCollapsed(r) {
   if (emptyOpen.has(r.id)) return slotRow(r, {});
   return `<tr class="mc-collapsed" data-empty-for="${r.id}">
     <td class="t-strong">${r.capability_label}</td>
-    <td><span class="chip gray">${r.backend_label}</span></td>
+    <td><span class="chip chip-backend plain">${r.backend_label}</span></td>
     <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button></td>
   </tr>`;
 }
