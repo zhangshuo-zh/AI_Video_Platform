@@ -137,7 +137,9 @@ export function enhanceSelect(sel) {
   btn.setAttribute('aria-controls', list.id);
   list.setAttribute('role', 'listbox');
   list.hidden = true;
-  wrap.appendChild(list);
+  // 挂载到 body：彻底免疫任何祖先容器设置 backdrop-filter/transform/contain 导致的定位基准错乱
+  document.body.appendChild(list);
+  wrap._fvList = list;
 
   const paint = () => {
     // 高亮项要用 id 被 aria-activedescendant 指认（键盘移动时读屏要念出来）；
@@ -187,6 +189,7 @@ export function enhanceSelect(sel) {
   };
 
   const open = () => {
+    if (!sel.isConnected) { closeActive(); list.remove(); return; }
     if (sel.disabled) return;
     if (active && active.sel === sel) { closeActive(); return; }
     closeActive();
@@ -311,6 +314,7 @@ export function restorePicks(root = document) {
       observers.delete(sel);
       const wrap = sel.closest('.fv-pick');
       if (wrap) {
+        wrap._fvList?.remove();
         wrap.parentNode.insertBefore(sel, wrap);
         wrap.remove();
       }

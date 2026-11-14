@@ -10,6 +10,7 @@ import {
   agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
+import { enhanceSelect } from '../../pick.js';
 import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.js';
 import { REG_SOURCES, unitLabel } from '../../enums.js';
 import {
@@ -159,14 +160,19 @@ export function slotDetail(r, adapter) {
     </div></td></tr>`;
 }
 
+export function slotProviderOptions(capability, backend, selectedProvider, cachedList) {
+  const providers = cachedList || (cache.manifest?.adapters || []).filter((a) => a.capability === capability && a.backend === backend);
+  return '<option value="">— 选择引擎 —</option>'
+    + (selectedProvider && !providers.some((a) => a.code === selectedProvider)
+      ? `<option value="${escapeHtml(selectedProvider)}" selected>${escapeHtml(selectedProvider)}（清单未登记）</option>` : '')
+    + providers.map((a) => `<option value="${escapeHtml(a.code)}"${a.code === selectedProvider ? ' selected' : ''}>${escapeHtml(a.label)}</option>`).join('')
+    + '<option value="__manual__">手动填写其他引擎…</option>';
+}
+
 export function slotRow(r, providerLists) {
   const adapter = adapterOf(cache.manifest, r.capability, r.backend, r.provider);
-  const providers = providerLists[`${r.capability}|${r.backend}`] || [];
-  const providerOptions = '<option value="">— 选择引擎 —</option>'
-    + (r.provider && !providers.some((a) => a.code === r.provider)
-      ? `<option value="${escapeHtml(r.provider)}" selected>${escapeHtml(r.provider)}（清单未登记）</option>` : '')
-    + providers.map((a) => `<option value="${escapeHtml(a.code)}"${a.code === r.provider ? ' selected' : ''}>${escapeHtml(a.label)}</option>`).join('')
-    + '<option value="__manual__">手动填写其他引擎…</option>';
+  const providers = providerLists[`${r.capability}|${r.backend}`];
+  const providerOptions = slotProviderOptions(r.capability, r.backend, r.provider, providers);
   const videoCloud = r.capability === 'video' && r.backend === 'cloud';
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
@@ -908,10 +914,31 @@ export function mountEngines(root) {
       if (e.target.matches('[data-f="provider"], [data-f="model"]')) {
         if (e.target.dataset.f === 'provider' && e.target.value === '__manual__') {
           const previous = e.target;
-          (previous.closest('.fv-pick') || previous).outerHTML = '<input class="ctl sm" data-f="provider" aria-label="引擎" placeholder="自定义 provider 标识">';
-          tr.querySelector('[data-f="provider"]').focus();
+          (previous.closest('.fv-pick') || previous).outerHTML = `
+            <div class="mc-manual-provider" style="display:flex;align-items:center;gap:4px;flex:1 1 132px;">
+              <input class="ctl sm" data-f="provider" aria-label="引擎" placeholder="自定义 provider 标识" style="flex:1;min-width:0">
+              <button type="button" class="btn xs ghost" data-act-revert-provider title="切回下拉选择已有引擎" style="padding:2px 6px;font-size:11px;white-space:nowrap;flex:none">切回选择</button>
+            </div>`;
+          tr.querySelector('input[data-f="provider"]').focus();
         }
         refresh(e.target.dataset.f === 'provider');
+      }
+    });
+    tr.addEventListener('click', (e) => {
+      const revertBtn = e.target.closest('[data-act-revert-provider]');
+      if (revertBtn) {
+        const wrap = tr.querySelector('.mc-manual-provider') || revertBtn.closest('.mc-manual-provider');
+        if (wrap) {
+          const cap = tr.dataset.cap;
+          const backend = tr.dataset.backend;
+          const opts = slotProviderOptions(cap, backend, '');
+          wrap.outerHTML = `<select class="ctl sm" data-f="provider" aria-label="引擎">${opts}</select>`;
+          const newSelect = tr.querySelector('select[data-f="provider"]');
+          if (newSelect && document.documentElement.dataset.theme === 'night') {
+            enhanceSelect(newSelect);
+          }
+          refresh(true);
+        }
       }
     });
     tr.addEventListener('input', (e) => {
