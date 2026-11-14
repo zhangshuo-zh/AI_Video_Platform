@@ -308,7 +308,15 @@ export function pageEngines() {
       </span>
     </div>
     <div class="table-wrap">
-      <table>
+      <table class="tbl-fixed mc-slot-table">
+      <colgroup>
+        <col style="width:64px">
+        <col style="width:72px">
+        <col style="width:530px">
+        <col style="width:370px">
+        <col style="width:48px">
+        <col style="width:48px">
+      </colgroup>
       <thead><tr>
         <th>能力</th><th>后端</th><th>选型（Provider / 模型）</th>
         <th>状态（健康 · 验证）</th><th class="c">启用</th><th class="c">默认</th>

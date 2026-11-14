@@ -814,8 +814,9 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .btn-revert-pick:active{transform:scale(.95)}
 .btn-revert-pick .revert-icon{display:inline-block;transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
 .btn-revert-pick:hover .revert-icon{transform:rotate(-45deg)}
-.mc-status{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
-.mc-health,.mc-validation{display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0}
+.mc-slot-table{table-layout:fixed;width:100%;min-width:1130px}
+.mc-status{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;white-space:nowrap}
+.mc-health,.mc-validation{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap;min-width:0}
 /* 调用策略的状态列：徽章在上、看候选在下。
    徽章文字允许折行（「清单缺能力」比「待配置」宽两个字，全站 chip 默认 nowrap，
    那一颗会把整张表撑宽、把最后一列顶出视口）。按钮仍不折。 */
