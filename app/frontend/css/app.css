@@ -908,27 +908,63 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    那一颗会把整张表撑宽、把最后一列顶出视口）。按钮仍不折。 */
 .policy td:last-child .chip{white-space:nowrap}
 .policy td:last-child .btn{white-space:nowrap}
+/* ================= 模型中心表格行高统一规范（以引擎列表为基准 56px 黄金律动体系） ================= */
+.mc-slot-table tr.slot,
+.mc-slot-table tr.mc-collapsed,
+.mc-adapter-table tbody tr,
+.policy-table tbody tr{
+  height:56px;
+}
+
+.mc-slot-table tr.slot td,
+.mc-slot-table tr.mc-collapsed td,
+.mc-adapter-table tbody td,
+.policy-table tbody td{
+  height:56px;
+  padding:8px 12px;
+  vertical-align:middle;
+  box-sizing:border-box;
+}
+
+/* 第一列上下两行文本规整排布：统一 12.5px 标题 + 11px mono 标识 */
+.mc-slot-table td:first-child,
+.mc-adapter-table td:first-child,
+.policy td:first-child{
+  line-height:1.25;
+}
+.mc-slot-table td:first-child > div:first-child,
+.mc-adapter-table td:first-child > div:first-child,
+.policy td:first-child b{
+  font-size:12.5px;
+  font-weight:650;
+  color:var(--ink);
+  display:block;
+  line-height:1.3;
+}
+.mc-slot-table td:first-child .hint.mono,
+.mc-adapter-table td:first-child .hint.mono,
+.policy td:first-child .hint.mono{
+  font-size:11px;
+  color:var(--ink-3);
+  margin-top:2px;
+  line-height:1.2;
+}
+
 /* 调用策略表格精雕（方案 C：规整行高律动、左侧琥珀聚焦流线与排版微雕） */
 .policy-table{
-  border-collapse:collapse;width:100%;min-width:1164px;
+  border-collapse:collapse;width:100%;min-width:1188px;table-layout:fixed;
 }
 .policy-table th{
-  padding:11px 14px;font-size:11.5px;font-weight:600;letter-spacing:.02em;
+  padding:10px 12px;font-size:11.5px;font-weight:600;letter-spacing:.02em;
   color:var(--ink-3);border-bottom:1.5px solid var(--line-strong);background:rgba(255,255,255,.015);
   white-space:nowrap;
 }
 .policy td{
-  padding:10px 14px;vertical-align:middle;border-bottom:1px solid var(--line);
-  box-sizing:border-box;transition:background var(--fast) var(--ease);
+  border-bottom:1px solid var(--line);
+  transition:background var(--fast) var(--ease);
 }
 .policy td:first-child{
-  position:relative;min-width:170px;
-}
-.policy td:first-child b{
-  font-size:13px;font-weight:650;color:var(--ink);letter-spacing:-.01em;display:block;
-}
-.policy td:first-child .hint.mono{
-  font-size:11px;color:var(--ink-3);margin-top:3px;letter-spacing:-.01em;
+  position:relative;
 }
 .policy td:nth-child(2),
 .policy-table th:nth-child(2){
@@ -954,10 +990,10 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 
 .policy-slot-col,
 .policy-fallback-col{
-  width:196px;min-width:196px;box-sizing:border-box;
+  width:184px;min-width:184px;box-sizing:border-box;
 }
 .policy-pref-col{
-  width:108px;min-width:108px;box-sizing:border-box;
+  width:96px;min-width:96px;box-sizing:border-box;
 }
 
 .policy select.ctl,
@@ -978,8 +1014,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   color:var(--ink-3) !important;
 }
 
-/* 必需能力交互磁吸胶囊标签 */
-.mc-req-group{display:flex;flex-wrap:wrap;gap:5px;align-items:center;max-width:240px}
+/* 必需能力交互磁吸胶囊标签（单行流线排布，不折行撑大行高） */
+.mc-req-group{display:inline-flex;flex-wrap:nowrap;gap:5px;align-items:center;white-space:nowrap}
 .mc-req-tag{display:inline-flex;position:relative;cursor:pointer;user-select:none}
 .mc-req-tag input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
 .mc-req-pill{
@@ -1039,9 +1075,14 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   outline:2px solid var(--accent);outline-offset:2px;
 }
 
-/* 操作列与看候选微按键 */
+/* 操作列与看候选微按键（水平单行并排，消除高度撑大） */
 .policy-status-wrap{
-  display:flex;flex-direction:column;align-items:flex-start;gap:6px;
+  display:inline-flex;flex-direction:row;align-items:center;gap:8px;white-space:nowrap;
+}
+.policy-status-wrap .chip{margin:0;white-space:nowrap;flex-shrink:0}
+.policy-status-wrap .btn-resolve{margin:0;white-space:nowrap;flex-shrink:0}
+.policy-act-col{
+  width:156px;min-width:156px;white-space:nowrap;
 }
 .btn-resolve{
   display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:11px;

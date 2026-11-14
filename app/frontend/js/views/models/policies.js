@@ -142,8 +142,19 @@ export function pagePolicies() {
     </div>
     <div class="table-wrap">
       <table class="policy-table">
+        <colgroup>
+          <col style="width:170px">
+          <col style="width:68px">
+          <col style="width:210px">
+          <col style="width:184px">
+          <col style="width:96px">
+          <col style="width:184px">
+          <col style="width:84px">
+          <col style="width:64px">
+          <col style="width:156px">
+        </colgroup>
         <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th class="policy-slot-col">建议轨</th>
-          <th class="policy-pref-col">偏好</th><th class="policy-fallback-col">备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th>状态</th></tr></thead>
+          <th class="policy-pref-col">偏好</th><th class="policy-fallback-col">备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th class="policy-act-col">状态</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

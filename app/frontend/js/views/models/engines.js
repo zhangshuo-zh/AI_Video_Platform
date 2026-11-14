@@ -222,7 +222,10 @@ export function slotRow(r, providerLists) {
   const backendCls = r.backend === 'local' ? (isLocalReady ? 'local-ready' : 'plain') : 'blue';
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
-    <td class="t-strong">${r.capability_label}</td>
+    <td class="t-strong">
+      <div>${escapeHtml(r.capability_label)}</div>
+      <div class="hint mono">${escapeHtml(r.capability)}</div>
+    </td>
     <td><span class="chip chip-backend ${backendCls}">${r.backend_label}</span></td>
     <td><div class="mc-picks">
         <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
@@ -328,7 +331,10 @@ async function waitForStartedEngine(id, out, active, waiting) {
 export function slotCollapsed(r) {
   if (emptyOpen.has(r.id)) return slotRow(r, {});
   return `<tr class="mc-collapsed" data-empty-for="${r.id}">
-    <td class="t-strong">${r.capability_label}</td>
+    <td class="t-strong">
+      <div>${escapeHtml(r.capability_label)}</div>
+      <div class="hint mono">${escapeHtml(r.capability)}</div>
+    </td>
     <td><span class="chip chip-backend plain">${r.backend_label}</span></td>
     <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button></td>
   </tr>`;
@@ -424,10 +430,10 @@ export function pageEngines() {
     <div class="table-wrap">
       <table class="tbl-fixed mc-slot-table">
       <colgroup>
-        <col style="width:64px">
-        <col style="width:72px">
+        <col style="width:78px">
+        <col style="width:68px">
         <col style="width:580px">
-        <col style="width:380px">
+        <col style="width:370px">
         <col style="width:44px">
         <col style="width:44px">
       </colgroup>
@@ -464,7 +470,16 @@ export function pageEngines() {
         </span>
       </div>
     </div>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="tbl-fixed mc-adapter-table">
+      <colgroup>
+        <col style="width:160px">
+        <col style="width:100px">
+        <col style="width:160px">
+        <col style="width:80px">
+        <col style="width:100px">
+        <col style="width:160px">
+        <col style="width:140px">
+      </colgroup>
       <thead><tr><th>引擎</th><th>位置</th><th>能力</th><th class="c">模型档</th>
         <th>参数核验</th><th>连接方式（变量名）</th><th>最近检查</th></tr></thead>
       <tbody>${engineRows}${unintegrated}</tbody>
