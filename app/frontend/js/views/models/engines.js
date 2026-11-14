@@ -915,9 +915,15 @@ export function mountEngines(root) {
         if (e.target.dataset.f === 'provider' && e.target.value === '__manual__') {
           const previous = e.target;
           (previous.closest('.fv-pick') || previous).outerHTML = `
-            <div class="mc-manual-provider" style="display:flex;align-items:center;gap:4px;flex:1 1 132px;">
-              <input class="ctl sm" data-f="provider" aria-label="引擎" placeholder="自定义 provider 标识" style="flex:1;min-width:0">
-              <button type="button" class="btn xs ghost" data-act-revert-provider title="切回下拉选择已有引擎" style="padding:2px 6px;font-size:11px;white-space:nowrap;flex:none">切回选择</button>
+            <div class="mc-manual-provider">
+              <input class="ctl sm" data-f="provider" aria-label="引擎" placeholder="自定义 provider 标识">
+              <button type="button" class="btn-revert-pick" data-act-revert-provider title="切回下拉选择已有引擎">
+                <svg class="revert-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2.5 7.5A5.5 5.5 0 1 1 8 13.5c-2.4 0-4.5-1.5-5.3-3.8"></path>
+                  <polyline points="2.5 3.5 2.5 7.5 6.5 7.5"></polyline>
+                </svg>
+                <span>切回选择</span>
+              </button>
             </div>`;
           tr.querySelector('input[data-f="provider"]').focus();
         }
@@ -932,7 +938,7 @@ export function mountEngines(root) {
           const cap = tr.dataset.cap;
           const backend = tr.dataset.backend;
           const opts = slotProviderOptions(cap, backend, '');
-          wrap.outerHTML = `<select class="ctl sm" data-f="provider" aria-label="引擎">${opts}</select>`;
+          wrap.outerHTML = `<select class="ctl sm artifact-reveal" data-f="provider" aria-label="引擎">${opts}</select>`;
           const newSelect = tr.querySelector('select[data-f="provider"]');
           if (newSelect && document.documentElement.dataset.theme === 'night') {
             enhanceSelect(newSelect);
