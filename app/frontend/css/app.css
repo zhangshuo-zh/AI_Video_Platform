@@ -800,10 +800,10 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    实际显示成 "deepse" "d"——看不清自己填了什么，比没填还糟。
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
    全进横跨整表的备注带。 */
-.mc-picks{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;width:100%}
+.mc-picks{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;width:100%;overflow:hidden}
 .mc-picks > .ctl,
 .mc-picks > .fv-pick,
-.mc-picks > .mc-manual-provider{flex:0 0 220px !important;width:220px !important;min-width:220px !important;max-width:220px !important;box-sizing:border-box}
+.mc-picks > .mc-manual-provider{flex:0 0 200px !important;width:200px !important;min-width:200px !important;max-width:200px !important;box-sizing:border-box}
 .mc-manual-provider{display:flex;align-items:center;gap:4px;position:relative}
 .mc-manual-provider input.ctl{flex:1 1 auto;min-width:0;width:auto}
 .mc-pick-extra{flex:1 1 auto;min-width:0;display:inline-flex;align-items:center;overflow:hidden;margin-left:2px}
@@ -820,7 +820,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .btn-revert-pick:active{transform:scale(.95)}
 .btn-revert-pick .revert-icon{display:inline-block;transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
 .btn-revert-pick:hover .revert-icon{transform:rotate(-45deg)}
-.mc-slot-table{table-layout:fixed;width:100%;min-width:1130px}
+.mc-slot-table{table-layout:fixed;width:100%;min-width:1184px}
 .mc-status{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;white-space:nowrap}
 .mc-health,.mc-validation{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap;min-width:0}
 /* 调用策略的状态列：徽章在上、看候选在下。

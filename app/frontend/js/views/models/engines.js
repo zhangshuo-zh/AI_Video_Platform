@@ -346,10 +346,10 @@ export function pageEngines() {
       <colgroup>
         <col style="width:64px">
         <col style="width:72px">
-        <col style="width:auto">
-        <col style="width:370px">
-        <col style="width:48px">
-        <col style="width:48px">
+        <col style="width:520px">
+        <col style="width:440px">
+        <col style="width:44px">
+        <col style="width:44px">
       </colgroup>
       <thead><tr>
         <th>能力</th><th>后端</th><th>选型（Provider / 模型）</th>
