@@ -755,7 +755,7 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
    （不影响需要负 margin 对齐的地方）。 */
 .card + .card, .card + .stack, .stack + .card{margin-top:20px}
 .card + .card{margin-bottom:0}
-.card-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.card-head{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--line)}
 .card-head h2{font-size:var(--fs-strong);font-weight:680;letter-spacing:-.012em}
 .card-head .sub{font-size:11.5px;color:var(--ink-3)}
 .card-head .right{margin-left:auto;display:flex;gap:6px;align-items:center}
@@ -926,6 +926,34 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   box-sizing:border-box;
 }
 
+/* ================= 模型中心表格首末列固定外边距规范 (18px 黄金对齐基准) ================= */
+/* 核心表格首列（最左列）左内距与末列（最右列）右内距严格统一锁定为 18px，保证跨页面绝对一致 */
+.mc-slot-table th:first-child,
+.mc-slot-table td:first-child,
+.mc-adapter-table th:first-child,
+.mc-adapter-table td:first-child,
+.mc-engine-inst-table th:first-child,
+.mc-engine-inst-table td:first-child,
+.policy-table th:first-child,
+.policy td:first-child,
+#repo-rows td:first-child,
+.card:has(#repo-rows) th:first-child{
+  padding-left:18px !important;
+}
+
+.mc-slot-table th:last-child,
+.mc-slot-table td:last-child,
+.mc-adapter-table th:last-child,
+.mc-adapter-table td:last-child,
+.mc-engine-inst-table th:last-child,
+.mc-engine-inst-table td:last-child,
+.policy-table th:last-child,
+.policy td:last-child,
+#repo-rows td:last-child,
+.card:has(#repo-rows) th:last-child{
+  padding-right:18px !important;
+}
+
 /* 第一列纯净业务标题规范（优雅垂直居中，去除冗余机器别名与代码键名） */
 .mc-slot-table td:first-child,
 .mc-adapter-table td:first-child,
@@ -1073,7 +1101,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .policy-status-wrap .chip{margin:0;white-space:nowrap;flex-shrink:0}
 .policy-status-wrap .btn-resolve{margin:0;white-space:nowrap;flex-shrink:0}
 .policy-act-col{
-  width:156px;min-width:156px;white-space:nowrap;
+  width:160px;min-width:160px;white-space:nowrap;
 }
 .btn-resolve{
   display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:11px;

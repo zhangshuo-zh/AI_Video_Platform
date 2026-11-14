@@ -423,12 +423,12 @@ export function pageEngines() {
     <div class="table-wrap">
       <table class="tbl-fixed mc-slot-table">
       <colgroup>
-        <col style="width:78px">
+        <col style="width:84px">
         <col style="width:68px">
-        <col style="width:580px">
-        <col style="width:370px">
-        <col style="width:44px">
-        <col style="width:44px">
+        <col style="width:560px">
+        <col style="width:366px">
+        <col style="width:50px">
+        <col style="width:56px">
       </colgroup>
       <thead><tr>
         <th>能力</th><th>后端</th>
