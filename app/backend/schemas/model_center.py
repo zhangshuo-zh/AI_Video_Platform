@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .enums import Capability, ConnectionType, HostingSource, PolicyPreference
+from .enums import Capability, ConnectionType, HostingSource
 
 
 # ---------- 模型中心（0035） ----------
