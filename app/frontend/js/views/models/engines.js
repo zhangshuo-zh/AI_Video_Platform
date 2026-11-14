@@ -327,17 +327,24 @@ export function pageEngines() {
   return `
   <div class="card" style="margin-bottom:12px">
     <div class="card-head">
-      <h2>能力轨</h2>
-      <span class="sub">默认轨走打勾那条；云端视频只能逐镜头另选</span>
+      <div style="display:flex;align-items:center">
+        <h2>能力轨</h2>
+        <span class="help-tip" title="查看能力轨核心运行规则">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">能力轨核心运行规则</span>
+            <ul class="tip-list">
+              <li><b>默认轨唯一来源</b>：打勾项为默认执行轨。云端视频只能逐镜头显式另选，不支持设为默认。</li>
+              <li><b>绝不自动降级</b>：调用策略的建议轨与备用轨仅作参考；本地执行失败绝不会自动降级转云端，避免意外产生账单。</li>
+              <li><b>健康与验证分离</b>：健康表明运行环境与密钥变量是否就绪；验证必须有真实调用或产物验收通过记录方达生产可用。</li>
+              <li><b>点击单格展开</b>：点击「能力」单元格可展开查看出处清单、允许参数、密钥变量名及历史校验记录。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right">
         <span class="chip plain" id="save-state" hidden>已保存</span>
-        <!-- 与右边那颗 primary 同档（sm）：两者并排在 card-head 里，
-             用 xs 会矮 10px、字号小一档，看着像"主按钮旁边挂了个表格内小按钮"。
-             全站 card-head .right 里的按钮都走 sm，这里没有理由是例外。 -->
         <button class="btn sm" id="slots-expand">${slotOpen.size ? '全部收起' : '展开全部细节'}</button>
-        <!-- 主按钮也走 sm：全站 card-head .right 里都是 btn sm primary
-             （agents／composition／pipeline／review 一致），只有这里用了默认档,
-             于是和旁边那颗 28px 的次级按钮并排时高出 5px。 -->
         <button class="btn sm primary" id="save-providers">保存能力轨</button>
       </span>
     </div>
@@ -352,35 +359,42 @@ export function pageEngines() {
         <col style="width:44px">
       </colgroup>
       <thead><tr>
-        <th>能力</th><th>后端</th><th>选型（Provider / 模型）</th>
-        <th>状态（健康 · 验证）</th><th class="c">启用</th><th class="c">默认</th>
+        <th>能力</th><th>后端</th>
+        <th>选型（Provider / 模型）
+          <span class="help-tip" data-tip="切换引擎后模型联动到新引擎第一档；也可选择「手动填写其他引擎…」直通自定义配置；右侧微标签展示首要参数规格">?</span>
+        </th>
+        <th>状态（健康 · 验证）
+          <span class="help-tip" data-tip="健康（绿就绪/黄待查/红缺失）：反映运行环境齐备度；验证：必须具备真实调用或产物验收凭据方达生产可用">?</span>
+        </th>
+        <th class="c">启用</th><th class="c">默认</th>
       </tr></thead>
       <tbody>${body}</tbody>
       </table>
     </div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" ><b>点「能力」那一格展开细节</b>：清单出处、允许参数、
-        密钥变量名、环境检查与验证记录、备注都在展开里。
-        这一张表是默认轨的唯一来源——调用策略的建议轨与备用轨只是提示，本地失败不会自动转云端。
-        健康与验证也不是一回事：健康只说环境齐不齐，验证说凭什么认为真能产出。</p>
-    </div>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>引擎</h2>
-      <span class="sub">清单里登记过的适配器；最后一排是本机装了但平台未接入的</span></div>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>引擎</h2>
+        <span class="help-tip" title="查看适配器引擎清单说明">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">适配器引擎清单说明</span>
+            <ul class="tip-list">
+              <li><b>数据来源</b>：代码库 <code>adapters.py</code> 适配器总表，属于事实规格层（只读）。</li>
+              <li><b>参数核验状态</b>：标「已核验」代表官方 schema 参数与默认值经代码验证并自动预填；「未核验」仅透传自定义参数。</li>
+              <li><b>只接探测引擎</b>：如 ComfyUI 已支持端点探活与本地启动，因工作流契约未定暂无生成中心提交入口。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
+    </div>
     <div class="table-wrap"><table>
       <thead><tr><th>引擎</th><th>位置</th><th>能力</th><th class="c">模型档</th>
         <th>参数核验</th><th>连接方式（变量名）</th><th>最近检查</th></tr></thead>
       <tbody>${engineRows}${unintegrated}</tbody>
     </table></div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" ><b>「只接探测」的那几档没有「提交」入口</b>：
-        平台能连上它们、看得见通不通，但没有执行契约，所以拿不出可信的参数表，
-        也就不会摆一个点了没用的按钮。今天是 ComfyUI：它收的是一整张
-        workflow 节点图，不是一张平坦参数表——接执行要单独定 workflow 模板与
-        参数注入点，是独立工作包。未接入那一排则是连探测器都没有的那几家。</p>
-    </div>
   </div>
 
   ${engineInstancesCard()}`;
@@ -875,8 +889,21 @@ export function engineInstancesCard() {
   return `
   <div class="card" id="card-engine-inst">
     <div class="card-head">
-      <h2>引擎实例</h2>
-      <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span>
+      <div style="display:flex;align-items:center">
+        <h2>引擎实例</h2>
+        <span class="help-tip" title="查看引擎实例与端点管理规范">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">引擎实例与端点管理规范</span>
+            <ul class="tip-list">
+              <li><b>实例定义</b>：记录常驻服务运行的主机与端口（如 Draw Things、Ollama、ComfyUI）。健康状态每次现查，不落库。</li>
+              <li><b>端点不可修改</b>：端点是实例历史作业绑定的核心业务主键；换机器请新建实例再停用旧实例，确保审计留痕准确。</li>
+              <li><b>连接协议支持</b>：当前仅开放 <code>local_http</code> 协议探测与调用；gRPC 与 CLI 分支建设中。</li>
+              <li><b>现查探活与启动</b>：服务掉线时点击「启动服务」可拉起本地进程并等待连接就绪，点击「探测」可实时探活。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right">
         <button class="btn sm ghost" id="btn-toggle-add-inst">${addInstOpen ? '✕ 收起登记面板' : '＋ 登记新实例'}</button>
       </span>
@@ -900,42 +927,35 @@ export function engineInstancesCard() {
         <div class="mc-add-inst-title">
           <span class="badge-dot"></span>
           <span>登记新引擎实例</span>
-          <span class="hint">为常驻本地或自建服务配置可用端口与端点地址</span>
+          <span class="hint">配置常驻服务或自建集群端点</span>
         </div>
         <button type="button" class="btn xs ghost" id="btn-close-add-inst" title="收起登记面板">✕ 收起</button>
       </div>
       <div class="mc-add-inst-grid">
         <div class="field-item">
-          <label>目标引擎</label>
+          <label>目标引擎 <span class="help-tip" data-tip="清单中登记过的服务型引擎优先排列，支持 HTTP 真实握手探活">?</span></label>
           <select class="ctl sm" id="eng-code">${codeOpts || '<option value="">清单里还没有引擎</option>'}</select>
         </div>
         <div class="field-item">
-          <label>服务端点 URL</label>
+          <label>服务端点 URL <span class="help-tip" data-tip="标准格式：http://主机IP:端口号（例如 http://127.0.0.1:7860），不带额外路径与参数">?</span></label>
           <input class="ctl sm mono" id="eng-endpoint" maxlength="200" placeholder="http://127.0.0.1:7860">
         </div>
         <div class="field-item">
-          <label>实例显示名 <span class="hint">（可空）</span></label>
+          <label>实例显示名 <span class="help-tip" data-tip="用于多机协作部署时快速识别，留空默认使用引擎英文标识">?</span></label>
           <input class="ctl sm" id="eng-name" maxlength="80" placeholder="例如：M3 Max 本机服务">
         </div>
         <div class="field-item">
-          <label>共享密钥变量名 <span class="hint">（可空，从环境读）</span></label>
+          <label>共享密钥变量名 <span class="help-tip" data-tip="操作系统进程环境变量名（如 COMFYUI_SECRET）。密钥值永不存库，仅从环境读取；本机引擎留空即可">?</span></label>
           <input class="ctl sm mono" id="eng-secret" maxlength="60" placeholder="例如：COMFYUI_SECRET">
         </div>
         <div class="field-item span-full">
-          <label>备注说明 <span class="hint">（可空，记录用途、宿主机或换机原因）</span></label>
+          <label>备注说明 <span class="help-tip" data-tip="记录此实例的用途、宿主机硬件型号或换机历史归档原因">?</span></label>
           <div class="field-action-row">
             <input class="ctl sm" id="eng-note" maxlength="300" placeholder="备注：这台是谁的、为什么换机、部署在哪台宿主机">
             <button class="btn sm primary" id="eng-add">＋ 确认登记</button>
           </div>
         </div>
       </div>
-    </div>
-
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" title="端点连同引擎 code 是这一行的键，要换机器请新建一条再停旧的，否则历史作业的「当时打的是哪台」就说不清了。非服务型那几档也能登记（给远程执行器留位置），但暂时没有探测分支。">
-        <b>端点改不了</b>——换机器请新建一条再停旧的，否则历史作业说不清打的是哪台。</p>
-      <p class="note" title="探测与执行都只写了 HTTP 那一条路。把它们摆进下拉等于给一个选进去看不到任何行为的选项，所以接口直接拒。库里若有历史行用了别的值，这一屏照样列出，状态写「探测未实现」，不拿一次 HTTP 的失败冒充它的结论。">
-        <b>连接方式只有 <code>local_http</code> 可选</b>——<code>grpc</code>／<code>cli</code> 的探测与执行分支还没写。</p>
     </div>
   </div>`;
 }
