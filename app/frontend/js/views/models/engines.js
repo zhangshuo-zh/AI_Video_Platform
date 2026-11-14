@@ -179,32 +179,32 @@ export function slotParamDisplay(r, adapter) {
     return `<div class="mc-param-flow"><span class="mc-flow-hint">选择引擎后配置</span></div>`;
   }
 
-  let pillsHtml = '';
+  let pillHtml = '';
   if (paramCount > 0) {
-    const topParams = params.slice(0, 3);
-    pillsHtml = topParams.map((p) => {
-      let valStr = '';
-      if (p.default !== null && p.default !== undefined) {
-        valStr = `=${p.default}`;
-      } else if (p.min !== undefined && p.max !== undefined) {
-        valStr = `:${p.min}—${p.max}`;
-      }
-      const title = [p.name, p.type, valStr, p.note || ''].filter(Boolean).join(' · ');
-      return `<span class="mc-chip-mini" data-toggle-slot="${r.id}" title="${escapeHtml(title)}"><span class="k">${escapeHtml(p.name)}</span>${valStr ? `<span class="v">${escapeHtml(valStr)}</span>` : ''}</span>`;
-    }).join('');
+    // 选出第 1 个最具代表性的核心参数，保证在保留的列宽内 100% 完整显示不截断
+    const p = params[0];
+    let valStr = '';
+    if (p.default !== null && p.default !== undefined) {
+      valStr = `=${p.default}`;
+    } else if (p.min !== undefined && p.max !== undefined) {
+      valStr = `:${p.min}—${p.max}`;
+    }
+    const shortName = p.name.replace(/^max_/, '').replace(/^prompt_/, '');
+    const title = [p.name, p.type, valStr, p.note || ''].filter(Boolean).join(' · ');
+    pillHtml = `<span class="mc-chip-mini" data-toggle-slot="${r.id}" title="${escapeHtml(title)}"><span class="k">${escapeHtml(shortName)}</span>${valStr ? `<span class="v">${escapeHtml(valStr)}</span>` : ''}</span>`;
   }
 
-  const badgeHtml = `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="${paramCount > 0 ? `该模型支持 ${paramCount} 项参数配置，点击展开/收起` : '点击查看配置与参数详情'}">${paramCount > 0 ? `⚙ ${paramCount}项参数 ${isOpen ? '▴' : '▾'}` : `⚙ 详情 ${isOpen ? '▴' : '▾'}`}</button>`;
+  const badgeHtml = `<button type="button" class="btn xs ghost mc-param-badge" data-toggle-slot="${r.id}" title="${paramCount > 0 ? `支持 ${paramCount} 项参数配置，点击展开全部` : '点击查看配置与参数详情'}">${paramCount > 0 ? `⚙ ${paramCount}项 ${isOpen ? '▴' : '▾'}` : `⚙ 详情 ${isOpen ? '▴' : '▾'}`}</button>`;
 
   if (paramCount === 0 && adapter) {
     return `<div class="mc-param-flow">
-      <span class="mc-flow-hint" data-toggle-slot="${r.id}" style="cursor:pointer" title="该模型无需额外调参，开箱即用；点击可查看密钥与环境详情">⚡ 开箱即用</span>
+      <span class="mc-flow-hint" data-toggle-slot="${r.id}" style="cursor:pointer" title="该模型开箱即用；点击可查看密钥与环境详情">⚡ 开箱即用</span>
       ${badgeHtml}
     </div>`;
   }
 
   return `<div class="mc-param-flow">
-    ${pillsHtml}
+    ${pillHtml}
     ${badgeHtml}
   </div>`;
 }
@@ -346,8 +346,8 @@ export function pageEngines() {
       <colgroup>
         <col style="width:64px">
         <col style="width:72px">
-        <col style="width:520px">
-        <col style="width:440px">
+        <col style="width:580px">
+        <col style="width:380px">
         <col style="width:44px">
         <col style="width:44px">
       </colgroup>
