@@ -167,13 +167,27 @@ export default {
     return `
     <section class="view on">
       <div class="page-head">
-        <h1>模型中心</h1>
-        <p>模型登记、引擎真相、调用策略与运行概览；选路与排队仍归生成中心</p>
+        <div class="page-title-wrap">
+          <h1>模型中心</h1>
+          <span class="help-tip lg">
+            <span class="help-icon">?</span>
+            <span class="tip-pop tip-right">
+              <span class="tip-title">模型中心定位与核心硬边界</span>
+              <div class="tip-desc">模型登记、引擎真相、调用策略与运行概览；选路、排队与作业事实仍归生成中心。</div>
+              <ul class="tip-list">
+                <li><b>四层信息架构</b>：规格住代码（清单只读）、登记管机器实例、选型定默认轨（能力轨打勾）、证据重验证（真实调用）。</li>
+                <li><b>默认轨唯一来源</b>：引擎管理中打勾项为默认执行轨；调用策略的建议轨与备用轨仅作参考，不改默认。</li>
+                <li><b>绝不自动降级</b>：本地失败绝不自动转云端，避免意外产生账单；云端视频需逐镜头显式另选。</li>
+                <li><b>验证分离原则</b>：健康只反映环境齐不齐；验证必须具备真实调用或产物验收凭据方达生产可用。</li>
+              </ul>
+            </span>
+          </span>
+        </div>
         <div class="right">
           ${subChipRow(SUBS, sub)}
           <!-- 「查看运行异常」原来在这儿，做的事只是 setSub(3)，等于一颗跳转链接。
                跳转不该占页头一等位置，已挂到概览卡「任务」那格的可点数字上。 -->
-          <button class="btn" id="mc-check-all" title="现查一次服务型引擎，再逐条跑环境检查">检查引擎连接</button>
+          <button class="btn" id="mc-check-all">检查引擎连接</button>
           <button class="btn primary" id="mc-add">登记模型</button>
         </div>
       </div>

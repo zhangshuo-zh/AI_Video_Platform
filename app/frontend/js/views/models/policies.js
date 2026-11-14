@@ -99,8 +99,22 @@ export function pagePolicies() {
   return `
   <div class="card">
     <div class="card-head">
-      <h2>任务调用策略</h2>
-      <span class="sub">场景 → 必需能力 → 建议轨 / 偏好 / 备用轨</span>
+      <div style="display:flex;align-items:center">
+        <h2>任务调用策略</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">任务调用策略运行规范</span>
+            <div class="tip-desc">九个任务场景的建议轨、偏好与备用轨推荐映射规则。</div>
+            <ul class="tip-list">
+              <li><b>保存只改配置</b>：保存仅更新业务策略推荐配置，绝不会启动推理任务。</li>
+              <li><b>不改写默认轨</b>：策略推荐绝不会覆盖默认轨，默认轨的唯一来源始终是「引擎管理」能力轨打勾项。</li>
+              <li><b>备用轨不自动顶上</b>：<code>no_auto_fallback = ${String(cache.policies.no_auto_fallback)}</code>。默认轨不可用时，绝不悄悄转路线扣费，须通过「看候选」人工改选。</li>
+              <li><b>候选范围限定</b>：候选仅从「模型仓库」已登记的档位中筛选，未登记的不是可选项。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right"><button class="btn primary" id="save-policies">保存策略</button></span>
     </div>
     <div class="table-wrap">
@@ -110,13 +124,7 @@ export function pagePolicies() {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="modal-err" id="policy-error"></p>
-      <p class="note" title="保存只改配置、不启动任务；也不会把建议轨写成默认轨，默认轨的唯一来源是「引擎管理」那张能力轨表。候选只从「模型仓库」已登记的档里出，没登记的不是可选项。">
-        <b>保存只改配置。</b>
-        <b>备用轨不自动顶上</b>（<code>no_auto_fallback</code> ＝ ${String(cache.policies.no_auto_fallback)}）——
-        默认轨不行时用「看候选」人工改选，而不是悄悄换路花钱。</p>
-    </div>
+    <div class="card-body" style="padding:0 16px"><p class="modal-err" id="policy-error" style="margin:4px 0"></p></div>
   </div>`;
 }
 

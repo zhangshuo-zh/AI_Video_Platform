@@ -130,8 +130,21 @@ function liveCards() {
 
   return `
   <div class="card mb-card" >
-    <div class="card-head"><h2>队列与 worker</h2>
-      <span class="sub">现读 <code>/api/worker/status</code>，与生成中心同一个口径；这一页不开第二条队列</span>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>队列与 worker</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">队列与 Worker 运行事实</span>
+            <div class="tip-desc">实时读取 <code>/api/worker/status</code>，与生成中心保持完全同一口径。</div>
+            <ul class="tip-list">
+              <li><b>不开第二套队列</b>：模型中心只做真相观测，排队与调度权威归生成中心。</li>
+              <li><b>双通道实时探活</b>：显示当前作业与等待数，离线或挂死时及时预警。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right">
         <span class="chip ${w.online ? 'green' : 'gray'}">${w.online ? 'worker 在线' : 'worker 未接入'}</span>
       </span>
@@ -155,8 +168,22 @@ function liveCards() {
   </div>
 
   <div class="card mb-card" >
-    <div class="card-head"><h2>告警</h2>
-      <span class="sub">判定与处置分开：这里只说哪里不对，取消与重试仍回生成中心做</span></div>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>告警</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">告警观测与处置原则</span>
+            <div class="tip-desc">判定与处置严格分离：这里只展示异动告警，取消与重试仍回生成中心做。</div>
+            <ul class="tip-list">
+              <li><b>判定与处置分离</b>：模型中心仅陈述异常指标（队列积压、探活失败、并发冲突）。</li>
+              <li><b>处置主权</b>：任务重试、作业撤销等业务操作请前往生成中心发起。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
+    </div>
     <div class="card-body">
       ${alerts ? `<ul class="hint flush" >${alerts}</ul>`
               : '<p class="note flush" >现在没有告警。</p>'}
@@ -172,35 +199,60 @@ export function pageMonitor() {
   <div id="mc-live">${liveCards()}</div>
 
   <div class="card mb-card" >
-    <div class="card-head"><h2>模型维度</h2>
-      <span class="sub">登记 ${s.registered_total} · 可用 ${s.available_total} · 需要看一眼 ${s.needs_attention}</span></div>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>模型维度</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">模型维度监控边界</span>
+            <div class="tip-desc">登记 ${s.registered_total} · 可用 ${s.available_total} · 需要看一眼 ${s.needs_attention}。</div>
+            <ul class="tip-list">
+              <li><b>按 provider/model 聚合成本</b>：暂不支持（cost_summary 当前按币种×能力×状态聚合）。</li>
+              <li><b>按时间范围筛选</b>：暂不支持（列表接口仅支持 limit，全仓暂无 since/date_from 参数）。</li>
+              <li><b>分档执行耗时</b>：暂不支持（仅记录单条作业耗时，无分位数统计）。</li>
+              <li><b>成本唯一出口</b>：云端调用次数与金额权威出口在生成中心成本账，本页不另行核算。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
+    </div>
     <div class="card-body">
       <p class="note" style="margin:0 0 8px"><b>下面三件事本轮做不到，如实标出来，不拿估算填</b>：</p>
       <div class="param-chips">
-        <span class="chip amber" title="cost_summary 现在只按 currency × capability × 状态聚合">按 provider/model 聚合成本：不支持</span>
-        <span class="chip amber" title="列表接口只有 limit，全仓没有 since/date_from">按时间范围筛选：不支持</span>
-        <span class="chip amber" title="只有单条 job.elapsed_ms，没有 AVG/分位">分档执行耗时：不支持</span>
+        <span class="chip amber">按 provider/model 聚合成本：不支持</span>
+        <span class="chip amber">按时间范围筛选：不支持</span>
+        <span class="chip amber">分档执行耗时：不支持</span>
       </div>
-      <p class="hint" style="margin-top:10px"
-         title="这三项各要改一处后端（成本聚合维度、列表参数、耗时统计），属于 P1。云端调用次数与金额的权威出口是生成中心的成本账（§1 不变量：成本只有一个出口）。">
+      <p class="hint" style="margin-top:10px">
         三项都要改后端，属 P1。云端次数与金额只看生成中心的成本账，这一页不另算。</p>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>最近验证留痕</h2>
-      <span class="sub">只追加不改；密钥值不进记录</span>
-      <span class="right">${validationPager()}</span></div>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>最近验证留痕</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">验证记录留痕规范</span>
+            <div class="tip-desc">仅支持真实调用或产物验收记录追加，只增不改，确保审计凭据真实。</div>
+            <ul class="tip-list">
+              <li><b>只增不改</b>：验证记录属于防篡改证据链，不能修改或跳号。</li>
+              <li><b>安全合规</b>：真实密钥与密码绝不进入验证记录，仅记录出处类型与校验结论。</li>
+              <li><b>游标翻页</b>：每次最多返回 ${HISTORY_PAGE} 条，翻旧账通过「更早」按钮基于游标推进。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
+      <span class="right">${validationPager()}</span>
+    </div>
     <div class="table-wrap"><table>
       <thead><tr><th>出处</th><th>结果</th><th>槽位</th><th>作业</th><th>说明</th><th>时间</th></tr></thead>
       <tbody id="mc-val-rows">${(cache.validations?.items || []).map(valRow).join('')
         || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
     </table></div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note flush" >这一页是**一页**：接口一次最多回 ${HISTORY_PAGE} 条，
-        翻旧账走「更早」那颗按钮——用上一页最后一条的 id 往前切，不跳号也不重复。
-        更早的记录不是被删了，只是没往这一屏搬。</p>
-    </div>
   </div>`;
 }
 
@@ -270,8 +322,21 @@ function workerProcessCard() {
 
   return `
   <div class="card mb-card">
-    <div class="card-head"><h2>worker 进程</h2>
-      <span class="sub">从这里启停后台干活的进程；与 <code>./run.sh worker</code> 是同一个入口</span>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>worker 进程</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">Worker 进程与守护规范</span>
+            <div class="tip-desc">启停后台执行作业的 worker 进程；与 <code>./run.sh worker</code> 是同一个入口。</div>
+            <ul class="tip-list">
+              <li><b>进程独立性</b>：API 重启不会影响运行中的 worker 进程（独立会话）。</li>
+              <li><b>看门狗守护</b>：开启守护后，worker 异常崩溃退出时看门狗将自动拉起补齐。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right">${status}</span>
     </div>
     <div class="card-body">
@@ -488,8 +553,21 @@ function concurrencyCard() {
 
   return `
   <div class="card mb-card">
-    <div class="card-head"><h2>并发设置</h2>
-      <span class="sub">同时最多跑几条作业。改完 worker 下一轮就按新值领活，不用重启</span>
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>并发设置</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">Worker 并发控制规则</span>
+            <div class="tip-desc">控制同时最多运行的作业条数。改完 worker 下一轮自动按新值领活。</div>
+            <ul class="tip-list">
+              <li><b>免重启生效</b>：保存后 worker 下一次领活时立即生效，无需重启进程。</li>
+              <li><b>资源防爆</b>：依据本机实测峰值内存测算推荐上限，防止显存与内存打满。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right">
         <span class="chip ${ui.chip}">${escapeHtml(ui.label)}</span>
       </span>

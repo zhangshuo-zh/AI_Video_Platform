@@ -820,21 +820,29 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .btn-revert-pick:active{transform:scale(.95)}
 .btn-revert-pick .revert-icon{display:inline-block;transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
 .btn-revert-pick:hover .revert-icon{transform:rotate(-45deg)}
-/* ---------- 通用问号提示微控件（Help Tooltip） ---------- */
+/* ---------- 通用问号提示微控件（Help Tooltip） ----------
+ * 视觉交互准则：
+ * 1. 采用 cursor:pointer，严禁使用 cursor:help 以免在 macOS/Win 触发突兀的系统问号光标
+ * 2. 悬停无跳跃感：不使用 transform:scale 突兀缩放，仅平滑点亮边框与背景
+ * 3. 浮层采用暗金毛玻璃质感，支持微色标标题、条目化清单、代码片段与引导说明
+ */
+.page-title-wrap{display:inline-flex;align-items:center;min-height:34px;vertical-align:middle}
 .help-tip{
   display:inline-flex;align-items:center;justify-content:center;position:relative;
-  width:15px;height:15px;border-radius:50%;border:1px solid var(--line);
-  background:var(--field);color:var(--ink-3);font-size:10px;font-family:var(--font-sans,system-ui);
-  font-weight:700;cursor:help;vertical-align:middle;line-height:1;user-select:none;
-  transition:all var(--fast);margin-left:6px;flex-shrink:0;
+  width:16px;height:16px;border-radius:50%;border:1px solid var(--line-strong);
+  background:var(--field);color:var(--ink-2);font-size:10.5px;font-family:var(--font-sans,system-ui);
+  font-weight:600;cursor:pointer;vertical-align:middle;line-height:1;user-select:none;
+  transition:border-color var(--fast),color var(--fast),background var(--fast),box-shadow var(--fast),opacity var(--fast);
+  margin-left:6px;flex-shrink:0;opacity:.8;
 }
+.help-tip.lg{width:18px;height:18px;font-size:11.5px;margin-left:8px}
 .help-tip:hover{
-  border-color:var(--accent);color:var(--accent);background:var(--accent-tint);
-  box-shadow:0 0 8px var(--accent-tint);transform:scale(1.08);
+  opacity:1;border-color:var(--accent);color:var(--accent);background:var(--accent-tint);
+  box-shadow:0 0 6px var(--accent-tint);
 }
 .help-tip .tip-pop{
   position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%) translateY(-4px);
-  padding:10px 14px;width:max-content;max-width:340px;background:var(--sheet,#1a1a20);
+  padding:12px 14px;width:max-content;max-width:380px;background:var(--sheet,#1a1a20);
   color:var(--ink);font-size:11.5px;font-weight:normal;line-height:1.6;border-radius:8px;
   border:1px solid var(--line-strong);box-shadow:var(--sh-pop,0 8px 28px rgba(0,0,0,0.45));
   pointer-events:none;opacity:0;visibility:hidden;
@@ -849,14 +857,15 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .help-tip .tip-pop::after{content:'';position:absolute;bottom:100%;left:14px;border:5px solid transparent;border-bottom-color:var(--sheet,#1a1a20)}
 .help-tip .tip-pop:not(.tip-right)::after{left:50%;transform:translateX(-50%)}
 .help-tip .tip-pop.tip-up::after{bottom:auto;top:100%;border-bottom-color:transparent;border-top-color:var(--sheet,#1a1a20)}
-.tip-pop .tip-title{display:block;font-weight:700;font-size:12px;color:var(--accent);margin-bottom:6px;letter-spacing:.02em}
-.tip-pop .tip-list{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:4px}
+.tip-pop .tip-title{display:block;font-weight:700;font-size:12.5px;color:var(--accent);margin-bottom:6px;letter-spacing:.02em}
+.tip-pop .tip-desc{color:var(--ink-2);font-size:11.5px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px dashed var(--line);line-height:1.55}
+.tip-pop .tip-list{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:5px}
 .tip-pop .tip-list li{color:var(--ink-2);line-height:1.55}
 .tip-pop .tip-list li b{color:var(--ink);font-weight:600}
 .tip-pop code{font-family:var(--font-mono,monospace);font-size:11px;padding:1px 4px;border-radius:3px;background:rgba(255,255,255,0.08);color:var(--accent)}
 .help-tip[data-tip]:not(:has(.tip-pop))::before{
   content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;
-  transform:translateX(-50%) translateY(3px);padding:6px 10px;width:max-content;max-width:260px;
+  transform:translateX(-50%) translateY(3px);padding:6px 10px;width:max-content;max-width:280px;
   background:var(--sheet,#1a1a20);color:var(--ink);font-size:11px;font-weight:normal;line-height:1.5;
   border-radius:6px;border:1px solid var(--line-strong);box-shadow:var(--sh-pop,0 6px 20px rgba(0,0,0,0.4));
   pointer-events:none;opacity:0;visibility:hidden;

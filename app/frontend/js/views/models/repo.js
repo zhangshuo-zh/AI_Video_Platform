@@ -110,8 +110,24 @@ export function pageRepo() {
   return `
   <div class="card">
     <div class="card-head">
-      <h2>模型仓库</h2>
-      <span class="sub">清单 × 本机登记。规格住代码里，这里只登记实例</span>
+      <div style="display:flex;align-items:center">
+        <h2>模型仓库</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">模型仓库与登记说明</span>
+            <div class="tip-desc">清单 × 本机登记。规格住代码里，页面只维护机器实例。</div>
+            <ul class="tip-list">
+              <li><b>三种「缺东西」处置相反</b>：
+                <br>• <b>本机未登记</b>：点「登记模型」填入配置即可；
+                <br>• <b>清单无此档</b>：点多少次没用，要改 <code>adapters.py</code> 清单或撤登记；
+                <br>• <b>清单只有名字</b>：等适配器规格补齐，可先手动填模型标识。</li>
+              <li><b>登记与权重解耦</b>：登记不会下载权重，也不会启动推理服务。</li>
+              <li><b>安全撤登记</b>：撤登记只删除元数据登记行，磁盘权重完好保留，历史作业与验证记录不受影响。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
       <span class="right"><span class="hint" id="repo-count"></span></span>
     </div>
     <div class="card-body" style="padding-bottom:0">
@@ -139,13 +155,6 @@ export function pageRepo() {
           <th>状态 / 健康</th><th>操作</th></tr></thead>
         <tbody id="repo-rows">${rows}</tbody>
       </table>
-    </div>
-    <div class="card-body" style="border-top:1px solid var(--line)">
-      <p class="note" title="只列已登记的档，「装了不等于配了」就看不见，所以第二种照样列出来并用红徽章分开。登记不会下载权重，也不会启动推理。撤登记只删这一行，权重仍在盘上，历史作业与验证记录不动。">
-        <b>三种「缺东西」，处置相反：</b>
-        <b>本机未登记</b>＝点「登记」即可；
-        <b>清单无此档</b>＝点多少次没用，要改 <code>adapters.py</code> 或撤登记；
-        <b>清单只有名字</b>＝等规格补齐，先手填模型标识。</p>
     </div>
   </div>`;
 }

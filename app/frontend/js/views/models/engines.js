@@ -329,10 +329,11 @@ export function pageEngines() {
     <div class="card-head">
       <div style="display:flex;align-items:center">
         <h2>能力轨</h2>
-        <span class="help-tip" title="查看能力轨核心运行规则">
+        <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
             <span class="tip-title">能力轨核心运行规则</span>
+            <div class="tip-desc">五类能力 × 本地/云端十行选型配置；打勾行即系统默认执行轨。</div>
             <ul class="tip-list">
               <li><b>默认轨唯一来源</b>：打勾项为默认执行轨。云端视频只能逐镜头显式另选，不支持设为默认。</li>
               <li><b>绝不自动降级</b>：调用策略的建议轨与备用轨仅作参考；本地执行失败绝不会自动降级转云端，避免意外产生账单。</li>
@@ -377,10 +378,11 @@ export function pageEngines() {
     <div class="card-head">
       <div style="display:flex;align-items:center">
         <h2>引擎</h2>
-        <span class="help-tip" title="查看适配器引擎清单说明">
+        <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
             <span class="tip-title">适配器引擎清单说明</span>
+            <div class="tip-desc">代码库 <code>adapters.py</code> 适配器总表，属于事实规格层（只读）。</div>
             <ul class="tip-list">
               <li><b>数据来源</b>：代码库 <code>adapters.py</code> 适配器总表，属于事实规格层（只读）。</li>
               <li><b>参数核验状态</b>：标「已核验」代表官方 schema 参数与默认值经代码验证并自动预填；「未核验」仅透传自定义参数。</li>
@@ -891,12 +893,13 @@ export function engineInstancesCard() {
     <div class="card-head">
       <div style="display:flex;align-items:center">
         <h2>引擎实例</h2>
-        <span class="help-tip" title="查看引擎实例与端点管理规范">
+        <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
             <span class="tip-title">引擎实例与端点管理规范</span>
+            <div class="tip-desc">记录常驻服务运行的主机与端口（Draw Things、Ollama、ComfyUI 等）。</div>
             <ul class="tip-list">
-              <li><b>实例定义</b>：记录常驻服务运行的主机与端口（如 Draw Things、Ollama、ComfyUI）。健康状态每次现查，不落库。</li>
+              <li><b>实例定义</b>：记录常驻服务运行的主机与端口。健康状态每次现查，不落库。</li>
               <li><b>端点不可修改</b>：端点是实例历史作业绑定的核心业务主键；换机器请新建实例再停用旧实例，确保审计留痕准确。</li>
               <li><b>连接协议支持</b>：当前仅开放 <code>local_http</code> 协议探测与调用；gRPC 与 CLI 分支建设中。</li>
               <li><b>现查探活与启动</b>：服务掉线时点击「启动服务」可拉起本地进程并等待连接就绪，点击「探测」可实时探活。</li>
