@@ -215,7 +215,7 @@ export function slotParamBadge(r, adapter) {
 
 export function slotRow(r, providerLists) {
   const adapter = adapterOf(cache.manifest, r.capability, r.backend, r.provider);
-  const providers = providerLists[`${r.capability}|${r.backend}`];
+  const providers = providerLists[`${r.capability}|${r.backend}`] || [];
   const providerOptions = slotProviderOptions(r.capability, r.backend, r.provider, providers);
   const videoCloud = r.capability === 'video' && r.backend === 'cloud';
   const isLocalReady = r.backend === 'local' && (r.health?.state === 'ok' || r.health?.ok);
@@ -246,11 +246,73 @@ function slotModelPick(adapter, model) {
   return `<select class="ctl sm" data-f="model" aria-label="模型"><option value="">— 选择模型 —</option>${extra}${models.map((m) => `<option value="${escapeHtml(m.code)}"${m.code === model ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}</select>`;
 }
 
+// ---------------- 引擎拉起后的后台自动探活看门狗 (2026-11-14) ----------------
+// 用户拉起 ComfyUI 等服务后，通常需要手动选择工作流，服务端口（8188）才会正式就绪。
+// 在此期间由看门狗在后台进行非阻塞的周期性静默探活（最长 3 分钟窗口期），
+// 一旦检测到服务端口答话（ok），自动触发全页刷新点亮「就绪」并将主控大按钮切换为「🛑 关闭进程」。
+const activeWatchers = new Map();
+
+export function isEngineProbing(id) {
+  return activeWatchers.has(Number(id));
+}
+
+export function stopEngineWatchdog(id) {
+  const key = Number(id);
+  const w = activeWatchers.get(key);
+  if (w) {
+    clearTimeout(w.timerId);
+    activeWatchers.delete(key);
+  }
+}
+
+export function startEngineWatchdog(id, options = {}) {
+  const key = Number(id);
+  stopEngineWatchdog(key);
+
+  const maxDurationMs = options.maxDurationMs || 180000; // 最长 3 分钟窗口
+  const deadline = Date.now() + maxDurationMs;
+  let attempts = 0;
+
+  const tick = async () => {
+    if (Date.now() > deadline) {
+      stopEngineWatchdog(key);
+      alertNotify('自动探测已满 3 分钟。若服务已在应用内启动，请随时点击「探测」核对。', 'warn');
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+      return;
+    }
+    attempts++;
+    try {
+      const probe = await api.probeEngine(key);
+      if (probe && (probe.state === 'ok' || probe.ok)) {
+        stopEngineWatchdog(key);
+        const modelHint = probe.model ? `（已加载: ${probe.model}）` : '';
+        alertNotify(`🎉 服务已成功连通就绪！${modelHint}`, 'info');
+        if (typeof options.onProbeOk === 'function') {
+          try { options.onProbeOk(probe); } catch { /* ignore */ }
+        }
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+        return;
+      }
+    } catch {
+      // 端口未监听时拒绝连接属于启动中正常现象，静默等待下一次 tick
+    }
+
+    if (activeWatchers.has(key)) {
+      const interval = attempts < 10 ? 1500 : 2500;
+      const timerId = setTimeout(tick, interval);
+      activeWatchers.set(key, { deadline, timerId });
+    }
+  };
+
+  const timerId = setTimeout(tick, 1000);
+  activeWatchers.set(key, { deadline, timerId });
+}
+
 // 启动可能比后端的短等待慢；继续检查这一台，直到连接成功或等候期结束。
 // 使用实例探测接口取得真实状态，不能把 started 当成就绪。
 async function waitForStartedEngine(id, out, active, waiting) {
   if (!out?.started || out.reachable) return out;
-  const deadline = Date.now() + 60000;
+  const deadline = Date.now() + 12000;
   waiting();
   while (active() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -573,6 +635,8 @@ export function openProbeResults(payload, cloudRows) {
     } else if (it.can_control || it.launch_ready) {
       if (ok) {
         actBtn = `<button class="btn xs btn-stop-engine" data-probe-stop="${it.id}" title="关闭本机常驻服务物理进程（优雅退出）">🛑 关闭进程</button>`;
+      } else if (isEngineProbing(it.id)) {
+        actBtn = `<button class="btn xs btn-probing-engine" data-probe-probing="${it.id}" title="已拉起服务，后台正在持续自动探测中（最长3分钟）…点击可立即手动探测">⏳ 探测中…</button>`;
       } else {
         actBtn = `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}" title="${escapeHtml(it.launch_note || '拉起本地常驻服务物理进程并等待端口就绪')}">🚀 拉起进程</button>`;
       }
@@ -692,6 +756,7 @@ export function openProbeResults(payload, cloudRows) {
       });
     });
     bindLaunch();
+    bindProbing();
     bindStop();
   };
   const paint = () => paintWith(payload, cloudRows);
@@ -728,6 +793,39 @@ export function openProbeResults(payload, cloudRows) {
     finally { btn.disabled = false; }
   });
 
+  async function bindProbing() {
+    for (const btn of host.querySelectorAll('[data-probe-probing]')) {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.probeProbing;
+        btn.disabled = true;
+        btn.textContent = '探测中…';
+        try {
+          const probe = await api.probeEngine(id);
+          if (probe?.state === 'ok' || probe?.ok) {
+            stopEngineWatchdog(id);
+            payload = await api.engines();
+            if (!host.isConnected) return;
+            paintWith(payload);
+            host.querySelector('[data-probe-status]').textContent = '🎉 服务已连接就绪！';
+            window.dispatchEvent(new CustomEvent('app:refresh'));
+          } else {
+            host.querySelector('[data-probe-status]').textContent = `尚未连通：${probe?.detail || '端口未就绪'}，后台看门狗继续探测中…`;
+            if (host.isConnected) {
+              btn.disabled = false;
+              btn.textContent = '⏳ 探测中…';
+            }
+          }
+        } catch (e) {
+          host.querySelector('[data-probe-status]').textContent = `探测异常：${e.message}`;
+          if (host.isConnected) {
+            btn.disabled = false;
+            btn.textContent = '⏳ 探测中…';
+          }
+        }
+      });
+    }
+  }
+
   // 启动按钮的点击要绑在**这个弹窗自己**身上（2026-11-12 修）。
   // 它由这里 append 到 body、不在 #view-root 里，所以 mountEngineInstances
   // 里那次 root.querySelectorAll 永远选不到它——实测：按钮画得出来、
@@ -760,10 +858,31 @@ export function openProbeResults(payload, cloudRows) {
         btn.disabled = false;
         btn.textContent = label;
 
+        if (out?.reachable) {
+          stopEngineWatchdog(id);
+        } else if (out?.started) {
+          startEngineWatchdog(id, {
+            onProbeOk: async () => {
+              if (!host.isConnected) return;
+              try {
+                const fresh = await api.engines();
+                if (!host.isConnected) return;
+                payload = fresh;
+                paintWith(fresh);
+                host.querySelector('[data-probe-status]').textContent = '🎉 服务已连接就绪！';
+              } catch { /* ignore */ }
+            },
+          });
+        }
+
         // 屏内结论：把后端那句话原样写到这一屏底部，重画之后仍然保留。
         noticeLine = (err
           ? '启动失败：' + (err && err.message ? err.message : String(err))
-          : (out && out.message) || '已请求启动。')
+          : (out?.reachable
+              ? (out.message || '服务已连接，就绪。')
+              : (out?.started
+                  ? '🚀 服务已拉起，后台看门狗正在持续自动探测中（最长3分钟）。进入工作流后将自动就绪。'
+                  : (out && out.message) || '已请求启动。')))
           .replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
         // 重画要的是**全部实例**的新状态，而 launch 只回这一台，所以再取一次列表。
@@ -772,7 +891,7 @@ export function openProbeResults(payload, cloudRows) {
           if (!host.isConnected) return;
           payload = fresh;
           paintWith(fresh);
-          host.querySelector('[data-probe-status]').textContent = out?.reachable ? '服务已连接，就绪。' : '';
+          host.querySelector('[data-probe-status]').textContent = out?.reachable ? '服务已连接，就绪。' : (out?.started ? '已拉起，后台持续自动探测中…' : '');
           window.dispatchEvent(new CustomEvent('app:refresh'));
         } catch {
           paint();     // 取不到新数据就至少把结论行画出来
@@ -785,6 +904,7 @@ export function openProbeResults(payload, cloudRows) {
     for (const btn of host.querySelectorAll('[data-probe-stop]')) {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.probeStop;
+        stopEngineWatchdog(id);
         const label = btn.textContent;
         btn.disabled = true;
         btn.textContent = '关闭中…';
@@ -869,10 +989,16 @@ export function engineInstStatusCell(it) {
     }
   }
 
+  let probingLine = '';
+  if (isEngineProbing(it.id) && it.health_state !== 'ok') {
+    probingLine = '<div class="hint mono" style="color:var(--sky,#38bdf8);margin-top:2px">⏳ 后台自动探活中（连通后将自动点亮）…</div>';
+  }
+
   return `<div class="inst-status-wrap">
     <div class="inst-status-head">${badge}</div>
     ${modelLine}
     ${detailLine}
+    ${probingLine}
     ${probeHistoryLine(it)}
   </div>`;
 }
@@ -933,6 +1059,12 @@ export function engineInstancesCard() {
                       title="关闭本机常驻服务物理进程（优雅退出）">
                 <span class="ctrl-icon">🛑</span>
                 <span class="ctrl-label">关闭进程</span>
+              </button>
+            ` : isEngineProbing(it.id) ? `
+              <button type="button" class="btn-control-engine btn-probing-engine" data-act-probing="${it.id}"
+                      title="已拉起服务，后台正在持续自动探测中（最长 3 分钟）。连通后将自动点亮，点击可立即手动探测一次">
+                <span class="ctrl-icon rotating-spin">⏳</span>
+                <span class="ctrl-label">自动探测中…</span>
               </button>
             ` : `
               <button type="button" class="btn-control-engine btn-launch-engine" data-act-launch="${it.id}"
@@ -1401,15 +1533,44 @@ export function mountEngineInstances(root) {
       btn.innerHTML = label;
       btn.disabled = false;
       if (!ok || !out) { repaint(); return; }
-      // 无论成败都把后端那句话原样给出去：它已经分清了「起来了」与「能用了」。
-      alertNotify(out.message, out.reachable ? 'info' : 'warn');
+
+      if (out.reachable) {
+        stopEngineWatchdog(id);
+        alertNotify(out.message || '服务已连接，就绪。', 'info');
+      } else if (out.started) {
+        startEngineWatchdog(id);
+        alertNotify('🚀 服务已拉起！已进入后台持续自动探测（3分钟）。您在应用中进入工作流后，平台将自动连通并点亮状态，无需手动重复点击探测。', 'info');
+      } else {
+        alertNotify(out.message || '服务启动失败', 'err');
+      }
       repaint();
+    });
+  });
+
+  root.querySelectorAll('[data-act-probing]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.actProbing;
+      btn.disabled = true;
+      let out = null;
+      const ok = await run('即时探测', async () => {
+        out = await api.probeEngine(id);
+      });
+      btn.disabled = false;
+      if (!ok || !out) return;
+      if (out.state === 'ok' || out.ok) {
+        stopEngineWatchdog(id);
+        alertNotify(`🎉 连通就绪：${out.model || '（服务未报模型名）'} @ ${out.endpoint}`, 'info');
+        repaint();
+      } else {
+        alertNotify(`端口尚未响应：${out.detail}。后台看门狗将继续为您持续自动探测…`, 'warn');
+      }
     });
   });
 
   root.querySelectorAll('[data-act-stop]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.actStop;
+      stopEngineWatchdog(id);
       btn.disabled = true;
       const label = btn.innerHTML;
       btn.textContent = '关闭中…';
@@ -1427,14 +1588,18 @@ export function mountEngineInstances(root) {
   });
   root.querySelectorAll('[data-act-probe]').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      const id = btn.dataset.actProbe;
       btn.disabled = true;
       let out = null;
-      const ok = await run('探测', async () => { out = await api.probeEngine(btn.dataset.actProbe); });
+      const ok = await run('探测', async () => { out = await api.probeEngine(id); });
       btn.disabled = false;
       if (!ok || !out) return;
-      alertNotify(out.state === 'ok'
-        ? `连上了：${out.model || '（服务没报模型名）'} @ ${out.endpoint}`
-        : `没连上：${out.detail}`);
+      if (out.state === 'ok' || out.ok) {
+        stopEngineWatchdog(id);
+        alertNotify(`连上了：${out.model || '（服务没报模型名）'} @ ${out.endpoint}`, 'info');
+      } else {
+        alertNotify(`没连上：${out.detail}`);
+      }
       repaint();
     });
   });
@@ -1466,6 +1631,7 @@ export function mountEngineInstances(root) {
   root.querySelectorAll('[data-act-uninst]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.actUninst;
+      stopEngineWatchdog(id);
       const yes = await confirmDanger({
         title: '撤这一条实例登记',
         body: '只删端点这一行：应用、权重与历史作业一律不动，旧作业仍按当时冻结的快照可查。'

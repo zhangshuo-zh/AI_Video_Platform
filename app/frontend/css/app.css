@@ -1459,6 +1459,7 @@ input.ctl:disabled:hover,select.ctl:disabled:hover,textarea.ctl:disabled:hover{b
 .fv-pick-list{position:fixed;z-index:var(--z-pick);max-height:280px;overflow:auto;padding:4px;
   background:var(--field);border:1px solid var(--line-strong);border-radius:var(--r-ctl);
   box-shadow:var(--sh-pop)}
+:root[data-theme="night"] .fv-pick-list{background:#241f1b}
 .fv-pick-opt{overflow-wrap:anywhere;display:block;width:100%;padding:8px 10px;border:0;border-radius:6px;
   background:none;color:var(--ink);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
 .fv-pick-opt:hover{background:var(--accent-tint)}
@@ -2558,6 +2559,25 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   box-shadow:0 0 12px rgba(239,68,68,.35);transform:translateY(-1px);
 }
 
+/* 自动探活看门狗运行态（天青科技感呼吸光环与慢转沙漏） */
+.btn-control-engine.btn-probing-engine{
+  background:rgba(14,165,233,.12);border:1px solid rgba(14,165,233,.45);color:#38bdf8;
+  animation:pulse-probing 2s ease-in-out infinite;
+}
+.btn-control-engine.btn-probing-engine:hover{
+  background:rgba(14,165,233,.24);border-color:#38bdf8;color:#fff;
+  box-shadow:0 0 14px rgba(14,165,233,.38);transform:translateY(-1px);
+}
+@keyframes pulse-probing{
+  0%,100%{border-color:rgba(14,165,233,.45);box-shadow:0 0 0 rgba(14,165,233,0)}
+  50%{border-color:rgba(14,165,233,.9);box-shadow:0 0 10px rgba(14,165,233,.32)}
+}
+@keyframes spin-probing{
+  0%{transform:rotate(0deg)}
+  100%{transform:rotate(360deg)}
+}
+.rotating-spin{display:inline-block;animation:spin-probing 3s linear infinite}
+
 /* 外部服务无配方占位态（保障所有行高度网格 100% 对齐） */
 .btn-control-engine.btn-ctrl-placeholder{
   background:var(--subtle,rgba(128,128,128,.05));border:1px dashed var(--line);
@@ -2592,6 +2612,15 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .btn.xs.btn-stop-engine:hover{
   background:rgba(239,68,68,.22);border-color:#f87171;color:#fff;
   box-shadow:0 0 10px rgba(239,68,68,.35);
+}
+.btn.xs.btn-probing-engine{
+  background:rgba(14,165,233,.12);border:1px solid rgba(14,165,233,.45);color:#38bdf8;
+  padding:3px 9px;font-size:11px;font-weight:600;border-radius:5px;
+  animation:pulse-probing 2s ease-in-out infinite;
+}
+.btn.xs.btn-probing-engine:hover{
+  background:rgba(14,165,233,.24);border-color:#38bdf8;color:#fff;
+  box-shadow:0 0 10px rgba(14,165,233,.38);
 }
 
 /* 端点微胶囊与复制/打开链接（强制单行，彻底根治端口号折行） */
