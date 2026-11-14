@@ -926,28 +926,19 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   box-sizing:border-box;
 }
 
-/* 第一列上下两行文本规整排布：统一 12.5px 标题 + 11px mono 标识 */
+/* 第一列纯净业务标题规范（优雅垂直居中，去除冗余机器别名与代码键名） */
 .mc-slot-table td:first-child,
 .mc-adapter-table td:first-child,
 .policy td:first-child{
-  line-height:1.25;
-}
-.mc-slot-table td:first-child > div:first-child,
-.mc-adapter-table td:first-child > div:first-child,
-.policy td:first-child b{
-  font-size:12.5px;
-  font-weight:650;
+  font-size:13px;
+  font-weight:600;
   color:var(--ink);
-  display:block;
-  line-height:1.3;
+  white-space:nowrap;
+  line-height:1.4;
 }
-.mc-slot-table td:first-child .hint.mono,
-.mc-adapter-table td:first-child .hint.mono,
-.policy td:first-child .hint.mono{
-  font-size:11px;
-  color:var(--ink-3);
-  margin-top:2px;
-  line-height:1.2;
+.policy td:first-child b{
+  font-weight:650;
+  letter-spacing:-.01em;
 }
 
 /* 调用策略表格精雕（方案 C：规整行高律动、左侧琥珀聚焦流线与排版微雕） */

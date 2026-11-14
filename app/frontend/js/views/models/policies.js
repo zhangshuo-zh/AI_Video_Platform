@@ -80,8 +80,7 @@ export function pagePolicies() {
     const cur = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
     const fb = p.fallback_provider ? `${p.fallback_provider}|${p.fallback_model}` : '';
     return `<tr class="policy" data-key="${escapeHtml(p.scene_key)}">
-      <td><b>${escapeHtml(p.scene_label || p.scene_key)}</b>
-        <div class="hint mono">${escapeHtml(p.scene_key)}</div></td>
+      <td class="policy-scene-cell" title="底层标识：${escapeHtml(p.scene_key)}"><b>${escapeHtml(p.scene_label || p.scene_key)}</b></td>
       <td><span class="chip cap-${escapeHtml(p.capability)}">${escapeHtml(p.capability_label)}</span></td>
       <td><div class="mc-req-group">${requiredPicker(p)}</div></td>
       <td class="policy-slot-col"><select class="ctl sm policy-slot-pick" data-f="slot">

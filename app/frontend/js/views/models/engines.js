@@ -222,10 +222,7 @@ export function slotRow(r, providerLists) {
   const backendCls = r.backend === 'local' ? (isLocalReady ? 'local-ready' : 'plain') : 'blue';
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
-    <td class="t-strong">
-      <div>${escapeHtml(r.capability_label)}</div>
-      <div class="hint mono">${escapeHtml(r.capability)}</div>
-    </td>
+    <td class="t-strong" title="能力标识：${escapeHtml(r.capability)}">${escapeHtml(r.capability_label)}</td>
     <td><span class="chip chip-backend ${backendCls}">${r.backend_label}</span></td>
     <td><div class="mc-picks">
         <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
@@ -331,10 +328,7 @@ async function waitForStartedEngine(id, out, active, waiting) {
 export function slotCollapsed(r) {
   if (emptyOpen.has(r.id)) return slotRow(r, {});
   return `<tr class="mc-collapsed" data-empty-for="${r.id}">
-    <td class="t-strong">
-      <div>${escapeHtml(r.capability_label)}</div>
-      <div class="hint mono">${escapeHtml(r.capability)}</div>
-    </td>
+    <td class="t-strong" title="能力标识：${escapeHtml(r.capability)}">${escapeHtml(r.capability_label)}</td>
     <td><span class="chip chip-backend plain">${r.backend_label}</span></td>
     <td colspan="4">未配置 · <button class="mc-open" data-open-empty="${r.id}">去配置</button></td>
   </tr>`;
@@ -378,8 +372,7 @@ export function pageEngines() {
       return `<span class="chip chip-backend blue">${b === 'cloud' ? '云端' : b}</span>`;
     }).join(' ');
     return `<tr>
-      <td class="t-strong">${escapeHtml(list[0].label)}
-        <div class="hint mono">${escapeHtml(code)}</div></td>
+      <td class="t-strong" title="引擎代码：${escapeHtml(code)}">${escapeHtml(list[0].label)}</td>
       <td>${backendChips}</td>
       <td><span class="hint">${[...new Set(list.map((a) => capLabel[a.capability] || a.capability))].join(' · ')}</span></td>
       <td class="c">${tiers || '<span class="chip amber">只登记名字</span>'}</td>
@@ -395,7 +388,7 @@ export function pageEngines() {
      后者带一个「去配置」。共用一个类的话，"未接入行没有可点按钮"这条断言
      会被折叠行里的按钮判成假——上一轮就是这么撞上的。 */
   const unintegrated = (cache.catalog.unintegrated_engines || []).map((e) => `<tr class="mc-offline">
-    <td class="t-strong">${escapeHtml(e.label)}<div class="hint mono">${escapeHtml(e.code)}</div></td>
+    <td class="t-strong" title="引擎代码：${escapeHtml(e.code)}">${escapeHtml(e.label)}</td>
     <td><span class="chip gray">${escapeHtml(e.kind)}</span></td>
     <td colspan="3"><span class="hint">${escapeHtml(e.note)}</span></td>
     <td><span class="chip gray">未接入</span></td>
@@ -1161,9 +1154,9 @@ export function engineInstancesCard() {
                             : '<span class="chip amber">变量没值</span>'}`
       : '<span class="hint">—</span>';
     return `<tr class="engine-inst" data-inst="${it.id}">
-      <td class="t-strong">${escapeHtml(name)}
-        <div class="hint mono">${escapeHtml(it.engine_code)}${
-          engine && !engine.served ? ' · 非服务型' : ''}</div></td>
+      <td class="t-strong" title="引擎标识：${escapeHtml(it.engine_code)}">
+        ${escapeHtml(name)}${engine && !engine.served ? '<span class="chip xs gray" style="margin-left:5px;font-size:10px;vertical-align:middle">非服务型</span>' : ''}
+      </td>
       <td>
         <div class="inst-endpoint-cell">
           <code class="mono endpoint-text">${escapeHtml(it.endpoint)}</code>
