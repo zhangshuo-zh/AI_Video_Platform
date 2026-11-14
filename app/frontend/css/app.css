@@ -232,8 +232,14 @@
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
+/* 视口滚动条槽位绝对常驻（根治跨页面内容长短不一导致右侧滚动条显隐产生的页面横向跳动与漂移） */
+html{
+  height:100%;
+  overflow-y:scroll;
+  scrollbar-gutter:stable;
+}
 body{
+  min-height:100%;
   color:var(--ink);
   background:var(--page-art), var(--bg);
   background-attachment:fixed;
