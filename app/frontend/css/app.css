@@ -801,9 +801,16 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    并列之后主表只留会互相挤的六列，长内容（参数 chips、清单出处、备注、密钥）
    全进横跨整表的备注带。 */
 .mc-picks{display:flex;gap:8px;align-items:center;flex-wrap:nowrap;width:100%;overflow:hidden}
-.mc-picks > .ctl,
-.mc-picks > .fv-pick,
-.mc-picks > .mc-manual-provider{flex:0 0 200px !important;width:200px !important;min-width:200px !important;max-width:200px !important;box-sizing:border-box}
+.mc-picks > .fv-pick{overflow:hidden;border-radius:var(--r-ctl)}
+/* 第一个控件（引擎 Provider）：保持 192px 充足宽度 */
+.mc-picks > select:first-child,
+.mc-picks > .fv-pick:first-child,
+.mc-picks > .mc-manual-provider{flex:0 0 192px !important;width:192px !important;min-width:192px !important;max-width:192px !important;box-sizing:border-box}
+/* 第二个控件（模型 Model）：放宽至 228px，为长模型名（如 FLUX.1 schnell 等）提供充裕展示空间并对齐小箭头 */
+.mc-picks > select:nth-child(2),
+.mc-picks > .fv-pick:nth-child(2),
+.mc-picks > select[data-f="model"],
+.mc-picks > input[data-f="model"]{flex:0 0 228px !important;width:228px !important;min-width:228px !important;max-width:228px !important;box-sizing:border-box}
 .mc-manual-provider{display:flex;align-items:center;gap:4px;position:relative}
 .mc-manual-provider input.ctl{flex:1 1 auto;min-width:0;width:auto}
 .mc-pick-extra{flex:1 1 auto;min-width:0;display:inline-flex;align-items:center;overflow:hidden;margin-left:4px}
@@ -1399,13 +1406,16 @@ input.ctl:disabled:hover,select.ctl:disabled:hover,textarea.ctl:disabled:hover{b
    绘制，color-scheme 管不到它，只能换成按钮＋浮层。 */
 .fv-pick{position:relative;display:block;width:100%}
 .fv-pick>select.ctl{display:none}
-.fv-pick-btn{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-ctl);
-  background:var(--field);color:var(--ink);font:inherit;font-size:13px;text-align:left;
-  cursor:pointer;transition:border-color var(--fast)}
-.fv-pick-btn::after{content:'';flex:none;width:7px;height:7px;
+.fv-pick-btn{display:block;position:relative;width:100%;
+  padding:6px 26px 6px 10px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--field);color:var(--ink);font:inherit;font-size:12.5px;text-align:left;
+  cursor:pointer;transition:border-color var(--fast);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  box-sizing:border-box;line-height:1.45}
+.fv-pick-btn::after{content:'';position:absolute;right:10px;top:50%;
+  width:6.5px;height:6.5px;
   border-right:1.5px solid var(--ink);border-bottom:1.5px solid var(--ink);
-  transform:rotate(45deg) translateY(-2px);opacity:.7}
+  transform:translateY(-65%) rotate(45deg);opacity:.7;pointer-events:none}
 .fv-pick-btn:hover{border-color:var(--line-hover)}
 .fv-pick-btn:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .fv-pick-btn:disabled{opacity:.55;cursor:not-allowed}

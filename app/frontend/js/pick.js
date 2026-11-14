@@ -157,6 +157,8 @@ export function enhanceSelect(sel) {
   const sync = () => {
     const opt = sel.options[sel.selectedIndex];
     btn.textContent = opt ? opt.textContent : '';
+    if (opt?.textContent) btn.title = opt.textContent;
+    else btn.removeAttribute('title');
     btn.disabled = sel.disabled;
     const label = sel.getAttribute('aria-label');
     if (label) btn.setAttribute('aria-label', label);
