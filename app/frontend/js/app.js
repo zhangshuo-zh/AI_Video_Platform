@@ -663,28 +663,98 @@ function setupPalette() {
 
 const THEME_KEY = 'fv.theme';
 
-function paintThemeButtons(theme) {
-  const now = theme === 'night' ? '夜间（暗金片场）' : '白天（极光玻璃）';
-  const to = theme === 'night' ? '白天' : '夜间';
+function getSystemIsDark() {
+  try {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch {
+    const h = new Date().getHours();
+    return !(h >= 6 && h < 18);
+  }
+}
+
+function updateThemeTooltips(theme, mode) {
+  let title = '';
+  if (mode === 'auto') {
+    const sysText = theme === 'night' ? '深色 · 暗金片场' : '浅色 · 极光玻璃';
+    title = `当前：跟随系统（${sysText}） · 点击切到${theme === 'night' ? '白天' : '夜间'}模式`;
+  } else if (mode === 'day') {
+    title = '当前：锁定浅色（白天 · 极光玻璃） · 点击切到夜间模式';
+  } else {
+    title = '当前：锁定深色（夜间 · 暗金片场） · 点击恢复跟随系统';
+  }
   document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
-    const text = `当前：${now} · 点击切到${to}`;
-    btn.title = text;
-    btn.setAttribute('aria-label', text);
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
   });
+}
+
+function applyTheme(targetTheme, targetMode) {
+  const root = document.documentElement;
+  root.dataset.theme = targetTheme;
+  root.dataset.themeMode = targetMode;
+
+  if (targetTheme === 'night') applyPicks(); else restorePicks();
+
+  try {
+    if (targetMode === 'auto') {
+      localStorage.removeItem(THEME_KEY);
+    } else {
+      localStorage.setItem(THEME_KEY, targetMode);
+    }
+  } catch { /* 禁用存储时切完这次仍然生效 */ }
+
+  updateThemeTooltips(targetTheme, targetMode);
 }
 
 function setupTheme() {
   const root = document.documentElement;
-  paintThemeButtons(root.dataset.theme || 'day');
+  let mode = root.dataset.themeMode || 'auto';
+  let theme = root.dataset.theme || (getSystemIsDark() ? 'night' : 'day');
+
+  applyTheme(theme, mode);
+
+  // 1. 动态监听操作系统深色/浅色偏好变动（系统切换外观时实时联动）
+  if (window.matchMedia) {
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemChange = (e) => {
+      let curMode = 'auto';
+      try { curMode = localStorage.getItem(THEME_KEY) || 'auto'; } catch { /* ignore */ }
+      if (curMode === 'auto') {
+        const nextTheme = e.matches ? 'night' : 'day';
+        applyTheme(nextTheme, 'auto');
+      }
+    };
+    if (mql.addEventListener) {
+      mql.addEventListener('change', handleSystemChange);
+    } else if (mql.addListener) {
+      mql.addListener(handleSystemChange);
+    }
+  }
+
+  // 2. 按钮点击支持智能三态循环：跟随系统 -> 反色模式 -> 另一模式 -> 跟随系统
   document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const next = root.dataset.theme === 'night' ? 'day' : 'night';
-      root.dataset.theme = next;
-      // 夜间的原生 select 弹层是系统菜单，深色主题管不到它；切过去就把下拉换成自绘的。
-      if (next === 'night') applyPicks(); else restorePicks();
-      // 手动选过一次，就别再跟着时钟走：他要的不是"按时间"
-      try { localStorage.setItem(THEME_KEY, next); } catch { /* 禁用存储时切完这次仍然生效 */ }
-      paintThemeButtons(next);
+      const curMode = root.dataset.themeMode || 'auto';
+      let nextMode = 'day';
+      let nextTheme = 'day';
+
+      if (curMode === 'auto') {
+        if (root.dataset.theme === 'day') {
+          nextMode = 'night';
+          nextTheme = 'night';
+        } else {
+          nextMode = 'day';
+          nextTheme = 'day';
+        }
+      } else if (curMode === 'day') {
+        nextMode = 'night';
+        nextTheme = 'night';
+      } else {
+        nextMode = 'auto';
+        nextTheme = getSystemIsDark() ? 'night' : 'day';
+      }
+
+      applyTheme(nextTheme, nextMode);
     });
   });
 }

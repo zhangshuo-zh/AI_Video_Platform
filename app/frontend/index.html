@@ -6,15 +6,24 @@
 <title>AI 视频生产平台</title>
 <!-- 主题要在样式表生效前定下来。app.js 是 type=module，要等整页解析完才跑，
      那之前会先按默认主题画一帧——晚上打开就闪一下白。
-     规则只有一条：手动选过就听他的，没选过按本机小时（6—18 点算白天）。
+     规则：手动锁定过（day/night）听用户的；未选或 auto 则智能跟随操作系统外观
+     （prefers-color-scheme: dark，老旧环境回退到 6—18 点算白天）。
      键名和 js/app.js 里写主题的那处是同一个，改一处要改两处。 -->
 <script>
 (function () {
   var saved = null;
   try { saved = localStorage.getItem('fv.theme'); } catch (e) { /* 禁用本地存储时退回默认 */ }
+  var isDark = false;
+  if (window.matchMedia) {
+    try { isDark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+  }
+  var mode = (saved === 'day' || saved === 'night') ? saved : 'auto';
   var h = new Date().getHours();
-  document.documentElement.dataset.theme =
-    (saved === 'day' || saved === 'night') ? saved : (h >= 6 && h < 18 ? 'day' : 'night');
+  var theme = mode === 'auto'
+    ? (window.matchMedia ? (isDark ? 'night' : 'day') : (h >= 6 && h < 18 ? 'day' : 'night'))
+    : mode;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.themeMode = mode;
 })();
 </script>
 <!-- 标签页与收藏栏的图标。不声明这两行，Safari 会去请求 /favicon.ico，404 之后
@@ -124,6 +133,11 @@
   <symbol id="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M20.2 14.6A8.8 8.8 0 0 1 9.4 3.8 8.8 8.8 0 1 0 20.2 14.6z"/>
   </symbol>
+  <symbol id="ic-auto-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8"/>
+    <path d="M12 4v16"/>
+    <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" fill-opacity="0.35"/>
+  </symbol>
 </svg>
 
 <div class="app">
@@ -194,6 +208,7 @@
             <div class="proj-menu right bell-menu" id="bell-menu" role="menu" hidden></div>
           </div>
           <button class="theme-btn" type="button" data-theme-toggle>
+            <svg class="i-auto" aria-hidden="true"><use href="#ic-auto-theme"/></svg>
             <svg class="i-sun" aria-hidden="true"><use href="#ic-sun"/></svg>
             <svg class="i-moon" aria-hidden="true"><use href="#ic-moon"/></svg>
           </button>
@@ -223,6 +238,7 @@
   <!-- 闸门把顶栏整个盖住了，登录前也要能切主题，所以这里再来一枚。
        两枚按钮共用 [data-theme-toggle]，app.js 一次绑完。 -->
   <button class="theme-btn gate-theme" type="button" data-theme-toggle>
+    <svg class="i-auto" aria-hidden="true"><use href="#ic-auto-theme"/></svg>
     <svg class="i-sun" aria-hidden="true"><use href="#ic-sun"/></svg>
     <svg class="i-moon" aria-hidden="true"><use href="#ic-moon"/></svg>
   </button>

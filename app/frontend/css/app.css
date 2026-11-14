@@ -698,10 +698,20 @@ main{min-width:0;display:flex;flex-direction:column}
 /* 闸门里那枚要压过卡片与网格，也得离窗口边角留点距离 */
 .gate-theme{position:absolute;top:20px;right:22px;z-index:var(--z-sticky);width:32px;height:32px}
 .gate-theme svg{width:17px;height:17px}
-/* 太阳/月亮只留一枚：切换钮本身已经说明"现在是哪套"，两枚并排会让人以为是两个开关 */
+/* 主题切换三态图标：跟随系统 (auto) / 锁定浅色 (day) / 锁定深色 (night) */
+.theme-btn .i-auto{display:none}
+.theme-btn .i-sun{display:none}
 .theme-btn .i-moon{display:none}
-[data-theme=night] .theme-btn .i-sun{display:none}
-[data-theme=night] .theme-btn .i-moon{display:block}
+
+/* 根据 data-theme-mode 明确呈现对应状态 */
+[data-theme-mode="auto"] .theme-btn .i-auto{display:block}
+[data-theme-mode="day"] .theme-btn .i-sun{display:block}
+[data-theme-mode="night"] .theme-btn .i-moon{display:block}
+
+/* 无 data-theme-mode 属性时的向后兼容降级 */
+:not([data-theme-mode]) .theme-btn .i-sun{display:block}
+:not([data-theme-mode])[data-theme="night"] .theme-btn .i-sun{display:none}
+:not([data-theme-mode])[data-theme="night"] .theme-btn .i-moon{display:block}
 
 .view{display:none;padding:24px 24px 72px;max-width:1440px;margin:0 auto}
 .view.on{display:block;animation:view-in .18s var(--ease)}
