@@ -770,6 +770,8 @@ export function fmtGap(seconds) {
   return `${Math.floor(n / 86400)} 天`;
 }
 
+let addInstOpen = false;
+
 export function engineInstStatusCell(it) {
   const badge = it.enabled
     ? (it.probe_unsupported
@@ -851,7 +853,7 @@ export function engineInstancesCard() {
       <td class="t-dim">${escapeHtml(it.note || '')}</td>
       <td class="c inst-actions">
         ${it.health_state === 'ok' || !it.launch_ready ? ''
-          : `<button class="btn xs primary" data-act-launch="${it.id}"
+          : `<button class="btn xs btn-launch-engine" data-act-launch="${it.id}"
                      title="${escapeHtml(it.launch_note || '')}">启动服务</button>`}
         <button class="btn xs" data-act-probe="${it.id}">探测</button>
         <button class="btn xs ghost" data-act-probes="${it.id}">看历史</button>
@@ -867,17 +869,25 @@ export function engineInstancesCard() {
     要先在这里写一条端点（例如 <code>http://127.0.0.1:7860</code>），
     模型仓库那边才查得到它的健康状况。</span></td></tr>`;
 
+  // 无实例时默认展开登记面板，已有实例时收起保持整洁
+  if (items.length === 0) addInstOpen = true;
+
   return `
-  <div class="card">
-    <div class="card-head"><h2>引擎实例</h2>
-      <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span></div>
+  <div class="card" id="card-engine-inst">
+    <div class="card-head">
+      <h2>引擎实例</h2>
+      <span class="sub">这一档引擎在哪台机器、哪个端口；健康是每次现查，不落库</span>
+      <span class="right">
+        <button class="btn sm ghost" id="btn-toggle-add-inst">${addInstOpen ? '✕ 收起登记面板' : '＋ 登记新实例'}</button>
+      </span>
+    </div>
     <div class="table-wrap"><table class="tbl-fixed mc-engine-inst-table">
       <colgroup>
         <col style="width:160px">
-        <col style="width:220px">
+        <col style="width:240px">
         <col style="width:130px">
-        <col style="width:300px">
-        <col style="width:170px">
+        <col style="width:290px">
+        <col style="width:160px">
         <col style="width:220px">
       </colgroup>
       <thead><tr><th>实例</th><th>端点</th><th>连接方式（密钥变量）</th>
@@ -885,11 +895,14 @@ export function engineInstancesCard() {
       <tbody>${rows}${empty}</tbody>
     </table></div>
 
-    <div class="mc-add-inst-panel">
-      <div class="mc-add-inst-title">
-        <span class="icon">＋</span>
-        <span>登记新引擎实例</span>
-        <span class="hint">为常驻本地或自建服务配置可用端口与端点地址</span>
+    <div class="mc-add-inst-panel" id="panel-add-inst" style="${addInstOpen ? '' : 'display:none'}">
+      <div class="mc-add-inst-head">
+        <div class="mc-add-inst-title">
+          <span class="badge-dot"></span>
+          <span>登记新引擎实例</span>
+          <span class="hint">为常驻本地或自建服务配置可用端口与端点地址</span>
+        </div>
+        <button type="button" class="btn xs ghost" id="btn-close-add-inst" title="收起登记面板">✕ 收起</button>
       </div>
       <div class="mc-add-inst-grid">
         <div class="field-item">
@@ -912,7 +925,7 @@ export function engineInstancesCard() {
           <label>备注说明 <span class="hint">（可空，记录用途、宿主机或换机原因）</span></label>
           <div class="field-action-row">
             <input class="ctl sm" id="eng-note" maxlength="300" placeholder="备注：这台是谁的、为什么换机、部署在哪台宿主机">
-            <button class="btn sm primary" id="eng-add">＋ 登记此实例</button>
+            <button class="btn sm primary" id="eng-add">＋ 确认登记</button>
           </div>
         </div>
       </div>
@@ -1225,6 +1238,20 @@ export function mountEngines(root) {
  */
 export function mountEngineInstances(root) {
   const repaint = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+
+  const toggleBtn = root.querySelector('#btn-toggle-add-inst');
+  const panel = root.querySelector('#panel-add-inst');
+  const closeBtn = root.querySelector('#btn-close-add-inst');
+
+  const updatePanelState = (open) => {
+    addInstOpen = open;
+    if (panel) panel.style.display = open ? 'block' : 'none';
+    if (toggleBtn) toggleBtn.textContent = open ? '✕ 收起登记面板' : '＋ 登记新实例';
+  };
+
+  toggleBtn?.addEventListener('click', () => updatePanelState(!addInstOpen));
+  closeBtn?.addEventListener('click', () => updatePanelState(false));
+
   const addBtn = root.querySelector('#eng-add');
   addBtn?.addEventListener('click', async () => {
     const body = {
