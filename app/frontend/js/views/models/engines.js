@@ -221,7 +221,7 @@ export function slotRow(r, providerLists) {
   const main = `<tr class="slot"
       data-id="${r.id}" data-cap="${r.capability}" data-backend="${r.backend}">
     <td class="t-strong">${r.capability_label}</td>
-    <td><span class="chip ${r.backend === 'local' ? 'plain' : 'blue'}">${r.backend_label}</span></td>
+    <td><span class="chip chip-backend ${r.backend === 'local' ? 'plain' : 'blue'}">${r.backend_label}</span></td>
     <td><div class="mc-picks">
         <select class="ctl sm" data-f="provider" aria-label="引擎">${providerOptions}</select>
         ${slotModelPick(adapter, r.model)}
@@ -300,7 +300,7 @@ export function pageEngines() {
       .map((v) => `<code>${escapeHtml(v)}</code>`).join(' ');
     const checked = lastCheck[code] ? String(lastCheck[code]).slice(0, 16) : '';
     const backends = [...new Set(list.map((a) => a.backend))];
-    const backendChips = backends.map((b) => `<span class="chip ${b === 'local' ? 'plain' : 'blue'}">${b === 'local' ? '本地' : (b === 'cloud' ? '云端' : b)}</span>`).join(' ');
+    const backendChips = backends.map((b) => `<span class="chip chip-backend ${b === 'local' ? 'plain' : 'blue'}">${b === 'local' ? '本地' : (b === 'cloud' ? '云端' : b)}</span>`).join(' ');
     return `<tr>
       <td class="t-strong">${escapeHtml(list[0].label)}
         <div class="hint mono">${escapeHtml(code)}</div></td>

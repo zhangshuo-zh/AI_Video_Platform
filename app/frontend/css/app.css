@@ -1148,6 +1148,15 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .chip.amber{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
 .chip.red{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
 .chip.plain{background:var(--field);color:var(--ink-2);border-color:var(--line-strong)}
+/* 后端/位置专属胶囊（.chip-backend）：锁定 54px 宽度等宽居中，本地与云端尺寸与结构完全对称对齐 */
+.chip-backend{
+  width:54px;justify-content:center;box-sizing:border-box;text-align:center;
+  padding:2px 0;flex:none;
+}
+.chip-backend.plain::before{
+  content:'';width:5px;height:5px;border-radius:50%;background:currentColor;
+  display:inline-block;flex:none;opacity:.55;
+}
 /* 筛选 chip 换成真 button 后要把 UA 默认样式按回去：字体跟页面、手型光标、
    颜色仍交给 .chip.xxx 变体（两条类选择器权重更高，不会被这条顶掉） */
 button.chip{cursor:pointer;font-family:inherit;line-height:1.5}
