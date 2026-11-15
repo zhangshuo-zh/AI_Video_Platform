@@ -23,9 +23,14 @@ import engines
 import model_center as mc
 import validations
 from deps import require_permission, require_user
-from models import (BACKENDS, CAPABILITIES, EngineInstanceIn,
-                    EngineInstancePatch, ModelPolicyIn, ModelRegistrationIn,
-                    ModelRegistrationPatch, POLICY_PREFERENCES, REG_SOURCES,
+from models import (BACKENDS, CAPABILITIES, ConfigChangesOut,
+                    EngineActionOut, EngineInstanceIn, EngineInstancePatch,
+                    EngineListOut, EngineMutationOut, EngineProbeOut,
+                    EngineProbesOut, ModelCatalogOut, ModelMutationOut,
+                    ModelPoliciesOut, ModelPoliciesSaveOut, ModelPolicyIn,
+                    ModelProbeOut, ModelRegistrationIn, ModelRegistrationPatch,
+                    ModelResolveOut, ModelScenesOut, ModelStatsOut,
+                    POLICY_PREFERENCES, REG_SOURCES,
                     RuntimePathIn, RuntimePathItem, RuntimePathsOut,
                     SecretItem, SecretProbeOut, SecretsOut,
                     SecretValueIn, SecretValueOut, SecretValuesOut,
@@ -92,7 +97,7 @@ def _item_of(reg_id: int) -> dict:
     return item or {}
 
 
-@router.get("/models")
+@router.get("/models", response_model=ModelCatalogOut)
 def list_models(_=Depends(require_permission("system:config"))) -> dict:
     """模型仓库与引擎管理的唯一数据源：清单 × 登记 的联表。
 
@@ -118,13 +123,13 @@ def list_models(_=Depends(require_permission("system:config"))) -> dict:
             "stats": mc.stats(rows)}
 
 
-@router.get("/models/stats")
+@router.get("/models/stats", response_model=ModelStatsOut)
 def model_stats(_=Depends(require_permission("system:config"))) -> dict:
     """顶部四数。口径由后端一处给（caliber 字段），界面只念不算。"""
     return mc.stats()
 
 
-@router.post("/models/probe")
+@router.post("/models/probe", response_model=ModelProbeOut)
 def probe_models(fresh: int = 0,
                  _=Depends(require_permission("system:config"))) -> dict:
     """现查一次服务型引擎，再把**同一份**目录与四数一起回给界面。
@@ -145,34 +150,10 @@ def probe_models(fresh: int = 0,
     网关问一次——但**结论口径不变**：探的是"路通不通、钥匙对不对"，永远不等于
     "那一档模型可用"。实现与纪律见 `cloud_probe.py` 模块头。
     """
-    rows = [dict(r) for r in model_center.registrations()]
-    # 按引擎去重：同一个 engine_code 可能有两三行登记（同机同服务的不同档），
-    # 逐行探等于把同一个端点问三遍，而结论是同一台机器给的。
-    probed: dict[str, dict] = {}
-    for row in rows:
-        adapter = mc.find_adapter(row["capability"], row["backend"], row["provider"])
-        if adapter is None or adapter.code not in engines.SERVICE_ENGINES:
-            continue
-        if adapter.code in probed:
-            continue
-        status = engines.probe(adapter.code, fresh=bool(fresh))
-        probed[adapter.code] = {"state": status.state, "detail": status.detail,
-                                "endpoint": status.values.get("endpoint", ""),
-                                "engine_model": status.values.get("model", ""),
-                                "soft": status.soft}
-    # 缓存此刻已被上面这一轮填好，所以下面这次 catalog 里的探测全是缓存命中，
-    # 不会为同一台机器再发一遍请求。
-    items = mc.catalog(probe=True)
-    # 云端轨：登记过的供应商逐家去供应商网关问一次（与本机那一路去重逻辑一致，
-    # 同一家不同能力轨只问一次；未核验的如实回"没有可探的端点"，不发请求）。
-    cloud = cloud_probe.probe_registered(rows, fresh=bool(fresh))
-    return {"items": items, "stats": mc.stats(items),
-            "probed": [{"engine_code": code, **value} for code, value in probed.items()],
-            "cloud": cloud,
-            "note": "只读：探测不建 Job、不写库、不改默认轨"}
+    return mc.probe_all(fresh=bool(fresh))
 
 
-@router.post("/models", status_code=201)
+@router.post("/models", response_model=ModelMutationOut, status_code=201)
 def create_model(payload: ModelRegistrationIn,
                  user=Depends(require_permission("system:config"))) -> dict:
     capability = payload.capability.strip()
@@ -213,7 +194,7 @@ def create_model(payload: ModelRegistrationIn,
             "清单里没有这个 provider：登记留下了，但参数不猜、运行方式不猜，提交侧会被拒"}
 
 
-@router.patch("/models/{reg_id}")
+@router.patch("/models/{reg_id}", response_model=ModelMutationOut)
 def patch_model(reg_id: int, payload: ModelRegistrationPatch,
                 _=Depends(require_permission("system:config"))) -> dict:
     _row_or_404(reg_id)
@@ -228,7 +209,7 @@ def patch_model(reg_id: int, payload: ModelRegistrationPatch,
     return {"item": _item_of(reg_id)}
 
 
-@router.delete("/models/{reg_id}")
+@router.delete("/models/{reg_id}", response_model=ModelMutationOut)
 def remove_model(reg_id: int, confirm: str = "",
                  user=Depends(require_permission("system:config"))) -> dict:
     """撤登记。**不删权重文件、不动历史作业、不清验证记录**。
@@ -286,7 +267,7 @@ def check_model(reg_id: int, user=Depends(require_permission("system:config"))):
     return ValidationOut.from_row(result["validation"])
 
 
-@router.get("/model-policies")
+@router.get("/model-policies", response_model=ModelPoliciesOut)
 def list_policies(_=Depends(require_permission("system:config"))) -> dict:
     items = []
     # 每条能力轴上"清单有可能产出哪些标签"只算一次：它是清单的纯函数，
@@ -326,7 +307,7 @@ def list_policies(_=Depends(require_permission("system:config"))) -> dict:
             "items": items}
 
 
-@router.put("/model-policies")
+@router.put("/model-policies", response_model=ModelPoliciesSaveOut)
 def save_policies(payload: list[ModelPolicyIn],
                   user=Depends(require_permission("system:config"))) -> dict:
     """整批保存策略。只改配置，**不启动任何任务**（任务书 §七 规则 8）。
@@ -405,7 +386,7 @@ def save_policies(payload: list[ModelPolicyIn],
                     "备用轨不会自动顶上"}
 
 
-@router.get("/config-changes")
+@router.get("/config-changes", response_model=ConfigChangesOut)
 def list_config_changes(limit: int = Query(50, ge=1),
                         _=Depends(require_permission("system:config"))) -> dict:
     """选路配置的变更痕（0044）。最近改了什么：谁、什么时候、从什么改成什么。
@@ -426,7 +407,7 @@ def list_config_changes(limit: int = Query(50, ge=1),
     return {"items": rows}
 
 
-@router.get("/model-policies/scenes")
+@router.get("/model-policies/scenes", response_model=ModelScenesOut)
 def list_scenes(_=Depends(require_user)) -> dict:
     """九个任务场景的**只读骨架**：键、界面名、能力、必需能力与"配不配得出"。
 
@@ -466,7 +447,7 @@ def list_scenes(_=Depends(require_user)) -> dict:
                     "候选与挡路原因走 /model-policies/resolve/{scene_key}。"}
 
 
-@router.get("/model-policies/resolve/{scene_key}")
+@router.get("/model-policies/resolve/{scene_key}", response_model=ModelResolveOut)
 def resolve(scene_key: str, _=Depends(require_user)) -> dict:
     """场景 → 候选与挡路原因。只读，登录即可（与 /providers/available 同一档）。"""
     out = mc.resolve_scene(scene_key)
@@ -508,7 +489,7 @@ def _tier_problem(capability: str, provider: str, model_code: str) -> str:
 #   * 返回值里的健康是**现查**的，库里没有那一列；
 #   * 密钥只出现在"变量名＋有没有值"这一层，值永不进响应。
 
-@router.get("/engines")
+@router.get("/engines", response_model=EngineListOut)
 def list_engines(_=Depends(require_permission("system:config"))) -> dict:
     """引擎实例列表，带每台现在的真实状态（探测一次，不落库）。
 
@@ -586,7 +567,7 @@ def list_engines(_=Depends(require_permission("system:config"))) -> dict:
             "service_engines": sorted(engines.SERVICE_ENGINES)}
 
 
-@router.post("/engines", status_code=201)
+@router.post("/engines", response_model=EngineMutationOut, status_code=201)
 def create_engine(payload: EngineInstanceIn,
                   user=Depends(require_permission("system:config"))) -> dict:
     code = payload.engine_code.strip()
@@ -607,7 +588,7 @@ def create_engine(payload: EngineInstanceIn,
     return {"id": row["id"], "warning": _probe_warning(row, user["id"])}
 
 
-@router.patch("/engines/{instance_id}")
+@router.patch("/engines/{instance_id}", response_model=EngineMutationOut)
 def patch_engine(instance_id: int, payload: EngineInstancePatch,
                  _=Depends(require_permission("system:config"))) -> dict:
     if engine_instances.instance(instance_id) is None:
@@ -620,7 +601,7 @@ def patch_engine(instance_id: int, payload: EngineInstancePatch,
     return {"id": row["id"], "enabled": bool(row["enabled"])}
 
 
-@router.delete("/engines/{instance_id}")
+@router.delete("/engines/{instance_id}", response_model=EngineMutationOut)
 def remove_engine(instance_id: int, confirm: str = "",
                   _=Depends(require_permission("system:config"))) -> dict:
     """撤实例。**不动应用本身、不动历史作业**。"""
@@ -637,7 +618,7 @@ def remove_engine(instance_id: int, confirm: str = "",
             "note": "只撤了端点登记；应用、权重与 job 历史一律没碰"}
 
 
-@router.get("/engines/{instance_id}/probes")
+@router.get("/engines/{instance_id}/probes", response_model=EngineProbesOut)
 def list_engine_probes(instance_id: int, limit: int = Query(20, ge=1),
                        _=Depends(require_permission("system:config"))) -> dict:
     """这条实例的探测历史，最新在前。**只读，不触发探测**。
@@ -656,7 +637,7 @@ def list_engine_probes(instance_id: int, limit: int = Query(20, ge=1),
                     "不参与任何判断——现在通不通仍由探测现查"}
 
 
-@router.post("/engines/{instance_id}/probe")
+@router.post("/engines/{instance_id}/probe", response_model=EngineProbeOut)
 def probe_engine(instance_id: int,
                  user=Depends(require_permission("system:config"))) -> dict:
     """手动探一次：只读一次服务自述，不建 Job。**留一条痕**（0042）。
@@ -694,7 +675,7 @@ def probe_engine(instance_id: int,
             "endpoint": status.values.get("endpoint", row["endpoint"])}
 
 
-@router.post("/engines/{instance_id}/launch")
+@router.post("/engines/{instance_id}/launch", response_model=EngineActionOut)
 def launch_engine(instance_id: int, request: Request,
                   user=Depends(require_permission("system:config"))) -> dict:
     """按内置配方把这一台本机服务拉起来，起完复探一次。
@@ -756,7 +737,7 @@ def launch_engine(instance_id: int, request: Request,
             "message": result.message}
 
 
-@router.post("/engines/{instance_id}/stop")
+@router.post("/engines/{instance_id}/stop", response_model=EngineActionOut)
 def stop_engine(instance_id: int, request: Request,
                 user=Depends(require_permission("system:config"))) -> dict:
     """按内置配方优雅关闭这一台本机服务。

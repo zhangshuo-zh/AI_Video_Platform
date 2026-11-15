@@ -1,6 +1,7 @@
 """音频素材（W15）。SQL 只在这一层。"""
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 
@@ -82,8 +83,8 @@ class AudioRepository:
             return conn.execute(_SELECT + " WHERE a.id = ?", (clip_id,)).fetchone()
 
     def finish(self, clip_id: int, *, status: str, path: str | None,
-               duration_ms: int | None, timestamps: list | None = None,
-               visemes: list | None = None) -> None:
+               duration_ms: int | None, timestamps: builtins.list | None = None,
+               visemes: builtins.list | None = None) -> None:
         with get_conn() as conn:
             conn.execute(
                 """UPDATE audio_clip

@@ -91,7 +91,7 @@ from .extract_candidates import (
 
 from .jobs import (
     job_kind, shot_source_version, shots_view, shot_asset_ids, shot_variant_ids,
-    job_source_stale, _service_engine_gate, submit_job, _cost_of, JobMissing,
+    job_source_stale, _service_engine_gate, verify_job_links, submit_job, _cost_of, JobMissing,
     JobStateConflict, _seconds_since, worker_status, job_detail_view, retry_preview,
     json_loads_dict, reconcile_job, mark_job_attention,
     set_concurrency, concurrency_now
@@ -220,6 +220,7 @@ __all__ = [
     "shots_view",
     "submit_doc_ai_job",
     "submit_job",
+    "verify_job_links",
     "text_ai_route",
     "version_token",
     "workbench",

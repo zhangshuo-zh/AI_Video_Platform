@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .enums import Capability, ConnectionType, HostingSource
 
@@ -265,3 +265,129 @@ class SecretValuesOut(BaseModel):
     kek_ready: bool = False
     kek_env: str = ""
     note: str = ""
+
+
+class ModelCatalogOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ModelStatsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ModelProbeOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ModelMutationOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ModelPoliciesOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ModelPoliciesSaveOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    saved: int = 0
+
+
+class ConfigChangesOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ModelScenesOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ModelResolveOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class EngineListOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class EngineMutationOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class EngineProbesOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class EngineProbeOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: int
+    state: str = ""
+
+
+class EngineActionOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: int
+    engine_code: str = ""
+
+
+class AgentOverviewOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentConfigsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentToolsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentPlanOptionsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentRunCreateOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    run: dict[str, Any]
+
+
+class AgentRunListOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class AgentRunDetailOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentPendingOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ChatGPTConnectionOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ChatGPTModelsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+
+
+class ChatGPTDraftOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ChatGPTAcceptOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    run_id: int
+    note: str = ""
+
+
+class ChatGPTUsageOut(BaseModel):
+    model_config = ConfigDict(extra="allow")

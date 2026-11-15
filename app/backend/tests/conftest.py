@@ -182,6 +182,7 @@ def clean_queue(app):
                       finished_at = datetime('now','localtime'),
                       error_code = 'test_cleanup'
                 WHERE status IN ('queued','starting','running','cancel_requested')""")
+        conn.execute("DELETE FROM worker_node")
     return None
 
 

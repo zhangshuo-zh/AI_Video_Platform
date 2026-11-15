@@ -21,8 +21,12 @@ worker 掉线每 15 秒检查一次，若每轮发一条，几分钟就是几十
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from db import get_conn
+from log import get_logger, sanitize_msg
+
+logger = get_logger("fastvideo.notifications")
 
 # 能出现在界面上的 kind。加新的要同时改 `js/notifications.js` 的图标映射，
 # 否则会显示成一个没有图标的条目——不报错，但看着像坏了。
@@ -132,7 +136,8 @@ def prune(force: bool = False) -> int:
                      WHERE created_at < datetime('now','localtime','-{NOTIFICATION_KEEP_DAYS} days')"""
             )
             return cur.rowcount
-    except Exception:
+    except sqlite3.Error as exc:
+        logger.debug("notification_prune_skip err=%s", sanitize_msg(exc))
         return 0
 
 
@@ -223,7 +228,8 @@ def _my_project_ids(uid: int) -> list[int]:
                    SELECT project_id AS id FROM project_member WHERE user_id = ?""",
                 (uid, uid)).fetchall()
         return [int(r["id"]) for r in rows]
-    except Exception:
+    except sqlite3.Error as exc:
+        logger.warning("notification_projects_query_failed err=%s", sanitize_msg(exc))
         return []
 
 
@@ -242,7 +248,8 @@ def _is_config_admin(user) -> bool:
         # 所以直接复用 `is_manager`，不另造一套判定。
         from access import is_manager
         return bool(is_manager(user))
-    except Exception:
+    except (sqlite3.Error, KeyError, TypeError) as exc:
+        logger.debug("notification_admin_check_fallback err=%s", sanitize_msg(exc))
         return False
 
 

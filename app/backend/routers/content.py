@@ -14,15 +14,14 @@ import asset_import_recovery
 import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
 from config import FILES_DIR
-from db import transaction
 from deps import actor_name, require_permission
 from imagetypes import ALLOWED_TYPES, MAX_IMAGE_BYTES, is_heic, looks_like
 
 from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetGenIn, AssetGenOut,
                     AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut,
-                    AssetIn, AssetOut, AssetProfileIn, AssetProfileOut, AssetShotOut,
-                    EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version, ShotIn,
-                    ShotOut, VariantIn, VariantOut, VariantUpdateIn)
+                    AssetImpactOut, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
+                    AssetShotOut, EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version,
+                    ShotIn, ShotOut, VariantIn, VariantOut, VariantUpdateIn)
 from paths import listdir_empty, resolve_within
 from repositories.content import _images_of, assets, episodes, shots
 from repositories.content import profiles as profile_repo
@@ -439,7 +438,7 @@ def asset_shots(asset_id: int,
     return out
 
 
-@router.get("/assets/{asset_id}/impact")
+@router.get("/assets/{asset_id}/impact", response_model=AssetImpactOut)
 def asset_impact(asset_id: int,
                  user=Depends(require_permission("asset:read"))) -> dict:
     """改了这条资产，哪些镜头与哪些已生成产物会受影响（任务书 §6.3、场景三）。
@@ -695,15 +694,13 @@ def delete_variant_image(variant_id: int, path: str,
     if row is None:
         raise asset_studio.VariantMissing("形态不存在")
     ensure_asset(row["asset_id"], user, "write")
-    with transaction():
-        out, removed = variant_repo.remove_image(variant_id, path)
+    out, removed = asset_studio.remove_variant_image_tx(variant_id, path)
     if out is None:
         raise asset_studio.VariantMissing("形态不存在")
     if not removed:
         # 与"删资产的参考图"同一条口径：路径不在这一份清单里就回 404，
         # 不能回一句"删好了"而实际什么都没动——那是最难查的一种假成功。
         raise HTTPException(status_code=404, detail="这张图不在该形态下")
-    asset_studio.remove_imported_file(path)
     return VariantOut.from_row(out)
 
 
@@ -765,15 +762,5 @@ def import_generated_image(asset_id: int, payload: AssetImageImportIn,
     ensure_by("job", payload.job_id, user, "read", "作业")
     # 一个事务：形态的图清单与资产的 ref_images 都是读-改-写，
     # BEGIN IMMEDIATE 保证两个人同时存图不会互相覆盖那份 JSON
-    out = None
-    try:
-        with transaction():
-            out = asset_studio.import_generated_image(asset, payload)
-    except Exception:
-        # 服务返回后，外层事务仍可能提交失败。行已回滚，文件也要补偿清理；
-        # 服务内部失败时 out 仍为 None，沿用服务自身的文件清理。
-        if out is not None:
-            asset_import_recovery.discard(out["_import_marker"])
-        raise
-    asset_import_recovery.committed(out.pop("_import_marker"))
+    out = asset_studio.import_generated_image_tx(asset, payload)
     return AssetImageImportOut(**out)

@@ -134,10 +134,11 @@ class ReviewRepository:
         与 `decision_counts` 同一纪律：只数真存在的签字行。**不在此处合成"通过率"**——
         签得少可能只是这一轮没轮到那个人，把它读成质量高低是平台说不清的事。
         """
+        args: list[int] = []
         if project_ids is None:
-            where, args = "1", []
+            where = "1"
         elif not project_ids:
-            where, args = "0", []
+            where = "0"
         else:
             marks = ",".join("?" for _ in project_ids)
             where, args = f"project_id IN ({marks})", list(project_ids)
@@ -158,10 +159,11 @@ class ReviewRepository:
         "还差多少没审"由作业状态那一份事实回答（`jobs.stats_for_projects`），
         两边各说各的，不在这里合成一个"通过率"骗人的数。
         """
+        args: list[int] = []
         if project_ids is None:
-            where, args = "1", []
+            where = "1"
         elif not project_ids:
-            where, args = "0", []
+            where = "0"
         else:
             marks = ",".join("?" for _ in project_ids)
             where, args = f"project_id IN ({marks})", list(project_ids)

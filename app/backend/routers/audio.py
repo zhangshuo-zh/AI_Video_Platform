@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status as http_status
 import access
 import services
 from deps import require_permission
-from models import AudioClipIn, AudioClipOut, AudioClipUpdateIn
+from models import AudioCapabilitiesOut, AudioClipIn, AudioClipOut, AudioClipUpdateIn
 from repositories.audio import clips
 from repositories.content import episodes, shots
 
@@ -38,7 +38,7 @@ def _clip(clip_id: int, user, need: str = "read"):
     return row
 
 
-@router.get("/audio/capabilities")
+@router.get("/audio/capabilities", response_model=AudioCapabilitiesOut)
 def audio_capabilities(user=Depends(require_permission("audio:read"))) -> dict:
     """音频四类能力的真实状态：能不能提交、缺哪一件、为什么。
 

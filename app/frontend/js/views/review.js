@@ -58,7 +58,7 @@ export default {
     const head = `<div class="page-head">
         <h1>审核中心</h1>
         <p>${HEAD_SUB[tab] || '审核'} · ${escapeHtml(project.name)}</p>
-        <div class="row" style="gap:6px">${subChipRow(TABS, tab)}</div>
+        <div class="row u-gap-6">${subChipRow(TABS, tab)}</div>
       </div>`;
     if (tab === 1) return `<section class="view on">${head}${await this.renderJobs(project)}</section>`;
     if (tab === 2) {
@@ -150,7 +150,7 @@ export default {
         <div class="card-head"><h2>产物审核队列</h2>
           <div class="right"><span class="chip plain">${queue.length} 条作业</span>
             <span class="chip ${pending ? 'amber' : 'green'}">${pending} 条待签</span></div></div>
-        ${canSign && picked.size ? `<div class="row" style="gap:8px;margin:8px 0">
+        ${canSign && picked.size ? `<div class="row u-gap-8 u-my-8">
           <span class="chip plain">已选 ${picked.size} 条</span>
           <button class="btn sm primary" data-batch="approved">批量通过</button>
           <button class="btn sm danger" data-batch="rejected">批量驳回</button>
@@ -239,7 +239,7 @@ export default {
       const signed = signs.get(f.anchor);
       const tone = f.severity === 'error' ? 'red' : 'amber';
       return `<div class="rev-finding">
-        <div class="row" style="justify-content:space-between;gap:8px">
+        <div class="row u-between u-gap-8">
           <div><span class="chip ${tone}">${f.severity === 'error' ? '错误' : '警告'}</span>
             <span class="mono t-dim">${escapeHtml(f.anchor)}</span>
             ${escapeHtml(f.message)}</div>
@@ -248,14 +248,14 @@ export default {
           : '<span class="chip gray">未签</span>'}
         </div>
         <blockquote class="ex-quote">${escapeHtml(f.quote || '')}</blockquote>
-        ${canSign ? `<div class="row" style="gap:6px;margin-top:6px">
+        ${canSign ? `<div class="row u-gap-6 u-mt-6">
           <button class="btn sm" data-sign="approved" data-anchor="${escapeHtml(f.anchor)}">通过</button>
           <button class="btn sm" data-sign="returned" data-anchor="${escapeHtml(f.anchor)}">退回</button>
           <button class="btn sm danger" data-sign="rejected" data-anchor="${escapeHtml(f.anchor)}">驳回</button>
         </div>` : ''}
         ${signed?.note ? `<p class="t-desc">备注：${escapeHtml(signed.note)}</p>` : ''}
       </div>`;
-    }).join('') : '<p class="hint" style="text-align:left">这次校验没有发现问题。</p>';
+    }).join('') : '<p class="hint u-text-left">这次校验没有发现问题。</p>';
 
     const docSign = signs.get('document');
     detail.innerHTML = `
@@ -280,8 +280,8 @@ export default {
           <span class="modal-label">整份签字</span>
           ${docSign ? `<span class="chip ${docSign.decision === 'approved' ? 'green' : 'amber'}">
             ${escapeHtml(docSign.decision_label)} · ${escapeHtml(docSign.signed_by_name)}</span>` : ''}
-          ${canSign ? `<div class="row" style="gap:6px;margin-top:8px">
-            <input id="review-note" class="ctl" maxlength="500" style="max-width:360px"
+          ${canSign ? `<div class="row u-gap-6 u-mt-8">
+            <input id="review-note" class="ctl u-maxw-360" maxlength="500"
                    placeholder="签字备注（可空）" value="${escapeHtml(signNote)}">
             <button class="btn sm" data-sign="approved" data-anchor="document">整份通过</button>
             <button class="btn sm" data-sign="returned" data-anchor="document">退回</button>
@@ -395,7 +395,7 @@ export default {
       const anchor = `artifact:${i}`;
       const signed = signs.get(anchor);
       return `<div class="rev-finding">
-        <div class="row" style="justify-content:space-between;gap:8px">
+        <div class="row u-between u-gap-8">
           <div><span class="chip ${a.exists ? 'plain' : 'red'}">${a.exists ? '在' : '已不在'}</span>
             <span class="mono t-dim">${escapeHtml(a.path)}</span>
             <span class="t-desc">${a.size} 字节</span></div>
@@ -403,7 +403,7 @@ export default {
             ${escapeHtml(signed.decision_label)} · ${escapeHtml(signed.signed_by_name)}</span>`
             : '<span class="chip gray">未签</span>'}
         </div>
-        ${canSign ? `<div class="row" style="gap:6px;margin-top:6px">
+        ${canSign ? `<div class="row u-gap-6 u-mt-6">
           <button class="btn sm" data-jsign="approved" data-anchor="${anchor}">通过</button>
           <button class="btn sm" data-jsign="returned" data-anchor="${anchor}">退回</button>
           <button class="btn sm danger" data-jsign="rejected" data-anchor="${anchor}">驳回</button>
@@ -433,8 +433,8 @@ export default {
           ${whole ? `<span class="chip ${DECISION_TONE[whole.decision] || 'gray'}">
             ${escapeHtml(whole.decision_label)} · ${escapeHtml(whole.signed_by_name)}</span>` : ''}
           ${checklistHtml(cl)}
-          ${canSign ? `<div class="row" style="gap:6px;margin-top:8px">
-            <input id="job-review-note" class="ctl" maxlength="500" style="max-width:360px"
+          ${canSign ? `<div class="row u-gap-6 u-mt-8">
+            <input id="job-review-note" class="ctl u-maxw-360" maxlength="500"
                    placeholder="签字备注（可空）" value="${escapeHtml(jobNote)}">
             <button class="btn sm${cl && !cl.can_approve ? ' disabled' : ''}"
                     data-jsign="approved" data-anchor="artifact"

@@ -34,18 +34,18 @@ export function secretValuesCard() {
     return `<tr data-sv="${escapeHtml(it.env_name)}">
       <td><b>${escapeHtml(it.env_name)}</b></td>
       <td>${it.present
-        ? `<code style="font-size:11px">${escapeHtml(it.preview || '')}</code>
-           <div class="t-desc" style="font-size:11px">${it.length} 字符 · ${escapeHtml(srcText)}</div>`
+        ? `<code class="u-fs-11">${escapeHtml(it.preview || '')}</code>
+           <div class="t-desc u-fs-11">${it.length} 字符 · ${escapeHtml(srcText)}</div>`
         : '<span class="t-dim">—</span>'}</td>
       <td><span class="chip ${tone}">${escapeHtml(srcText)}</span></td>
       <td>
         <button class="btn xs" data-sv-edit="${escapeHtml(it.env_name)}">${it.present ? '更换' : '设置'}</button>
         ${it.source === 'db'
           ? `<button class="btn xs ghost" data-sv-del="${escapeHtml(it.env_name)}">删除</button>` : ''}
-        <div data-sv-form="${escapeHtml(it.env_name)}" hidden style="margin-top:6px">
-          <input class="ctl sm" type="password" autocomplete="new-password"
+        <div data-sv-form="${escapeHtml(it.env_name)}" hidden class="u-mt-6">
+          <input class="ctl sm u-maxw-260" type="password" autocomplete="new-password"
                  data-sv-input="${escapeHtml(it.env_name)}"
-                 placeholder="粘贴密钥（保存后不再显示）" style="max-width:260px">
+                 placeholder="粘贴密钥（保存后不再显示）">
           <button class="btn xs" data-sv-save="${escapeHtml(it.env_name)}">保存</button>
           <button class="btn xs ghost" data-sv-cancel="${escapeHtml(it.env_name)}">取消</button>
         </div>
@@ -59,12 +59,12 @@ export function secretValuesCard() {
       <span class="sub">密钥密文存库，主密钥只在环境变量</span>
     </div>
     <div class="card-body">
-      ${ready ? '' : `<p class="t-bad" style="margin-top:0">
+      ${ready ? '' : `<p class="t-bad u-mt-0">
         <b>没有配置 ${escapeHtml(data.kek_env)}，现在不能保存密钥。</b><br>
         没有主密钥就无法加密，平台**不会**退回去存明文，所以这里先禁用。
         生成方法：<code>python3 -c "import base64,secrets;print(base64.b64encode(secrets.token_bytes(32)).decode())"</code>
         然后把结果写进环境变量并重启 API。</p>`}
-      <p class="hint" style="margin-top:0">
+      <p class="hint u-mt-0">
         <b>保存后下一次执行作业生效</b>（已在队列里排队的也按新值），不用重启。
         已在跑的那一单不受影响。<br>
         <b>环境变量优先</b>：同一把密钥若进程环境里也有值，以环境为准，这里存的密文不生效。
@@ -165,15 +165,15 @@ export function runtimePathsCard() {
     const shown = it.effective || '（未配置）';
     return `<tr data-rp="${escapeHtml(it.env_name)}">
       <td><b>${escapeHtml(it.label)}</b>
-        <div class="t-dim" style="font-size:11px">${escapeHtml(it.env_name)}</div>
+        <div class="t-dim u-fs-11">${escapeHtml(it.env_name)}</div>
         ${it.hint ? `<div class="t-desc">${escapeHtml(it.hint)}</div>` : ''}</td>
-      <td><code style="font-size:11px">${escapeHtml(shown)}</code>
-        <div class="t-desc" style="font-size:11px">${
+      <td><code class="u-fs-11">${escapeHtml(shown)}</code>
+        <div class="t-desc u-fs-11">${
           it.source === 'env' ? '来自环境变量（页面改不动）'
             : it.source === 'web' ? '来自这里保存的值'
               : '跟随内置默认'}</div>
         ${it.detail && it.state !== 'ok'
-          ? `<div class="t-dim" style="font-size:11px">${escapeHtml(it.detail)}</div>` : ''}</td>
+          ? `<div class="t-dim u-fs-11">${escapeHtml(it.detail)}</div>` : ''}</td>
       <td><span class="chip ${tone}">${STATE_TEXT[it.state] || it.state}</span></td>
       <td>${locked
         ? '<span class="chip gray">环境变量优先</span>'
@@ -182,7 +182,7 @@ export function runtimePathsCard() {
                   placeholder="/绝对路径">
            <button class="btn xs" data-rp-save="${escapeHtml(it.env_name)}">保存</button>
            ${it.saved_value ? `<button class="btn xs ghost" data-rp-clear="${escapeHtml(it.env_name)}">清除</button>` : ''}`}
-        ${pending ? '<div class="t-desc" style="font-size:11px">已保存；与当前生效值不同，说明环境变量里另有一份（环境优先）</div>' : ''}
+        ${pending ? '<div class="t-desc u-fs-11">已保存；与当前生效值不同，说明环境变量里另有一份（环境优先）</div>' : ''}
       </td>
     </tr>`;
   }).join('');
@@ -193,7 +193,7 @@ export function runtimePathsCard() {
       <span class="sub">worker 去哪里找权重与 CLI</span>
     </div>
     <div class="card-body">
-      <p class="hint" style="margin-top:0">
+      <p class="hint u-mt-0">
         <b>保存后下一次执行作业生效</b>（已在队列里排队的也按新值），不用重启。
         已在跑的那一单不受影响。<br>
         <b>环境变量优先</b>：被环境占住的那几项标着「环境变量优先」，页面改不动。
@@ -202,7 +202,7 @@ export function runtimePathsCard() {
         <thead><tr><th>参数</th><th>当前生效值</th><th>状态</th><th>在这里改</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      ${data.note ? `<p class="t-desc" style="margin-bottom:0">${escapeHtml(data.note)}</p>` : ''}
+      ${data.note ? `<p class="t-desc u-mb-0">${escapeHtml(data.note)}</p>` : ''}
     </div>
   </div>`;
 }

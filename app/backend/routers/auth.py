@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from config import COOKIE_SECURE, SESSION_HOURS
 from deps import COOKIE_NAME, require_user
+from models import AuthProfileOut, OkOut, PasswordChangeOut
 from repositories.users import login_throttle, sessions, users
 from security import (hash_password, hash_session_token, new_session_token,
                       verify_password)
@@ -43,7 +44,7 @@ def _profile(user) -> dict:
     }
 
 
-@router.post("/login")
+@router.post("/login", response_model=AuthProfileOut)
 def login(payload: LoginIn, response: Response, request: Request):
     username = payload.username.strip()
     client = request.client.host if request.client else ""
@@ -95,7 +96,7 @@ def login(payload: LoginIn, response: Response, request: Request):
     return _profile(user)
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=OkOut)
 def logout(request: Request, response: Response, user=Depends(require_user)):
     token = request.cookies.get(COOKIE_NAME)
     if token:
@@ -104,12 +105,12 @@ def logout(request: Request, response: Response, user=Depends(require_user)):
     return {"ok": True}
 
 
-@router.get("/me")
+@router.get("/me", response_model=AuthProfileOut)
 def me(user=Depends(require_user)):
     return _profile(user)
 
 
-@router.post("/password")
+@router.post("/password", response_model=PasswordChangeOut)
 def change_password(payload: ChangePasswordIn, response: Response,
                     user=Depends(require_user)):
     # 口令哈希从库里现取，不从会话行上拿：sessions.get 现在只带身份列，

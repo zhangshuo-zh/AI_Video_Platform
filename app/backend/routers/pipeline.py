@@ -18,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, status as http_status
 import access
 import pipeline
 from deps import require_permission
-from models import (PipelineCancelIn, PipelineRunIn, PipelineRunOut,
-                    PipelineRunSummaryOut, PipelineTemplateOut)
+from models import (PipelineCancelIn, PipelinePreflightOut, PipelineRunIn,
+                    PipelineRunOut, PipelineRunSummaryOut, PipelineTemplateOut)
 from repositories.pipeline import pipeline_repo
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
@@ -78,7 +78,7 @@ def get_template(template_id: int,
     return PipelineTemplateOut(**pipeline.template_view(_template(template_id)))
 
 
-@router.get("/projects/{project_id}/preflight")
+@router.get("/projects/{project_id}/preflight", response_model=PipelinePreflightOut)
 def preflight(project_id: int, episode_id: int, template_id: int | None = None,
               user=Depends(require_permission("job:submit"))) -> dict:
     """发起运行之前的生产前检查（只读，不建运行、不写状态）。

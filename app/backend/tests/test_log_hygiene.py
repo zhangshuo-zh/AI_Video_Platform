@@ -175,3 +175,54 @@ def test_短提示词原样保留(run_spec_env):
                          log, "wid", extra)
     text = log_path.read_text(encoding="utf-8")
     assert short in text, "短提示词被无谓地折叠了"
+
+
+def test_log_sanitize_masks_secrets_and_truncates(monkeypatch):
+    """M1: log.sanitize_msg 对 sk-/Bearer/env 密钥脱敏并截断超长消息。"""
+    import log as app_log
+
+    monkeypatch.setenv("FASTVIDEO_TEST_API_KEY", "env-secret-token-xyz-999")
+    raw = (
+        "call failed Bearer my-bearer-secret-123456 "
+        "key=sk-proj-secret1234567890abcdef "
+        "env=env-secret-token-xyz-999 "
+        + ("A" * 400)
+    )
+    cleaned = app_log.sanitize_msg(raw, max_len=160)
+    assert "my-bearer-secret-123456" not in cleaned
+    assert "sk-proj-secret1234567890abcdef" not in cleaned
+    assert "env-secret-token-xyz-999" not in cleaned
+    assert "A" * 200 not in cleaned
+
+
+def test_main_unhandled_error_returns_sanitized_500(caplog):
+    """M1: main 未捕获异常兜底返回脱敏 JSON 500，不向响应泄露密钥。"""
+    from fastapi.testclient import TestClient
+    import main
+
+    app = main.create_app()
+
+    @app.get("/_test_m1_boom")
+    def _boom():
+        raise RuntimeError("boom sk-leak-secret-1234567890abcdef")
+
+    app.router.routes.insert(0, app.router.routes.pop())
+
+    client = TestClient(app, raise_server_exceptions=False)
+    with caplog.at_level("ERROR"):
+        resp = client.get("/_test_m1_boom")
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "内部服务异常，请查看运行日志"}
+    assert "sk-leak-secret-1234567890abcdef" not in resp.text
+    assert "sk-leak-secret-1234567890abcdef" not in caplog.text
+
+
+def test_worker_and_agents_facade_exports():
+    """M1: worker 与 agents 拆包后保留完整门面符号。"""
+    import agents
+
+    for sym in ("_RssWatch", "descendant_peak", "_pump", "run_once", "main"):
+        assert hasattr(worker, sym), f"worker facade missing {sym}"
+    for sym in ("create_run", "EVENT_LABEL", "tick", "plan_route", "loads"):
+        assert hasattr(agents, sym), f"agents facade missing {sym}"
+

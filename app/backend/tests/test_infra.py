@@ -1621,8 +1621,9 @@ def test_mypy_门禁真的在检查而不是空转():
     conf = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "[tool.mypy]" in conf, "pyproject.toml 里没有 [tool.mypy] 段"
     mypy_cfg = conf[conf.index("[tool.mypy]"):]
-    assert 'files = ["schemas", "db.py"]' in mypy_cfg, (
-        f"mypy 的检查范围被改了，必须仍是 schemas 与 db.py：{mypy_cfg[:200]}")
+    for required in ('"schemas"', '"db.py"', '"services"', '"repositories"'):
+        assert required in mypy_cfg, (
+            f"mypy 的检查范围必须覆盖 schemas/db.py/services/repositories，缺少 {required}：{mypy_cfg[:200]}")
 
     # B：探针。写进 schemas/ 再删掉——用 try/finally 保证不留下文件
     probe = root / "schemas" / "_mypy_probe_tmp.py"

@@ -3545,3 +3545,56 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   transform:translateY(-2px);
   box-shadow:0 8px 24px -6px var(--accent-glow),0 0 0 1px var(--accent-line);
 }
+
+/* ==========================================================================
+   M1.5 全站业务表格微光统一 + 通用语义工具类（严守双主题 var(--*) 令牌）
+   ========================================================================== */
+.table-wrap > table tbody tr:not(.mc-expanded){height:56px}
+.table-wrap > table tbody tr:not(.mc-expanded) > td{height:56px;vertical-align:middle;box-sizing:border-box}
+.table-wrap > table th:first-child,.table-wrap > table td:first-child{padding-left:18px}
+.table-wrap > table th:last-child,.table-wrap > table td:last-child{padding-right:18px}
+.table-wrap > table tbody tr:not(.mc-expanded) > td:first-child{position:relative}
+.table-wrap > table tbody tr:not(.mc-expanded):hover > td{background:var(--row-hover)}
+.table-wrap > table tbody tr:not(.mc-expanded):hover > td:first-child::before{
+  content:'';position:absolute;left:0;top:8px;bottom:8px;width:3.5px;
+  border-radius:0 3px 3px 0;background:var(--accent);
+  box-shadow:0 0 10px var(--accent-glow);pointer-events:none;
+}
+
+.as-split{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start}
+#shots-split{grid-template-columns:240px minmax(0,1fr)}
+.u-grp-split{display:flex;justify-content:space-between;align-items:center}
+.u-between{justify-content:space-between}
+.u-wrap{flex-wrap:wrap}
+.u-gap-6{gap:6px}
+.u-gap-8{gap:8px}
+.u-m-0{margin:0}
+.u-mt-0{margin-top:0}
+.u-mt-6{margin-top:6px}
+.u-mt-8{margin-top:8px}
+.u-mt-10{margin-top:10px}
+.u-mt-12{margin-top:12px}
+.u-mb-0{margin-bottom:0}
+.u-ml-8{margin-left:8px}
+.u-ml-auto{margin-left:auto}
+.u-my-8{margin-top:8px;margin-bottom:8px}
+.u-flex-1{flex:1;min-width:0}
+.u-float-r{float:right}
+.u-text-left{text-align:left}
+.u-fs-10{font-size:10px}
+.u-fs-11{font-size:11px}
+.u-w-auto{width:auto}
+.u-w-120{width:120px}
+.u-w-full{width:100%}
+.u-maxw-260{max-width:260px}
+.u-maxw-360{max-width:360px}
+.u-bt{border-top:1px solid var(--line)}
+.u-card-foot{border-top:1px solid var(--line);padding:8px 12px}
+.u-foot-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.u-pad-8{padding:8px}
+.u-pad-hint{padding:8px 10px;text-align:left}
+.u-empty-sm{padding:24px 20px}
+.u-warn-box{border:1px solid var(--warn-line);background:var(--warn-soft);padding:8px 12px;border-radius:10px}
+.u-check-row{display:flex;gap:8px;align-items:flex-start;margin-top:12px}
+.u-check-box{width:auto;margin-top:3px}
+

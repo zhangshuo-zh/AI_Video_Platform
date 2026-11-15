@@ -9,7 +9,6 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status as http_status
 
-from db import transaction
 from deps import actor_name, require_permission
 from models import (PasswordResetIn, PermissionOut, RoleOut, RolePermIn,
                     UserCreateIn, UserDeleteIn, UserOut, UserRolesIn, UserUpdateIn)
@@ -160,10 +159,7 @@ def delete_user(user_id: int, payload: UserDeleteIn,
         # 失败要自己转成 500：让异常裸出去的话，界面只剩一句"Internal Server Error"，
         # 而这里最该说的是"什么都没动、账号还在"——人据此才知道可以直接重来。
         try:
-            with transaction():
-                for row in owned:
-                    project_repo.set_owner(row["id"], payload.transfer_to)
-                users.delete(user_id)
+            users.transfer_and_delete(user_id, payload.transfer_to, [row["id"] for row in owned])
         except Exception as exc:
             raise HTTPException(
                 status_code=500,

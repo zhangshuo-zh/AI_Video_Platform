@@ -89,10 +89,11 @@ class JobsQueryMixin:
         限制一起显示出来——平台的可查事实只有 `created_by` 这类弱引用，
         没有操作审计（设计稿 §8 明写不做），把它当绩效读数就是编。
         """
+        args: list[int] = []
         if project_ids is None:
-            where, args = "1", []
+            where = "1"
         elif not project_ids:
-            where, args = "0", []
+            where = "0"
         else:
             marks = ",".join("?" for _ in project_ids)
             where, args = f"project_id IN ({marks})", list(project_ids)

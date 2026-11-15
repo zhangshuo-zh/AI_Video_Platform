@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .jobs import JobArtifactOut
 
@@ -199,3 +201,11 @@ class JobReviewOut(BaseModel):
     signatures: list[dict] = []
     anchors: list[str] = []
     can_sign: bool = False
+
+
+class PipelinePreflightOut(BaseModel):
+    """产线启动前只读预检结果。"""
+    model_config = ConfigDict(extra="allow")
+    blocking: list[Any] = Field(default_factory=list)
+    warnings: list[Any] = Field(default_factory=list)
+    info: dict[str, Any] = Field(default_factory=dict)

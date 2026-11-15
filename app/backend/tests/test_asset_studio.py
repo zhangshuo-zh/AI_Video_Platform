@@ -986,7 +986,6 @@ def test_图片导入失败清理本次文件且重试一致(
     from contextlib import contextmanager
     from pathlib import Path
     import errno
-    import routers.content as content_router
 
     aid = studio["aid"]
     job, _ = _image_job(studio["pid"])
@@ -1022,7 +1021,7 @@ def test_图片导入失败清理本次文件且重试一致(
                 raise sqlite3.OperationalError("injected database write failure")
             patch.setattr(repository, "add_image", fail_after_write)
         else:
-            original_transaction = content_router.transaction
+            original_transaction = asset_studio.transaction
 
             @contextmanager
             def fail_commit():
@@ -1030,7 +1029,7 @@ def test_图片导入失败清理本次文件且重试一致(
                     yield
                     # 服务已返回，事务结束时失败；仍须回滚行并清理已复制文件。
                     raise sqlite3.OperationalError("injected commit failure")
-            patch.setattr(content_router, "transaction", fail_commit)
+            patch.setattr(asset_studio, "transaction", fail_commit)
         with pytest.raises((OSError, sqlite3.OperationalError), match="injected"):
             c.post(url, json=payload)
 

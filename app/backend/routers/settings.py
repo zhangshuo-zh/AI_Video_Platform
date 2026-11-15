@@ -19,9 +19,9 @@ import engines
 import validations
 from config import ALLOW_MOCK
 from deps import require_permission, require_user
-from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderOptionOut,
-                    ProviderOut, ProviderUpdate, ValidationIn, ValidationOut,
-                    provider_slot_version)
+from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderManifestOut,
+                    ProviderOptionOut, ProviderOut, ProviderUpdate, ValidationIn,
+                    ValidationOut, provider_slot_version)
 from repositories.config_log import record as config_log_record
 from repositories.model_center import model_center as registration_repo
 from repositories.providers import has_key, providers
@@ -78,7 +78,7 @@ def list_providers(_=Depends(require_permission("system:config"))) -> list[Provi
     return [_row_out(row, matrix) for row in rows]
 
 
-@router.get("/providers/manifest")
+@router.get("/providers/manifest", response_model=ProviderManifestOut)
 def provider_manifest(_=Depends(require_permission("system:config"))) -> dict:
     """能力清单：每个 adapter 支持哪些档、每档允许哪些参数、出处是哪。
 

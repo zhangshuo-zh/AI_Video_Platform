@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .enums import AudioKind
 
@@ -47,3 +47,8 @@ class AudioClipOut(BaseModel):
     notes: str = ""
     created_at: str
     updated_at: str
+
+
+class AudioCapabilitiesOut(BaseModel):
+    """音频四类能力的真实状态响应（保留所有动态明细键）。"""
+    model_config = ConfigDict(extra="allow")

@@ -322,3 +322,53 @@ def infer(user_id, model, prompt, *, metrics=None):
 
 def draft_name(user_id, key):
     return f'draft-{int(user_id)}-{uuid.UUID(key)}'
+
+
+class DraftNotReadyError(ValueError):
+    """草案尚未就绪，无法创建暂停的运行。"""
+
+
+def accept_draft(user_id: int, key: str, approval_valid_seconds: int,
+                 ensure_access=None) -> int:
+    """将已就绪的 ChatGPT 计划草案幂等落库为一条暂停的 Agent Run，返回 run_id。"""
+    import agents
+    from db import transaction
+    from repositories.agents import STEP_PENDING, agent_runs
+
+    name = draft_name(user_id, key)
+    with _lock(name):
+        draft = _read(name)
+        if not draft:
+            raise FileNotFoundError('没有这份计划草案')
+        if ensure_access is not None:
+            ensure_access(draft['project_id'])
+        if draft['state'] != 'ready':
+            raise DraftNotReadyError('请先取得完整且可解析的计划草案')
+        # 复用运行层的持久幂等键，即使在事务提交后进程中断也不会建两条运行。
+        with transaction():
+            idem = f'chatgpt-{user_id}-{key}'
+            run = agent_runs.by_idempotency(idem)
+            if run is None:
+                steps = agents.parse_plan(json.dumps(draft['steps']))
+                run = agent_runs.create(dict(
+                    project_id=draft['project_id'],
+                    episode_id=draft['episode_id'], goal=draft['goal'],
+                    approval_valid_seconds=approval_valid_seconds,
+                    idempotency_key=idem, created_by=user_id,
+                    model_snapshot={'backend': 'cloud', 'provider': 'chatgpt_plan',
+                                    'model': draft['model'], 'route_source': 'chatgpt_oauth',
+                                    'cost_note': '使用个人 ChatGPT 套餐额度'}))
+                agent_runs.set_will(run['id'], paused=True)
+                agent_runs.set_plan(run['id'], steps)
+                agent_runs.set_plan_status(run['id'], 'ready')
+                for step in steps:
+                    agent_runs.add_step(
+                        run['id'], step['seq'], tool_code=step['tool'],
+                        args=step['args'], args_hash=step['args_hash'],
+                        risk=step['risk'], status=STEP_PENDING)
+                agent_runs.add_event(
+                    'plan_ready', run_id=run['id'], actor_id=user_id,
+                    payload={'source': 'chatgpt_plan', 'steps': len(steps), 'paused': True})
+            draft['run_id'] = run['id']
+        _write(name, draft)
+    return int(run['id'])

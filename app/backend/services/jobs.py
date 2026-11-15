@@ -222,7 +222,29 @@ def _service_engine_gate(capability: str, mode: str, provider: str, model: str) 
 
 
 
-def submit_job(payload, created_by: int | None) -> dict:
+def verify_job_links(project_id: int, episode_id: int | None, shot_id: int | None) -> None:
+    """集与镜头必须真的属于这个项目；两者同时给时必须互相对得上。
+
+    这不是权限问题（项目那一道已经过了），是输入自相矛盾，所以交由调用方回 422。
+    """
+    with get_conn() as conn:
+        if episode_id is not None:
+            ep = conn.execute("SELECT project_id FROM episode WHERE id = ?",
+                              (episode_id,)).fetchone()
+            if ep is None or ep["project_id"] != project_id:
+                raise JobInvalid("这一集不属于该项目")
+        if shot_id is not None:
+            shot = conn.execute(
+                """SELECT e.project_id, e.id AS episode_id FROM shot s
+                     JOIN episode e ON e.id = s.episode_id WHERE s.id = ?""",
+                (shot_id,)).fetchone()
+            if shot is None or shot["project_id"] != project_id:
+                raise JobInvalid("这个镜头不属于该项目")
+            if episode_id is not None and shot["episode_id"] != episode_id:
+                raise JobInvalid("这个镜头不在指定的那一集里")
+
+
+def submit_job(payload, created_by: int | None) -> sqlite3.Row:
     """校验并写入 Job 行，返回 sqlite3.Row。**不触发执行**——执行是 worker 的事。
 
     三条闸门在这里一次性过完：路线（默认轨或显式槽位）、参数白名单、

@@ -150,8 +150,8 @@ def job_checklist(job) -> dict:
     shot = shots.get(int(job["shot_id"])) if job["shot_id"] else None
     clips: list[dict] = []
     if job["project_id"] and job["episode_id"] and job["shot_id"]:
-        clips = [c for c in audio_clips.list(int(job["project_id"]),
-                                             episode_id=int(job["episode_id"]))
+        clips = [dict(c) for c in audio_clips.list(int(job["project_id"]),
+                                                   episode_id=int(job["episode_id"]))
                  if int(c["shot_id"] or 0) == int(job["shot_id"])]
     stale = bool(shot is not None and job_source_stale(job, shot=shot))
     stored = review_checks.get(review_checks.TARGET_KIND, int(job["id"]))

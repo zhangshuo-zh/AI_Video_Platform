@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 
 # ---------- 系统状态 ----------
@@ -14,3 +16,11 @@ class HealthOut(BaseModel):
     """
     ok: bool
     project_count: int
+
+
+class ProviderManifestOut(BaseModel):
+    """能力清单响应（结构由 adapters.manifest_payload 决定，保留全部动态声明）。"""
+    model_config = ConfigDict(extra="allow")
+    manifest_version: int | str = 1
+    adapters: Any = None
+    capabilities: Any = None

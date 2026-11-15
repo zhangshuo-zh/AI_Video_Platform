@@ -111,7 +111,7 @@ function itemRow(row, assets) {
         <span class="t-dim">原文第 ${f.start ?? '?'}—${f.end ?? '?'} 字</span></blockquote>`
         : '<p class="t-desc">这一条没有原文证据，服务端不会让它进资产。</p>'}
       ${decided ? '' : `
-        <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+        <div class="row u-gap-6 u-mt-6 u-wrap">
           ${hit ? `<span class="chip amber">像是已有的「${escapeHtml(hit.name)}」</span>
             <span class="t-dim">${(hit.name || '').trim() === (f.name || '').trim()
               ? '同名' : '别名命中'}；建议合并进去，不要再建一条</span>` : ''}
@@ -152,7 +152,7 @@ export default {
       return `<section class="view on">
         <div class="page-head"><h1>文本提取补资产</h1>
           <div class="right">${subChipRow(WS_LABELS, wsIndex())}</div></div>
-        <div class="card"><div class="empty err" style="padding:26px 20px">
+        <div class="card"><div class="empty err u-empty-sm">
           <div class="empty-t">读不到抽取记录</div><p>${escapeHtml(err)}</p>
           <p><button class="btn" data-retry>重试</button></p></div></div></section>`;
     }
@@ -186,7 +186,7 @@ export default {
       </div>
       ${notice ? `<div class="card"><div class="bar bad">${escapeHtml(notice)}</div></div>` : ''}
 
-      <div class="as-split" style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start">
+      <div class="as-split">
         <div class="card tree">
           <div class="card-head"><h2>抽取记录</h2><span class="sub">${runs.length} 次</span></div>
           <div class="card-body">
@@ -221,7 +221,7 @@ export default {
               <p>${runId ? '换一类看看，或到创作中心再抽一次别的文档。' : '先发起一次抽取，回到这一页处理候选。'}</p>
             </div>` : ''}
             ${runId && items.some((r) => r.kind === 'shot') ? `
-              <p style="margin-top:10px"><a class="btn" id="as-shots-md"
+              <p class="u-mt-10"><a class="btn" id="as-shots-md"
                  href="/api/extract/runs/${runId}/shots.md" download>导出镜头候选 Markdown</a>
                  <span class="t-dim">镜头不进分镜表，导出去由人抄</span></p>` : ''}
           </div>

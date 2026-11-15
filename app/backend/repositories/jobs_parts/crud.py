@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 
@@ -167,9 +168,9 @@ class JobsCrudMixin:
                      ORDER BY j.id DESC LIMIT ?""", args).fetchall()
 
 
-    def count_listed(self, project_ids: list[int] | None, status: str | None = None,
+    def count_listed(self, project_ids: builtins.list[int] | None, status: str | None = None,
                      capability: str | None = None,
-                     statuses: list[str] | None = None, execution_mode: str | None = None,
+                     statuses: builtins.list[str] | None = None, execution_mode: str | None = None,
                      keyword: str | None = None, episode_id: int | None = None,
                      shot_id: int | None = None,
                      refs_prefix: str | None = None) -> int:
@@ -222,7 +223,7 @@ class JobsCrudMixin:
                 f"SELECT COUNT(*) FROM job WHERE {where}", args).fetchone()[0])
 
 
-    def ids_for_project(self, project_id: int) -> list[int]:
+    def ids_for_project(self, project_id: int) -> builtins.list[int]:
         with get_conn() as conn:
             return [r["id"] for r in conn.execute(
                 "SELECT id FROM job WHERE project_id = ?", (project_id,))]
@@ -247,7 +248,7 @@ class JobsCrudMixin:
         return {"queued": int(row["queued"] or 0), "running": int(row["running"] or 0)}
 
     @staticmethod
-    def _scope(project_ids: list[int] | None) -> tuple[str, list]:
+    def _scope(project_ids: builtins.list[int] | None) -> tuple[str, builtins.list]:
         if project_ids is None:
             return "1", []
         if not project_ids:

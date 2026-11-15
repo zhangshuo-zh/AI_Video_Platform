@@ -30,6 +30,7 @@ import adapters
 import asset_import_recovery
 import jobfiles
 from config import FILES_DIR
+from db import transaction
 from imagetypes import MAX_IMAGE_BYTES, sniff
 from models import ASSET_GEN_OPERATIONS, JOB_STATUSES, JobSubmitIn, VARIANT_KINDS
 from paths import resolve_within
@@ -731,6 +732,29 @@ def import_generated_image(asset, payload) -> dict:
         # 会在界面上显示一张打不开的图，更难查。
         asset_import_recovery.discard(token)
         raise
+
+
+def remove_variant_image_tx(variant_id: int, path: str) -> tuple[object | None, bool]:
+    """在一个事务内从形态摘除图片引用，并在事务后清理盘上文件。"""
+    with transaction():
+        out, removed = variant_repo.remove_image(variant_id, path)
+    if out is not None and removed:
+        remove_imported_file(path)
+    return out, removed
+
+
+def import_generated_image_tx(asset, payload) -> dict:
+    """在一个事务内导入生成图；事务提交失败时触发补偿清理。"""
+    out = None
+    try:
+        with transaction():
+            out = import_generated_image(asset, payload)
+    except Exception:
+        if out is not None:
+            asset_import_recovery.discard(out["_import_marker"])
+        raise
+    asset_import_recovery.committed(out.pop("_import_marker"))
+    return out
 
 
 def remove_imported_file(rel_path: str) -> bool:

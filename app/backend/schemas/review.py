@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- 审核中心（W14） ----------
@@ -96,3 +96,26 @@ class ReviewQueueItem(BaseModel):
     rejected: int = 0
     returned: int = 0
     stale: bool = False
+
+
+class JobChecklistOut(BaseModel):
+    """作业审核清单响应（自动项 + 人工项 + 可签字判据）。"""
+    model_config = ConfigDict(extra="allow")
+
+
+class JobReviewBatchOut(BaseModel):
+    """批量签字汇总响应。"""
+    model_config = ConfigDict(extra="allow")
+
+
+class AgentActionQueueOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    items: list[Any] = Field(default_factory=list)
+    target_kind: str = ""
+    anchor: str = ""
+    note: str = ""
+
+
+class AgentStepReviewOut(BaseModel):
+    """智能体动作步骤审核视图与签字回执。"""
+    model_config = ConfigDict(extra="allow")

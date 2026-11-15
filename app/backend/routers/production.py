@@ -18,7 +18,7 @@ import access
 import precheck
 import production
 from deps import require_permission, require_user
-from models import ContextIn, ProjectProductionOut
+from models import ContextIn, ContextOut, PrecheckOut, ProjectProductionOut, ShotWorkbenchOut
 from repositories.content import episodes
 from repositories.context import context
 
@@ -31,7 +31,7 @@ def _view(row) -> dict:
     return {"project_id": row["project_id"], "episode_id": row["episode_id"]}
 
 
-@router.get("/context")
+@router.get("/context", response_model=ContextOut)
 def get_context(user=Depends(require_user)) -> dict:
     """读当前上下文。项目已经看不见时**当场抹掉**并返回空，不拿旧行骗人。"""
     row = context.get(user["id"])
@@ -52,7 +52,7 @@ def get_context(user=Depends(require_user)) -> dict:
     return _view(row)
 
 
-@router.put("/context")
+@router.put("/context", response_model=ContextOut)
 def put_context(payload: ContextIn, user=Depends(require_user)) -> dict:
     """写当前上下文。只接受"看得见的项目 × 属于该项目的集"。"""
     project_id = payload.project_id
@@ -102,7 +102,7 @@ def project_production(project_id: int, episode_id: int | None = None,
 # ---------------------------------------------------------------- 统一预检
 
 
-@router.get("/precheck/shot/{shot_id}")
+@router.get("/precheck/shot/{shot_id}", response_model=PrecheckOut)
 def shot_precheck_api(shot_id: int, capability: str = "video",
                       execution_mode: str | None = None,
                       confirmed_cloud: bool = False,
@@ -119,7 +119,7 @@ def shot_precheck_api(shot_id: int, capability: str = "video",
                                   confirmed_cloud=confirmed_cloud)
 
 
-@router.get("/projects/{project_id}/precheck")
+@router.get("/projects/{project_id}/precheck", response_model=PrecheckOut)
 def episode_precheck_api(project_id: int, episode_id: int,
                          template_id: int | None = None,
                          user=Depends(require_permission("job:read"))) -> dict:
@@ -138,7 +138,7 @@ def episode_precheck_api(project_id: int, episode_id: int,
     return precheck.episode_precheck(project_id, episode_id, template_id)
 
 
-@router.get("/projects/{project_id}/composition-precheck")
+@router.get("/projects/{project_id}/composition-precheck", response_model=PrecheckOut)
 def composition_precheck_api(project_id: int, episode_id: int,
                              subtitle_path: str | None = None,
                              user=Depends(require_permission("job:read"))) -> dict:
@@ -151,7 +151,7 @@ def composition_precheck_api(project_id: int, episode_id: int,
                                          subtitle_path=subtitle_path)
 
 
-@router.get("/shots/{shot_id}/workbench")
+@router.get("/shots/{shot_id}/workbench", response_model=ShotWorkbenchOut)
 def shot_workbench_api(shot_id: int,
                        user=Depends(require_permission("project:read"))) -> dict:
     """单镜头生产工作台：八段一屏（设定／引用／关键帧／视频／音频／预览／审核／可合成）。

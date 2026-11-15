@@ -25,7 +25,9 @@ import access
 import agents
 import agent_tools
 from deps import require_permission
-from models import AgentRunIn
+from models import (AgentConfigsOut, AgentOverviewOut, AgentPendingOut,
+                    AgentPlanOptionsOut, AgentRunCreateOut, AgentRunDetailOut,
+                    AgentRunIn, AgentRunListOut, AgentToolsOut)
 from repositories.projects import projects as project_repo
 
 router = APIRouter(prefix="/api", tags=["agents"])
@@ -53,7 +55,7 @@ def _bad(exc: Exception, code: int = 422) -> HTTPException:
     return HTTPException(status_code=code, detail=str(exc))
 
 
-@router.get("/agent/overview")
+@router.get("/agent/overview", response_model=AgentOverviewOut)
 def overview(user=Depends(require_permission("system:config"))) -> dict:
     """顶部四数＋最近事件＋运行列表。
 
@@ -64,13 +66,13 @@ def overview(user=Depends(require_permission("system:config"))) -> dict:
     return agents.overview(_visible_ids(user))
 
 
-@router.get("/agent/configs")
+@router.get("/agent/configs", response_model=AgentConfigsOut)
 def configs(user=Depends(require_permission("system:config"))) -> dict:
     """本地／云端两张配置卡。配置、健康、驻留、运行四个概念分开返回。"""
     return agents.config_cards()
 
 
-@router.get("/agent/tools")
+@router.get("/agent/tools", response_model=AgentToolsOut)
 def tools(_=Depends(require_permission("system:config"))) -> dict:
     """白名单工具表（只读）。
 
@@ -86,7 +88,7 @@ def tools(_=Depends(require_permission("system:config"))) -> dict:
                          "没有 Shell、没有 Python"}
 
 
-@router.get("/agent/plan-options")
+@router.get("/agent/plan-options", response_model=AgentPlanOptionsOut)
 def plan_options(project_id: int, goal: str = "", scene_key: str = "",
                  episode_id: int | None = None,
                  user=Depends(require_permission("project:read"))) -> dict:
@@ -110,7 +112,7 @@ def plan_options(project_id: int, goal: str = "", scene_key: str = "",
         "blockers": [] if route.get("ok") else [route.get("reason")]}
 
 
-@router.post("/agent/runs", status_code=http_status.HTTP_201_CREATED)
+@router.post("/agent/runs", response_model=AgentRunCreateOut, status_code=http_status.HTTP_201_CREATED)
 def create_run(payload: AgentRunIn,
                user=Depends(require_permission("job:submit"))) -> dict:
     """发起一次运行。201 返回的是 run 的视图，此刻只多了一条排队中的作业。
@@ -137,7 +139,7 @@ def create_run(payload: AgentRunIn,
             "这条运行的意图和已发起的某条完全一样，平台没有再排一条"}
 
 
-@router.get("/agent/runs")
+@router.get("/agent/runs", response_model=AgentRunListOut)
 def list_runs(project_id: int, limit: int = Query(50, ge=1),
               user=Depends(require_permission("project:read"))) -> dict:
     access.ensure(user, project_id, "read")
@@ -156,7 +158,7 @@ def list_runs(project_id: int, limit: int = Query(50, ge=1),
             "event_labels": agents.EVENT_LABEL}
 
 
-@router.get("/agent/runs/{run_id}")
+@router.get("/agent/runs/{run_id}", response_model=AgentRunDetailOut)
 def run_detail(run_id: int,
                user=Depends(require_permission("project:read"))) -> dict:
     """运行详情：步骤（带关联作业的现读状态）＋事件时间线（倒序）。"""
@@ -166,7 +168,7 @@ def run_detail(run_id: int,
         raise _bad(exc, 404) from exc
 
 
-@router.post("/agent/runs/{run_id}/pause")
+@router.post("/agent/runs/{run_id}/pause", response_model=AgentRunDetailOut)
 def pause(run_id: int, user=Depends(require_permission("job:cancel"))) -> dict:
     try:
         return agents.pause(run_id, user)
@@ -176,7 +178,7 @@ def pause(run_id: int, user=Depends(require_permission("job:cancel"))) -> dict:
         raise _bad(exc, 409) from exc
 
 
-@router.post("/agent/runs/{run_id}/resume")
+@router.post("/agent/runs/{run_id}/resume", response_model=AgentRunDetailOut)
 def resume(run_id: int, user=Depends(require_permission("job:cancel"))) -> dict:
     try:
         return agents.resume(run_id, user)
@@ -186,7 +188,7 @@ def resume(run_id: int, user=Depends(require_permission("job:cancel"))) -> dict:
         raise _bad(exc, 409) from exc
 
 
-@router.post("/agent/runs/{run_id}/cancel")
+@router.post("/agent/runs/{run_id}/cancel", response_model=AgentRunDetailOut)
 def cancel(run_id: int, reason: str = "",
            user=Depends(require_permission("job:cancel"))) -> dict:
     """取消。要人自己确认那句话由前端弹窗负责，这里只收原因。
@@ -203,7 +205,7 @@ def cancel(run_id: int, reason: str = "",
         raise _bad(exc, 409) from exc
 
 
-@router.get("/agent/pending")
+@router.get("/agent/pending", response_model=AgentPendingOut)
 def pending(user=Depends(require_permission("review:read"))) -> dict:
     """待审批那几行。**这里只能看，不能签**——签字在审核中心（不变量 3）。
 

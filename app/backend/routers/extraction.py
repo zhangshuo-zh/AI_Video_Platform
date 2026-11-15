@@ -13,7 +13,8 @@ import extraction
 import services
 from deps import require_permission
 from models import (ExtractAcceptIn, ExtractItemOut, ExtractMergeIn, ExtractRejectIn,
-                    ExtractRunOut, ExtractSubmitIn)
+                    ExtractRunOut, ExtractSubmitIn, ExtractionDecisionOut,
+                    ExtractionOptionsOut)
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
 from workspace import PathError
@@ -40,7 +41,7 @@ def _run(run_id: int, user, need: str = "read"):
     return row
 
 
-@router.get("/projects/{project_id}/extract/options")
+@router.get("/projects/{project_id}/extract/options", response_model=ExtractionOptionsOut)
 def extraction_options(project_id: int, doc_id: int,
                        user=Depends(require_permission("doc:read"))) -> dict:
     """弹窗里的计价与健康。只读，不建作业、不花钱。"""
@@ -116,13 +117,13 @@ def list_items(run_id: int, kind: str | None = None, status: str | None = None,
             for row in services.extraction_items(run, kind, status)]
 
 
-@router.post("/extract/items/{item_id}/accept")
+@router.post("/extract/items/{item_id}/accept", response_model=ExtractionDecisionOut)
 def accept_item(item_id: int, payload: ExtractAcceptIn,
                 user=Depends(require_permission("asset:write"))) -> dict:
     return _decide(item_id, user, lambda: services.extraction_accept(item_id, payload, user))
 
 
-@router.post("/extract/items/{item_id}/merge")
+@router.post("/extract/items/{item_id}/merge", response_model=ExtractionDecisionOut)
 def merge_item(item_id: int, payload: ExtractMergeIn,
                user=Depends(require_permission("asset:write"))) -> dict:
     # 全局资产只有管理员能改；先把这一道门过掉，再进事务
@@ -134,7 +135,7 @@ def merge_item(item_id: int, payload: ExtractMergeIn,
                    lambda: services.extraction_merge(item_id, payload.asset_id, user))
 
 
-@router.post("/extract/items/{item_id}/reject")
+@router.post("/extract/items/{item_id}/reject", response_model=ExtractionDecisionOut)
 def reject_item(item_id: int, payload: ExtractRejectIn,
                 user=Depends(require_permission("doc:write"))) -> dict:
     return _decide(item_id, user,

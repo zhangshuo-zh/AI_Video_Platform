@@ -197,7 +197,7 @@ function detailHtml(d) {
         ? `<p class="bar">有步骤在等人批。<b>这一页不能签</b>——批准与驳回只落在审核中心。
           <button class="btn sm ${canSign ? 'primary' : ''}" data-goto-review="2"
             ${canSign ? '' : 'disabled title="需要 review:sign"'}>去审核中心</button></p>` : ''}
-      <div class="row" style="gap:8px;margin-top:12px">
+      <div class="row u-gap-8 u-mt-12">
         ${canCancel && !d.cancelled ? `<button class="btn sm" data-run-pause="${d.id}"
           ${d.paused ? 'disabled' : ''}>暂停</button>
           <button class="btn sm" data-run-resume="${d.id}"
@@ -220,9 +220,8 @@ function createModal(episodes, policies, options) {
   const choices = (options && options.approval_choices) || [];
   const defaultValid = (options && options.default_valid_seconds) || null;
   const confirmLine = `<span id="ag-cloud-line" hidden>
-      <label class="modal-label" for="ag-cloud"
-        style="display:flex;gap:8px;align-items:flex-start;margin-top:12px">
-        <input type="checkbox" id="ag-cloud" style="width:auto;margin-top:3px">
+      <label class="modal-label u-check-row" for="ag-cloud">
+        <input type="checkbox" id="ag-cloud" class="u-check-box">
         <span>确认用云端算这次计划：<b id="ag-cloud-what"></b><br>
           <span class="t-desc" id="ag-cloud-cost"></span>
           平台不会替你勾这一格，也不会因为本地失败就自己换到云端。</span></label></span>`;
@@ -234,19 +233,19 @@ function createModal(episodes, policies, options) {
         <label class="modal-label" for="ag-goal">要它做什么（一句话说清）</label>
         <textarea class="ctl" id="ag-goal" rows="3"
           placeholder="例：盘点第 1 集缺哪些资产，并为每个缺的角色生成一段人物履历"></textarea>
-        <label class="modal-label" for="ag-ep" style="margin-top:12px">哪一集（可留空＝整个项目）</label>
+        <label class="modal-label u-mt-12" for="ag-ep">哪一集（可留空＝整个项目）</label>
         <select class="ctl" id="ag-ep">
           <option value="">（不指定集）</option>
           ${episodes.map((e) => `<option value="${e.id}">第 ${e.seq} 集${
             e.title ? ' · ' + escapeHtml(e.title) : ''}</option>`).join('')}
         </select>
-        <label class="modal-label" for="ag-scene" style="margin-top:12px">按哪个任务场景</label>
+        <label class="modal-label u-mt-12" for="ag-scene">按哪个任务场景</label>
         <select class="ctl" id="ag-scene">
           <option value="">（不按场景：走文本能力的默认轨）</option>
           ${policies.map((p) => `<option value="${escapeHtml(p.scene_key)}">${
             escapeHtml(p.scene_label)}${p.enabled ? '' : '（待配置）'}</option>`).join('')}
         </select>
-        <label class="modal-label" for="ag-valid" style="margin-top:12px">批准的有效期</label>
+        <label class="modal-label u-mt-12" for="ag-valid">批准的有效期</label>
         <select class="ctl" id="ag-valid">
           ${choices.map((c) => `<option value="${c.seconds}"${
             c.seconds === defaultValid ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
@@ -274,7 +273,7 @@ export default {
     const project = store.current;
     const head = (line) => `<div class="page-head">
         <h1>智能体中心</h1><p>${escapeHtml(line)}</p>
-        <div class="row" style="gap:6px">${subChipRow(SUBS, sub)}</div>
+        <div class="row u-gap-6">${subChipRow(SUBS, sub)}</div>
       </div>`;
 
     if (!project) {
@@ -424,7 +423,7 @@ export default {
             : '清单说允许自动兜底——这条与智能体的授权要求冲突，需要人先看一眼策略。'}</p>
           <p class="modal-meta">智能体发起时读的就是这张表的场景那一行；
             「建议轨」显示给人看，最终走哪条仍由默认轨与人的确认决定。</p>
-          <div class="row" style="margin-top:12px">
+          <div class="row u-mt-12">
             <button class="btn" data-goto-models="policy">去模型中心·调用策略改这些行</button></div>
         </div>
       </div>`;

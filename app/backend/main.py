@@ -5,6 +5,8 @@
 - 前端是纯静态文件（../frontend），由同一个进程兜底托管，
   以后要换 nginx 直接指过去即可，后端不用动。
 """
+import sqlite3
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +19,7 @@ from bootstrap import ensure_admin
 from config import (CORS_ORIGINS, DOCS_ENABLED, FILES_DIR, FRONTEND_DIR,
                     HOST, PORT)
 from gitrepo import GitError
+from log import get_logger, sanitize_msg
 from migrate import migrate
 from routers import (agents as agents_api, chatgpt_plan as chatgpt_plan_api, audio, auth, compositions, content,
                      dashboard, documents, extraction, files, jobs,
@@ -28,6 +31,7 @@ from services import ensure_workspace
 
 
 def create_app() -> FastAPI:
+    logger = get_logger("fastvideo.main")
     migrate(verbose=False)          # 启动时把库补到最新，重复执行是安全的
     # 网页上设过的运行时路径并进本进程环境（0051）。
     # **必须在 migrate 之后**：`runtime_path` 表是 0051 建的，读早了会撞
@@ -38,21 +42,22 @@ def create_app() -> FastAPI:
         import runtime_paths
         written = runtime_paths.apply()
         if written:
-            print(f"[启动] 已应用网页上设的运行时路径 {len(written)} 项："
-                  + "、".join(written))
-    except Exception as exc:
+            logger.info("startup_runtime_paths_applied count=%d keys=%s",
+                        len(written), "、".join(written))
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         # 一条路径没应用不该让整个平台起不来：探测会如实回 unknown/missing，
         # 人点开设置页看得见，比启动失败好排查。
-        print(f"[启动] 运行时路径没应用上：{type(exc).__name__}: {exc}")
+        logger.warning("startup_runtime_paths_failed err=%s:%s",
+                       type(exc).__name__, sanitize_msg(exc))
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
     # 只恢复有持久化意图的导入，不扫描删除历史文件；与其他进程的导入共用写锁。
     try:
         import asset_import_recovery
         recovered = asset_import_recovery.recover()
         if any(recovered.values()):
-            print(f"[启动] 图片导入恢复：{recovered}")
-    except Exception as exc:
-        print(f"[启动] 图片导入恢复暂未完成：{type(exc).__name__}，请运行恢复工具检查")
+            logger.info("startup_import_recovery result=%s", recovered)
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        logger.warning("startup_import_recovery_failed err=%s", type(exc).__name__)
     # 内置产线模板按 (name, version) 补齐：已有的不动，只插缺的。
     # 放这里是因为 worker 进程也要有一份同样的模板表，而两边共用同一个库，
     # 谁先起来谁补齐都行——插过一次之后就是空操作。
@@ -63,7 +68,7 @@ def create_app() -> FastAPI:
     try:
         ensure_workspace()
     except GitError as err:
-        print(f"[启动] 文档工作区没准备好，创作中心的正文功能不可用：{err}")
+        logger.warning("startup_workspace_not_ready err=%s", sanitize_msg(err))
     # 接口文档默认**不开**（2026-11-08，P1）：`/api/docs` 与 `/api/openapi.json`
     # 不用登录就能拿到全部接口清单、参数模型与权限点名称——对"局域网里谁都能
     # 打开"的部署，这是白送的侦察材料。本机调试时设 FASTVIDEO_DOCS=1 打开。
@@ -99,6 +104,17 @@ def create_app() -> FastAPI:
             status_code=exc.status_code,
             content=errors.payload(exc.status_code, exc.detail, code),
             headers=getattr(exc, "headers", None) or None,
+        )
+
+    @app.exception_handler(Exception)
+    async def _on_unhandled_error(request: Request, exc: Exception):
+        if isinstance(exc, HTTPException):
+            raise exc
+        logger.error("unhandled_error path=%s err=%s",
+                     request.url.path, sanitize_msg(repr(exc)))
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "内部服务异常，请查看运行日志"},
         )
 
     # 同源部署（本进程托管静态文件）时不需要 CORS；前端搬去 nginx 再开
@@ -177,9 +193,9 @@ def create_app() -> FastAPI:
     try:
         import worker_daemon
         worker_daemon.start_thread()
-    except Exception:
+    except (OSError, RuntimeError) as exc:
         # 一句守护起不来不该让整个 API 起不来——它是增强项，不是必需项。
-        pass
+        logger.warning("worker_daemon_start_failed err=%s", sanitize_msg(exc))
     return app
 
 

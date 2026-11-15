@@ -290,7 +290,8 @@ class AgentRepository:
             conn.execute(f"UPDATE agent_step SET {sets}, "
                          "updated_at = datetime('now','localtime') WHERE id = ?",
                          (*fields.values(), int(step_id)))
-            return self.step(step_id)
+            updated = self.step(step_id)
+            return updated if updated is not None else row
 
     def cancel_open_steps(self, run_id: int) -> int:
         """取消运行时代动作废。

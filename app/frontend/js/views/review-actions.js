@@ -69,7 +69,7 @@ export async function renderActions(project) {
   // 这也是它存在模块变量里的原因（`flash` 的注解）。
   const flashBar = flash
     ? `<div class="card"><div class="bar ${flash.tone}">${escapeHtml(flash.text)}`
-      + `<button class="btn xs" data-dismiss-flash style="margin-left:8px">知道了</button>`
+      + `<button class="btn xs u-ml-8" data-dismiss-flash>知道了</button>`
       + '</div></div>'
     : '';
   return `
@@ -112,8 +112,7 @@ function detailHtml(d) {
         ${signed ? '' : ''}（批准会绑在这一串上）<br>
         <b>有效期到：</b>${escapeHtml(d.expires_at || '未设')}</p>
       <p class="modal-meta">${escapeHtml(d.binding || '')}</p>
-      ${d.paid ? `<p class="bar warn" style="border:1px solid var(--warn-line);
-          background:var(--warn-soft);padding:8px 12px;border-radius:10px">
+      ${d.paid ? `<p class="bar warn u-warn-box">
         <b>这一步会花钱。</b>${escapeHtml(d.cloud_confirm_note || '')}</p>` : ''}
       <p class="hint">已签记录：${signed}</p>
       <label class="modal-label mt-card" for="action-note" >批注（可选，会跟着签字落库）</label>

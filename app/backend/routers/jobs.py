@@ -13,11 +13,10 @@ import error_catalog
 import job_state
 import jobfiles
 import services
-from db import get_conn
 from deps import require_permission, require_user
 from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
                     JobDiagnosisOut,
-                   JobRetryBatchIn,
+                    JobRetryBatchIn, JobRetryBatchOut,
                     CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
                     JobSubmitIn, LocalCostOut, WorkerStatusOut,
@@ -42,25 +41,11 @@ def _load(job_id: int, user, need: str = "read"):
 
 
 def _check_links(payload: JobSubmitIn) -> None:
-    """集与镜头必须真的属于这个项目；两者同时给时必须互相对得上。
-
-    这不是权限问题（项目那一道已经过了），是输入自相矛盾，所以回 422。
-    """
-    with get_conn() as conn:
-        if payload.episode_id is not None:
-            ep = conn.execute("SELECT project_id FROM episode WHERE id = ?",
-                              (payload.episode_id,)).fetchone()
-            if ep is None or ep["project_id"] != payload.project_id:
-                raise HTTPException(status_code=422, detail="这一集不属于该项目")
-        if payload.shot_id is not None:
-            shot = conn.execute(
-                """SELECT e.project_id, e.id AS episode_id FROM shot s
-                     JOIN episode e ON e.id = s.episode_id WHERE s.id = ?""",
-                (payload.shot_id,)).fetchone()
-            if shot is None or shot["project_id"] != payload.project_id:
-                raise HTTPException(status_code=422, detail="这个镜头不属于该项目")
-            if payload.episode_id is not None and shot["episode_id"] != payload.episode_id:
-                raise HTTPException(status_code=422, detail="这个镜头不在指定的那一集里")
+    """集与镜头必须真的属于这个项目；两者同时给时必须互相对得上。"""
+    try:
+        services.verify_job_links(payload.project_id, payload.episode_id, payload.shot_id)
+    except services.JobInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/jobs", response_model=JobOut, status_code=http_status.HTTP_202_ACCEPTED)
@@ -300,7 +285,7 @@ def retry_job(job_id: int, user=Depends(require_permission("job:submit"))) -> Jo
     return JobOut.from_row(jobs.retry(row, user["id"]))
 
 
-@router.post("/jobs/retry-batch")
+@router.post("/jobs/retry-batch", response_model=JobRetryBatchOut)
 def jobs_retry_batch(payload: JobRetryBatchIn,
                      user=Depends(require_permission("job:submit"))) -> dict:
     """把这一集里卡住的镜头一次重投（任务书 §15 的 P2「批量制作」）。

@@ -1,7 +1,7 @@
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .enums import ASSET_KINDS, AssetKind, EpisodeStatus
 from .tokens import asset_version
@@ -196,3 +196,8 @@ class AssetShotOut(BaseModel):
     # 0034：这一镜点开了这个资产的**哪个形态**（只列属于本资产的，别的资产的形态
     # 不该出现在这条资产的引用清单里）。详情页据此说清"第 3 镜要的是她那套雨夜外套"。
     variant_names: list[str] = []
+
+
+class AssetImpactOut(BaseModel):
+    """资产修改影响评估响应（保留动态受影响镜头与产物分析键）。"""
+    model_config = ConfigDict(extra="allow")

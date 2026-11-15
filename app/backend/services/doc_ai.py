@@ -2,6 +2,7 @@ import adapters
 import docai
 import jobfiles
 import json
+import sqlite3
 
 from config import DOC_MAX_BYTES, LOCK_MINUTES
 from models import JOB_STATUSES, JobEstimateIn
@@ -86,7 +87,7 @@ def doc_ai_options(doc, operation: str, scope: str, start: int, end: int,
 
 
 
-def submit_doc_ai_job(doc, payload, created_by: int | None, actor: str) -> dict:
+def submit_doc_ai_job(doc, payload, created_by: int | None, actor: str) -> sqlite3.Row:
     """把一次文档 AI 操作落成一条 text Job。
 
     Job 里冻结三样东西：拼好的提示词（含选中的原文）、base_version（正文哈希）、

@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .jobs import JobEstimateIn
 
@@ -80,3 +82,24 @@ class ExtractMergeIn(BaseModel):
 
 class ExtractRejectIn(BaseModel):
     reason: str = Field(default="", max_length=500)
+
+
+class ExtractionOptionsOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    doc_id: int
+    doc_title: str = ""
+    version: str = ""
+    chars: int = 0
+    provider: str = ""
+    model: str = ""
+    unit: str = ""
+    unit_price_micros: int = 0
+    currency: str = ""
+    source: str = ""
+    estimated_quantity: float | int = 0
+    prompt_version: str = ""
+
+
+class ExtractionDecisionOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    item: dict[str, Any]

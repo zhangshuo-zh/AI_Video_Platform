@@ -10,7 +10,7 @@ import threading
 import time
 
 from config import LOGIN_LOCK_SECONDS, LOGIN_MAX_FAILS
-from db import get_conn
+from db import get_conn, transaction
 
 
 class UserRepository:
@@ -156,6 +156,15 @@ class UserRepository:
         """
         with get_conn() as conn:
             conn.execute("DELETE FROM app_user WHERE id = ?", (user_id,))
+
+    def transfer_and_delete(self, user_id: int, transfer_to: int, project_ids: list[int]) -> None:
+        """在同一事务内转移名下全部项目并删除账号。"""
+        from repositories.projects import projects as project_repo
+
+        with transaction():
+            for pid in project_ids:
+                project_repo.set_owner(pid, transfer_to)
+            self.delete(user_id)
 
     def all_roles(self) -> list[sqlite3.Row]:
         with get_conn() as conn:

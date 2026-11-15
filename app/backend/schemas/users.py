@@ -1,6 +1,8 @@
 import json
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- 用户与角色（系统设置页） ----------
@@ -82,3 +84,21 @@ class PermissionOut(BaseModel):
 
 class RolePermIn(BaseModel):
     permissions: list[str] = []
+
+
+class AuthProfileOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    user: dict[str, Any]
+    roles: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class OkOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: bool = True
+
+
+class PasswordChangeOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: bool = True
+    relogin: bool = True

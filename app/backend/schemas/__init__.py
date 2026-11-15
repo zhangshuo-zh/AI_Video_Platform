@@ -41,7 +41,7 @@ from .assets import (
 )
 
 from .audio import (
-    AudioClipIn, AudioClipUpdateIn, AudioClipOut
+    AudioClipIn, AudioClipUpdateIn, AudioClipOut, AudioCapabilitiesOut
 )
 
 from .composition import (
@@ -50,7 +50,7 @@ from .composition import (
 
 from .content import (
     EpisodeIn, EpisodeStatusIn, EpisodeOut, ShotIn, ContextIn, ShotOut, AssetIn,
-    AssetOut, AssetCoverIn, AssetShotOut
+    AssetOut, AssetCoverIn, AssetShotOut, AssetImpactOut
 )
 
 from .costs import (
@@ -83,7 +83,7 @@ from .enums import (
 
 from .extraction import (
     ExtractSubmitIn, ExtractRunOut, ExtractItemOut, ExtractAcceptIn, ExtractMergeIn,
-    ExtractRejectIn
+    ExtractRejectIn, ExtractionOptionsOut, ExtractionDecisionOut
 )
 
 from .jobs import (
@@ -92,7 +92,7 @@ from .jobs import (
     WorkerProcessOut, WorkerStartIn, WorkerStopIn,
     WorkerDaemonIn, WorkerDaemonOut,
     NotificationOut, NotificationInboxOut, NotificationReadIn, NotificationReadOut,
-    JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut
+    JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut, JobRetryBatchOut
 )
 
 from .members import (
@@ -105,20 +105,27 @@ from .model_center import (
     EngineInstanceIn, EngineInstancePatch, EngineInstanceOut, ModelPolicyIn, AgentRunIn,
     RuntimePathIn, RuntimePathItem, RuntimePathsOut,
     SecretItem, SecretProbeOut, SecretsOut,
-    SecretValueIn, SecretValueOut, SecretValuesOut
+    SecretValueIn, SecretValueOut, SecretValuesOut,
+    ModelCatalogOut, ModelStatsOut, ModelProbeOut, ModelMutationOut,
+    ModelPoliciesOut, ModelPoliciesSaveOut, ConfigChangesOut, ModelScenesOut, ModelResolveOut,
+    EngineListOut, EngineMutationOut, EngineProbesOut, EngineProbeOut, EngineActionOut,
+    AgentOverviewOut, AgentConfigsOut, AgentToolsOut, AgentPlanOptionsOut,
+    AgentRunCreateOut, AgentRunListOut, AgentRunDetailOut, AgentPendingOut,
+    ChatGPTConnectionOut, ChatGPTModelsOut, ChatGPTDraftOut, ChatGPTAcceptOut, ChatGPTUsageOut
 )
 
 from .pipeline import (
     PipelineRunIn, PipelineCancelIn, PipelineNodeOut, PipelineEventOut,
     PipelineProgressOut, PipelineRunOut, PipelineRunSummaryOut, PipelineTemplateNodeOut,
-    PipelineTemplateOut, JobReviewOut
+    PipelineTemplateOut, JobReviewOut, PipelinePreflightOut
 )
 
 from .production import (
     ProductionEntry, ProductionEpisodeBrief, ProductionAssets, ProductionOverview,
     ProductionStage, ProductionNextTask, ProductionCounts, ProductionBoard,
     ProductionMemory, ProductionDisk, ProductionTeam, ProductionMoney,
-    ProductionEstimate, ProductionStats, ProjectProductionOut
+    ProductionEstimate, ProductionStats, ProjectProductionOut,
+    ContextOut, PrecheckOut, ShotWorkbenchOut
 )
 
 from .projects import (
@@ -130,11 +137,12 @@ from .projects import (
 
 from .review import (
     ReviewSignIn, ReviewCheckItemIn, ReviewCheckIn, ReviewBatchItemIn, ReviewBatchIn,
-    ReviewGateOut, ReviewQueueItem
+    ReviewGateOut, ReviewQueueItem,
+    JobChecklistOut, JobReviewBatchOut, AgentActionQueueOut, AgentStepReviewOut
 )
 
 from .system import (
-    HealthOut
+    HealthOut, ProviderManifestOut
 )
 
 from .tokens import (
@@ -143,7 +151,7 @@ from .tokens import (
 
 from .users import (
     UserOut, UserCreateIn, UserUpdateIn, PasswordResetIn, UserRolesIn, RoleOut,
-    PermissionOut, RolePermIn
+    PermissionOut, RolePermIn, AuthProfileOut, OkOut, PasswordChangeOut
 )
 
 from .workbench import (
@@ -355,6 +363,18 @@ __all__ = [
     "NotificationInboxOut",
     "NotificationReadIn",
     "NotificationReadOut",
+    "AgentActionQueueOut", "AgentConfigsOut", "AgentOverviewOut", "AgentPendingOut",
+    "AgentPlanOptionsOut", "AgentRunCreateOut", "AgentRunDetailOut", "AgentRunListOut",
+    "AgentStepReviewOut", "AgentToolsOut", "AssetImpactOut", "AudioCapabilitiesOut",
+    "AuthProfileOut", "ChatGPTAcceptOut", "ChatGPTConnectionOut", "ChatGPTDraftOut",
+    "ChatGPTModelsOut", "ChatGPTUsageOut", "ConfigChangesOut", "ContextOut",
+    "EngineActionOut", "EngineListOut", "EngineMutationOut", "EngineProbeOut",
+    "EngineProbesOut", "ExtractionDecisionOut", "ExtractionOptionsOut",
+    "JobChecklistOut", "JobRetryBatchOut", "JobReviewBatchOut",
+    "ModelCatalogOut", "ModelMutationOut", "ModelPoliciesOut", "ModelPoliciesSaveOut",
+    "ModelProbeOut", "ModelResolveOut", "ModelScenesOut", "ModelStatsOut",
+    "OkOut", "PasswordChangeOut", "PipelinePreflightOut", "PrecheckOut",
+    "ProviderManifestOut", "ShotWorkbenchOut",
     "_digest",
     "asset_version",
     "profile_version",

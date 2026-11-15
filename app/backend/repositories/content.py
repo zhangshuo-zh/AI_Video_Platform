@@ -188,7 +188,8 @@ class AssetRepository:
         默认 all 是指令 §3.1-C 的"范围筛选"缺省档；`project` 只看自有、
         `global` 只看全局池。
         """
-        clauses, params = [], []
+        clauses: list[str] = []
+        params: list[object] = []
         if scope == "project":
             clauses.append("a.project_id = ?")
             params.append(project_id)

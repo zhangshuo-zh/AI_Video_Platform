@@ -131,7 +131,7 @@ function estimateNote(o) {
   if (!note) return '';
   const tag = (o && o.estimate_kind) === 'exact' ? '' : '预估';
   return `<p class="ai-estimate-note t-dim">${
-    tag ? `<span class="chip gray" style="font-size:10px">${tag}</span> ` : ''
+    tag ? `<span class="chip gray u-fs-10">${tag}</span> ` : ''
   }${escapeHtml(note)}</p>`;
 }
 
@@ -251,7 +251,7 @@ async function renderDocs(tab, subRow) {
         ${d.lock_holder_name && d.lock_holder_id !== store.user?.id
           ? `<span class="chip amber" title="锁到 ${escapeHtml(d.lock_expires_at)}，超时自己松开">
                ${escapeHtml(d.lock_holder_name)} 在改</span>` : ''}
-        <span class="t-dim" style="float:right">
+        <span class="t-dim u-float-r">
           <button class="btn sm danger" data-del-doc="${d.id}" data-title="${escapeHtml(d.title)}"
                   ${canWrite ? '' : 'disabled'}>删</button>
         </span>
@@ -271,13 +271,13 @@ async function renderDocs(tab, subRow) {
       <div class="right">${subRow}</div>
     </div>
 
-    <div class="as-split" style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start">
+    <div class="as-split">
       <div class="card tree">
-        <div class="grp" style="display:flex;justify-content:space-between;align-items:center">
+        <div class="grp u-grp-split">
           <span>${KIND_LABEL[kind]}文档 · ${docs.length} 份</span>
           ${canWrite ? '<button class="btn sm primary" id="doc-new">新建</button>' : ''}
         </div>
-        ${docs.length ? list : '<p class="hint" style="padding:8px 10px;text-align:left">这一类还没有稿子。</p>'}
+        ${docs.length ? list : '<p class="hint u-pad-hint">这一类还没有稿子。</p>'}
       </div>
       ${body}
     </div>
@@ -299,7 +299,7 @@ function editorHtml(doc) {
       <span class="sub">${escapeHtml(doc.rel_path)}</span>
       <div class="right">
         ${canWrite ? `
-          <select id="doc-status" class="ctl sm" style="width:auto"
+          <select id="doc-status" class="ctl sm u-w-auto"
                   title="草稿 → 润色 → 定稿；定稿只改状态，不冻结内容">
             ${Object.entries(DOC_STATUS).map(([key, [text]]) => `
               <option value="${key}"${key === doc.status ? ' selected' : ''}>${text}</option>`).join('')}
@@ -329,11 +329,11 @@ function editorHtml(doc) {
           <div><span class="grp">工作区里现在这份</span>
             <pre class="diff">${escapeHtml(serverCopy)}</pre></div>
         </div>
-        <p class="row" style="gap:8px">
+        <p class="row u-gap-8">
           <button class="btn sm" id="doc-conflict-use">用盘上这份，丢掉我的草稿</button>
           <button class="btn sm" id="doc-conflict-refresh">刷新版本令牌</button>
         </p>
-        <p class="hint" style="text-align:left">「刷新版本令牌」＝ 对照过了，确认要用我这边这份覆盖盘上那份。</p>
+        <p class="hint u-text-left">「刷新版本令牌」＝ 对照过了，确认要用我这边这份覆盖盘上那份。</p>
       </div>` : ''}
 
     ${notice ? `<div class="bar ok">${escapeHtml(notice)}</div>` : ''}
@@ -341,17 +341,15 @@ function editorHtml(doc) {
     <textarea id="doc-text" class="ctl doc-area" spellcheck="false"
               ${canWrite ? '' : 'readonly'} placeholder="在这里写正文……">${escapeHtml(draft ?? '')}</textarea>
 
-    <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px;
-         display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <div class="card-body u-card-foot u-foot-bar">
       <span class="sub" id="doc-count">${charCount(draft)} 字</span>
       <span class="sub" id="doc-commit">${doc.git_commit ? '当前提交 ' + doc.git_commit.slice(0, 8) : '还没有提交记录'}</span>
-      <span class="sub" id="doc-updated" data-created="${escapeHtml(doc.created_at)}"
-            style="margin-left:auto">创建 ${escapeHtml(doc.created_at)}
+      <span class="sub u-ml-auto" id="doc-updated" data-created="${escapeHtml(doc.created_at)}">创建 ${escapeHtml(doc.created_at)}
         · 改动 ${escapeHtml(doc.updated_at)}</span>
     </div>
 
-    <div id="doc-hist-panel" hidden class="card-body" style="border-top:1px solid var(--line)">
-      <p class="hint" style="text-align:left">版本历史来自工作区的 Git 仓库，最多列最近 30 次。</p>
+    <div id="doc-hist-panel" hidden class="card-body u-bt">
+      <p class="hint u-text-left">版本历史来自工作区的 Git 仓库，最多列最近 30 次。</p>
       <div id="doc-hist-list"><span class="sub">载入中…</span></div>
       <pre id="doc-diff" class="diff" hidden></pre>
     </div>
@@ -680,7 +678,7 @@ function mountDocs(root, tab) {
           <span class="v-subj" title="${escapeHtml(v.subject)}">${escapeHtml(v.subject)}</span>
           <span class="v-when">${escapeHtml(v.at)} · ${escapeHtml(v.author)}</span>
           <button class="btn sm" data-diff>看差异</button>
-        </div>`).join('') : '<p class="hint" style="text-align:left">还没有提交记录。</p>';
+        </div>`).join('') : '<p class="hint u-text-left">还没有提交记录。</p>';
       listEl.querySelectorAll('[data-ver]').forEach((row) => {
         row.addEventListener('click', async () => {
           const pre = root.querySelector('#doc-diff');
@@ -811,7 +809,7 @@ function paintEx(root) {
     body.innerHTML = ex.error
       ? `<p class="modal-meta">报价没取到：${escapeHtml(ex.error)}</p>
          <p class="ai-estimate-note t-dim">
-           <span class="chip amber" style="font-size:10px">预估</span>
+           <span class="chip amber u-fs-10">预估</span>
            这一笔的真实费用要以供应商账单为准；报价恢复后才能提交（数量与单价必须由服务端核）。</p>
          ${err}`
       : `<p class="modal-meta">正在取计价与健康…</p>${err}`;
@@ -912,12 +910,12 @@ function paintEx(root) {
               data-ex-kind="${k}">${labels[k]} ${n}</button>`;
   }).join('');
   const cards = list.map((item) => exCard(item, root)).join('')
-    || '<p class="hint" style="text-align:left">这一类没有候选。</p>';
+    || '<p class="hint u-text-left">这一类没有候选。</p>';
   const exportBtn = ex.kind === 'shot' && list.length
     ? `<a class="btn sm" target="_blank" rel="noopener"
           href="/api/extract/runs/${run.id}/shots.md">导出 Markdown</a>` : '';
   body.innerHTML = `
-    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <div class="row u-between u-wrap u-gap-8">
       <div class="ai-ops" id="ex-kinds">${tabs}</div>
       <span class="t-desc">共 ${ex.items.length} 条 · 待处理 ${run.counts.pending} ·
         已入库 ${run.counts.accepted} · 已合并 ${run.counts.merged} · 已驳回 ${run.counts.rejected}</span>
@@ -957,7 +955,7 @@ function exCard(item, root) {
       <button class="btn sm" data-ex-accept="${item.id}">入库</button>`;
   return `
     <div class="ex-card">
-      <div class="row" style="justify-content:space-between;gap:8px">
+      <div class="row u-between u-gap-8">
         <div><span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${escapeHtml(item.kind_label)}</span>
           <b>${escapeHtml(title)}</b>
           ${item.confidence != null ? `<span class="t-desc">把握 ${item.confidence}</span>` : ''}</div>
@@ -966,7 +964,7 @@ function exCard(item, root) {
       <div class="ex-fields">${fields}</div>
       ${evidence.quote ? `<blockquote class="ex-quote">${escapeHtml(evidence.quote)}
         <span class="t-desc">原文 ${evidence.start}–${evidence.end}</span></blockquote>` : ''}
-      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+      <div class="row u-gap-6 u-wrap u-mt-8">
         ${item.status === 'pending' ? targets : ''}
         ${item.status === 'pending' && item.kind !== 'shot'
           ? `<button class="btn sm danger" data-ex-reject="${item.id}">驳回</button>` : ''}
@@ -1437,9 +1435,9 @@ async function renderShots(tab, subRow) {
     // 只有 doc:read 的人原来也会拿到这一行输入框和按钮，点下去吃 403——
     // 这一页其余的写动作都已经按同一口径收过一遍了，这一行是最开始漏的。
     const createEp = store.can('doc:write') ? `
-      <div class="card-body" style="border-top:1px solid var(--line);padding:8px">
-        <div class="row" style="gap:6px">
-          <input id="ep-title" class="ctl sm" placeholder="新集标题" style="flex:1;min-width:0">
+      <div class="card-body u-bt u-pad-8">
+        <div class="row u-gap-6">
+          <input id="ep-title" class="ctl sm u-flex-1" placeholder="新集标题">
           <button class="btn sm primary" id="ep-create">建一集</button>
         </div>
       </div>` : '';
@@ -1504,7 +1502,7 @@ async function renderShots(tab, subRow) {
       <div class="t ${e.id === pickedEpisodeId ? 'on' : ''}" data-pick="${e.id}">
         第 ${e.seq} 集 · ${escapeHtml(e.title)}
         <span class="chip ${tone}" title="本集状态，改它用右侧的下拉">${label}</span>
-        <span class="t-dim" style="float:right">${e.shot_count} 镜
+        <span class="t-dim u-float-r">${e.shot_count} 镜
           <button class="btn sm danger" data-del-ep="${e.id}"
                   data-label="第 ${e.seq} 集「${escapeHtml(e.title)}」"
                   data-shots="${e.shot_count}">删</button>
@@ -1570,7 +1568,7 @@ async function renderShots(tab, subRow) {
         <div class="right"><span class="chip plain">${shots.length} 镜</span>${subRow}</div>
       </div>
 
-      <div class="as-split" style="display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;align-items:start">
+      <div id="shots-split" class="as-split">
         <div class="card tree">
           <div class="grp">创作单元 · 建与删都在这一栏</div>
           ${epList}
@@ -1583,7 +1581,7 @@ async function renderShots(tab, subRow) {
             <div class="right">
               ${canWrite ? '<button class="btn sm primary" id="shot-new">新建镜头</button>' : ''}
               <span class="sub">本集状态</span>
-              <select id="ep-status" class="ctl sm" style="width:auto"
+              <select id="ep-status" class="ctl sm u-w-auto"
                       title="改成「定稿」后，项目中心那一页的进度会跟着走">
                 ${Object.entries(EP_STATUS).map(([key, [text]]) => `
                   <option value="${key}"${key === current.status ? ' selected' : ''}>${text}</option>`).join('')}
@@ -1606,8 +1604,8 @@ async function renderShots(tab, subRow) {
             ${canWrite ? '<p><button class="btn primary" id="shot-new-empty">新建第一镜</button></p>' : ''}
             </div>`}
 
-          <div class="card-body" style="border-top:1px solid var(--line);padding:8px 12px">
-            <p class="hint" style="text-align:left;margin:0">
+          <div class="card-body u-card-foot">
+            <p class="hint u-text-left u-m-0">
             提示词留空时，生成用内容那一栏；引用资产只读，点名字到资产中心。
             作业状态由队列说了算，这一页只显示、不修改。
             </p>
@@ -1636,15 +1634,15 @@ function shotModalHtml() {
                       placeholder="可留空；生成时用内容那一栏"></textarea>
 
             <label for="sm-duration">时长（秒）</label>
-            <input id="sm-duration" class="ctl" type="number" min="1" max="60"
-                   step="1" value="5" style="width:120px">
+            <input id="sm-duration" class="ctl u-w-120" type="number" min="1" max="60"
+                   step="1" value="5">
 
             <label class="top">引用资产</label>
             <div class="shot-pick">
               <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
               <div id="sm-assets" class="asset-pick"></div>
               <div id="sm-variants" class="variant-pick"></div>
-              <p class="hint" style="text-align:left"
+              <p class="hint u-text-left"
                  title="角色／场景／道具的内容到资产中心改。选中的是哪一套形态会记在这一镜上；旧素材会不会因此过期，看分镜表那格「源已变」。">
                 只选引用。换衣服不用另建人物，形态记在这一镜上。</p>
             </div>
@@ -1835,7 +1833,7 @@ function mountShots(root) {
         return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
           <div class="pick-row">${chips}</div></div>`;
       }).join('') + (shotEdit.sel.size ? `
-        <div class="as-actions" style="margin-top:6px">
+        <div class="as-actions u-mt-6">
           <button type="button" class="btn xs" data-merge-variant-prompt
             title="把选中形态的提示词并进这一镜的提示词；并进的是文本，你还能改">
             把形态描述并进提示词</button>

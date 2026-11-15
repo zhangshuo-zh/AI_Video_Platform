@@ -439,7 +439,7 @@ export default {
         <div class="modal-box wide">
           <div class="modal-head neutral">参数模板</div>
           <div class="modal-body">
-            <p class="modal-meta" style="margin-top:0">模板只预填下一次提交，不改已经落库的 Job 参数快照。</p>
+            <p class="modal-meta u-mt-0">模板只预填下一次提交，不改已经落库的 Job 参数快照。</p>
             <div id="pf-list" class="pf-list"></div>
             <div class="pf-edit">
               <h3 id="pf-form-title">新建模板</h3>
@@ -472,7 +472,7 @@ export default {
         <div class="modal-box">
           <div class="modal-head neutral" id="rc-title">核对云端作业</div>
           <div class="modal-body">
-            <p class="modal-meta" id="rc-meta" style="margin-top:0"></p>
+            <p class="modal-meta u-mt-0" id="rc-meta"></p>
             <div class="form-grid">
               <label for="rc-decision">核对结果</label>
               <select id="rc-decision" class="ctl">
@@ -1057,7 +1057,7 @@ export default {
         title: '把这条云端作业标记为待核对？',
         body: `<p>供应商说成功、产物却打不开，或用量与预计差很多时用。
           标记后账单挂起，<b>核对前不要重试</b>，可能重复计费。</p>
-          <p><input id="att-reason" class="ctl" maxlength="500" style="width:100%"
+          <p><input id="att-reason" class="ctl u-w-full" maxlength="500"
             placeholder="为什么待核对，例如 产物打不开 / 用量与预计不符"></p>`,
         okText: '标记待核对', danger: false,
       });

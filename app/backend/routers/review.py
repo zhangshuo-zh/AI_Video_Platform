@@ -10,8 +10,9 @@ import agents as agents_mod           # 智能体的动作审批读它，不读�
 import reviewgate
 import services
 from deps import require_permission
-from models import (JobReviewOut, ReviewBatchIn, ReviewCheckIn, ReviewGateOut,
-                    ReviewQueueItem, ReviewSignIn)
+from models import (AgentActionQueueOut, AgentStepReviewOut, JobChecklistOut,
+                    JobReviewBatchOut, JobReviewOut, ReviewBatchIn,
+                    ReviewCheckIn, ReviewGateOut, ReviewQueueItem, ReviewSignIn)
 from repositories.agents import agent_runs
 from repositories.documents import documents as docs
 from repositories.jobs import jobs as job_repo
@@ -103,7 +104,7 @@ def job_review(job_id: int, request: Request,
     return JobReviewOut(**services.job_review_state(row, can_sign=can_sign))
 
 
-@router.get("/jobs/{job_id}/review-checklist")
+@router.get("/jobs/{job_id}/review-checklist", response_model=JobChecklistOut)
 def job_checklist_view(job_id: int,
                        user=Depends(require_permission("review:read"))) -> dict:
     """一条作业的审核清单：自动项现算 ＋ 人工项已存的结论 ＋ 能不能签字的结论。
@@ -115,7 +116,7 @@ def job_checklist_view(job_id: int,
     return services.job_checklist(_job(job_id, user))
 
 
-@router.post("/jobs/{job_id}/review-checklist")
+@router.post("/jobs/{job_id}/review-checklist", response_model=JobChecklistOut)
 def job_checklist_save_view(job_id: int, payload: ReviewCheckIn,
                             user=Depends(require_permission("review:sign"))) -> dict:
     """保存人工清单结论。项不属于这一类能力的清单整批拒（422），不往里掺野 code。"""
@@ -127,7 +128,7 @@ def job_checklist_save_view(job_id: int, payload: ReviewCheckIn,
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post("/jobs/review-batch")
+@router.post("/jobs/review-batch", response_model=JobReviewBatchOut)
 def job_review_batch_view(payload: ReviewBatchIn,
                           user=Depends(require_permission("review:sign"))) -> dict:
     """批量签字：整批同一个结论，逐条落地、逐条报原因。
@@ -179,7 +180,7 @@ def job_review_sign(job_id: int, payload: ReviewSignIn,
 # 审"一次动作能不能发生"，参数就是被审对象，所以参数一改指纹变、旧批准失配，
 # 与"正文改一个字旧签字作废"是同一条道理。
 
-@router.get("/projects/{project_id}/agent-action-reviews")
+@router.get("/projects/{project_id}/agent-action-reviews", response_model=AgentActionQueueOut)
 def agent_action_queue(project_id: int,
                        user=Depends(require_permission("review:read"))) -> dict:
     """这一集里正在等人批的步骤。只读——要签就走下面那条。"""
@@ -190,7 +191,7 @@ def agent_action_queue(project_id: int,
             "note": "批准的是上面那组参数；参数一改指纹就变，旧批准自动作废"}
 
 
-@router.get("/agent-steps/{step_id}/review")
+@router.get("/agent-steps/{step_id}/review", response_model=AgentStepReviewOut)
 def agent_step_review(step_id: int,
                       user=Depends(require_permission("review:read"))) -> dict:
     """审批那一张卡：完整参数、往外送什么、按什么计价、有效期、已签记录。"""
@@ -200,7 +201,7 @@ def agent_step_review(step_id: int,
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/agent-steps/{step_id}/review-sign")
+@router.post("/agent-steps/{step_id}/review-sign", response_model=AgentStepReviewOut)
 def agent_step_review_sign(step_id: int, payload: ReviewSignIn,
                            user=Depends(require_permission("review:sign"))) -> dict:
     """给智能体的一个动作签字（批准／驳回／退回）。

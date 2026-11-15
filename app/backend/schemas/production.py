@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- 生产工作台（跨模块聚合，键最多的一组） ----------
@@ -201,3 +201,19 @@ class ProjectProductionOut(BaseModel):
     # 让界面不用再抄一份；它们不由用户数据驱动。
     stages: list[dict] = Field(default_factory=list)
     statuses: list[str] = Field(default_factory=list)
+
+
+class ContextOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    project_id: int | None = None
+    episode_id: int | None = None
+
+
+class PrecheckOut(BaseModel):
+    """镜头/整集/合成前统一预检响应（保留全部预检明细键）。"""
+    model_config = ConfigDict(extra="allow")
+
+
+class ShotWorkbenchOut(BaseModel):
+    """单镜头八段一屏工作台响应（保留全部关联生产键）。"""
+    model_config = ConfigDict(extra="allow")

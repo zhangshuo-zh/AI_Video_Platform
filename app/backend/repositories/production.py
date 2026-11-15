@@ -180,7 +180,7 @@ class ProductionRepository:
                 "no_prompt": int(row["no_prompt"] or 0),
                 "no_refs": int(row["no_refs"] or 0)}
 
-    def job_status_by_shot(self, episode_id: int) -> dict[str, dict[str, int]]:
+    def job_status_by_shot(self, episode_id: int) -> dict[str, dict[str, dict[str, int]]]:
         """这一集每条镜头的最新作业状态，按能力归堆。
 
         返回 `{"video": {"succeeded": 9, "failed": 1, ...}, "image": {...}, "text": {...}}`。
@@ -194,7 +194,7 @@ class ProductionRepository:
                      JOIN shot s ON s.id = j.shot_id
                     WHERE s.episode_id = ?
                     GROUP BY j.capability, j.status""", (episode_id,)).fetchall()
-        out: dict[str, dict[str, int]] = {}
+        out: dict[str, dict[str, dict[str, int]]] = {}
         for r in rows:
             out.setdefault(r["capability"], {})[r["status"]] = {
                 "shots": int(r["shots"]), "jobs": int(r["n"])}

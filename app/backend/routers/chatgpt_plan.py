@@ -13,9 +13,9 @@ import agents
 import agent_tools
 import chatgpt_plan as chatgpt
 import chatgpt_usage
-from db import transaction
 from deps import require_permission
-from repositories.agents import STEP_PENDING, agent_runs
+from models import (ChatGPTAcceptOut, ChatGPTConnectionOut, ChatGPTDraftOut,
+                    ChatGPTModelsOut, ChatGPTUsageOut)
 from repositories.content import episodes, shots
 
 router = APIRouter(prefix='/api/agent/chatgpt', tags=['agents'])
@@ -42,12 +42,12 @@ def _error(exc):
     return HTTPException(422, str(exc))
 
 
-@router.get('/connection')
+@router.get('/connection', response_model=ChatGPTConnectionOut)
 def connection(user=Depends(require_permission('job:submit'))):
     return chatgpt.status(user['id'])
 
 
-@router.post('/authorize')
+@router.post('/authorize', response_model=ChatGPTConnectionOut)
 def authorize(payload: LoginIn, request: Request,
               user=Depends(require_permission('job:submit'))):
     # 浏览器必须与后端在同一台电脑，授权回调才可到达 loopback listener。
@@ -56,12 +56,12 @@ def authorize(payload: LoginIn, request: Request,
     return chatgpt.start_login(user['id'], payload.new_account)
 
 
-@router.delete('/connection')
+@router.delete('/connection', response_model=ChatGPTConnectionOut)
 def disconnect(user=Depends(require_permission('job:submit'))):
     return chatgpt.disconnect(user['id'])
 
 
-@router.get('/models')
+@router.get('/models', response_model=ChatGPTModelsOut)
 def model_list(user=Depends(require_permission('job:submit'))):
     try:
         return {'items': chatgpt.models(user['id'])}
@@ -78,7 +78,7 @@ def _view(draft):
     return out
 
 
-@router.post('/drafts')
+@router.post('/drafts', response_model=ChatGPTDraftOut)
 def generate(payload: DraftIn, user=Depends(require_permission('job:submit'))):
     access.ensure(user, payload.project_id, 'read')
     episode = episodes.get(payload.episode_id) if payload.episode_id else None
@@ -125,7 +125,7 @@ def _load(user, key):
     return name, draft
 
 
-@router.get('/drafts/{key}')
+@router.get('/drafts/{key}', response_model=ChatGPTDraftOut)
 def draft_status(key: UUID, user=Depends(require_permission('job:submit'))):
     _, draft = _load(user, key)
     if draft['state'] == 'generating' and time.time() - draft['created_at'] > 180:
@@ -133,40 +133,20 @@ def draft_status(key: UUID, user=Depends(require_permission('job:submit'))):
     return _view(draft)
 
 
-@router.post('/drafts/{key}/accept')
+@router.post('/drafts/{key}/accept', response_model=ChatGPTAcceptOut)
 def accept(key: UUID, payload: AcceptIn, user=Depends(require_permission('job:submit'))):
-    name, _ = _load(user, key)
-    with chatgpt._lock(name):
-        _, draft = _load(user, key)
-        if draft['state'] != 'ready':
-            raise HTTPException(409, '请先取得完整且可解析的计划草案')
-        # 复用运行层的持久幂等键，即使在事务提交后进程中断也不会建两条运行。
-        with transaction():
-            idem = f'chatgpt-{user["id"]}-{key}'
-            run = agent_runs.by_idempotency(idem)
-            if run is None:
-                steps = agents.parse_plan(json.dumps(draft['steps']))
-                run = agent_runs.create(dict(project_id=draft['project_id'],
-                    episode_id=draft['episode_id'], goal=draft['goal'],
-                    approval_valid_seconds=payload.approval_valid_seconds,
-                    idempotency_key=idem, created_by=user['id'],
-                    model_snapshot={'backend': 'cloud', 'provider': 'chatgpt_plan',
-                                    'model': draft['model'], 'route_source': 'chatgpt_oauth',
-                                    'cost_note': '使用个人 ChatGPT 套餐额度'}))
-                agent_runs.set_will(run['id'], paused=True)
-                agent_runs.set_plan(run['id'], steps)
-                agent_runs.set_plan_status(run['id'], 'ready')
-                for step in steps:
-                    agent_runs.add_step(run['id'], step['seq'], tool_code=step['tool'],
-                        args=step['args'], args_hash=step['args_hash'], risk=step['risk'], status=STEP_PENDING)
-                agent_runs.add_event('plan_ready', run_id=run['id'], actor_id=user['id'],
-                    payload={'source': 'chatgpt_plan', 'steps': len(steps), 'paused': True})
-            draft['run_id'] = run['id']
-        chatgpt._write(name, draft)
-    return {'run_id': run['id'], 'note': '已创建暂停的运行。查看步骤后，可在运行详情中恢复执行。'}
+    try:
+        run_id = chatgpt.accept_draft(
+            user['id'], str(key), payload.approval_valid_seconds,
+            ensure_access=lambda pid: access.ensure(user, pid, 'read'))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except chatgpt.DraftNotReadyError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {'run_id': run_id, 'note': '已创建暂停的运行。查看步骤后，可在运行详情中恢复执行。'}
 
 
-@router.get('/usage')
+@router.get('/usage', response_model=ChatGPTUsageOut)
 def usage(days: int = Query(7, ge=1, le=30), project_id: int | None = None,
           user=Depends(require_permission('job:submit'))):
     if days not in (7, 30):

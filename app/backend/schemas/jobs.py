@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Literal
 
 import job_state
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .enums import BACKENDS, BILLABLE_LABELS, CAPABILITIES, ERROR_LABELS, JOB_STATUSES
 
@@ -440,3 +440,8 @@ class JobRetryPreviewOut(BaseModel):
     chain_pending: int = 0
     may_charge_again: bool = False
     warning: str = ""
+
+
+class JobRetryBatchOut(BaseModel):
+    """批量重试执行摘要（保留逐条结果与状态计数）。"""
+    model_config = ConfigDict(extra="allow")

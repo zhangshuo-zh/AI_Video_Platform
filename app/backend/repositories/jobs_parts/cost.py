@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from db import get_conn
 
 from .common import BILLABLE_WHERE
 
 
 class JobsCostMixin:
+    if TYPE_CHECKING:
+        def _scope(self, project_ids: list[int] | None) -> tuple[str, list[int]]: ...
 
     def cost_summary(self, project_ids: list[int] | None) -> dict:
         """按币种 × 能力汇总。金额口径见 `BILLABLE_WHERE`，项目看板共用那一条。"""
