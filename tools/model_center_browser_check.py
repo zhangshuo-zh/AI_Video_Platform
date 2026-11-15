@@ -125,7 +125,7 @@ def seed_db() -> None:
     admin = _admin_id()
     with get_conn() as conn:
         conn.execute("UPDATE model_policy SET required_json=? WHERE scene_key='character_variant'",
-                     (json.dumps(["图生图", "参考图"]),))
+                     (json.dumps(["图生图", "参考图", "局部重绘"]),))
         conn.execute("UPDATE model_policy SET enabled=0, slot_provider='', slot_model='' "
                      "WHERE scene_key='character_variant'")
 
@@ -1028,8 +1028,8 @@ def main():
         check("调用策略有九个场景",
               P.eval_js(cdp, "document.querySelectorAll('tr.policy').length") == 9,
               str(P.eval_js(cdp, "document.querySelectorAll('tr.policy').length")) + " 行")
-        # 「配不出来」与「待配置」必须分开显示：image 轴没有任何一档登记过图片
-        # 输入参数，所以 character_variant 要的「图生图 + 参考图」在清单里没有来源。
+        # 「配不出来」与「待配置」必须分开显示：M2/M4 已为图像轴补齐图生图与参考图参数，
+        # 因此这里另以清单里没有任何来源的「局部重绘」守住缺来源展示与保存留存契约。
         # 同时钉住反向半边：清单能产出的能力（scene_prompt 只要文本生成）不许被误标。
         marked = P.eval_js(
             cdp, "(() => { const row = [...document.querySelectorAll('tr.policy')]"
@@ -1067,8 +1067,8 @@ def main():
               req.get('boxes', 0) >= 2 and '文本生成' in req.get('checked', []),
               f"scene_prompt 勾选项 {req.get('boxes')} 个，勾着 {req.get('checked')}")
         check("缺来源的既有标签仍显示并标注缺来源",
-              all(any(tag in label for label in req.get("missing", []))
-                  for tag in ("图生图", "参考图")), str(req.get("missing")))
+              any("局部重绘" in label for label in req.get("missing", [])),
+              str(req.get("missing")))
         # 降一次必需项再存回去：走一遍真保存，钉住"写路径真的通"。
         # （scene_prompt 种子勾着「文本生成+结构化输出」；降掉「结构化输出」
         # 再存，界面刷新后那一格应只剩「文本生成」。）
@@ -1091,7 +1091,7 @@ def main():
         saved_required = cdp.eval("""fetch('/api/model-policies').then(r => r.json())
             .then(body => body.items.find(row => row.scene_key === 'character_variant').required)""")
         check("保存其他场景后仍保留图生图和参考图要求",
-              isinstance(saved_required, list) and set(saved_required) == {"图生图", "参考图"},
+              isinstance(saved_required, list) and set(saved_required) == {"图生图", "参考图", "局部重绘"},
               str(saved_required))
         saved_policy = cdp.eval("""fetch('/api/model-policies').then(r => r.json())
             .then(body => body.items.find(row => row.scene_key === 'character_variant'))""")
@@ -1100,7 +1100,7 @@ def main():
               and "清单缺能力" in str(P.eval_js(cdp,
                   "document.querySelector('tr[data-key=character_variant]').innerText"))
               and P.eval_js(cdp,
-                  "document.querySelectorAll('tr[data-key=character_variant] [data-req]:checked').length") == 2)
+                  "document.querySelectorAll('tr[data-key=character_variant] [data-req]:checked').length") == 3)
         # 存回去，别让降下来的配置留在副本库里影响后面断言
         P.eval_js(cdp, """(() => {
           const row = [...document.querySelectorAll('tr.policy')]
@@ -1116,10 +1116,11 @@ def main():
         check("非法策略被拒且错误原话可见",
               P.eval_js(cdp, "document.body.innerText.includes('要启用就得选一条建议轨')"))
 
-        # 恢复合法状态，明确取消一个缺来源要求后保存，再次保存仍应保留另一个。
+        # 恢复合法状态，明确取消「局部重绘」与「图生图」要求后保存，再次保存仍应保留「参考图」。
         P.eval_js(cdp, """(() => {
           const row = document.querySelector('tr[data-key=character_variant]');
           row.querySelector('[data-f="on"]').checked = false;
+          row.querySelector('[data-req="局部重绘"]').checked = false;
           row.querySelector('[data-req="图生图"]').checked = false;
         })()""")
         P.click(cdp, "#save-policies")
