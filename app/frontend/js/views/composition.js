@@ -208,8 +208,12 @@ function subtitleHtml(state) {
     return `<select class="ctl" id="cp-sub" disabled>
         <option value="">这台机器的 FFmpeg 烧不了字幕</option>${opts}
       </select>
+      <div class="row cp-srt-tools">
+        <button class="btn xs primary" id="cp-sub-auto" type="button">✨ 按分镜台词生成字幕</button>
+      </div>
+      ${state.generated_path ? `<p class="hint cp-srt-hint">已生成字幕：${escapeHtml(state.generated_path)}</p>` : ''}
       <p class="hint cp-srt-hint">${escapeHtml(state.ffmpeg_hint || '这台机器的 FFmpeg 没有 subtitles 滤镜。')}</p>
-      ${items.length ? '' : '<p class="hint">传上去的字幕会留在本项目里，装好带 libass 的 FFmpeg 再选。</p>'}`;
+      ${items.length ? '' : '<p class="hint">生成或上传的字幕会留在本项目里，导出工程包或装好带 libass 的 FFmpeg 后可用。</p>'}`;
   }
   const opts = items.map((s) =>
     `<option value="${escapeHtml(s.path)}">${escapeHtml(s.name)} · `
@@ -218,6 +222,7 @@ function subtitleHtml(state) {
       <option value="">不用字幕</option>${opts}
     </select>
     <div class="row cp-srt-tools">
+      <button class="btn xs primary" id="cp-sub-auto" type="button">✨ 按分镜台词生成字幕</button>
       <label class="btn xs cp-srt-upload">上传 .srt／.vtt
         <input type="file" id="cp-sub-file" accept=".srt,.vtt" hidden>
       </label>
@@ -352,6 +357,23 @@ export default {
         } catch (e) {
           err.textContent = e.message || '字幕没传上去。';
           err.hidden = false;
+        }
+      });
+      subWrap.querySelector('#cp-sub-auto')?.addEventListener('click', async () => {
+        const episodeId = Number(modal.querySelector('#cp-ep')?.value);
+        const err = modal.querySelector('#cp-modal-err');
+        if (!episodeId) {
+          if (err) { err.textContent = '先选一集，再按分镜台词生成字幕。'; err.hidden = false; }
+          return;
+        }
+        try {
+          subState = await api.generateAutoSubtitles(store.current.id, episodeId);
+          paintSubs();
+          const sel = subWrap.querySelector('#cp-sub');
+          if (subState.generated_path && sel && !sel.disabled) sel.value = subState.generated_path;
+          if (err) err.hidden = true;
+        } catch (e) {
+          if (err) { err.textContent = e.message || '自动字幕生成失败。'; err.hidden = false; }
         }
       });
       subWrap.querySelector('[data-cp-sub-del]')?.addEventListener('click', async () => {

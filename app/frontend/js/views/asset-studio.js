@@ -574,6 +574,7 @@ function variantPanel(d) {
         <b>${escapeHtml(v.name)}</b>
         <span class="chip plain">${escapeHtml(v.variant_type_label)}</span>
         <span class="t-dim">${v.image_count} 图${v.source_job_id ? ` · 来源作业 #${v.source_job_id}` : ''}</span>
+        <label class="btn xs">上传图<input type="file" accept="image/png,image/jpeg,image/webp" data-upload-variant="${v.id}" hidden></label>
         <button class="btn xs" data-edit-variant="${v.id}">${editing ? '收起' : '改名与提示词'}</button>
         <button class="btn xs ghost" data-move-variant="${v.id}" data-dir="-1"
                 ${idx === 0 ? 'disabled' : ''} title="往前排">↑</button>
@@ -1219,6 +1220,18 @@ function bindLive(root, d) {
         okText: '删这张',
       }))) return;
       const ok = await run('删这张图', () => api.deleteAssetVariantImage(Number(vid), path));
+      if (ok) refresh();
+    });
+  });
+  root.querySelectorAll('[data-upload-variant]').forEach((inp) => {
+    if (inp.dataset.bound) return;
+    inp.dataset.bound = '1';
+    inp.addEventListener('change', async () => {
+      const picked = inp.files?.[0];
+      if (!picked) return;
+      const vid = Number(inp.dataset.uploadVariant);
+      const ok = await run('上传形态图', () => api.uploadVariantImage(vid, picked));
+      inp.value = '';
       if (ok) refresh();
     });
   });

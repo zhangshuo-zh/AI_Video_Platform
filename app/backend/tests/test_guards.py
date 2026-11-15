@@ -75,6 +75,7 @@ ROUTES = [
     ("DELETE", "/api/asset-variants/{v}", None, 404),
     # v0.99：形态的图也要有删除出口（0033 只有"删整个形态"，导错一张就得全删）。
     # 同样先撞"形态不存在"＝404，不因为多了个 query 参数就变成另一套显隐规则。
+    ("POST", "/api/asset-variants/{v}/images", "FILE", 404),
     ("DELETE", "/api/asset-variants/{v}/images?path=x", None, 404),
     ("POST", "/api/projects/{p}/asset-generations",
      {"operation": "asset_image", "image_prompt": "越权提交"}, 404),
@@ -126,6 +127,7 @@ ROUTES = [
     ("POST", "/api/extract/items/{t}/merge", {"asset_id": "{a}"}, 404),
     ("POST", "/api/extract/items/{t}/reject", {"reason": "x"}, 404),
     ("GET", "/api/extract/runs/{x}/shots.md", None, 404),
+    ("POST", "/api/extract/runs/{x}/import-shots", {}, 404),
     # ---------- 审核中心（W14） ----------
     ("GET", "/api/projects/{p}/reviews", None, 404),
     ("GET", "/api/documents/{d}/review-gate", None, 404),
@@ -242,6 +244,7 @@ ROUTES = [
     # 字幕：文件不进库，但同样要登录、要看得见项目
     ("GET", "/api/projects/{p}/composition-subtitles", None, 404),
     ("POST", "/api/projects/{p}/composition-subtitles", "FILE", 404),
+    ("POST", "/api/projects/{p}/episodes/{e}/composition-subtitles/auto", {}, 404),
     ("DELETE", "/api/projects/{p}/composition-subtitles?path=x", None, 404),
     # ---------- 整季生产（阶段 E） ----------
     ("GET", "/api/projects/{p}/seasons", None, 404),

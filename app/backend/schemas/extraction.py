@@ -103,3 +103,16 @@ class ExtractionOptionsOut(BaseModel):
 class ExtractionDecisionOut(BaseModel):
     model_config = ConfigDict(extra="allow")
     item: dict[str, Any]
+
+
+class ExtractShotImportIn(BaseModel):
+    episode_id: int | None = None
+
+
+class ExtractShotImportOut(BaseModel):
+    run_id: int
+    episode_id: int
+    created_shot_ids: list[int] = Field(default_factory=list)
+    skipped_item_ids: list[int] = Field(default_factory=list)
+    matched_assets: int = 0
+

@@ -24,6 +24,7 @@ from jobfiles import resolve_artifact, resolve_subtitle
 from runners import RunSpec, RunnerUnavailable
 
 from composition import interpolate, validators
+from composition.timeline import crossfade_overlap_ms
 from composition.validators import MediaInvalid
 
 
@@ -99,22 +100,118 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         raise CompositionJobInvalid(f"合成前检查：{exc.message}") from exc
 
     concat_path = outputs / f"{job['id']}-inputs.txt"
-    total_ms = 0
+    shot_targets: list[Path] = []
     lines = []
+    has_trim_or_transition = False
     for shot in shots:
         target = resolve_artifact((shot.get("video") or {}).get("path") or "")
         if target is None:                       # verify_inputs 刚查过，这里是双保险
             raise CompositionJobInvalid(f"第 {shot.get('seq')} 镜的视频文件不在了")
+        shot_targets.append(target)
+        trim_in_ms = max(0, int(shot.get("trim_in_ms") or 0))
+        trim_out_ms = max(0, int(shot.get("trim_out_ms") or 0))
+        transition = str(shot.get("transition") or "cut")
         lines.append(_concat_line(target))
-        total_ms += int(shot.get("duration_ms") or 0)
-    if total_ms <= 0:
-        total_ms = int(timeline.get("total_duration_ms") or 0)
+        if trim_in_ms > 0:
+            lines.append(f"inpoint {trim_in_ms / 1000.0:.3f}")
+        if trim_out_ms > 0:
+            lines.append(f"outpoint {trim_out_ms / 1000.0:.3f}")
+        if trim_in_ms > 0 or trim_out_ms > 0 or transition in ("crossfade", "fade_black"):
+            has_trim_or_transition = True
     concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     output = outputs / f"{job['id']}-compose.mp4"
     receipt = outputs / f"{job['id']}-compose.json"
-    argv = [ffmpeg, "-hide_banner", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(concat_path)]
+    chains: list[str] = []
+
+    sub_target: Path | None = None
+    subtitles = timeline.get("subtitles") or []
+    if subtitles:
+        sub_path = str(subtitles[0].get("path") or "")
+        # 与 timeline.build 同一套解析规则：`subtitles/` 开头的是成片页上传的，
+        # 只认本项目目录；两处写法不一样就会出现"提交时过、跑的时候找不到"
+        sub_target = (resolve_subtitle(int(timeline.get("project_id") or 0), sub_path)
+                      if sub_path.startswith("subtitles/") else resolve_artifact(sub_path))
+        if sub_target is None:
+            raise CompositionJobInvalid("字幕文件不在了")
+
+    if has_trim_or_transition:
+        argv = [ffmpeg, "-hide_banner", "-y"]
+        for target in shot_targets:
+            argv += ["-i", str(target)]
+        video_inputs_count = len(shot_targets)
+        total_ms = 0
+        prev_shot_dur_ms = 0
+        for idx, shot in enumerate(shots):
+            trim_in_ms = max(0, int(shot.get("trim_in_ms") or 0))
+            trim_out_ms = max(0, int(shot.get("trim_out_ms") or 0))
+            transition = str(shot.get("transition") or "cut")
+            dur_ms = max(100, int(shot.get("duration_ms") or 0))
+            seg_parts: list[str] = []
+            if trim_in_ms > 0 or trim_out_ms > 0:
+                trim_expr = f"trim=start={trim_in_ms / 1000.0:.3f}"
+                if trim_out_ms > 0:
+                    trim_expr += f":end={trim_out_ms / 1000.0:.3f}"
+                seg_parts.append(f"{trim_expr},setpts=PTS-STARTPTS")
+            else:
+                seg_parts.append("setpts=PTS-STARTPTS")
+            seg_parts.append(
+                f"fps={encode_fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p"
+            )
+            if transition == "fade_black":
+                dur_s = dur_ms / 1000.0
+                fade_d = min(0.35, dur_s * 0.25)
+                out_st = max(0.0, dur_s - fade_d)
+                seg_parts.append(
+                    f"fade=t=in:st=0:d={fade_d:.3f},fade=t=out:st={out_st:.3f}:d={fade_d:.3f}"
+                )
+            chains.append(f"[{idx}:v]" + ",".join(seg_parts) + f"[sv{idx}]")
+
+        if len(shots) == 1:
+            merged_label = "[sv0]"
+            total_ms = int(shots[0].get("duration_ms") or 0)
+        else:
+            merged_label = "[sv0]"
+            total_ms = int(shots[0].get("duration_ms") or 0)
+            prev_shot_dur_ms = total_ms
+            for idx in range(1, len(shots)):
+                cur_dur_ms = int(shots[idx].get("duration_ms") or 0)
+                tr = str(shots[idx].get("transition") or "cut")
+                ov_ms = crossfade_overlap_ms(prev_shot_dur_ms, cur_dur_ms, tr)
+                out_label = f"[vm{idx}]"
+                if ov_ms > 0:
+                    offset_s = max(0.0, (total_ms - ov_ms) / 1000.0)
+                    chains.append(
+                        f"{merged_label}[sv{idx}]xfade=transition=fade:"
+                        f"duration={ov_ms / 1000.0:.3f}:offset={offset_s:.3f}{out_label}"
+                    )
+                    total_ms = total_ms + cur_dur_ms - ov_ms
+                else:
+                    chains.append(f"{merged_label}[sv{idx}]concat=n=2:v=1:a=0{out_label}")
+                    total_ms += cur_dur_ms
+                merged_label = out_label
+                prev_shot_dur_ms = cur_dur_ms
+        if sub_target is not None:
+            chains.append(f"{merged_label}{_subtitle_filter(sub_target)}[v]")
+        else:
+            chains.append(f"{merged_label}null[v]")
+    else:
+        total_ms = sum(int(shot.get("duration_ms") or 0) for shot in shots)
+        argv = [ffmpeg, "-hide_banner", "-y",
+                "-f", "concat", "-safe", "0", "-i", str(concat_path)]
+        video_inputs_count = 1
+        video_chain = (
+            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+        )
+        if sub_target is not None:
+            video_chain += "," + _subtitle_filter(sub_target)
+        video_chain += "[v]"
+        chains.append(video_chain)
+
+    if total_ms <= 0:
+        total_ms = int(timeline.get("total_duration_ms") or 0)
 
     audio = timeline.get("audio") or []
     audio_inputs: list[Path] = []
@@ -126,30 +223,13 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
     for target in audio_inputs:
         argv += ["-i", str(target)]
 
-    video_chain = (
-        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
-    )
-    subtitles = timeline.get("subtitles") or []
-    if subtitles:
-        sub_path = str(subtitles[0].get("path") or "")
-        # 与 timeline.build 同一套解析规则：`subtitles/` 开头的是成片页上传的，
-        # 只认本项目目录；两处写法不一样就会出现"提交时过、跑的时候找不到"
-        sub = (resolve_subtitle(int(timeline.get("project_id") or 0), sub_path)
-               if sub_path.startswith("subtitles/") else resolve_artifact(sub_path))
-        if sub is None:
-            raise CompositionJobInvalid("字幕文件不在了")
-        video_chain += "," + _subtitle_filter(sub)
-    video_chain += "[v]"
-
-    chains = [video_chain]
     maps = ["-map", "[v]"]
     if audio_inputs:
         labels = []
         for index, clip in enumerate(audio):
             start = max(0, int(clip.get("start_ms") or 0))
             labels.append(f"[a{index}]")
-            chains.append(f"[{index + 1}:a]adelay={start}|{start}[a{index}]")
+            chains.append(f"[{video_inputs_count + index}:a]adelay={start}|{start}[a{index}]")
         chains.append("".join(labels) +
                       f"amix=inputs={len(labels)}:duration=longest:"
                       f"dropout_transition=0[a]")
@@ -176,6 +256,7 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
                   json.dumps(timeline, ensure_ascii=False, sort_keys=True)
                   .encode("utf-8")).hexdigest(),
               "inputs": len(shots), "audio_inputs": len(audio_inputs),
+              "transitions": [str(s.get("transition") or "cut") for s in shots],
               # 补帧计划交给 worker：这一段跑在 ffmpeg 之后、post_check 之前。
               # 不补帧时是 None，worker 那一步整个跳过，行为与加这道之前逐字一致。
               "interp": interp_plan,
@@ -214,6 +295,7 @@ def post_check(spec: RunSpec) -> dict:
             "timeline_sha256": spec.meta.get("timeline_sha"),
             "inputs": spec.meta.get("inputs"),
             "audio_inputs": spec.meta.get("audio_inputs"),
+            "transitions": spec.meta.get("transitions") or [],
             "expected": expected,
             "observed": info,
         }

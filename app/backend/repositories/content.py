@@ -89,7 +89,9 @@ class ShotRepository:
                duration: float, asset_ids: list[int],
                variant_ids: list[int] | None = None,
                *, shot_size: str = "", camera_move: str = "", aspect: str = "",
-               style: str = "", negative_prompt: str = "") -> sqlite3.Row:
+               style: str = "", negative_prompt: str = "",
+               trim_in_ms: int = 0, trim_out_ms: int = 0,
+               transition: str = "cut") -> sqlite3.Row:
         with get_conn() as conn:
             seq = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM shot WHERE episode_id = ?",
@@ -99,11 +101,12 @@ class ShotRepository:
                 """INSERT INTO shot (episode_id, seq, summary, prompt, duration,
                                      asset_ids, variant_ids,
                                      shot_size, camera_move, aspect, style,
-                                     negative_prompt)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                     negative_prompt, trim_in_ms, trim_out_ms, transition)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
-                 style, negative_prompt),
+                 style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
+                 transition or "cut"),
             )
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -112,8 +115,10 @@ class ShotRepository:
                duration: float, asset_ids: list[int],
                variant_ids: list[int] | None = None,
                *, shot_size: str = "", camera_move: str = "", aspect: str = "",
-               style: str = "", negative_prompt: str = "") -> sqlite3.Row | None:
-        """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏）。
+               style: str = "", negative_prompt: str = "",
+               trim_in_ms: int = 0, trim_out_ms: int = 0,
+               transition: str = "cut") -> sqlite3.Row | None:
+        """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏，0054 起加出入点与转场）。
 
         **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
         搬动它等于让"第 3 镜"在别的集里又出现一次；真要挪就删了重建。
@@ -128,12 +133,15 @@ class ShotRepository:
             conn.execute(
                 """UPDATE shot SET summary = ?, prompt = ?, duration = ?, asset_ids = ?,
                           variant_ids = ?, shot_size = ?, camera_move = ?, aspect = ?,
-                          style = ?, negative_prompt = ?, revision = revision + 1,
+                          style = ?, negative_prompt = ?,
+                          trim_in_ms = ?, trim_out_ms = ?, transition = ?,
+                          revision = revision + 1,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
-                 style, negative_prompt, shot_id),
+                 style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
+                 transition or "cut", shot_id),
             )
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()

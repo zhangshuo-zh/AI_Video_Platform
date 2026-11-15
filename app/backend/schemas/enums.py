@@ -199,3 +199,24 @@ ExtractItemKind = Literal["character", "scene", "prop", "shot"]
 # ---------- 音频中心（W15） ----------
 
 AudioKind = Literal["dialogue", "narration", "music", "sfx"]
+
+
+# ---------- 分镜粗剪与转场（M2/M3） ----------
+
+SHOT_TRANSITIONS: dict[str, str] = {
+    "cut": "硬切",
+    "crossfade": "叠化交叉",
+    "fade_black": "黑场淡入淡出",
+}
+
+ShotTransition = Literal["cut", "crossfade", "fade_black"]
+
+CAMERA_MOVES: dict[str, str] = {
+    "static": "固定",
+    "push_in": "推镜",
+    "pull_out": "拉镜",
+    "pan": "摇镜",
+    "truck": "移镜",
+    "orbit": "环绕",
+}
+

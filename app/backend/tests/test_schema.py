@@ -111,7 +111,7 @@ with sqlite3.connect(DB_PATH) as conn:
     conn.execute("INSERT INTO project(name,owner_id) VALUES ('old',1)")
     conn.execute("INSERT INTO job(project_id,capability,kind,execution_mode,provider_code,model_code,input_refs_json,status) VALUES(1,'image','image','local','mock','mock-1','[\\\"op:asset_image\\\",\\\"asset:1\\\"]','queued')")
     before=conn.execute('SELECT * FROM job').fetchall()
-migrate._discover=original
+migrate._discover=lambda:[(v,p) for v,p in original() if v<=53]
 assert migrate.migrate(verbose=False)==1
 assert migrate.migrate(verbose=False)==0
 with sqlite3.connect(DB_PATH) as conn:

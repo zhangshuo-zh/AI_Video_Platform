@@ -172,17 +172,38 @@ def build(project_id: int, episode_id: int, *,
         if not info["has_video"]:
             reasons.append(f"第 {shot['seq']} 镜的文件里没有视频流")
             continue
-        duration_ms = int(info["duration_ms"] or 0)
+        raw_duration_ms = int(info["duration_ms"] or 0)
+        if raw_duration_ms < 100:
+            reasons.append(f"第 {shot['seq']} 镜的视频时长无效（{raw_duration_ms}ms）")
+            continue
+        keys = shot.keys()
+        trim_in_ms = max(0, int(shot["trim_in_ms"] or 0)) if "trim_in_ms" in keys else 0
+        trim_out_ms = max(0, int(shot["trim_out_ms"] or 0)) if "trim_out_ms" in keys else 0
+        transition = ((shot["transition"] if "transition" in keys else "cut") or "cut")
+        if trim_in_ms > 0 and trim_in_ms >= raw_duration_ms:
+            reasons.append(
+                f"第 {shot['seq']} 镜的入场点（{trim_in_ms}ms）超出视频时长（{raw_duration_ms}ms）"
+            )
+            continue
+        if trim_out_ms > 0 and trim_out_ms <= trim_in_ms:
+            reasons.append(f"第 {shot['seq']} 镜的出场点必须大于入场点")
+            continue
+        eff_in_ms = min(trim_in_ms, raw_duration_ms)
+        eff_out_ms = min(trim_out_ms, raw_duration_ms) if trim_out_ms > 0 else raw_duration_ms
+        duration_ms = eff_out_ms - eff_in_ms
         if duration_ms < 100:
-            reasons.append(f"第 {shot['seq']} 镜的视频时长无效（{duration_ms}ms）")
+            reasons.append(f"第 {shot['seq']} 镜裁剪后有效时长不足 100ms（{duration_ms}ms）")
             continue
         planned_ms = max(0, int(round(float(shot["duration"] or 0) * 1000)))
-        total_ms += duration_ms
         timeline_shots.append({
             "shot_id": shot_id,
             "seq": int(shot["seq"]),
             "summary": shot["summary"],
             "duration_ms": duration_ms,
+            "raw_duration_ms": raw_duration_ms,
+            "trim_in_ms": eff_in_ms,
+            "trim_out_ms": eff_out_ms if trim_out_ms > 0 else 0,
+            "transition": transition,
             "planned_duration_ms": planned_ms,
             "video": {
                 "job_id": int(video_job["id"]),
@@ -199,7 +220,7 @@ def build(project_id: int, episode_id: int, *,
     # 分两次说等于让人改完一轮再撞第二轮。攒到下面一起报。
     audio_rows = clips.list(project_id, None, episode_id)
     audio: list[dict] = []
-    starts = _shot_starts(timeline_shots)
+    starts, total_ms = _shot_timeline_layout(timeline_shots)
     for row in audio_rows:
         if row["status"] != "ready":
             continue
@@ -248,6 +269,7 @@ def build(project_id: int, episode_id: int, *,
             "title": episode["title"],
         },
         "shots": timeline_shots,
+        "transitions": [s.get("transition") or "cut" for s in timeline_shots],
         "audio": audio,
         "subtitles": subtitles,
         "total_duration_ms": total_ms,
@@ -280,11 +302,31 @@ def majority_size(shot_rows: list[dict]) -> dict | None:
             "same_as": hits, "of": sum(counts.values())}
 
 
-def _shot_starts(rows: list[dict]) -> dict[int, int]:
-    """台词从所属镜头的起点开始。没有镜头关联的素材从 0 开始。"""
+def crossfade_overlap_ms(prev_dur_ms: int, cur_dur_ms: int, transition: str) -> int:
+    """计算 crossfade 转场的叠化重叠时长；长度过短时退化为 0（硬切）以防滤镜报错。"""
+    if transition != "crossfade":
+        return 0
+    overlap = min(300, max(0, prev_dur_ms) // 4, max(0, cur_dur_ms) // 4)
+    return overlap if overlap >= 80 else 0
+
+
+def _shot_timeline_layout(rows: list[dict]) -> tuple[dict[int, int], int]:
+    """按有效时长与 crossfade 重叠量计算每镜起点与成片总时长。"""
     starts: dict[int, int] = {}
     cursor = 0
-    for row in rows:
+    prev_dur_ms = 0
+    for idx, row in enumerate(rows):
+        dur_ms = int(row["duration_ms"])
+        if idx > 0:
+            ov = crossfade_overlap_ms(prev_dur_ms, dur_ms, str(row.get("transition") or "cut"))
+            cursor = max(0, cursor - ov)
         starts[int(row["shot_id"])] = cursor
-        cursor += int(row["duration_ms"])
+        cursor += dur_ms
+        prev_dur_ms = dur_ms
+    return starts, cursor
+
+
+def _shot_starts(rows: list[dict]) -> dict[int, int]:
+    """台词从所属镜头的起点开始。没有镜头关联的素材从 0 开始。"""
+    starts, _ = _shot_timeline_layout(rows)
     return starts

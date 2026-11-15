@@ -124,7 +124,7 @@ function itemRow(row, assets) {
               </select>
               <button class="btn sm" data-merge="${row.id}">合并</button>` : ''}` : ''
           }
-          ${row.kind === 'shot' ? '<span class="t-desc">镜头候选只导出 Markdown，不自动写分镜表</span>' : ''}
+          ${row.kind === 'shot' ? '<span class="t-desc">已接纳的镜头候选可点下方「一键导入为分镜」直接落库</span>' : ''}
           ${row.kind !== 'shot' && canWrite ? `<button class="btn sm danger" data-reject="${row.id}">拒绝</button>` : ''}
         </div>`}
     </div>`;
@@ -221,9 +221,11 @@ export default {
               <p>${runId ? '换一类看看，或到创作中心再抽一次别的文档。' : '先发起一次抽取，回到这一页处理候选。'}</p>
             </div>` : ''}
             ${runId && items.some((r) => r.kind === 'shot') ? `
-              <p class="u-mt-10"><a class="btn" id="as-shots-md"
-                 href="/api/extract/runs/${runId}/shots.md" download>导出镜头候选 Markdown</a>
-                 <span class="t-dim">镜头不进分镜表，导出去由人抄</span></p>` : ''}
+              <p class="u-mt-10 row">
+                <a class="btn" id="as-shots-md"
+                   href="/api/extract/runs/${runId}/shots.md" download>导出镜头候选 Markdown</a>
+                ${store.can('doc:write') ? '<button type="button" class="btn primary" id="as-import-shots">🎬 一键导入为分镜</button>' : ''}
+              </p>` : ''}
           </div>
         </div>
       </div>
@@ -293,6 +295,17 @@ export default {
       const ok = await run('拒绝候选', () => api.extractReject(Number(btn.dataset.reject), ''), { btn: btn });
         if (ok) refresh();
       });
+    });
+    root.querySelector('#as-import-shots')?.addEventListener('click', async (e) => {
+      if (!runId) return;
+      const btn = e.currentTarget;
+      const res = await run('一键导入为分镜', () => api.extractImportShots(runId, {}), { btn });
+      if (res) {
+        notice = typeof res === 'object' && Array.isArray(res.created_shot_ids)
+          ? `已导入第 #${res.episode_id} 集：新建 ${res.created_shot_ids.length} 镜，跳过重复 ${(res.skipped_item_ids || []).length} 条，匹配关联资产 ${res.matched_assets || 0} 次。`
+          : '已将镜头候选导入分镜表。';
+        refresh();
+      }
     });
   },
 };

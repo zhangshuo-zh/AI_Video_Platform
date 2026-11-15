@@ -31,7 +31,7 @@ from pathlib import Path
 import adapters
 import engines
 import runtime
-from config import JOBS_DIR
+from config import FILES_DIR, JOBS_DIR
 from paths import resolve_within, within
 
 CLOUD_RUNNER = Path(__file__).resolve().parent / "cloud_run.py"
@@ -222,6 +222,61 @@ def _job_project_of(job_id: int) -> int | None:
     return row["project_id"] if row is not None else None
 
 
+def _asset_project_of(asset_id: int) -> tuple[bool, int | None]:
+    """查询资产是否存在及其所属 project_id（全局资产为 None）。"""
+    from db import get_conn
+    with get_conn() as conn:
+        row = conn.execute("SELECT project_id FROM asset WHERE id = ?",
+                           (asset_id,)).fetchone()
+    if row is None:
+        return False, None
+    return True, row["project_id"]
+
+
+def _is_project_asset_file(target: Path, job) -> bool:
+    """检查目标文件是否落在 data/files/<asset_id>/... 且属于当前项目或全局资产。"""
+    try:
+        rel = target.relative_to(FILES_DIR.resolve())
+    except ValueError:
+        return False
+    if not rel.parts or not rel.parts[0].isdigit():
+        return False
+    exists, asset_pid = _asset_project_of(int(rel.parts[0]))
+    if not exists:
+        return False
+    return asset_pid is None or asset_pid == job.get("project_id")
+
+
+def _resolve_input_image(raw: str, job, *, label: str = "条件图") -> Path:
+    """解析并校验证件目录/同项目作业产物/资产图库内的参考图路径。"""
+    cleaned = (raw or "").strip()
+    if cleaned.startswith("/api/files/"):
+        cleaned = cleaned[len("/api/files/"):]
+    elif cleaned.startswith("files/"):
+        cleaned = cleaned[len("files/"):]
+    image_path = Path(cleaned).expanduser()
+    root = _job_dir_root(job["id"])
+    files_root = FILES_DIR.resolve()
+    jobs_root = JOBS_DIR.resolve()
+    if image_path.is_absolute():
+        target = image_path.resolve()
+    else:
+        candidates = [
+            p for base in (root, jobs_root, files_root)
+            if (p := resolve_within(base, str(image_path))) is not None
+        ]
+        target = next((p for p in candidates if p.is_file()), candidates[0] if candidates else None)
+    if target is None or not (
+        within(root, target)
+        or _is_platform_artifact(target, job)
+        or _is_project_asset_file(target, job)
+    ):
+        raise RunnerUnavailable(f"{label}路径越出作业目录")
+    if not target.is_file():
+        raise RunnerUnavailable(f"{label}不存在：{target.name}")
+    return target
+
+
 def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     probe = runtime.probe_mlx_video()
     _need_runtime(probe)
@@ -229,21 +284,7 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     image = (params.get("image") or "").strip()
     if not image:
         raise RunnerUnavailable("I2V 需要条件图；资产选择器接上之前不能从界面提交")
-    image_path = Path(image).expanduser()
-    root = _job_dir_root(job["id"])
-    if image_path.is_absolute():
-        # 绝对路径以前直接放行——文件头的第 3 条硬约束写的是"不接受界面随手填
-        # 一个 /etc/passwd"，代码却没执行它。绝对路径照样要过边界：worker 是拿
-        # 这台机器的权限起进程的，任何能提交作业的人都能借它读全盘的文件。
-        target = image_path.resolve()
-    else:
-        # 相对路径只允许落在本作业目录里；resolve 之后再做一次边界比对，
-        # 挡住 ../ 和符号链接绕出去。
-        target = resolve_within(root, str(image_path))
-    if target is None or not (within(root, target) or _is_platform_artifact(target, job)):
-        raise RunnerUnavailable("条件图路径越出作业目录")
-    if not target.is_file():
-        raise RunnerUnavailable(f"条件图不存在：{target.name}")
+    target = _resolve_input_image(image, job, label="条件图")
 
     out = _mp4_path(outputs, job["id"], "mlx-video")
     seed = int(params.get("seed", 42))
@@ -335,8 +376,19 @@ def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
     if params.get("seed") is not None:
         body["seed"] = int(params["seed"])
 
-    request = {"endpoint": endpoint, "path": DRAW_THINGS_PATH, "body": body,
-               "output": str(out), "receipt": str(receipt), "timeout": 600}
+    req_path = DRAW_THINGS_PATH
+    request: dict = {
+        "endpoint": endpoint, "path": req_path, "body": body,
+        "output": str(out), "receipt": str(receipt), "timeout": 600,
+    }
+    init_image = str(params.get("init_image") or "").strip()
+    if init_image:
+        init_target = _resolve_input_image(init_image, job, label="参考底图")
+        request["path"] = "/sdapi/v1/img2img"
+        request["init_image"] = str(init_target)
+        strength = params.get("strength")
+        body["denoising_strength"] = float(0.65 if strength is None else strength)
+
     request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2),
                             encoding="utf-8")
     argv = [sys.executable, str(ENGINE_HTTP_RUNNER), str(request_path)]

@@ -13,7 +13,8 @@ import extraction
 import services
 from deps import require_permission
 from models import (ExtractAcceptIn, ExtractItemOut, ExtractMergeIn, ExtractRejectIn,
-                    ExtractRunOut, ExtractSubmitIn, ExtractionDecisionOut,
+                    ExtractRunOut, ExtractShotImportIn, ExtractShotImportOut,
+                    ExtractSubmitIn, ExtractionDecisionOut,
                     ExtractionOptionsOut)
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
@@ -171,3 +172,19 @@ def export_shots(run_id: int,
     name = f"shots-run{run_id}.md"
     return Response(text, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.post("/extract/runs/{run_id}/import-shots", response_model=ExtractShotImportOut)
+def import_extract_shots(run_id: int,
+                         payload: ExtractShotImportIn | None = None,
+                         user=Depends(require_permission("doc:write"))) -> ExtractShotImportOut:
+    """将文本抽取出的镜头候选一键导入分镜表，并自动按名称匹配资产（幂等防重）。"""
+    body = payload or ExtractShotImportIn()
+    try:
+        out = services.extraction_import_shots(run_id, body, user)
+    except services.ExtractMissing as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except extraction.ExtractInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ExtractShotImportOut(**out)
+

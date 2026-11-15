@@ -41,6 +41,7 @@ class Param:
     multiple_of: int | None = None
     choices: tuple[str, ...] = ()  # 字符串枚举；空＝自由文本
     note: str = ""
+    required: bool = True
 
     def as_dict(self) -> dict:
         out = {"name": self.name, "type": self.type, "default": self.default}
@@ -54,6 +55,8 @@ class Param:
             out["choices"] = list(self.choices)
         if self.note:
             out["note"] = self.note
+        if not self.required:
+            out["required"] = False
         return out
 
 
@@ -317,6 +320,12 @@ _DRAW_THINGS = Adapter(
                 Param("negative_prompt", "str", "",
                       note="2026-11-06 实测存在于返回体里；此前按 strings 命中形态"
                            "判为「不可定级」，现在由行为级确认"),
+                Param("init_image", "image", None,
+                      note="参考底图（图生图；留空时走文生图，非空自动切换 img2img）",
+                      required=False),
+                Param("strength", "float", 0.65, 0.05, 1.0,
+                      note="图生图重绘强度（denoising_strength）",
+                      required=False),
             ),
         ),
     ),
@@ -831,7 +840,7 @@ def validate_params(adapter: Adapter | None, model_code: str, params) -> list[st
         else:
             errors.extend(_check_one(param, value))
     for param in model.params:
-        if param.type == "image" and param.name not in params:
+        if param.type == "image" and param.required and param.name not in params:
             errors.append(f"缺少必填参数：{param.name}")
     return errors
 

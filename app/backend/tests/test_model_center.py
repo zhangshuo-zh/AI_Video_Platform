@@ -620,15 +620,32 @@ def test_结构化输出这条标签有清单来源(as_admin, clean_registration
 def test_清单里根本产不出来的必需能力必须单独说(as_admin, clean_registrations):
     """「配不出来」与「还没配」要说不同的话。
 
-    character_variant 要「图生图 + 参考图」，而 image 轴没有任何一档登记过图片
-    输入参数——这在任何配置下都不可能凑齐。把它写成"没有候选"会让人反复去配，
-    而真正要动的是 `adapters.py`。
+    M2.4 为 Draw Things 补齐 `init_image (type="image")` 后，`character_variant`
+    所需的「图生图 + 参考图」已正式可产出（`required_producible=True`）。若再将场景
+    必需能力设为一个清单里没有任何来源的标签（如「局部重绘」），仍须明确点出 adapters.py。
     """
-    out = as_admin.get("/api/model-policies/resolve/character_variant").json()
-    assert out["required_producible"] is False
-    assert set(out["impossible_tags"]) == {"图生图", "参考图"}
-    joined = " ".join(out["blockers"])
-    assert "没有任何来源" in joined and "adapters.py" in joined, out["blockers"]
+    ready = as_admin.get("/api/model-policies/resolve/character_variant").json()
+    assert ready["required_producible"] is True
+    assert ready["impossible_tags"] == []
+
+    import db
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+            ('["图生图","参考图","局部重绘"]',),
+        )
+    try:
+        out = as_admin.get("/api/model-policies/resolve/character_variant").json()
+        assert out["required_producible"] is False
+        assert set(out["impossible_tags"]) == {"局部重绘"}
+        joined = " ".join(out["blockers"])
+        assert "没有任何来源" in joined and "adapters.py" in joined, out["blockers"]
+    finally:
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+                ('["图生图","参考图"]',),
+            )
 
 
 def test_场景要求的标签都能产出时就不报不可达(as_admin, clean_registrations):
@@ -644,23 +661,34 @@ def test_候选接口明写不自动切换(as_admin):
 
 
 def test_人工声明不能替代清单事实(as_admin, clean_registrations):
-    """手工声明「图生图 + 参考图」不能把 4 个数学上无解的场景救活。
+    """手工声明清单产不出来的标签（如「局部重绘」）不能把无解场景救活。
 
-    审查里实测过这一条：给 mflux 手工声明这两个标签后 character_variant 立刻出候选——
-    那等于"用一句自我声明冒充能力证明"，与这一页"健康≠验证"的纪律自相矛盾。
-    判据是清单：image 轴这一版没有任何一档登记过图片输入参数，所以这两个标签
-    在 image 轴上不存在任何合法来源；声明了也进不了候选，而且要说清是为什么。
+    判据是清单：对 image 轴任何一档都不支持的标签，人工声明不替代清单事实，
+    声明了也进不了候选，而且要说清是为什么。
     """
-    as_admin.post("/api/models", json={
-        "capability": "image", "backend": "local", "provider": "mflux",
-        "model_code": "flux1-schnell", "capabilities": ["图生图", "参考图"]})
-    as_admin.put("/api/model-policies", json=[{
-        "scene_key": "character_variant", "capability": "image",
-        "required": ["图生图", "参考图"]}])
-    out = as_admin.get("/api/model-policies/resolve/character_variant").json()
-    assert out["candidates"] == [], "清单里没有来源的能力，声明了也不许进候选"
-    blocker = next(b for b in out["blockers"] if "flux1-schnell" in b)
-    assert "人工声明" in blocker and "清单" in blocker, blocker
+    import db
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+            ('["图生图","参考图","局部重绘"]',),
+        )
+    try:
+        as_admin.post("/api/models", json={
+            "capability": "image", "backend": "local", "provider": "mflux",
+            "model_code": "flux1-schnell", "capabilities": ["图生图", "参考图", "局部重绘"]})
+        as_admin.put("/api/model-policies", json=[{
+            "scene_key": "character_variant", "capability": "image",
+            "required": ["图生图", "参考图", "局部重绘"]}])
+        out = as_admin.get("/api/model-policies/resolve/character_variant").json()
+        assert out["candidates"] == [], "清单里没有来源的能力，声明了也不许进候选"
+        blocker = next(b for b in out["blockers"] if "flux1-schnell" in b)
+        assert "人工声明" in blocker and "清单" in blocker, blocker
+    finally:
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+                ('["图生图","参考图"]',),
+            )
 
 
 def test_未知场景不报错但说清没有(as_admin):
@@ -1157,44 +1185,70 @@ def test_场景骨架登录即可读且不含建议轨(as_role, seeded):
 
 
 def test_场景骨架把配不出来与还没配分开(as_admin, clean_registrations):
-    """`character_variant` 要「图生图 + 参考图」，image 轴这一版产不出来。
+    """M2.4 后 `character_variant` 已可达；若存在清单外必需标签，骨架仍须标记 `required_producible=False`。"""
+    base_items = as_admin.get("/api/model-policies/scenes").json()["items"]
+    base_variant = next(it for it in base_items if it["scene_key"] == "character_variant")
+    assert base_variant["required_producible"] is True
+    assert base_variant["impossible_required"] == []
 
-    两个数在界面上说不同的话：`required_producible=false` 是要改 adapters.py，
-    true 只是还没登记、还没点探测。混成一句"待配置"，人就会对着一个
-    永远点不亮的场景反复配——2026-11-07 审查里四个场景正是这样。
-    """
-    items = as_admin.get("/api/model-policies/scenes").json()["items"]
-    variant = next(it for it in items if it["scene_key"] == "character_variant")
-    assert variant["required_producible"] is False
-    assert set(variant["impossible_required"]) == {"图生图", "参考图"}
-    # 对照组：分镜生成要的两项清单里都产得出来，它只是"还没配"
-    story = next(it for it in items if it["scene_key"] == "storyboard")
-    assert story["required_producible"] is True
-    assert story["impossible_required"] == []
+    import db
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+            ('["图生图","参考图","局部重绘"]',),
+        )
+    try:
+        items = as_admin.get("/api/model-policies/scenes").json()["items"]
+        variant = next(it for it in items if it["scene_key"] == "character_variant")
+        assert variant["required_producible"] is False
+        assert set(variant["impossible_required"]) == {"局部重绘"}
+        story = next(it for it in items if it["scene_key"] == "storyboard")
+        assert story["required_producible"] is True
+        assert story["impossible_required"] == []
+    finally:
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+                ('["图生图","参考图"]',),
+            )
 
 
 def test_保存保留已有缺来源能力并允许显式移除(as_admin):
-    original = as_admin.get("/api/model-policies").json()["items"]
-    row = next(item for item in original if item["scene_key"] == "character_variant")
-    assert set(row["required"]) == {"图生图", "参考图"}
-    response = as_admin.put("/api/model-policies", json=[row])
-    assert response.status_code == 200, response.text
-    saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
-                 if item["scene_key"] == "character_variant")
-    assert set(saved["required"]) == {"图生图", "参考图"}
-    assert saved["required_producible"] is False
+    import db
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+            ('["图生图","参考图","局部重绘"]',),
+        )
+    try:
+        original = as_admin.get("/api/model-policies").json()["items"]
+        row = next(item for item in original if item["scene_key"] == "character_variant")
+        assert set(row["required"]) == {"图生图", "参考图", "局部重绘"}
+        response = as_admin.put("/api/model-policies", json=[row])
+        assert response.status_code == 200, response.text
+        saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
+                     if item["scene_key"] == "character_variant")
+        assert set(saved["required"]) == {"图生图", "参考图", "局部重绘"}
+        assert saved["required_producible"] is False
 
-    invalid = {**row, "required": [*row["required"], "凭空新增能力"]}
-    assert as_admin.put("/api/model-policies", json=[invalid]).status_code == 422
-    other = next(item for item in original if item["scene_key"] == "scene_prompt")
-    assert as_admin.put("/api/model-policies",
-                        json=[{**other, "required": row["required"]}]).status_code == 422
-    assert as_admin.put("/api/model-policies",
-                        json=[{**row, "capability": "text"}]).status_code == 422
+        invalid = {**row, "required": [*row["required"], "凭空新增能力"]}
+        assert as_admin.put("/api/model-policies", json=[invalid]).status_code == 422
+        other = next(item for item in original if item["scene_key"] == "scene_prompt")
+        assert as_admin.put("/api/model-policies",
+                            json=[{**other, "required": row["required"]}]).status_code == 422
+        assert as_admin.put("/api/model-policies",
+                            json=[{**row, "capability": "text"}]).status_code == 422
 
-    assert as_admin.put("/api/model-policies",
-                        json=[{**row, "required": ["参考图"]}]).status_code == 200
-    saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
-                 if item["scene_key"] == "character_variant")
-    assert saved["required"] == ["参考图"]
-    assert as_admin.put("/api/model-policies", json=[row]).status_code == 422
+        assert as_admin.put("/api/model-policies",
+                            json=[{**row, "required": ["图生图", "参考图"]}]).status_code == 200
+        saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
+                     if item["scene_key"] == "character_variant")
+        assert saved["required"] == ["图生图", "参考图"]
+        assert saved["required_producible"] is True
+        assert as_admin.put("/api/model-policies", json=[row]).status_code == 422
+    finally:
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE model_policy SET required_json = ? WHERE scene_key = 'character_variant'",
+                ('["图生图","参考图"]',),
+            )

@@ -57,6 +57,7 @@ class SubtitleFileOut(BaseModel):
     items: list = []
     subtitle_supported: bool = False
     ffmpeg_hint: str = ""
+    generated_path: str = ""
 
 
 

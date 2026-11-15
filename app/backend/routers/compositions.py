@@ -111,6 +111,21 @@ def delete_subtitle(project_id: int, path: str,
     return _subtitle_out(project_id)
 
 
+@router.post("/projects/{project_id}/episodes/{episode_id}/composition-subtitles/auto",
+             response_model=SubtitleFileOut,
+             status_code=http_status.HTTP_201_CREATED)
+def auto_generate_subtitle(project_id: int, episode_id: int,
+                           user=Depends(require_permission("job:submit"))):
+    """按一集分镜台词与时长自动生成 `.srt` 字幕文件并加入项目字幕清单。"""
+    access.ensure(user, project_id, "write")
+    try:
+        generated_path = subtitles.generate_srt_from_shots(project_id, episode_id)
+    except subtitles.SubtitleInvalid as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
+    out = _subtitle_out(project_id)
+    return out.model_copy(update={"generated_path": generated_path})
+
+
 def _subtitle_out(project_id: int) -> SubtitleFileOut:
     """把"有哪些字幕"和"这台机器烧不烧得动"一起给界面。
 

@@ -77,13 +77,15 @@ from .enums import (
     ERROR_LABELS, ProjectStatus, EpisodeStatus, JOB_STATUSES, JOB_RUNNING, JOB_FINISHED,
     ASSET_KINDS, AssetKind, VARIANT_KINDS, VariantType, ASSET_GEN_OPERATIONS,
     AssetGenOperation, DOC_KINDS, DocKind, DocStatus, DocAiOperation, ExtractItemKind,
-    AudioKind, Capability, DispatchMode, HostingSource, PolicyPreference, ConnectionType,
+    AudioKind, SHOT_TRANSITIONS, ShotTransition, CAMERA_MOVES,
+    Capability, DispatchMode, HostingSource, PolicyPreference, ConnectionType,
     SupportedConnectionType, ValidationKind, ValidationState, ProbeState
 )
 
 from .extraction import (
     ExtractSubmitIn, ExtractRunOut, ExtractItemOut, ExtractAcceptIn, ExtractMergeIn,
-    ExtractRejectIn, ExtractionOptionsOut, ExtractionDecisionOut
+    ExtractRejectIn, ExtractionOptionsOut, ExtractionDecisionOut,
+    ExtractShotImportIn, ExtractShotImportOut
 )
 
 from .jobs import (
@@ -229,6 +231,8 @@ __all__ = [
     "ExtractMergeIn",
     "ExtractRejectIn",
     "ExtractRunOut",
+    "ExtractShotImportIn",
+    "ExtractShotImportOut",
     "ExtractSubmitIn",
     "GenerationProfileIn",
     "GenerationProfileOut",
@@ -327,8 +331,11 @@ __all__ = [
     "SeasonCancelIn",
     "SeasonIn",
     "SeasonOut",
+    "CAMERA_MOVES",
+    "SHOT_TRANSITIONS",
     "ShotIn",
     "ShotOut",
+    "ShotTransition",
     "SubtitleFileOut",
     "SupportedConnectionType",
     "UNITS",

@@ -86,7 +86,7 @@ from .extract_candidates import (
     _extract_run_materialize, _extraction_content, extraction_submit, _STATUS_LABELS,
     _ITEM_LABELS, extraction_view, extraction_item_view, extraction_items,
     _load_extract_item, _candidate_fields, extraction_accept, extraction_merge,
-    extraction_reject
+    extraction_reject, extraction_import_shots
 )
 
 from .jobs import (
@@ -183,6 +183,7 @@ __all__ = [
     "doc_ai_preview",
     "ensure_workspace",
     "extraction_accept",
+    "extraction_import_shots",
     "extraction_item_view",
     "extraction_items",
     "extraction_merge",

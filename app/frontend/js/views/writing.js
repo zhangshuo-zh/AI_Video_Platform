@@ -29,6 +29,7 @@ let pickedDocId = null;
 // 放在模块级是给 mount（）用——render 与 mount 是两次调用，靠 DOM 传对象
 // 会把数据塞进 dataset；每次 render 整体覆盖，不跨项目残留。
 let shotCache = { episodeId: null, shots: [], assets: [], jobs: [] };
+let shotViewMode = 'table';
 
 /* 编辑器状态。放在模块级而不是每次 render 重取：人正在写的东西不能被一次刷新抹掉。
  *
@@ -1560,6 +1561,59 @@ async function renderShots(tab, subRow) {
         </td>
       </tr>`).join('');
 
+    const shotCards = shots.map((s) => {
+      const list = jobsByShot.get(s.id) || [];
+      const latest = list[0] || null;
+      const thumbVideo = list.find((j) => j.status === 'succeeded' && j.capability === 'video');
+      const thumbImage = list.find((j) => j.status === 'succeeded' && j.capability === 'image');
+      const boundAssets = (s.asset_ids || []).map((id) => assets.find((a) => a.id === id)).filter(Boolean);
+      const fallbackRef = boundAssets.find((a) => a.ref_images && a.ref_images.length)?.ref_images[0] || '';
+      const thumbHtml = thumbVideo
+        ? `<video preload="metadata" src="${api.jobArtifactUrl(thumbVideo.id, 0)}"></video>`
+        : thumbImage
+          ? `<img src="${api.jobArtifactUrl(thumbImage.id, 0)}" loading="lazy" alt="第 ${s.seq} 镜">`
+          : fallbackRef
+            ? `<img src="/files/${encodeURI(fallbackRef)}" loading="lazy" alt="第 ${s.seq} 镜参考图">`
+            : `<div class="sb-card-empty">第 ${s.seq} 镜 · 暂未生成画面</div>`;
+      const avatars = (s.asset_ids || []).map((id) => {
+        const a = assets.find((x) => x.id === id);
+        const img = a && a.ref_images && a.ref_images.length
+          ? `<img class="sb-avatar" src="/files/${encodeURI(a.ref_images[0])}" alt="">` : '';
+        return `<span class="sb-avatar-pill" data-goto-asset="${id}">${img}<span>${escapeHtml(a ? a.name : `#${id}`)}</span></span>`;
+      }).join('');
+      const transText = s.transition === 'crossfade' ? '叠化' : (s.transition === 'fade_black' ? '黑场' : '');
+      const hasTrim = Number(s.trim_in_ms || 0) > 0 || Number(s.trim_out_ms || 0) > 0;
+      const statusHtml = latest
+        ? `<span class="chip ${jobTone(latest.status)}">${escapeHtml(publicStatus(latest.status))}</span>`
+        : '<span class="chip gray">未提交</span>';
+      return `<article class="sb-card" data-sid="${s.id}">
+        <div class="sb-card-thumb">
+          ${thumbHtml}
+          <span class="sb-card-seq">#${String(s.seq).padStart(3, '0')}</span>
+          <span class="sb-card-dur">${s.duration}s${hasTrim ? ' · ✂' : ''}</span>
+        </div>
+        <div class="sb-card-body">
+          <div class="sb-card-title" title="${escapeHtml(s.summary)}">${escapeHtml(s.summary)}</div>
+          <div class="sb-card-badges">
+            ${statusHtml}
+            ${s.source_stale ? '<span class="chip amber">源已变</span>' : ''}
+            ${s.shot_size ? `<span class="chip plain">${escapeHtml(s.shot_size)}</span>` : ''}
+            ${s.camera_move ? `<span class="chip plain">${escapeHtml(s.camera_move)}</span>` : ''}
+            ${transText ? `<span class="chip blue">${transText}</span>` : ''}
+          </div>
+          ${avatars ? `<div class="sb-avatar-stack">${avatars}</div>` : '<span class="t-dim">未绑定角色／场景资产</span>'}
+        </div>
+        <div class="sb-card-actions">
+          <div class="row">
+            ${canWrite ? `<button class="btn xs" data-edit-shot="${s.id}">编辑</button>` : ''}
+            <button class="btn xs" data-shot-wb="${s.id}">工作台</button>
+            ${canSubmit ? `<button class="btn xs primary" data-gen-shot="${s.id}">生成</button>` : ''}
+          </div>
+          ${canWrite ? `<button class="btn xs danger" data-del-shot="${s.id}">删除</button>` : ''}
+        </div>
+      </article>`;
+    }).join('');
+
     return `
     <section class="view on">
       <div class="page-head">
@@ -1579,6 +1633,10 @@ async function renderShots(tab, subRow) {
           <div class="card-head">
             <h2>分镜</h2><span class="sub">一镜一行；提交作业去生成中心</span>
             <div class="right">
+              <div class="sb-view-toggle" role="group" aria-label="分镜视图切换">
+                <button type="button" class="btn xs${shotViewMode === 'table' ? ' on' : ''}" data-shot-view="table">紧凑表格</button>
+                <button type="button" class="btn xs${shotViewMode === 'grid' ? ' on' : ''}" data-shot-view="grid">故事板画廊</button>
+              </div>
               ${canWrite ? '<button class="btn sm primary" id="shot-new">新建镜头</button>' : ''}
               <span class="sub">本集状态</span>
               <select id="ep-status" class="ctl sm u-w-auto"
@@ -1590,14 +1648,15 @@ async function renderShots(tab, subRow) {
           </div>
           ${assetErr ? errorLine('资产名单', assetErr) : ''}
           ${jobErr ? errorLine('作业状态', jobErr) : ''}
-          ${shotErr ? errorBox('这一集的镜头', shotErr) : shots.length ? `
+          ${shotErr ? errorBox('这一集的镜头', shotErr) : shots.length ? (shotViewMode === 'grid' ? `
+          <div class="sb-grid">${shotCards}</div>` : `
           <div class="table-wrap">
             <table>
             <thead><tr><th>镜号</th><th>内容 / 提示词</th><th>引用资产</th>
               <th class="r">时长</th><th>作业</th><th class="r"></th></tr></thead>
             <tbody>${shotRows}</tbody>
             </table>
-            </div>` : `
+            </div>`) : `
             <div class="empty">
             <div class="empty-t">这一集还没有镜头</div>
             <p>一镜一行，内容与提示词可以在同一张表里编辑；资产只选引用。</p>
@@ -1868,6 +1927,16 @@ function mountShots(root) {
         id: shot ? shot.id : null,
         selected: new Set(shot ? shot.asset_ids : []),
         sel: new Set(shot ? shot.variant_ids : []),
+        extra: shot ? {
+          shot_size: shot.shot_size || '',
+          camera_move: shot.camera_move || '',
+          aspect: shot.aspect || '',
+          style: shot.style || '',
+          negative_prompt: shot.negative_prompt || '',
+          trim_in_ms: Number(shot.trim_in_ms || 0),
+          trim_out_ms: Number(shot.trim_out_ms || 0),
+          transition: shot.transition || 'cut',
+        } : {},
         variants: {}, variantError: {},
         query: '',
       };
@@ -1897,6 +1966,7 @@ function mountShots(root) {
         return;
       }
       const body = {
+        ...(shotEdit.extra || {}),
         summary,
         prompt: root.querySelector('#sm-prompt').value.trim(),
         duration,
@@ -1915,6 +1985,12 @@ function mountShots(root) {
       refresh();
     };
 
+    root.querySelectorAll('[data-shot-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        shotViewMode = btn.dataset.shotView === 'grid' ? 'grid' : 'table';
+        refresh();
+      });
+    });
     root.querySelector('#shot-new')?.addEventListener('click', () => openShot(null));
     root.querySelector('#shot-new-empty')?.addEventListener('click', () => openShot(null));
     root.querySelectorAll('[data-edit-shot]').forEach((btn) => {

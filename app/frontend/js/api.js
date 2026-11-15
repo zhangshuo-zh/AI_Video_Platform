@@ -408,6 +408,7 @@ export const api = {
   extractAccept: (itemId, body = {}) => send('POST', `/api/extract/items/${itemId}/accept`, body),
   extractMerge: (itemId, assetId) => send('POST', `/api/extract/items/${itemId}/merge`, { asset_id: assetId }),
   extractReject: (itemId, reason = '') => send('POST', `/api/extract/items/${itemId}/reject`, { reason }),
+  extractImportShots: (runId, body = {}) => send('POST', `/api/extract/runs/${runId}/import-shots`, body),
 
   // 审核中心（W14）：校验报告按正文版本冻结，签字按锚点落
   reviewQueue: (pid) => get(`/api/projects/${pid}/reviews`),
@@ -461,6 +462,7 @@ export const api = {
       .then(toJson);
   },
   deleteCompositionSubtitle: (pid, path) => send('DELETE', `/api/projects/${pid}/composition-subtitles?path=${encodeURIComponent(path)}`),
+  generateAutoSubtitles: (pid, eid) => send('POST', `/api/projects/${pid}/episodes/${eid}/composition-subtitles/auto`, {}),
 
   // 整季生产（阶段 E）：一季只是若干条单集运行的排产记录
   seasons: (pid) => get(`/api/projects/${pid}/seasons`),
@@ -517,6 +519,12 @@ export const api = {
   deleteAssetVariant: (vid) => send('DELETE', `/api/asset-variants/${vid}`),
   // 摘掉形态名下的**一张**图（v0.99）。以前只有"删整个形态"这一个出口，
   // 导错一张就得把其余的图一起扔了——基础参考图有这条删除路，形态也必须要有。
+  uploadVariantImage: (vid, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    // 同上：multipart 不走 send。
+    return request(`/api/asset-variants/${vid}/images`, { method: 'POST', body: form }).then(toJson);
+  },
   deleteAssetVariantImage: (vid, path) => send('DELETE', `/api/asset-variants/${vid}/images?path=${encodeURIComponent(path)}`),
   assetGenerationSubmit: (pid, body) => send('POST', `/api/projects/${pid}/asset-generations`, body),
   assetGeneration: (pid, jobId) => get(`/api/projects/${pid}/asset-generations/${jobId}`),

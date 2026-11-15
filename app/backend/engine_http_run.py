@@ -56,6 +56,16 @@ def main() -> int:
         return _finish(receipt_path, ok=False, code="endpoint_missing",
                        message="没有可用的引擎端点（实例没登记或已停用）")
 
+    init_image = str(request.get("init_image") or "").strip()
+    if init_image:
+        init_path = Path(init_image)
+        if not init_path.is_file():
+            return _finish(receipt_path, ok=False, code="init_image_missing",
+                           message="参考底图不存在", endpoint=endpoint, path=path)
+        body["init_images"] = [base64.b64encode(init_path.read_bytes()).decode("ascii")]
+        if path == "/sdapi/v1/txt2img":
+            path = "/sdapi/v1/img2img"
+
     payload = json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if secret_env:
@@ -145,6 +155,7 @@ def main() -> int:
 
     return _finish(receipt_path, ok=True, code="", message="",
                    latency_ms=latency_ms, bytes=len(blob),
+                   mode=("img2img" if init_image else "txt2img"),
                    engine_model=engine_model, requested_model=body.get("model") or "",
                    response_keys=sorted(data.keys()))
 

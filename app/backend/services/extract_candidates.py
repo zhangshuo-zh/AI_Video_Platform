@@ -6,7 +6,7 @@ import json
 
 from db import transaction
 from models import JobEstimateIn
-from repositories.content import assets
+from repositories.content import assets, episodes, shots
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
 from repositories.jobs import jobs as job_repo
@@ -350,3 +350,137 @@ def extraction_reject(item_id: int, reason: str, user) -> dict:
     if not extraction_runs.decide(row["id"], "rejected", user["id"]):
         raise ExtractConflict("这条候选已经处理过了，刷新后再看")
     return {"item": extraction_runs.get_item(row["id"]), "reason": reason}
+
+
+def extraction_import_shots(run_id: int, payload, user: dict) -> dict:
+    """将抽取出的镜头候选一键落库到 shot 表（自动匹配项目资产并保持幂等）。"""
+    run = extraction_runs.get_run(run_id)
+    if run is None:
+        raise ExtractMissing("抽取任务不存在")
+    project_id = int(run["project_id"])
+    access.ensure(user, project_id, "write")
+    _extract_run_materialize(run)
+
+    req_episode_id = getattr(payload, "episode_id", None)
+    if req_episode_id is not None:
+        ep = episodes.get(int(req_episode_id))
+        if ep is None or int(ep["project_id"]) != project_id:
+            raise extraction.ExtractInvalid("目标创作单元不存在或不属于该项目")
+        episode_id = int(ep["id"])
+    else:
+        doc = docs.get(run["doc_id"]) if run["doc_id"] is not None else None
+        if doc is not None and doc["episode_id"] is not None:
+            episode_id = int(doc["episode_id"])
+        else:
+            ep_rows = episodes.list_by_project(project_id)
+            if not ep_rows:
+                raise extraction.ExtractInvalid("项目中尚无创作单元，请先新建或指定创作单元")
+            episode_id = int(ep_rows[0]["id"])
+
+    visible_assets = assets.list_visible(project_id)
+    exact_map: dict[str, int] = {}
+    multi_names: list[tuple[str, int]] = []
+    for asset_row in visible_assets:
+        name = str(asset_row["name"] or "").strip()
+        if not name:
+            continue
+        low = name.lower()
+        exact_map.setdefault(low, int(asset_row["id"]))
+        if len(name) >= 2:
+            multi_names.append((low, int(asset_row["id"])))
+
+    existing = shots.list_by_episode(episode_id)
+    existing_pairs = {
+        (str(s["summary"] or "").strip(), str(s["prompt"] or "").strip())
+        for s in existing
+    }
+    existing_summaries = {str(s["summary"] or "").strip() for s in existing}
+
+    raw_items = list(extraction_runs.items(run_id, kind="shot"))
+
+    def _sort_key(row) -> tuple[int, int]:
+        try:
+            idx = int((json.loads(row["payload"] or "{}")).get("index") or 0)
+        except (TypeError, ValueError):
+            idx = 0
+        return (idx, int(row["id"]))
+
+    created_shot_ids: list[int] = []
+    skipped_item_ids: list[int] = []
+    matched_assets = 0
+
+    for row in sorted(raw_items, key=_sort_key):
+        item_id = int(row["id"])
+        if row["status"] not in ("pending", "accepted"):
+            skipped_item_ids.append(item_id)
+            continue
+        try:
+            p = json.loads(row["payload"] or "{}")
+        except ValueError:
+            p = {}
+        summary = str(p.get("summary") or "").strip()[:500]
+        if not summary:
+            skipped_item_ids.append(item_id)
+            continue
+
+        dialogue = [str(d).strip() for d in (p.get("dialogue") or []) if str(d).strip()]
+        prompt_parts = [
+            str(p.get("scene") or "").strip(),
+            summary,
+            (f"对白：{' / '.join(dialogue)}" if dialogue else ""),
+        ]
+        prompt = "，".join([part for part in prompt_parts if part])[:2000]
+
+        if (summary, prompt) in existing_pairs or (
+            row["status"] == "accepted" and summary in existing_summaries
+        ):
+            skipped_item_ids.append(item_id)
+            continue
+
+        matched_ids: list[int] = []
+        seen_ids: set[int] = set()
+        ref_tokens = [str(p.get("scene") or "").strip()] + [
+            str(x).strip() for x in (p.get("asset_refs") or [])
+        ]
+        for token in ref_tokens:
+            if not token:
+                continue
+            aid = exact_map.get(token.lower())
+            if aid is not None and aid not in seen_ids:
+                seen_ids.add(aid)
+                matched_ids.append(aid)
+        haystack = f"{summary} {' '.join(dialogue)}".lower()
+        for low_name, aid in multi_names:
+            if aid not in seen_ids and low_name in haystack:
+                seen_ids.add(aid)
+                matched_ids.append(aid)
+
+        try:
+            dur = float(p.get("duration_hint") or 5.0)
+        except (TypeError, ValueError):
+            dur = 5.0
+        dur = min(60.0, max(0.5, dur))
+
+        shot_row = shots.create(
+            episode_id,
+            summary,
+            prompt,
+            dur,
+            matched_ids,
+            shot_size=str(p.get("shot_size") or "").strip()[:40],
+            camera_move=str(p.get("camera_move") or "").strip()[:40],
+        )
+        if row["status"] == "pending":
+            extraction_runs.decide(item_id, "accepted", int(user["id"]), None)
+        created_shot_ids.append(int(shot_row["id"]))
+        existing_pairs.add((summary, prompt))
+        existing_summaries.add(summary)
+        matched_assets += len(matched_ids)
+
+    return {
+        "run_id": run_id,
+        "episode_id": episode_id,
+        "created_shot_ids": created_shot_ids,
+        "skipped_item_ids": skipped_item_ids,
+        "matched_assets": matched_assets,
+    }

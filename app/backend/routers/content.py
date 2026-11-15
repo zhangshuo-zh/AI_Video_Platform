@@ -221,7 +221,10 @@ def _shot_form_fields(payload) -> dict:
             "camera_move": payload.camera_move.strip(),
             "aspect": payload.aspect.strip(),
             "style": payload.style.strip(),
-            "negative_prompt": payload.negative_prompt.strip()}
+            "negative_prompt": payload.negative_prompt.strip(),
+            "trim_in_ms": int(payload.trim_in_ms or 0),
+            "trim_out_ms": int(payload.trim_out_ms or 0),
+            "transition": payload.transition}
 
 
 @router.post("/episodes/{episode_id}/shots", response_model=ShotOut,
@@ -674,6 +677,40 @@ def delete_variant(variant_id: int,
     # 反过来"文件没了、记录还在"会在画廊里留下一张打不开的图
     for rel in images:
         asset_studio.remove_imported_file(rel)
+
+
+@router.post("/asset-variants/{variant_id}/images", response_model=VariantOut)
+@studio_errors
+def upload_variant_image(variant_id: int, file: UploadFile = File(...),
+                         user=Depends(require_permission("asset:write"))) -> VariantOut:
+    """为某个资产形态上传一张本地参考图，复用资产图片安全校验并写入所属资产目录。"""
+    row = variant_repo.get(variant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="形态不存在")
+    asset = ensure_asset(int(row["asset_id"]), user, "write")
+    data = file.file.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"图片大小超过上限 {MAX_IMAGE_BYTES // 1024 // 1024}MB",
+        )
+    ctype = (file.content_type or "").lower()
+    if is_heic(ctype, data[:32]):
+        raise HTTPException(status_code=422, detail="暂不支持 HEIC/HEIF，请先转为 PNG/JPG/WebP")
+    if ctype not in ALLOWED_TYPES:
+        raise HTTPException(status_code=422, detail="仅支持 PNG、JPG、WebP 图片")
+    if not looks_like(ctype, data[:32]):
+        raise HTTPException(status_code=422, detail="文件内容与声明的图片格式不符")
+    target_dir = FILES_DIR / str(asset["id"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{ALLOWED_TYPES[ctype]}"
+    target = target_dir / filename
+    target.write_bytes(data)
+    rel = f"{asset['id']}/{filename}"
+    updated = variant_repo.add_image(variant_id, rel, source_job_id=None)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="形态不存在")
+    return VariantOut.from_row(updated)
 
 
 @router.delete("/asset-variants/{variant_id}/images", response_model=VariantOut)

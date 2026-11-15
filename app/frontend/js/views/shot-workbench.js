@@ -45,10 +45,10 @@ function artifactPreview(job) {
   const name = (first.path || '').split('/').pop() || '';
   const ext = name.split('.').pop().toLowerCase();
   if (/^(mp4|webm|mov|m4v)$/.test(ext)) {
-    return `<video controls preload="metadata" style="max-width:260px" src="${api.jobArtifactUrl(job.job_id, 0)}"></video>`;
+    return `<video controls preload="metadata" class="sw-preview-video" src="${api.jobArtifactUrl(job.job_id, 0)}"></video>`;
   }
   if (/^(png|jpg|jpeg|webp)$/.test(ext)) {
-    return `<img src="${api.jobArtifactUrl(job.job_id, 0)}" alt="${escapeHtml(name)}" style="max-width:200px">`;
+    return `<img src="${api.jobArtifactUrl(job.job_id, 0)}" alt="${escapeHtml(name)}" class="sw-preview-img">`;
   }
   return `<span class="hint mono">${escapeHtml(name)}</span>`;
 }
@@ -72,11 +72,83 @@ function jobRows(jobs, formalId) {
     </tr>`).join('')}</tbody></table></div>`;
 }
 
+const TRANSITION_LABELS = {
+  cut: '硬切 (Cut)',
+  crossfade: '叠化 (Crossfade)',
+  fade_black: '黑场渐变 (Fade Black)',
+};
+
+function fmtMsSec(ms) {
+  return `${(Math.max(0, Number(ms) || 0) / 1000).toFixed(2)}s`;
+}
+
+function previewStageHtml(d) {
+  const s = d.setting;
+  const formal = d.preview.formal_video;
+  const plannedMs = Math.max(1000, Math.round((Number(s.duration) || 5) * 1000));
+  const trimIn = Math.max(0, Number(s.trim_in_ms) || 0);
+  const trimOut = Math.max(0, Number(s.trim_out_ms) || 0);
+  const trans = s.transition || 'cut';
+  const transOpts = Object.entries(TRANSITION_LABELS).map(([k, lbl]) =>
+    `<option value="${k}"${k === trans ? ' selected' : ''}>${lbl}</option>`).join('');
+
+  return `<div class="wb-spotlight-stage">
+    <div class="wb-spotlight-head">
+      <span>${formal
+        ? `正式成片 · 作业 #${formal.job_id} · ${escapeHtml(formal.provider)}／${escapeHtml(formal.model)} · 第 ${formal.attempt} 次尝试`
+        : '暗场监看舞台 · 尚未签字正式视频'}</span>
+      <span class="chip blue">${escapeHtml(TRANSITION_LABELS[trans] || trans)}</span>
+    </div>
+    ${formal
+      ? `<video id="sw-stage-player" class="wb-spotlight-player" controls preload="metadata" src="${api.jobArtifactUrl(formal.job_id, 0)}"></video>`
+      : '<div class="wb-spotlight-empty">还没有签过通过的正式视频，预览区留空——不拿未签字的产物冒充正式结果；下方仍可预设粗剪出入点与镜头转场。</div>'}
+    ${formal ? `<div class="kv-grid">
+      <div class="kv"><dt>参数快照</dt><dd class="mono t-desc">${escapeHtml(formal.params || '{}')}</dd></div>
+      ${formal.retry_of_job_id ? `<div class="kv"><dt>重试来源</dt><dd>#${formal.retry_of_job_id}</dd></div>` : ''}
+    </div>` : ''}
+    <div class="wb-trim-scrubber" id="sw-trim-scrubber" data-planned-ms="${plannedMs}">
+      <div class="wb-trim-bar">
+        <span id="sw-trim-readout">入点 ${fmtMsSec(trimIn)} · 出点 ${trimOut > 0 ? fmtMsSec(trimOut) : '至片尾'}</span>
+        ${formal ? '<button type="button" class="btn xs" id="sw-trim-play">▶ 试播剪辑段</button>' : ''}
+      </div>
+      <div class="wb-trim-track">
+        <div class="wb-trim-window" id="sw-trim-win"></div>
+        <div class="wb-trim-playhead" id="sw-trim-playhead" hidden></div>
+      </div>
+      <div class="wb-trim-ranges">
+        <label class="wb-trim-field">入点游标 (In)
+          <input type="range" class="wb-trim-range" id="sw-trim-in-range" min="0" max="${plannedMs}" step="100" value="${Math.min(trimIn, plannedMs)}">
+        </label>
+        <label class="wb-trim-field">出点游标 (Out, 拉满=至片尾)
+          <input type="range" class="wb-trim-range" id="sw-trim-out-range" min="0" max="${plannedMs}" step="100" value="${trimOut > 0 ? Math.min(trimOut, plannedMs) : plannedMs}">
+        </label>
+      </div>
+      <div class="wb-trim-controls">
+        <label class="wb-trim-field">入点 (ms)
+          <input class="ctl sm" id="sw-trim-in-num" type="number" min="0" step="100" value="${trimIn}">
+        </label>
+        <label class="wb-trim-field">出点 (ms, 0=至片尾)
+          <input class="ctl sm" id="sw-trim-out-num" type="number" min="0" step="100" value="${trimOut}">
+        </label>
+        <label class="wb-trim-field">入镜转场
+          <select class="ctl sm" id="sw-trim-trans">${transOpts}</select>
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" class="btn sm primary" id="sw-trim-save">保存粗剪与转场</button>
+        <span class="modal-err" id="sw-trim-err"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
 function settingForm(d) {
   const s = d.setting;
   const row = (label, key, hint) => `
     <div class="kv"><dt>${label}</dt><dd>${escapeHtml(s[key] || '未填')}
       ${hint ? `<div class="hint">${hint}</div>` : ''}</dd></div>`;
+  const trimText = `${fmtMsSec(s.trim_in_ms)} → ${Number(s.trim_out_ms) > 0 ? fmtMsSec(s.trim_out_ms) : '片尾'}`;
+  const transText = TRANSITION_LABELS[s.transition] || s.transition || '硬切 (Cut)';
   return `
   <div class="kv-grid">
     ${row('镜头编号', 'seq')}
@@ -85,6 +157,8 @@ function settingForm(d) {
     ${row('运镜', 'camera_move')}
     ${row('画面比例', 'aspect')}
     ${row('镜头风格', 'style')}
+    <div class="kv"><dt>粗剪区间</dt><dd class="mono">${trimText}</dd></div>
+    <div class="kv"><dt>入镜转场</dt><dd>${escapeHtml(transText)}</dd></div>
   </div>
   <h3 class="drawer-h">画面描述与提示词</h3>
   <div class="kv-grid">
@@ -265,7 +339,7 @@ export default {
         <button class="btn primary" id="sw-generate">提交生成</button>
       </div></div>`;
 
-    const section = (title, body) => `<div class="card" style="margin-bottom:12px">
+    const section = (title, body) => `<div class="card u-mb-12">
       <div class="card-head"><h2>${title}</h2></div>
       <div class="card-body">${body}</div></div>`;
 
@@ -277,12 +351,7 @@ export default {
       ${section(`④ 视频（${d.videos.jobs.length} 条记录）`, jobRows(d.videos.jobs, d.videos.formal_job_id)
         + (d.videos.source_stale ? '<p class="modal-err">这一镜的分镜或资产在生成之后改过，最新产物可能已过期。</p>' : ''))}
       ${section('⑤ 音频', audioBlock(d))}
-      ${section('⑥ 预览与确认', d.preview.formal_video
-        ? `<div class="kv-grid"><div class="kv"><dt>正式视频</dt><dd>${artifactPreview(d.preview.formal_video)}</dd></div>
-           <div class="kv"><dt>模型</dt><dd>${escapeHtml(d.preview.formal_video.provider)}／${escapeHtml(d.preview.formal_video.model)}</dd></div>
-           <div class="kv"><dt>参数快照</dt><dd class="mono t-desc">${escapeHtml(d.preview.formal_video.params || '{}')}</dd></div>
-           <div class="kv"><dt>版本</dt><dd>第 ${d.preview.formal_video.attempt} 次尝试${d.preview.formal_video.retry_of_job_id ? `（重试自 #${d.preview.formal_video.retry_of_job_id}）` : ''}</dd></div></div>`
-        : '<p class="hint">还没有签过通过的正式视频，预览区是空的——不拿最新一条未签字的产物冒充正式结果。</p>')}
+      ${section('⑥ 预览与粗剪', previewStageHtml(d))}
       ${section('⑦ 审核', reviewBlock(d, cl))}
       ${section('⑧ 生产完成条件', readyBlock(d))}
       <div class="modal" id="sw-modal" hidden><div class="modal-box">
@@ -304,6 +373,13 @@ export default {
           <input class="ctl" id="sw-style" maxlength="60" value="${escapeHtml(d.setting.style)}">
           <label for="sw-neg">负面提示词</label>
           <input class="ctl" id="sw-neg" maxlength="2000" value="${escapeHtml(d.setting.negative_prompt)}">
+          <label for="sw-trim-in">入点 (ms)</label>
+          <input class="ctl" id="sw-trim-in" type="number" min="0" step="100" value="${Number(d.setting.trim_in_ms || 0)}">
+          <label for="sw-trim-out">出点 (ms, 0=至片尾)</label>
+          <input class="ctl" id="sw-trim-out" type="number" min="0" step="100" value="${Number(d.setting.trim_out_ms || 0)}">
+          <label for="sw-transition">入镜转场</label>
+          <select class="ctl" id="sw-transition">${Object.entries(TRANSITION_LABELS).map(([k, lbl]) =>
+            `<option value="${k}"${k === (d.setting.transition || 'cut') ? ' selected' : ''}>${lbl}</option>`).join('')}</select>
         </div>
         <p class="modal-meta">景别／运镜／比例／风格／负面提示词这几栏今天只是生产语言：
           执行器不读它们，改了也不会让已生成的产物判过期。要改引用资产请回分镜表。</p>
@@ -379,9 +455,8 @@ export default {
       const modal = root.querySelector('#sw-modal');
       if (modal) modal.hidden = false;
     });
-    root.querySelector('#sw-save')?.addEventListener('click', async () => {
-      const errEl = root.querySelector('#sw-error');
-      errEl.textContent = '';
+    const saveShotFields = async (errEl, buildOverrides, { closeModal = false } = {}) => {
+      if (errEl) errEl.textContent = '';
       const shotId = Number(getParam('shot'));
       // 引用关系必须先原样读回来：这一页不管引用，带空数组提交等于替人把
       // 人物与场景清空——那是"改个景别把整镜引用洗掉"的事故，不是保存设定。
@@ -390,34 +465,155 @@ export default {
         const rows = await api.shots(store.currentEpisodeId || 0);
         cur = rows.find((s) => s.id === shotId);
       } catch (err) {
-        errEl.textContent = '读不回这一镜的现有引用，已停止保存：' + (err.message || '未知错误');
+        if (errEl) errEl.textContent = '读不回这一镜的现有引用，已停止保存：' + (err.message || '未知错误');
         return;
       }
       if (!cur) {
-        errEl.textContent = '这一镜已经不在这个集里了，先回分镜表再看。';
+        if (errEl) errEl.textContent = '这一镜已经不在这个集里了，先回分镜表再看。';
         return;
       }
-      const body = {
+      const base = {
+        summary: cur.summary,
+        prompt: cur.prompt || '',
+        duration: Number(cur.duration),
+        asset_ids: cur.asset_ids || [],
+        variant_ids: cur.variant_ids || [],
+        shot_size: cur.shot_size || '',
+        camera_move: cur.camera_move || '',
+        aspect: cur.aspect || '',
+        style: cur.style || '',
+        negative_prompt: cur.negative_prompt || '',
+        trim_in_ms: Number(cur.trim_in_ms || 0),
+        trim_out_ms: Number(cur.trim_out_ms || 0),
+        transition: cur.transition || 'cut',
+      };
+      const body = { ...base, ...buildOverrides() };
+      if (!body.summary) {
+        if (errEl) errEl.textContent = '内容摘要不能空——生成时它就是提示词的替身。';
+        return;
+      }
+      if (body.trim_out_ms > 0 && body.trim_out_ms <= body.trim_in_ms) {
+        if (errEl) errEl.textContent = '出点必须大于入点（或填 0 表示保留到片尾）。';
+        return;
+      }
+      const ok = await run('保存设定', () => api.updateShot(shotId, body));
+      if (ok) {
+        if (closeModal) root.querySelector('#sw-modal').hidden = true;
+        window.dispatchEvent(new CustomEvent('app:refresh'));
+      }
+    };
+
+    root.querySelector('#sw-save')?.addEventListener('click', () => saveShotFields(
+      root.querySelector('#sw-error'),
+      () => ({
         summary: root.querySelector('#sw-summary').value.trim(),
         prompt: root.querySelector('#sw-prompt').value.trim(),
         duration: Number(root.querySelector('#sw-duration').value),
-        asset_ids: cur.asset_ids || [],
-        variant_ids: cur.variant_ids || [],
         shot_size: root.querySelector('#sw-size').value.trim(),
         camera_move: root.querySelector('#sw-move').value.trim(),
         aspect: root.querySelector('#sw-aspect').value.trim(),
         style: root.querySelector('#sw-style').value.trim(),
         negative_prompt: root.querySelector('#sw-neg').value.trim(),
+        trim_in_ms: Math.max(0, Math.round(Number(root.querySelector('#sw-trim-in')?.value) || 0)),
+        trim_out_ms: Math.max(0, Math.round(Number(root.querySelector('#sw-trim-out')?.value) || 0)),
+        transition: root.querySelector('#sw-transition')?.value || 'cut',
+      }),
+      { closeModal: true },
+    ));
+
+    // M2: 双游标粗剪滑轨与暗场播放器实时联动
+    const scrubber = root.querySelector('#sw-trim-scrubber');
+    if (scrubber) {
+      const inRange = root.querySelector('#sw-trim-in-range');
+      const outRange = root.querySelector('#sw-trim-out-range');
+      const inNum = root.querySelector('#sw-trim-in-num');
+      const outNum = root.querySelector('#sw-trim-out-num');
+      const winEl = root.querySelector('#sw-trim-win');
+      const readout = root.querySelector('#sw-trim-readout');
+      const player = root.querySelector('#sw-stage-player');
+      const playhead = root.querySelector('#sw-trim-playhead');
+      let totalMs = Math.max(1000, Number(scrubber.dataset.plannedMs) || 5000);
+      let stopAtSec = null;
+
+      const paintTrimWindow = () => {
+        const tin = Math.max(0, Math.round(Number(inNum?.value) || 0));
+        const tout = Math.max(0, Math.round(Number(outNum?.value) || 0));
+        const effOut = tout > 0 ? Math.min(tout, totalMs) : totalMs;
+        const leftPct = Math.min(100, (tin / totalMs) * 100);
+        const rightPct = Math.max(leftPct, Math.min(100, (effOut / totalMs) * 100));
+        if (winEl) {
+          winEl.style.left = `${leftPct.toFixed(2)}%`;
+          winEl.style.width = `${Math.max(1, rightPct - leftPct).toFixed(2)}%`;
+        }
+        const netMs = Math.max(0, effOut - tin);
+        if (readout) {
+          readout.textContent = `入点 ${fmtMsSec(tin)} · 出点 ${tout > 0 ? fmtMsSec(tout) : '至片尾'} · 净长 ${fmtMsSec(netMs)}`;
+        }
       };
-      if (!body.summary) {
-        errEl.textContent = '内容摘要不能空——生成时它就是提示词的替身。';
-        return;
+
+      const syncRangesMax = (ms) => {
+        totalMs = Math.max(500, Math.round(ms));
+        if (inRange) inRange.max = String(totalMs);
+        if (outRange) outRange.max = String(totalMs);
+        if (outRange && Number(outNum?.value || 0) === 0) outRange.value = String(totalMs);
+        paintTrimWindow();
+      };
+
+      inRange?.addEventListener('input', () => {
+        const val = Number(inRange.value) || 0;
+        if (inNum) inNum.value = String(val);
+        paintTrimWindow();
+      });
+      outRange?.addEventListener('input', () => {
+        const val = Number(outRange.value) || 0;
+        if (outNum) outNum.value = val >= totalMs ? '0' : String(val);
+        paintTrimWindow();
+      });
+      inNum?.addEventListener('input', () => {
+        if (inRange) inRange.value = String(Math.min(totalMs, Math.max(0, Number(inNum.value) || 0)));
+        paintTrimWindow();
+      });
+      outNum?.addEventListener('input', () => {
+        const val = Math.max(0, Number(outNum.value) || 0);
+        if (outRange) outRange.value = String(val === 0 ? totalMs : Math.min(totalMs, val));
+        paintTrimWindow();
+      });
+      paintTrimWindow();
+
+      if (player) {
+        player.addEventListener('loadedmetadata', () => {
+          if (Number.isFinite(player.duration) && player.duration > 0) {
+            syncRangesMax(player.duration * 1000);
+          }
+        });
+        player.addEventListener('timeupdate', () => {
+          const curMs = (player.currentTime || 0) * 1000;
+          if (playhead && totalMs > 0) {
+            playhead.hidden = false;
+            playhead.style.left = `${Math.min(100, Math.max(0, (curMs / totalMs) * 100)).toFixed(2)}%`;
+          }
+          if (stopAtSec != null && player.currentTime >= stopAtSec) {
+            player.pause();
+            stopAtSec = null;
+          }
+        });
+        root.querySelector('#sw-trim-play')?.addEventListener('click', () => {
+          const tin = Math.max(0, Number(inNum?.value) || 0) / 1000;
+          const tout = Math.max(0, Number(outNum?.value) || 0) / 1000;
+          stopAtSec = tout > tin ? tout : null;
+          player.currentTime = tin;
+          player.play().catch(() => {});
+        });
       }
-      const ok = await run('保存设定', () => api.updateShot(shotId, body));
-      if (ok) {
-        root.querySelector('#sw-modal').hidden = true;
-        window.dispatchEvent(new CustomEvent('app:refresh'));
-      }
-    });
+
+      root.querySelector('#sw-trim-save')?.addEventListener('click', () => saveShotFields(
+        root.querySelector('#sw-trim-err'),
+        () => ({
+          trim_in_ms: Math.max(0, Math.round(Number(inNum?.value) || 0)),
+          trim_out_ms: Math.max(0, Math.round(Number(outNum?.value) || 0)),
+          transition: root.querySelector('#sw-trim-trans')?.value || 'cut',
+        }),
+      ));
+    }
   },
 };

@@ -1,9 +1,9 @@
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .enums import ASSET_KINDS, AssetKind, EpisodeStatus
+from .enums import ASSET_KINDS, AssetKind, EpisodeStatus, ShotTransition
 from .tokens import asset_version
 
 
@@ -52,6 +52,15 @@ class ShotIn(BaseModel):
     aspect: str = Field(default="", max_length=20)
     style: str = Field(default="", max_length=60)
     negative_prompt: str = Field(default="", max_length=2000)
+    trim_in_ms: int = Field(default=0, ge=0)
+    trim_out_ms: int = Field(default=0, ge=0)
+    transition: ShotTransition = "cut"
+
+    @model_validator(mode="after")
+    def _check_trim_window(self) -> "ShotIn":
+        if self.trim_out_ms > 0 and self.trim_out_ms <= self.trim_in_ms:
+            raise ValueError("出场点必须大于入场点")
+        return self
 
 
 
@@ -78,6 +87,9 @@ class ShotOut(BaseModel):
     aspect: str = ""
     style: str = ""
     negative_prompt: str = ""
+    trim_in_ms: int = 0
+    trim_out_ms: int = 0
+    transition: str = "cut"
     # 形态 id → 「父资产名 · 形态名」。分镜表要把 #57 翻成人话，
     # 让浏览器再为一串 id 逐个回查形态就是 N+1；列表接口一次带出来。
     variant_labels: dict[int, str] = {}
@@ -103,6 +115,12 @@ class ShotOut(BaseModel):
                    style=(row["style"] if "style" in keys else ""),
                    negative_prompt=(row["negative_prompt"]
                                     if "negative_prompt" in keys else ""),
+                   trim_in_ms=(int(row["trim_in_ms"] or 0)
+                               if "trim_in_ms" in keys else 0),
+                   trim_out_ms=(int(row["trim_out_ms"] or 0)
+                                if "trim_out_ms" in keys else 0),
+                   transition=((row["transition"] if "transition" in keys else "cut")
+                               or "cut"),
                    variant_labels=variant_labels or {},
                    source_stale=bool(source_stale))
 

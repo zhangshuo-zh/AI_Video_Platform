@@ -7,8 +7,14 @@
 """
 from __future__ import annotations
 
-from composition import validators
+from pathlib import Path
+
+import jobfiles
+from composition import timeline, validators
 from config import FFMPEG_BIN
+from repositories.audio import clips as audio_repo
+from repositories.content import episodes, shots
+from repositories.jobs import jobs as job_repo
 
 MAX_SUBTITLE_BYTES = 1024 * 1024      # 字幕是文本；1MB 足够一整集，再多就是传错了东西
 ALLOWED_SUFFIXES = (".srt", ".vtt")
@@ -53,3 +59,77 @@ def availability() -> dict:
     return {"supported": False,
             "hint": f"这台机器的 FFmpeg（{FFMPEG_BIN}）没有 subtitles 滤镜，"
                     "烧不了字幕；要装带 libass 的构建后才能发起带字幕的合成"}
+
+
+def _fmt_srt_ts(ms: int) -> str:
+    ms = max(0, int(ms))
+    hours, rem = divmod(ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    seconds, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def generate_srt_from_shots(project_id: int, episode_id: int) -> str:
+    """按一集分镜实际/计划时长与台词自动生成 `.srt` 字幕并落盘到项目字幕目录。"""
+    ep = episodes.get(episode_id)
+    if ep is None or int(ep["project_id"]) != int(project_id):
+        raise SubtitleInvalid("创作单元不存在或不属于当前项目")
+    shot_rows = shots.list_by_episode(episode_id)
+    if not shot_rows:
+        raise SubtitleInvalid("这一集还没有分镜，无法生成字幕")
+
+    latest_videos = job_repo.latest_succeeded_videos_by_shot(episode_id)
+    audio_rows = audio_repo.list(project_id, None, episode_id)
+    lines_by_shot: dict[int, list[str]] = {}
+    for clip in audio_rows:
+        sid = clip["shot_id"]
+        if sid is None or clip["kind"] not in ("dialogue", "narration"):
+            continue
+        text = str(clip["text"] or "").strip()
+        if text:
+            lines_by_shot.setdefault(int(sid), []).append(text)
+
+    cursor = 0
+    prev_dur_ms = 0
+    blocks: list[str] = []
+    cue_idx = 0
+    for idx, shot in enumerate(shot_rows):
+        sid = int(shot["id"])
+        keys = shot.keys()
+        raw_ms = max(100, int(round(float(shot["duration"] or 5.0) * 1000)))
+        video_job = latest_videos.get(sid)
+        if video_job is not None:
+            manifest = jobfiles.parse_manifest(video_job["result_manifest"])
+            if manifest and manifest.get("path"):
+                target: Path | None = jobfiles.resolve_artifact(str(manifest["path"]))
+                if target is not None:
+                    try:
+                        info = validators.inspect(target)
+                        if int(info.get("duration_ms") or 0) >= 100:
+                            raw_ms = int(info["duration_ms"])
+                    except validators.MediaInvalid:
+                        pass
+        trim_in_ms = max(0, int(shot["trim_in_ms"] or 0)) if "trim_in_ms" in keys else 0
+        trim_out_ms = max(0, int(shot["trim_out_ms"] or 0)) if "trim_out_ms" in keys else 0
+        transition = str((shot["transition"] if "transition" in keys else "cut") or "cut")
+        eff_in = min(trim_in_ms, raw_ms)
+        eff_out = min(trim_out_ms, raw_ms) if trim_out_ms > 0 else raw_ms
+        dur_ms = max(100, eff_out - eff_in)
+        if idx > 0:
+            ov = timeline.crossfade_overlap_ms(prev_dur_ms, dur_ms, transition)
+            cursor = max(0, cursor - ov)
+        start_ms = cursor
+        end_ms = cursor + dur_ms
+        cursor = end_ms
+        prev_dur_ms = dur_ms
+
+        cue_lines = lines_by_shot.get(sid)
+        cue_text = "\n".join(cue_lines) if cue_lines else str(shot["summary"] or "").strip()
+        if cue_text:
+            cue_idx += 1
+            blocks.append(f"{cue_idx}\n{_fmt_srt_ts(start_ms)} --> {_fmt_srt_ts(end_ms)}\n{cue_text}")
+
+    if not blocks:
+        raise SubtitleInvalid("分镜缺少可用的台词或描述文本，无法生成字幕")
+    raw = ("\n\n".join(blocks) + "\n").encode("utf-8")
+    return jobfiles.save_subtitle(project_id, raw, ".srt")

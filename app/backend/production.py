@@ -773,6 +773,9 @@ def shot_workbench(shot_id: int) -> dict:
             "style": shot["style"] if "style" in shot.keys() else "",
             "negative_prompt": (shot["negative_prompt"]
                                 if "negative_prompt" in shot.keys() else ""),
+            "trim_in_ms": int(shot["trim_in_ms"]) if "trim_in_ms" in shot.keys() else 0,
+            "trim_out_ms": int(shot["trim_out_ms"]) if "trim_out_ms" in shot.keys() else 0,
+            "transition": (shot["transition"] if "transition" in shot.keys() else "cut") or "cut",
             "revision": int(shot["revision"])},
         "refs": {"assets": refs, "variants": ref_variants,
                  "missing_assets": [a for a in asset_ids if a not in loaded_assets],
