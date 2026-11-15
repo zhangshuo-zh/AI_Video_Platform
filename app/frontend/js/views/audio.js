@@ -169,6 +169,11 @@ export default {
           <p class="hint" style="text-align:left;margin:8px 0 0">
             登记只写素材台账；点「送进队列」才落 Job，成本只从 Job 记。
           </p>
+          ${tab === 0 ? `<div class="audio-batch-bar">
+            <button class="btn sm" id="audio-batch-tts" type="button">🎙️ 按角色音色批量配音（当前集）</button>
+            <label class="cp-check-opt"><input type="checkbox" id="audio-batch-submit"> 建单后自动送进队列</label>
+            <span class="hint">自动识别当前集台词与说话人，注入角色档案配置的声线、语速与造声描述。</span>
+          </div>` : ''}
         </div>` : ''}
         ${!episodes.length ? `<div class="empty"><div class="empty-t">还没有集</div>
           <p>先去创作中心建一集，音频才有地方挂。</p></div>`
@@ -233,6 +238,34 @@ export default {
       };
       const ok = await run('登记音频', () => api.createAudioClip(store.currentId, body));
       if (ok) refresh();
+    });
+
+    root.querySelector('#audio-batch-tts')?.addEventListener('click', async () => {
+      const episodeId = Number(root.querySelector('#audio-ep')?.value);
+      if (!episodeId) return;
+      const autoSubmit = Boolean(root.querySelector('#audio-batch-submit')?.checked);
+      audioNotice = ''; audioNoticeKey = '';
+      let out = null;
+      try {
+        out = await api.batchEpisodeTts(store.currentId, episodeId, {
+          overwrite_existing: false,
+          auto_submit: autoSubmit,
+        });
+      } catch (e) {
+        audioNotice = `批量配音失败：${e.message || e}`;
+        audioNoticeKey = noticeKeyOf(store.currentId, currentSubTab('audio', TABS));
+        refresh();
+        return;
+      }
+      const boundCount = Object.keys(out?.voice_bindings || {}).length;
+      const warnText = (out?.warnings || []).length ? `（提示：${out.warnings.join('；')}）` : '';
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: {
+          text: `批量配音完成：新建 ${out.created_clip_ids.length} 条 · 已提交 ${out.submitted_job_ids.length} 条 · 跳过 ${out.skipped_shot_ids.length} 镜 · 绑定音色 ${boundCount} 位${warnText}`,
+          kind: (out?.warnings || []).length ? 'warn' : 'ok',
+        },
+      }));
+      refresh();
     });
 
     root.querySelectorAll('[data-audio-submit]').forEach((btn) => {

@@ -55,12 +55,32 @@ class ShotIn(BaseModel):
     trim_in_ms: int = Field(default=0, ge=0)
     trim_out_ms: int = Field(default=0, ge=0)
     transition: ShotTransition = "cut"
+    first_frame_image: str = Field(default="", max_length=300)
+    last_frame_image: str = Field(default="", max_length=300)
 
     @model_validator(mode="after")
     def _check_trim_window(self) -> "ShotIn":
         if self.trim_out_ms > 0 and self.trim_out_ms <= self.trim_in_ms:
             raise ValueError("出场点必须大于入场点")
         return self
+
+
+
+
+class ShotExtractFrameIn(BaseModel):
+    position: Literal["last", "first"] = "last"
+    offset_ms: int | None = Field(default=None, ge=0)
+    apply_to_next_shot: bool = True
+    apply_to_self_last_frame: bool = False
+
+
+class ShotExtractFrameOut(BaseModel):
+    shot_id: int
+    next_shot_id: int | None = None
+    frame_path: str
+    frame_url: str
+    applied_to_next_shot: bool = False
+    applied_to_self_last_frame: bool = False
 
 
 
@@ -90,6 +110,8 @@ class ShotOut(BaseModel):
     trim_in_ms: int = 0
     trim_out_ms: int = 0
     transition: str = "cut"
+    first_frame_image: str = ""
+    last_frame_image: str = ""
     # 形态 id → 「父资产名 · 形态名」。分镜表要把 #57 翻成人话，
     # 让浏览器再为一串 id 逐个回查形态就是 N+1；列表接口一次带出来。
     variant_labels: dict[int, str] = {}
@@ -121,6 +143,10 @@ class ShotOut(BaseModel):
                                 if "trim_out_ms" in keys else 0),
                    transition=((row["transition"] if "transition" in keys else "cut")
                                or "cut"),
+                   first_frame_image=(row["first_frame_image"]
+                                      if "first_frame_image" in keys else ""),
+                   last_frame_image=(row["last_frame_image"]
+                                     if "last_frame_image" in keys else ""),
                    variant_labels=variant_labels or {},
                    source_stale=bool(source_stale))
 

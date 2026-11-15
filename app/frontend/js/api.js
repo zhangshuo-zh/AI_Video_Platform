@@ -451,6 +451,7 @@ export const api = {
       Object.fromEntries(Object.entries(params).filter(([, v]) => v)))),
   createComposition: (pid, body) => send('POST', `/api/projects/${pid}/compositions`, body),
   composition: (id) => get(`/api/compositions/${id}`),
+  compositionExportBundleUrl: (id) => `/api/compositions/${id}/export-bundle.zip`,
   // 字幕是"喂给一次合成的输入文件"，不进库、不进 Git 工作区；
   // 列表同时带回这台机器的 FFmpeg 能不能烧字幕，界面据此决定控件是可选还是禁用
   compositionSubtitles: (pid) => get(`/api/projects/${pid}/composition-subtitles`),
@@ -479,6 +480,7 @@ export const api = {
   createAudioClip: (pid, body) => send('POST', `/api/projects/${pid}/audio-clips`, body),
   updateAudioClip: (id, body) => send('PATCH', `/api/audio-clips/${id}`, body),
   submitAudioClip: (id) => send('POST', `/api/audio-clips/${id}/submit`),
+  batchEpisodeTts: (pid, eid, body = {}) => send('POST', `/api/projects/${pid}/episodes/${eid}/audio/batch-tts`, body),
   deleteAudioClip: (id) => send('DELETE', `/api/audio-clips/${id}`),
 
   // 项目看板（W16）：只读聚合；导出是纯下载，不写状态
@@ -547,6 +549,7 @@ export const api = {
   production: (pid, episodeId) => get(`/api/projects/${pid}/production?`
     + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}) })),
   shotWorkbench: (sid) => get(`/api/shots/${sid}/workbench`),
+  extractShotFrame: (sid, body = {}) => send('POST', `/api/shots/${sid}/extract-frame`, body),
   assetImpact: (id) => get(`/api/assets/${id}/impact`),
   precheckShot: (sid, params = {}) => get(`/api/precheck/shot/${sid}?` + new URLSearchParams(params)),
   precheckEpisode: (pid, episodeId, templateId) => get(`/api/projects/${pid}/precheck?` + new URLSearchParams({

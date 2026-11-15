@@ -234,12 +234,16 @@ def _asset_project_of(asset_id: int) -> tuple[bool, int | None]:
 
 
 def _is_project_asset_file(target: Path, job) -> bool:
-    """检查目标文件是否落在 data/files/<asset_id>/... 且属于当前项目或全局资产。"""
+    """检查目标文件是否落在 data/files/<asset_id>/... 或 data/files/shots/<project_id>/... 且属于当前项目。"""
     try:
         rel = target.relative_to(FILES_DIR.resolve())
     except ValueError:
         return False
-    if not rel.parts or not rel.parts[0].isdigit():
+    if not rel.parts:
+        return False
+    if rel.parts[0] == "shots" and len(rel.parts) >= 3 and rel.parts[1].isdigit():
+        return int(rel.parts[1]) == job.get("project_id")
+    if not rel.parts[0].isdigit():
         return False
     exists, asset_pid = _asset_project_of(int(rel.parts[0]))
     if not exists:
@@ -248,10 +252,12 @@ def _is_project_asset_file(target: Path, job) -> bool:
 
 
 def _resolve_input_image(raw: str, job, *, label: str = "条件图") -> Path:
-    """解析并校验证件目录/同项目作业产物/资产图库内的参考图路径。"""
+    """解析并校验证件目录/同项目作业产物/资产与镜头图库内的参考图路径。"""
     cleaned = (raw or "").strip()
     if cleaned.startswith("/api/files/"):
         cleaned = cleaned[len("/api/files/"):]
+    elif cleaned.startswith("/files/"):
+        cleaned = cleaned[len("/files/"):]
     elif cleaned.startswith("files/"):
         cleaned = cleaned[len("files/"):]
     image_path = Path(cleaned).expanduser()
@@ -292,13 +298,18 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
     width = int(params.get("width", 1280))
     height = int(params.get("height", 704))
     steps = int(params.get("steps", 4))
+    last_raw = (params.get("last_frame_image") or "").strip()
+    last_target: Path | None = None
     argv = [v["python"], "-m", "mlx_video.wan_2.generate",
             "--model-dir", v["model"],
             "--prompt", job["prompt_snapshot"],
-            "--image", str(target),
-            "--height", str(height), "--width", str(width),
-            "--num-frames", str(frames), "--steps", str(steps),
-            "--seed", str(seed), "--output-path", str(out)]
+            "--image", str(target)]
+    if last_raw:
+        last_target = _resolve_input_image(last_raw, job, label="尾帧图")
+        argv.extend(["--last-image", str(last_target)])
+    argv.extend(["--height", str(height), "--width", str(width),
+                 "--num-frames", str(frames), "--steps", str(steps),
+                 "--seed", str(seed), "--output-path", str(out)])
     # Lightning LoRA 是四步档的关键；有就挂，没有就按模型默认步数跑。
     # 这两个值不是用户参数，路径只从环境读，避免把任意本地文件喂给加载器。
     for key, flag in (("FASTVIDEO_MLX_VIDEO_LORA_HIGH", "--lora-high"),
@@ -311,7 +322,8 @@ def _mlx_video(job, params: dict, outputs: Path) -> RunSpec:
         meta={"adapter": "mlx-video", "model": job["model_code"],
               "model_dir": v["model"], "python": v["python"],
               "seed": seed, "width": width, "height": height, "frames": frames,
-              "steps": steps, "image": str(target)})
+              "steps": steps, "image": str(target),
+              "last_frame_image": str(last_target) if last_target else ""})
 
 
 def _mflux(job, params: dict, outputs: Path) -> RunSpec:

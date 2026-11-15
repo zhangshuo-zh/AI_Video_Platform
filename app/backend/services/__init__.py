@@ -58,7 +58,7 @@ from .artifact_review import (
 )
 
 from .audio import (
-    AUDIO_KINDS, AUDIO_STATUS, audio_clip_view, audio_sync, audio_submit
+    AUDIO_KINDS, AUDIO_STATUS, audio_batch_tts, audio_clip_view, audio_sync, audio_submit
 )
 
 from .cascade import (
@@ -171,6 +171,7 @@ __all__ = [
     "apply_doc_ai",
     "artifact_version",
     "artifact_version_of_manifest",
+    "audio_batch_tts",
     "audio_clip_view",
     "audio_submit",
     "audio_sync",

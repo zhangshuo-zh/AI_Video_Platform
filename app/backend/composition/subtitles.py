@@ -69,8 +69,8 @@ def _fmt_srt_ts(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
-def generate_srt_from_shots(project_id: int, episode_id: int) -> str:
-    """按一集分镜实际/计划时长与台词自动生成 `.srt` 字幕并落盘到项目字幕目录。"""
+def build_srt_text(project_id: int, episode_id: int) -> str:
+    """按一集分镜实际/计划时长与台词生成 `.srt` 字幕文本（供存盘与工程包导出复用）。"""
     ep = episodes.get(episode_id)
     if ep is None or int(ep["project_id"]) != int(project_id):
         raise SubtitleInvalid("创作单元不存在或不属于当前项目")
@@ -131,5 +131,10 @@ def generate_srt_from_shots(project_id: int, episode_id: int) -> str:
 
     if not blocks:
         raise SubtitleInvalid("分镜缺少可用的台词或描述文本，无法生成字幕")
-    raw = ("\n\n".join(blocks) + "\n").encode("utf-8")
+    return "\n\n".join(blocks) + "\n"
+
+
+def generate_srt_from_shots(project_id: int, episode_id: int) -> str:
+    """按一集分镜实际/计划时长与台词自动生成 `.srt` 字幕并落盘到项目字幕目录。"""
+    raw = build_srt_text(project_id, episode_id).encode("utf-8")
     return jobfiles.save_subtitle(project_id, raw, ".srt")

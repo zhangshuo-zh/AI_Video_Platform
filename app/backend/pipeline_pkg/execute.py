@@ -49,7 +49,7 @@ def _missing_image_params(capability: str, params: dict) -> list[str]:
     # 空字符串也算没给：模板里可能写着 `"image": ""` 占位，
     # 那不是路径，交给白名单去拒只会得到一句看不懂的话。
     return [p.name for p in model.params
-            if p.type == "image" and not str(params.get(p.name) or "").strip()]
+            if p.type == "image" and p.required and not str(params.get(p.name) or "").strip()]
 
 
 

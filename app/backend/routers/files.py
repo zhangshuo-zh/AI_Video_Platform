@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from access import ensure_asset
+from access import ensure, ensure_asset
 from config import FILES_DIR
 from deps import require_user
 from paths import resolve_within
@@ -30,13 +30,17 @@ def get_file(rel: str, user=Depends(require_user)) -> FileResponse:
     parts = Path(rel).parts
     if not rel or rel.startswith("/") or ".." in parts or len(parts) < 2:
         raise HTTPException(status_code=404, detail="文件不存在")
-    # 第一段就是资产 id：图按资产分目录存，归属可以直接推出来。
-    # 先判可见性再看文件在不在——反过来的话，"这个路径存在"本身就成了
-    # 给没权限的人的一个探测口（存在回 404 的另一种写法、不存在回 404）
-    asset_id = parts[0]
-    if not asset_id.isdigit():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    ensure_asset(int(asset_id), user, "read")
+    # 镜头截帧存放在 shots/<project_id>/<uuid>.<ext>，按项目可见性鉴权；
+    # 其余沿用 <asset_id>/<uuid>.<ext> 按资产可见性鉴权。
+    if parts[0] == "shots":
+        if len(parts) < 3 or not parts[1].isdigit():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        ensure(user, int(parts[1]), "read")
+    else:
+        asset_id = parts[0]
+        if not asset_id.isdigit():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        ensure_asset(int(asset_id), user, "read")
 
     target = resolve_within(FILES_DIR, rel)
     if target is None or not target.is_file():

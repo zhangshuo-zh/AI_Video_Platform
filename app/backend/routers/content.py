@@ -3,6 +3,9 @@
 路径按层级走：/api/projects/{id}/episodes → /api/episodes/{id}/shots，
 这样前端拿到的永远是"当前对象下面的东西"，不用自己拼过滤条件。
 """
+import json
+import shutil
+import subprocess
 import uuid
 from functools import wraps
 
@@ -11,9 +14,11 @@ from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
 
 import asset_studio
 import asset_import_recovery
+import jobfiles
 import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
-from config import FILES_DIR
+from composition import validators
+from config import FFMPEG_BIN, FILES_DIR
 from deps import actor_name, require_permission
 from imagetypes import ALLOWED_TYPES, MAX_IMAGE_BYTES, is_heic, looks_like
 
@@ -21,11 +26,13 @@ from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetGenIn, AssetG
                     AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut,
                     AssetImpactOut, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
                     AssetShotOut, EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version,
-                    ShotIn, ShotOut, VariantIn, VariantOut, VariantUpdateIn)
+                    ShotExtractFrameIn, ShotExtractFrameOut, ShotIn, ShotOut,
+                    VariantIn, VariantOut, VariantUpdateIn)
 from paths import listdir_empty, resolve_within
 from repositories.content import _images_of, assets, episodes, shots
 from repositories.content import profiles as profile_repo
 from repositories.content import variants as variant_repo
+from repositories.jobs import jobs as job_repo
 from services import (JobInvalid, NoRoute, clean_tags, delete_episode_cascade,
                       shot_variant_ids, shots_view)
 
@@ -224,7 +231,9 @@ def _shot_form_fields(payload) -> dict:
             "negative_prompt": payload.negative_prompt.strip(),
             "trim_in_ms": int(payload.trim_in_ms or 0),
             "trim_out_ms": int(payload.trim_out_ms or 0),
-            "transition": payload.transition}
+            "transition": payload.transition,
+            "first_frame_image": payload.first_frame_image.strip(),
+            "last_frame_image": payload.last_frame_image.strip()}
 
 
 @router.post("/episodes/{episode_id}/shots", response_model=ShotOut,
@@ -276,6 +285,79 @@ def delete_shot(shot_id: int,
     ensure_by("shot", shot_id, user, "write", "镜头")
     if not shots.delete(shot_id):
         raise HTTPException(status_code=404, detail="镜头不存在")
+
+
+@router.post("/shots/{shot_id}/extract-frame", response_model=ShotExtractFrameOut)
+def extract_shot_frame(shot_id: int, payload: ShotExtractFrameIn | None = None,
+                       user=Depends(require_permission("doc:write"))) -> ShotExtractFrameOut:
+    """从镜头最新成功视频截取尾帧/首帧存为 PNG 参考图，并可一键填入下一镜首帧槽位。"""
+    project = ensure_by("shot", shot_id, user, "write", "镜头")
+    shot = shots.get(shot_id)
+    if shot is None:
+        raise HTTPException(status_code=404, detail="镜头不存在")
+    opts = payload or ShotExtractFrameIn()
+    video_by_shot = job_repo.latest_succeeded_videos_by_shot(int(shot["episode_id"]))
+    video_job = video_by_shot.get(int(shot_id))
+    if video_job is None:
+        raise HTTPException(status_code=422, detail="该镜头还没有已完成的视频作业，无法截帧")
+    try:
+        rpaths = json.loads(video_job["result_paths_json"] or "[]")
+    except ValueError:
+        rpaths = []
+    rel = str(rpaths[0]) if rpaths else ""
+    target = jobfiles.resolve_artifact(rel) if rel else None
+    if target is None:
+        raise HTTPException(status_code=422, detail="视频产物文件不在磁盘上")
+    ffmpeg = shutil.which(FFMPEG_BIN)
+    if not ffmpeg:
+        raise HTTPException(status_code=422, detail=f"找不到 ffmpeg（{FFMPEG_BIN}）")
+    try:
+        info = validators.inspect(target)
+    except validators.MediaInvalid as exc:
+        raise HTTPException(status_code=422, detail=f"视频文件不可读：{exc.message}") from exc
+    dur_ms = int(info.get("duration_ms") or 0)
+    if opts.offset_ms is not None:
+        seek_s = min(max(0.0, opts.offset_ms / 1000.0), max(0.0, (dur_ms - 80) / 1000.0))
+    elif opts.position == "first":
+        seek_s = 0.0
+    else:
+        seek_s = max(0.0, (dur_ms - 120) / 1000.0)
+
+    out_dir = FILES_DIR / "shots" / str(int(project["id"]))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{uuid.uuid4().hex}.png"
+    out_path = out_dir / name
+
+    def _run_grab(ss_val: float) -> bool:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-y", "-ss", f"{ss_val:.3f}", "-i", str(target),
+             "-frames:v", "1", "-q:v", "2", str(out_path)],
+            capture_output=True, text=True, timeout=30, shell=False,
+        )
+        return proc.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0
+
+    if not _run_grab(seek_s) and not _run_grab(0.0):
+        raise HTTPException(status_code=422, detail="FFmpeg 截帧失败，请检查视频编码是否完整")
+
+    frame_path = f"shots/{int(project['id'])}/{name}"
+    frame_url = f"/files/{frame_path}"
+    next_shot = shots.next_in_episode(int(shot["episode_id"]), int(shot["seq"]))
+    applied_next = False
+    if opts.apply_to_next_shot and next_shot is not None:
+        shots.set_frame_image(int(next_shot["id"]), first_frame_image=frame_path)
+        applied_next = True
+    applied_self = False
+    if opts.apply_to_self_last_frame:
+        shots.set_frame_image(shot_id, last_frame_image=frame_path)
+        applied_self = True
+    return ShotExtractFrameOut(
+        shot_id=shot_id,
+        next_shot_id=int(next_shot["id"]) if next_shot is not None else None,
+        frame_path=frame_path,
+        frame_url=frame_url,
+        applied_to_next_shot=applied_next,
+        applied_to_self_last_frame=applied_self,
+    )
 
 
 # ---------- 资产 ----------

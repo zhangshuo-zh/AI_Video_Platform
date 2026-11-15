@@ -1177,13 +1177,16 @@ export default {
       }).join('')}</div>`;
     }
 
+    let pendingPrefillParams = null;
+
     function renderParams(values) {
       // 默认轨与显式轨都按"当前选中的 provider/model"去找模型档
       const option = selectedOption();
       const modelCode = option?.model;
       const model = option?.models?.find((m) => m.code === modelCode)
         || option?.models?.[0] || null;
-      root.querySelector('#jm-params').innerHTML = paramFields(model, values || {}, option);
+      const merged = values !== undefined ? values : (pendingPrefillParams || {});
+      root.querySelector('#jm-params').innerHTML = paramFields(model, merged || {}, option);
     }
 
     /** 清单里登记的官方价；当分辨率/时长等条件命中时优先用那一条。 */
@@ -1299,6 +1302,7 @@ export default {
     async function openJobModal(prefill) {
       jobModal.hidden = false;
       root.querySelector('#jm-error').textContent = '';
+      pendingPrefillParams = prefill?.params ? { ...prefill.params } : null;
       linked = (prefill?.episodeId || prefill?.shotId)
         ? { episodeId: prefill.episodeId || null, shotId: prefill.shotId || null } : null;
       const linkEl = root.querySelector('#jm-link');

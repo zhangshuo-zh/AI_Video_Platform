@@ -183,7 +183,10 @@ def save_profile(asset_id: int, payload) -> dict:
         biography=(payload.biography or "").strip(),
         personality=(payload.personality or "").strip(),
         growth_arc=(payload.growth_arc or "").strip(),
-        text_prompt=(payload.text_prompt or "").strip())
+        text_prompt=(payload.text_prompt or "").strip(),
+        tts_voice=(getattr(payload, "tts_voice", "") or "").strip(),
+        tts_rate=float(getattr(payload, "tts_rate", 1.0) or 1.0),
+        tts_mood=(getattr(payload, "tts_mood", "") or "").strip())
 
 
 # ---------- 命名形态 ----------

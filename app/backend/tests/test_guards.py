@@ -146,6 +146,7 @@ ROUTES = [
     ("PATCH", "/api/audio-clips/{q}",
      {"kind": "dialogue", "speaker": "", "text": "改", "notes": ""}, 404),
     ("POST", "/api/audio-clips/{q}/submit", None, 404),
+    ("POST", "/api/projects/{p}/episodes/{e}/audio/batch-tts", {}, 404),
     ("DELETE", "/api/audio-clips/{q}", None, 404),
     # ---------- 项目看板与导出（W16） ----------
     ("GET", "/api/projects/{p}/dashboard", None, 404),
@@ -176,6 +177,7 @@ ROUTES = [
     # 单镜头工作台读的是这一镜的作业与签字，影响分析读的是跨项目引用清单
     # ——两条都先过可见性，看不见就是 404
     ("GET", "/api/shots/{s}/workbench", None, 404),
+    ("POST", "/api/shots/{s}/extract-frame", {}, 404),
     ("GET", "/api/assets/{a}/impact", None, 404),
     # ---------- 账号与角色（editor 一律 403） ----------
     ("GET", "/api/users", None, 403),
@@ -241,6 +243,7 @@ ROUTES = [
     ("POST", "/api/projects/{p}/compositions",
      {"episode_id": 1}, 404),
     ("GET", "/api/compositions/{x}", None, 404),
+    ("GET", "/api/compositions/{x}/export-bundle.zip", None, 404),
     # 字幕：文件不进库，但同样要登录、要看得见项目
     ("GET", "/api/projects/{p}/composition-subtitles", None, 404),
     ("POST", "/api/projects/{p}/composition-subtitles", "FILE", 404),

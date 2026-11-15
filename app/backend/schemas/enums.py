@@ -218,5 +218,7 @@ CAMERA_MOVES: dict[str, str] = {
     "pan": "摇镜",
     "truck": "移镜",
     "orbit": "环绕",
+    "follow": "跟随",
+    "tilt": "升降",
 }
 

@@ -62,6 +62,15 @@ def delete_project_cascade(project_id: int, actor: str = "平台") -> None:
         if listdir_empty(d):
             d.rmdir()
 
+    # 清理镜头截帧目录（FILES_DIR/shots/<project_id>/）
+    shot_dir = resolve_within(FILES_DIR, f"shots/{project_id}")
+    if shot_dir is not None and shot_dir.is_dir():
+        for fp in list(shot_dir.iterdir()):
+            if fp.is_file():
+                fp.unlink()
+        if listdir_empty(shot_dir):
+            shot_dir.rmdir()
+
     for rel in doc_paths:
         try:
             gitrepo.remove_file(rel, f"删除项目 {project_id} 的稿件：{rel}", actor)

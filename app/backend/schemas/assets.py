@@ -22,8 +22,12 @@ class AssetProfileIn(BaseModel):
     # 与 asset.consistency_prompt 严格分开：这一条是"让文本模型怎么写这份设定"，
     # 那一条是"让图像模型画稳定"。合成一列，改履历就会顺手改掉定妆图的依据。
     text_prompt: str = Field(default="", max_length=2000)
+    # 0055：人物专属 TTS 音色绑定（VoxCPM2 批量配音时自动带上）
+    tts_voice: str = Field(default="", max_length=80)
+    tts_rate: float = Field(default=1.0, ge=0.5, le=2.0)
+    tts_mood: str = Field(default="", max_length=200)
     # 弱版本闸，同 AssetIn 的 `seen_version`：档案表没有自己的版本列，
-    # 令牌由 `profile_version` 现算（资产时间打头＋档案四段）。
+    # 令牌由 `profile_version` 现算（资产时间打头＋档案各段）。
     seen_version: str = Field(default="", max_length=32)
 
 
@@ -38,6 +42,9 @@ class AssetProfileOut(BaseModel):
     personality: str = ""
     growth_arc: str = ""
     text_prompt: str = ""
+    tts_voice: str = ""
+    tts_rate: float = 1.0
+    tts_mood: str = ""
     created_at: str = ""
     updated_at: str = ""
     # 弱版本令牌，由路由用 `profile_version` 现算填进来（档案表自己没有这一列）

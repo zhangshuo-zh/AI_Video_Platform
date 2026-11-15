@@ -100,19 +100,39 @@ def inspect(path: Path) -> dict:
     }
 
 
+def resolve_timeline_media(video_info: dict) -> Path | None:
+    """解析时间线镜头引用的视频或静帧参考图（兼容 JOBS_DIR 产物与 FILES_DIR 图库）。"""
+    from config import FILES_DIR
+    from jobfiles import resolve_artifact
+    from paths import resolve_within
+
+    rel = str((video_info or {}).get("path") or "").strip()
+    if not rel:
+        return None
+    if (video_info or {}).get("source_root") == "files":
+        target = resolve_within(FILES_DIR, rel)
+        return target if target is not None and target.is_file() else None
+    target = resolve_artifact(rel)
+    if target is not None:
+        return target
+    fallback = resolve_within(FILES_DIR, rel)
+    return fallback if fallback is not None and fallback.is_file() else None
+
+
 def verify_inputs(timeline: dict) -> list[dict]:
-    """逐个读镜头视频与音频；任何一件不可读就拒绝，不带病开跑。"""
+    """逐个读镜头视频／预演静帧与音频；任何一件不可读就拒绝，不带病开跑。"""
     from jobfiles import resolve_artifact
 
     checked: list[dict] = []
     for shot in timeline.get("shots") or []:
-        rel = (shot.get("video") or {}).get("path") or ""
-        target = resolve_artifact(rel)
+        video_info = shot.get("video") or {}
+        rel = video_info.get("path") or ""
+        target = resolve_timeline_media(video_info)
         if target is None:
-            raise MediaInvalid(f"第 {shot.get('seq')} 镜的视频文件不在了")
+            raise MediaInvalid(f"第 {shot.get('seq')} 镜的视频或关键帧文件不在了")
         info = inspect(target)
         if not info["has_video"]:
-            raise MediaInvalid(f"第 {shot.get('seq')} 镜的文件里没有视频流")
+            raise MediaInvalid(f"第 {shot.get('seq')} 镜的文件里没有画面流")
         checked.append({"kind": "shot", "seq": shot.get("seq"),
                         "path": rel, **info})
     for clip in timeline.get("audio") or []:

@@ -19,13 +19,14 @@ import os
 import shutil
 from pathlib import Path
 
-from config import (FFMPEG_BIN, COMPOSE_CRF, COMPOSE_INTERPOLATE, COMPOSE_PRESET)
+from config import (FFMPEG_BIN, FILES_DIR, COMPOSE_CRF, COMPOSE_INTERPOLATE, COMPOSE_PRESET)
 from jobfiles import resolve_artifact, resolve_subtitle
+from paths import resolve_within
 from runners import RunSpec, RunnerUnavailable
 
 from composition import interpolate, validators
 from composition.timeline import crossfade_overlap_ms
-from composition.validators import MediaInvalid
+from composition.validators import MediaInvalid, resolve_timeline_media
 
 
 class CompositionJobInvalid(Exception):
@@ -65,12 +66,13 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         raise CompositionJobInvalid(f"帧率 {fps} 不合法")
 
     # 补帧开着时，这一次合成要按**源帧率**编码，把 16→24 那一步交给 RIFE。
-    # 为什么不能照旧编成 24fps：编成 24 就是复制帧，文件已经是 24fps 了，
-    # 后面那道补帧会被"源和目标同帧率"判成无事可做——那样等于这道根本没加。
-    # 决定在建命令时就做（`interpolate.plan`），不等跑完再判：编码帧率取决于它。
+    is_animatic = any((shot.get("video") or {}).get("media_kind") == "image" for shot in shots)
     encode_fps: float = float(fps)
     interp_plan: dict | None = None
-    decision = interpolate.plan(float(fps))
+    decision = (
+        {"run": False, "reason": "animatic 静态预演模式不跑 RIFE 补帧"}
+        if is_animatic else interpolate.plan(float(fps))
+    )
     if decision.get("run"):
         rates: list[tuple[int, float | None]] = []
         for shot in shots:
@@ -100,25 +102,34 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         raise CompositionJobInvalid(f"合成前检查：{exc.message}") from exc
 
     concat_path = outputs / f"{job['id']}-inputs.txt"
-    shot_targets: list[Path] = []
+    shot_targets: list[tuple[dict, Path]] = []
     lines = []
-    has_trim_or_transition = False
+    has_trim_or_transition = is_animatic
     for shot in shots:
-        target = resolve_artifact((shot.get("video") or {}).get("path") or "")
+        vinfo = shot.get("video") or {}
+        rel = vinfo.get("path") or ""
+        if vinfo.get("source_root") == "files":
+            target = resolve_within(FILES_DIR, rel)
+            if target is not None and not target.is_file():
+                target = None
+        else:
+            target = resolve_artifact(rel) or resolve_timeline_media(vinfo)
         if target is None:                       # verify_inputs 刚查过，这里是双保险
-            raise CompositionJobInvalid(f"第 {shot.get('seq')} 镜的视频文件不在了")
-        shot_targets.append(target)
+            raise CompositionJobInvalid(f"第 {shot.get('seq')} 镜的媒体文件不在了")
+        shot_targets.append((shot, target))
         trim_in_ms = max(0, int(shot.get("trim_in_ms") or 0))
         trim_out_ms = max(0, int(shot.get("trim_out_ms") or 0))
         transition = str(shot.get("transition") or "cut")
-        lines.append(_concat_line(target))
-        if trim_in_ms > 0:
-            lines.append(f"inpoint {trim_in_ms / 1000.0:.3f}")
-        if trim_out_ms > 0:
-            lines.append(f"outpoint {trim_out_ms / 1000.0:.3f}")
+        if vinfo.get("media_kind") != "image":
+            lines.append(_concat_line(target))
+            if trim_in_ms > 0:
+                lines.append(f"inpoint {trim_in_ms / 1000.0:.3f}")
+            if trim_out_ms > 0:
+                lines.append(f"outpoint {trim_out_ms / 1000.0:.3f}")
         if trim_in_ms > 0 or trim_out_ms > 0 or transition in ("crossfade", "fade_black"):
             has_trim_or_transition = True
-    concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if not has_trim_or_transition:
+        concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     output = outputs / f"{job['id']}-compose.mp4"
     receipt = outputs / f"{job['id']}-compose.json"
@@ -137,8 +148,13 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
 
     if has_trim_or_transition:
         argv = [ffmpeg, "-hide_banner", "-y"]
-        for target in shot_targets:
-            argv += ["-i", str(target)]
+        for shot_item, target in shot_targets:
+            vinfo = shot_item.get("video") or {}
+            if vinfo.get("media_kind") == "image":
+                loop_ms = max(500, int(shot_item.get("raw_duration_ms") or shot_item.get("duration_ms") or 3000))
+                argv += ["-loop", "1", "-t", f"{loop_ms / 1000.0:.3f}", "-i", str(target)]
+            else:
+                argv += ["-i", str(target)]
         video_inputs_count = len(shot_targets)
         total_ms = 0
         prev_shot_dur_ms = 0
@@ -223,13 +239,42 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
     for target in audio_inputs:
         argv += ["-i", str(target)]
 
+    bgm_ducking = bool(
+        params.get("bgm_ducking") if "bgm_ducking" in params else frozen_params.get("bgm_ducking", True)
+    )
+    dialogue_windows: list[tuple[float, float]] = []
+    if bgm_ducking and audio:
+        for index, clip in enumerate(audio):
+            if clip.get("kind") in ("dialogue", "narration"):
+                s_ms = max(0, int(clip.get("start_ms") or 0))
+                d_ms = int(clip.get("duration_ms") or 0)
+                if d_ms <= 0:
+                    try:
+                        d_ms = int(validators.inspect(audio_inputs[index]).get("duration_ms") or 0)
+                    except MediaInvalid:
+                        d_ms = 0
+                if d_ms <= 0:
+                    d_ms = 2000
+                dialogue_windows.append((s_ms / 1000.0, (s_ms + max(200, d_ms)) / 1000.0))
+
+    bgm_ducked = False
     maps = ["-map", "[v]"]
     if audio_inputs:
         labels = []
         for index, clip in enumerate(audio):
             start = max(0, int(clip.get("start_ms") or 0))
             labels.append(f"[a{index}]")
-            chains.append(f"[{video_inputs_count + index}:a]adelay={start}|{start}[a{index}]")
+            if clip.get("kind") == "music" and bgm_ducking and dialogue_windows:
+                enable_expr = "+".join(
+                    f"between(t,{st:.3f},{en:.3f})" for st, en in dialogue_windows
+                )
+                chains.append(
+                    f"[{video_inputs_count + index}:a]adelay={start}|{start},"
+                    f"volume=0.28:enable='{enable_expr}'[a{index}]"
+                )
+                bgm_ducked = True
+            else:
+                chains.append(f"[{video_inputs_count + index}:a]adelay={start}|{start}[a{index}]")
         chains.append("".join(labels) +
                       f"amix=inputs={len(labels)}:duration=longest:"
                       f"dropout_transition=0[a]")
@@ -252,6 +297,8 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         runner="ffmpeg", argv=argv, cwd=outputs, expected=[output], media="video",
         meta={"compose_json": str(receipt), "expected": expected,
               "composition_id": composition_id,
+              "mode": "animatic" if is_animatic else str(frozen_params.get("mode") or "standard"),
+              "bgm_ducking": bgm_ducked,
               "timeline_sha": hashlib.sha256(
                   json.dumps(timeline, ensure_ascii=False, sort_keys=True)
                   .encode("utf-8")).hexdigest(),
@@ -296,6 +343,8 @@ def post_check(spec: RunSpec) -> dict:
             "inputs": spec.meta.get("inputs"),
             "audio_inputs": spec.meta.get("audio_inputs"),
             "transitions": spec.meta.get("transitions") or [],
+            "mode": spec.meta.get("mode"),
+            "bgm_ducking": bool(spec.meta.get("bgm_ducking")),
             "expected": expected,
             "observed": info,
         }

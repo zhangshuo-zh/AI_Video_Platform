@@ -234,7 +234,9 @@ _MLX_VIDEO = Adapter(
             code="wan2.2-i2v-a14b",
             label="Wan2.2 I2V-A14B（参考图驱动）",
             params=(
-                Param("image", "image", None, note="必填：条件图路径由 Job 的输入产物给"),
+                Param("image", "image", None, note="必填：条件图（首帧）路径由 Job 的输入产物给"),
+                Param("last_frame_image", "image", None, required=False,
+                      note="选填：尾帧参考图路径（首尾帧过渡生视频）"),
                 Param("width", "int", 1280, 64, 1920, 16),
                 Param("height", "int", 704, 64, 1920, 16),
                 Param("frames", "int", 81, 1, 257),
@@ -796,6 +798,8 @@ def _type_ok(kind: str, value) -> bool:
 
 
 def _check_one(param: Param, value) -> list[str]:
+    if not param.required and (value is None or value == ""):
+        return []
     if not _type_ok(param.type, value):
         return [f"参数 {param.name} 的类型应为 {param.type}"]
     out: list[str] = []

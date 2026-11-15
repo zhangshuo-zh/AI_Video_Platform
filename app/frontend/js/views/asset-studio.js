@@ -95,6 +95,7 @@ function newDraft(kind = 'character') {
     targetId: 0, kind, loadedAsset: 0,
     fields: Object.fromEntries(TEXT_FIELDS[kind].map(([k]) => [k, ''])),
     textPrompt: '', consistency: '', assetName: '',
+    ttsVoice: '', ttsRate: 1.0, ttsMood: '',
     textTrack: 'local', textProvider: '', textModel: '', textInstruction: '',
     textMode: 'full', textTargetField: '', sourceExcerpt: '', textParams: {},
     imageTrack: 'local', imageProvider: '', imageModel: '',
@@ -373,7 +374,25 @@ function textPanel(d) {
     <label class="top" for="as-text-prompt">文字设定提示词</label>
     <textarea id="as-text-prompt" class="ctl" rows="2" data-k="textPrompt"
               placeholder="让模型怎么写这份设定；它与下面的视觉一致性提示词是两回事"
-      >${escapeHtml(d.textPrompt)}</textarea>` : '';
+      >${escapeHtml(d.textPrompt)}</textarea>
+    <span class="pf-label top">专属配音</span>
+    <div class="as-voice-box">
+      <div class="as-voice-grid">
+        <label class="as-voice-field">声线／音色标签
+          <input id="as-tts-voice" class="ctl sm" data-k="ttsVoice" maxlength="80"
+                 placeholder="如：清冷少女音／zh-CN-Xiaoxiao" value="${escapeHtml(d.ttsVoice || '')}">
+        </label>
+        <label class="as-voice-field">语速倍率 (0.5-2.0)
+          <input id="as-tts-rate" class="ctl sm" type="number" min="0.5" max="2.0" step="0.1"
+                 data-k="ttsRate" value="${escapeHtml(String(d.ttsRate ?? 1.0))}">
+        </label>
+        <label class="as-voice-field">情绪／造声描述
+          <input id="as-tts-mood" class="ctl sm" data-k="ttsMood" maxlength="200"
+                 placeholder="如：沉稳低语、带轻微嘲弄" value="${escapeHtml(d.ttsMood || '')}">
+        </label>
+      </div>
+      <p class="hint u-m-0 u-text-left">音频中心按角色音色批量配音时自动注入 VoxCPM2 语速与造声提示。</p>
+    </div>` : '';
   const busy = inflight(d.textJob) || d.busyText;
   const blocked = busy || slotMissing(d, 'text');
   return `
@@ -762,6 +781,9 @@ export default {
           d.fields.personality = profile.personality;
           d.fields.growth_arc = profile.growth_arc;
           d.textPrompt = profile.text_prompt;
+          d.ttsVoice = profile.tts_voice || '';
+          d.ttsRate = profile.tts_rate ?? 1.0;
+          d.ttsMood = profile.tts_mood || '';
         }
         // 形态是服务端的清单，不是人正在敲的文字——它跟着刷新才对
         d.variants = variants;
@@ -1074,6 +1096,9 @@ export default {
           profile = await api.saveAssetProfile(id, {
             biography: d.fields.biography || '', personality: d.fields.personality || '',
             growth_arc: d.fields.growth_arc || '', text_prompt: d.textPrompt || '',
+            tts_voice: d.ttsVoice || '',
+            tts_rate: Math.max(0.5, Math.min(2.0, Number(d.ttsRate) || 1.0)),
+            tts_mood: d.ttsMood || '',
             seen_version: d.baseProfileVersion });
         } catch (err) {
           if (stale(err)) return;

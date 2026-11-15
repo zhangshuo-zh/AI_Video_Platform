@@ -91,7 +91,9 @@ class ShotRepository:
                *, shot_size: str = "", camera_move: str = "", aspect: str = "",
                style: str = "", negative_prompt: str = "",
                trim_in_ms: int = 0, trim_out_ms: int = 0,
-               transition: str = "cut") -> sqlite3.Row:
+               transition: str = "cut",
+               first_frame_image: str = "",
+               last_frame_image: str = "") -> sqlite3.Row:
         with get_conn() as conn:
             seq = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM shot WHERE episode_id = ?",
@@ -101,12 +103,13 @@ class ShotRepository:
                 """INSERT INTO shot (episode_id, seq, summary, prompt, duration,
                                      asset_ids, variant_ids,
                                      shot_size, camera_move, aspect, style,
-                                     negative_prompt, trim_in_ms, trim_out_ms, transition)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                     negative_prompt, trim_in_ms, trim_out_ms, transition,
+                                     first_frame_image, last_frame_image)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
                  style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
-                 transition or "cut"),
+                 transition or "cut", first_frame_image, last_frame_image),
             )
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -117,8 +120,10 @@ class ShotRepository:
                *, shot_size: str = "", camera_move: str = "", aspect: str = "",
                style: str = "", negative_prompt: str = "",
                trim_in_ms: int = 0, trim_out_ms: int = 0,
-               transition: str = "cut") -> sqlite3.Row | None:
-        """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏，0054 起加出入点与转场）。
+               transition: str = "cut",
+               first_frame_image: str = "",
+               last_frame_image: str = "") -> sqlite3.Row | None:
+        """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏，0054/0055 加粗剪转场与首尾帧）。
 
         **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
         搬动它等于让"第 3 镜"在别的集里又出现一次；真要挪就删了重建。
@@ -135,13 +140,38 @@ class ShotRepository:
                           variant_ids = ?, shot_size = ?, camera_move = ?, aspect = ?,
                           style = ?, negative_prompt = ?,
                           trim_in_ms = ?, trim_out_ms = ?, transition = ?,
+                          first_frame_image = ?, last_frame_image = ?,
                           revision = revision + 1,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
                  style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
-                 transition or "cut", shot_id),
+                 transition or "cut", first_frame_image, last_frame_image, shot_id),
+            )
+            touch(conn, "shot", shot_id)
+            return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
+
+    def next_in_episode(self, episode_id: int, after_seq: int) -> sqlite3.Row | None:
+        with get_conn() as conn:
+            return conn.execute(
+                "SELECT * FROM shot WHERE episode_id = ? AND seq > ? ORDER BY seq ASC LIMIT 1",
+                (episode_id, after_seq),
+            ).fetchone()
+
+    def set_frame_image(self, shot_id: int, *, first_frame_image: str | None = None,
+                        last_frame_image: str | None = None) -> sqlite3.Row | None:
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
+            if row is None:
+                return None
+            ff = row["first_frame_image"] if first_frame_image is None else first_frame_image
+            lf = row["last_frame_image"] if last_frame_image is None else last_frame_image
+            conn.execute(
+                """UPDATE shot SET first_frame_image = ?, last_frame_image = ?,
+                          updated_at = datetime('now','localtime')
+                    WHERE id = ?""",
+                (ff, lf, shot_id),
             )
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
@@ -455,40 +485,55 @@ class CharacterProfileRepository:
     改一次履历就把定妆图的依据也改了，而这两件事由不同的人在不同的页上做。
     """
 
-    FIELDS = ("biography", "personality", "growth_arc", "text_prompt")
+    FIELDS = ("biography", "personality", "growth_arc", "text_prompt", "tts_voice", "tts_mood")
 
     def get(self, asset_id: int) -> dict:
         with get_conn() as conn:
             row = conn.execute("SELECT * FROM asset_character_profile WHERE asset_id = ?",
                                (asset_id,)).fetchone()
         if row is None:
-            out = {"asset_id": asset_id, "exists": False, "created_at": "", "updated_at": ""}
+            out: dict = {
+                "asset_id": asset_id, "exists": False,
+                "created_at": "", "updated_at": "", "tts_rate": 1.0,
+            }
             out.update({k: "" for k in self.FIELDS})
             return out
+        keys = row.keys()
         out = {"asset_id": asset_id, "exists": True,
                "created_at": row["created_at"], "updated_at": row["updated_at"]}
-        out.update({k: row[k] for k in self.FIELDS})
+        for k in self.FIELDS:
+            out[k] = (row[k] if k in keys and row[k] is not None else "")
+        rate = row["tts_rate"] if "tts_rate" in keys else None
+        out["tts_rate"] = float(rate) if rate is not None else 1.0
         return out
 
     def upsert(self, asset_id: int, *, biography: str, personality: str,
-               growth_arc: str, text_prompt: str) -> dict:
+               growth_arc: str, text_prompt: str,
+               tts_voice: str = "", tts_rate: float = 1.0,
+               tts_mood: str = "") -> dict:
         """整体提交，和 `PUT /api/assets/{id}` 同一个约定：不留部分更新的口子。
 
         首次保存建行、之后改行，靠 `ON CONFLICT(asset_id) DO UPDATE`——
         老人物没有档案行，"先查再决定 INSERT 还是 UPDATE"要读两趟还有竞态。
         """
+        rate_val = max(0.5, min(2.0, float(tts_rate or 1.0)))
         with get_conn() as conn:
             conn.execute(
                 """INSERT INTO asset_character_profile
-                       (asset_id, biography, personality, growth_arc, text_prompt)
-                   VALUES (?, ?, ?, ?, ?)
+                       (asset_id, biography, personality, growth_arc, text_prompt,
+                        tts_voice, tts_rate, tts_mood)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(asset_id) DO UPDATE SET
                        biography = excluded.biography,
                        personality = excluded.personality,
                        growth_arc = excluded.growth_arc,
                        text_prompt = excluded.text_prompt,
+                       tts_voice = excluded.tts_voice,
+                       tts_rate = excluded.tts_rate,
+                       tts_mood = excluded.tts_mood,
                        updated_at = datetime('now','localtime')""",
-                (asset_id, biography, personality, growth_arc, text_prompt))
+                (asset_id, biography, personality, growth_arc, text_prompt,
+                 tts_voice, rate_val, tts_mood))
             touch(conn, "asset", asset_id)
         return self.get(asset_id)
 

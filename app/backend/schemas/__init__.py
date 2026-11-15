@@ -41,7 +41,8 @@ from .assets import (
 )
 
 from .audio import (
-    AudioClipIn, AudioClipUpdateIn, AudioClipOut, AudioCapabilitiesOut
+    AudioClipIn, AudioClipUpdateIn, AudioClipOut, AudioCapabilitiesOut,
+    AudioBatchTtsIn, AudioBatchTtsOut
 )
 
 from .composition import (
@@ -50,7 +51,8 @@ from .composition import (
 
 from .content import (
     EpisodeIn, EpisodeStatusIn, EpisodeOut, ShotIn, ContextIn, ShotOut, AssetIn,
-    AssetOut, AssetCoverIn, AssetShotOut, AssetImpactOut
+    AssetOut, AssetCoverIn, AssetShotOut, AssetImpactOut,
+    ShotExtractFrameIn, ShotExtractFrameOut
 )
 
 from .costs import (
@@ -177,6 +179,9 @@ __all__ = [
     "AssetProfileIn",
     "AssetProfileOut",
     "AssetShotOut",
+    "AudioBatchTtsIn",
+    "AudioBatchTtsOut",
+    "AudioCapabilitiesOut",
     "AudioClipIn",
     "AudioClipOut",
     "AudioClipUpdateIn",
@@ -335,6 +340,8 @@ __all__ = [
     "SHOT_TRANSITIONS",
     "ShotIn",
     "ShotOut",
+    "ShotExtractFrameIn",
+    "ShotExtractFrameOut",
     "ShotTransition",
     "SubtitleFileOut",
     "SupportedConnectionType",

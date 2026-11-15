@@ -77,6 +77,14 @@ const TRANSITION_LABELS = {
   crossfade: '叠化 (Crossfade)',
   fade_black: '黑场渐变 (Fade Black)',
 };
+const CAMERA_MOVE_OPTIONS = ['固定', '推镜', '拉镜', '摇镜', '移镜', '环绕', '跟随', '升降'];
+
+function frameSrc(val) {
+  const s = String(val || '').trim();
+  if (!s) return '';
+  if (s.startsWith('/') || s.startsWith('http://') || s.startsWith('https://')) return s;
+  return `/files/${s}`;
+}
 
 function fmtMsSec(ms) {
   return `${(Math.max(0, Number(ms) || 0) / 1000).toFixed(2)}s`;
@@ -109,7 +117,12 @@ function previewStageHtml(d) {
     <div class="wb-trim-scrubber" id="sw-trim-scrubber" data-planned-ms="${plannedMs}">
       <div class="wb-trim-bar">
         <span id="sw-trim-readout">入点 ${fmtMsSec(trimIn)} · 出点 ${trimOut > 0 ? fmtMsSec(trimOut) : '至片尾'}</span>
-        ${formal ? '<button type="button" class="btn xs" id="sw-trim-play">▶ 试播剪辑段</button>' : ''}
+        ${formal ? `<div class="row u-gap-6">
+          <button type="button" class="btn xs" id="sw-trim-play">▶ 试播剪辑段</button>
+          <button type="button" class="btn xs primary" id="sw-extract-tail"
+            data-seq="${d.setting.seq}" data-has-next="${d.next_shot_id ? '1' : '0'}"
+            title="${d.next_shot_id ? '从正式视频末帧抽帧并写入下一镜首帧槽位' : '已是本集最后一镜，抽帧存为当前镜头尾帧'}">📸 截尾帧给下一镜</button>
+        </div>` : ''}
       </div>
       <div class="wb-trim-track">
         <div class="wb-trim-window" id="sw-trim-win"></div>
@@ -149,6 +162,20 @@ function settingForm(d) {
       ${hint ? `<div class="hint">${hint}</div>` : ''}</dd></div>`;
   const trimText = `${fmtMsSec(s.trim_in_ms)} → ${Number(s.trim_out_ms) > 0 ? fmtMsSec(s.trim_out_ms) : '片尾'}`;
   const transText = TRANSITION_LABELS[s.transition] || s.transition || '硬切 (Cut)';
+  const firstImg = String(s.first_frame_image || '').trim();
+  const lastImg = String(s.last_frame_image || '').trim();
+  const slotBox = (label, val, field) => `
+    <div class="wb-frame-slot">
+      <div class="wb-frame-head">
+        <span>${label}</span>
+        ${val ? `<button type="button" class="btn xs ghost" data-clear-frame="${field}">清空</button>` : '<span class="hint">未指定</span>'}
+      </div>
+      <div class="wb-frame-thumb">
+        ${val ? `<img src="${escapeHtml(frameSrc(val))}" alt="${escapeHtml(label)}">`
+              : `<span>${field === 'first_frame_image' ? '默认采用关键帧或引用图' : '可选尾帧控制，生视频双帧锚定'}</span>`}
+      </div>
+      ${val ? `<span class="hint mono">${escapeHtml(val)}</span>` : ''}
+    </div>`;
   return `
   <div class="kv-grid">
     ${row('镜头编号', 'seq')}
@@ -159,6 +186,12 @@ function settingForm(d) {
     ${row('镜头风格', 'style')}
     <div class="kv"><dt>粗剪区间</dt><dd class="mono">${trimText}</dd></div>
     <div class="kv"><dt>入镜转场</dt><dd>${escapeHtml(transText)}</dd></div>
+  </div>
+  <h3 class="drawer-h">首尾帧连线（图生视频首尾帧引导）</h3>
+  <div class="wb-frame-bridge">
+    ${slotBox('首帧 (First Frame)', firstImg, 'first_frame_image')}
+    <span class="wb-frame-arrow" aria-hidden="true">首帧 ──🎬──► 尾帧</span>
+    ${slotBox('尾帧 (Last Frame)', lastImg, 'last_frame_image')}
   </div>
   <h3 class="drawer-h">画面描述与提示词</h3>
   <div class="kv-grid">
@@ -366,13 +399,18 @@ export default {
           <label for="sw-size">景别</label>
           <input class="ctl" id="sw-size" maxlength="40" value="${escapeHtml(d.setting.shot_size)}">
           <label for="sw-move">运镜</label>
-          <input class="ctl" id="sw-move" maxlength="40" value="${escapeHtml(d.setting.camera_move)}">
+          <input class="ctl" id="sw-move" list="sw-camera-moves" maxlength="40" value="${escapeHtml(d.setting.camera_move)}" placeholder="如：推镜 / 环绕">
+          <datalist id="sw-camera-moves">${CAMERA_MOVE_OPTIONS.map((m) => `<option value="${m}">`).join('')}</datalist>
           <label for="sw-aspect">画面比例</label>
           <input class="ctl" id="sw-aspect" maxlength="20" value="${escapeHtml(d.setting.aspect)}">
           <label for="sw-style">镜头风格</label>
           <input class="ctl" id="sw-style" maxlength="60" value="${escapeHtml(d.setting.style)}">
           <label for="sw-neg">负面提示词</label>
           <input class="ctl" id="sw-neg" maxlength="2000" value="${escapeHtml(d.setting.negative_prompt)}">
+          <label for="sw-first-frame">首帧参考路径</label>
+          <input class="ctl" id="sw-first-frame" maxlength="500" value="${escapeHtml(d.setting.first_frame_image || '')}" placeholder="如 shots/1/xxx.png（可截上一镜尾帧自动写入）">
+          <label for="sw-last-frame">尾帧参考路径</label>
+          <input class="ctl" id="sw-last-frame" maxlength="500" value="${escapeHtml(d.setting.last_frame_image || '')}" placeholder="可选，图生视频双帧首尾控制">
           <label for="sw-trim-in">入点 (ms)</label>
           <input class="ctl" id="sw-trim-in" type="number" min="0" step="100" value="${Number(d.setting.trim_in_ms || 0)}">
           <label for="sw-trim-out">出点 (ms, 0=至片尾)</label>
@@ -443,11 +481,17 @@ export default {
             kind: 'warn' } }));
         return;
       }
+      const firstFrameVal = root.querySelector('#sw-first-frame')?.value.trim() || '';
+      const lastFrameVal = root.querySelector('#sw-last-frame')?.value.trim() || '';
+      const prefillParams = {};
+      if (firstFrameVal) prefillParams.image = firstFrameVal;
+      if (lastFrameVal) prefillParams.last_frame_image = lastFrameVal;
       setJobPrefill({ projectId: store.currentId, episodeId: store.currentEpisodeId,
         shotId: Number(shotId), capability: 'video',
         // 同一镜的生成入口，场景键与分镜页那一处一致（`shot_video`）。
         sceneKey: 'shot_video',
-        prompt: (root.querySelector('#sw-prompt') || {}).value || '' });
+        prompt: (root.querySelector('#sw-prompt') || {}).value || '',
+        params: Object.keys(prefillParams).length ? prefillParams : undefined });
       renderView('generate');
     });
     const editBtn = root.querySelector('#sw-edit');
@@ -486,6 +530,8 @@ export default {
         trim_in_ms: Number(cur.trim_in_ms || 0),
         trim_out_ms: Number(cur.trim_out_ms || 0),
         transition: cur.transition || 'cut',
+        first_frame_image: cur.first_frame_image || '',
+        last_frame_image: cur.last_frame_image || '',
       };
       const body = { ...base, ...buildOverrides() };
       if (!body.summary) {
@@ -517,9 +563,44 @@ export default {
         trim_in_ms: Math.max(0, Math.round(Number(root.querySelector('#sw-trim-in')?.value) || 0)),
         trim_out_ms: Math.max(0, Math.round(Number(root.querySelector('#sw-trim-out')?.value) || 0)),
         transition: root.querySelector('#sw-transition')?.value || 'cut',
+        first_frame_image: root.querySelector('#sw-first-frame')?.value.trim() || '',
+        last_frame_image: root.querySelector('#sw-last-frame')?.value.trim() || '',
       }),
       { closeModal: true },
     ));
+
+    root.querySelectorAll('[data-clear-frame]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const field = btn.dataset.clearFrame;
+        if (field !== 'first_frame_image' && field !== 'last_frame_image') return;
+        saveShotFields(root.querySelector('#sw-trim-err'), () => ({ [field]: '' }));
+      });
+    });
+
+    root.querySelector('#sw-extract-tail')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const shotId = Number(getParam('shot'));
+      const seqLabel = btn?.dataset?.seq || String(shotId);
+      const hasNext = btn?.dataset?.hasNext === '1';
+      const errEl = root.querySelector('#sw-trim-err');
+      if (errEl) errEl.textContent = '';
+      let res = null;
+      const ok = await run('截取尾帧', () => api.extractShotFrame(shotId, {
+        position: 'last',
+        apply_to_next_shot: hasNext,
+        apply_to_self_last_frame: !hasNext,
+      }).then((out) => { res = out; }));
+      if (!ok || !res) return;
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: {
+          text: res.applied_to_next_shot
+            ? `已截取第 ${seqLabel} 镜尾帧，并写入下一镜首帧槽位`
+            : '已是本集最后一镜，已截取尾帧并存为当前镜头尾帧槽位',
+          kind: 'ok',
+        },
+      }));
+      renderView('shot');
+    });
 
     // M2: 双游标粗剪滑轨与暗场播放器实时联动
     const scrubber = root.querySelector('#sw-trim-scrubber');

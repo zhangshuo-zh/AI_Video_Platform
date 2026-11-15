@@ -23,9 +23,10 @@ from __future__ import annotations
 import json
 
 import jobfiles
-from config import COMPOSE_MAX_SHOTS
+from config import COMPOSE_MAX_SHOTS, FILES_DIR
 from composition import validators
 from models import JOB_STATUSES
+from paths import resolve_within
 from repositories.audio import clips
 from repositories.content import assets, episodes, shots, variants
 from repositories.jobs import jobs as job_repo
@@ -62,10 +63,69 @@ def _shot_review(job, signs: list, version: str) -> tuple[str, str]:
     return "missing", f"作业 #{job['id']} 的产物没有有效签字"
 
 
+def _pick_animatic_source(shot, image_jobs: list, signs_by_job: dict[int, list],
+                          loaded_assets: dict, loaded_variants: dict,
+                          artifact_version_fn) -> tuple[str, object | None, int | None, str, str] | None:
+    """动态故事板预演降级取源：已过审关键帧 -> 最新成功关键帧 -> 分镜首帧 -> 形态参考图 -> 资产参考图。"""
+    # 1) 关键帧作业（优先已过审，否则最新成功）
+    sorted_imgs = sorted(image_jobs, key=lambda r: (str(r["finished_at"] or ""), int(r["id"])), reverse=True)
+    for prefer_approved in (True, False):
+        for job in sorted_imgs:
+            verdict, why = _shot_review(job, signs_by_job.get(int(job["id"]), []), artifact_version_fn(job))
+            if prefer_approved and verdict != "approved":
+                continue
+            try:
+                paths = json.loads(job["result_paths_json"] or "[]")
+            except ValueError:
+                paths = []
+            rel = str(paths[0]) if paths else ""
+            target = jobfiles.resolve_artifact(rel) if rel else None
+            if target is not None:
+                return rel, target, int(job["id"]), verdict, why
+
+    # 2) 分镜记录的 first_frame_image / last_frame_image（FILES_DIR）
+    keys = shot.keys()
+    for col in ("first_frame_image",):
+        if col in keys and (shot[col] or "").strip():
+            rel = str(shot[col]).strip()
+            target = resolve_within(FILES_DIR, rel)
+            if target is not None and target.is_file():
+                return rel, target, None, "animatic", "采用镜头首帧参考图预演"
+
+    # 3) 绑定形态与绑定资产的 ref_images（FILES_DIR）
+    from services import shot_asset_ids, shot_variant_ids
+    for vid in sorted(shot_variant_ids(shot)):
+        vrow = loaded_variants.get(vid)
+        if not vrow:
+            continue
+        try:
+            imgs = json.loads(vrow["ref_images"] or "[]")
+        except ValueError:
+            imgs = []
+        for rel in imgs:
+            target = resolve_within(FILES_DIR, str(rel))
+            if target is not None and target.is_file():
+                return str(rel), target, None, "animatic", f"采用形态「{vrow['name']}」参考图预演"
+    for aid in sorted(shot_asset_ids(shot)):
+        arow = loaded_assets.get(aid)
+        if not arow:
+            continue
+        try:
+            imgs = json.loads(arow["ref_images"] or "[]")
+        except ValueError:
+            imgs = []
+        for rel in imgs:
+            target = resolve_within(FILES_DIR, str(rel))
+            if target is not None and target.is_file():
+                return str(rel), target, None, "animatic", f"采用资产「{arow['name']}」参考图预演"
+    return None
+
+
 def build(project_id: int, episode_id: int, *,
           require_approved: bool = True,
           subtitle_path: str | None = None,
-          shot_jobs: dict[int, int] | None = None) -> dict:
+          shot_jobs: dict[int, int] | None = None,
+          mode: str = "standard") -> dict:
     """生成一份时间线快照。任何前置不成立都抛 `CompositionInvalid`。
 
     `shot_jobs` 是"这一镜到底用哪条作业"的显式钉法（键 shot_id，值 job_id）。
@@ -111,6 +171,19 @@ def build(project_id: int, episode_id: int, *,
     signs_by_job: dict[int, list] = {}
     for sign in reviews.signs_for_jobs(project_id, wanted):
         signs_by_job.setdefault(int(sign["target_id"]), []).append(sign)
+    image_jobs_by_shot: dict[int, list] = {}
+    if mode == "animatic":
+        img_rows = job_repo.list(
+            [project_id], status="succeeded", capability="image",
+            episode_id=episode_id, limit=500,
+        )
+        img_ids = [int(r["id"]) for r in img_rows]
+        if img_ids:
+            for sign in reviews.signs_for_jobs(project_id, img_ids):
+                signs_by_job.setdefault(int(sign["target_id"]), []).append(sign)
+        for ir in img_rows:
+            if ir["shot_id"] is not None:
+                image_jobs_by_shot.setdefault(int(ir["shot_id"]), []).append(ir)
     asset_ids: set[int] = set()
     variant_ids: set[int] = set()
     for shot in shot_rows:
@@ -121,65 +194,113 @@ def build(project_id: int, episode_id: int, *,
 
     for shot in shot_rows:
         shot_id = int(shot["id"])
+        keys = shot.keys()
+        trim_in_ms = max(0, int(shot["trim_in_ms"] or 0)) if "trim_in_ms" in keys else 0
+        trim_out_ms = max(0, int(shot["trim_out_ms"] or 0)) if "trim_out_ms" in keys else 0
+        transition = ((shot["transition"] if "transition" in keys else "cut") or "cut")
+        planned_ms = max(0, int(round(float(shot["duration"] or 0) * 1000)))
+
         if pinned is not None:
             job_id = pinned.get(shot_id)
             video_job = jobs_by_id.get(int(job_id)) if job_id else None
             if video_job is None:
-                reasons.append(f"第 {shot['seq']} 镜没有产线签过的视频作业")
-                continue
-            if int(video_job["shot_id"] or 0) != shot_id:
+                if mode == "animatic":
+                    video_job = None
+                else:
+                    reasons.append(f"第 {shot['seq']} 镜没有产线签过的视频作业")
+                    continue
+            elif int(video_job["shot_id"] or 0) != shot_id:
                 reasons.append(
                     f"第 {shot['seq']} 镜钉的作业 #{job_id} 不属于这一镜")
                 continue
-            if video_job["status"] != "succeeded":
+            elif video_job["status"] != "succeeded":
                 reasons.append(
                     f"第 {shot['seq']} 镜钉的作业 #{job_id} 状态是"
                     f"「{JOB_STATUSES.get(video_job['status'], video_job['status'])}」，不是成功")
                 continue
         else:
             video_job = jobs_by_shot.get(shot_id)
+
+        use_animatic_image = False
         if video_job is None:
-            reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
-            continue
-        # 镜头行与资产都在手上了：判一次过期不该再回库读同一行、再逐个资产问一遍
-        if job_source_stale(video_job, shot, loaded_assets, loaded_variants):
-            reasons.append(
-                f"第 {shot['seq']} 镜的素材是旧版分镜／资产生成的（源内容已变），"
-                f"要重新生成并重新签字")
-            continue
-        try:
-            result_paths = json.loads(video_job["result_paths_json"] or "[]")
-        except ValueError:
-            result_paths = []
-        rel = str(result_paths[0]) if result_paths else ""
-        target = jobfiles.resolve_artifact(rel) if rel else None
-        if target is None:
-            reasons.append(f"第 {shot['seq']} 镜的视频产物不在了（作业 #{video_job['id']}）")
-            continue
-        verdict, why = _shot_review(
-            video_job, signs_by_job.get(int(video_job["id"]), []),
-            artifact_version(video_job))
-        if require_approved and verdict != "approved":
-            reasons.append(f"第 {shot['seq']} 镜{why}")
-            continue
-        # 实际时长从文件读，不拿分镜的计划时长顶替：合成出来的总长必须
-        # 和素材对得上，否则验收那道 8% 容差永远过不去（或者要静默裁切）。
-        try:
-            info = validators.inspect(target)
-        except validators.MediaInvalid as exc:
-            reasons.append(f"第 {shot['seq']} 镜的视频读不出来：{exc.message}")
-            continue
-        if not info["has_video"]:
-            reasons.append(f"第 {shot['seq']} 镜的文件里没有视频流")
-            continue
-        raw_duration_ms = int(info["duration_ms"] or 0)
-        if raw_duration_ms < 100:
-            reasons.append(f"第 {shot['seq']} 镜的视频时长无效（{raw_duration_ms}ms）")
-            continue
-        keys = shot.keys()
-        trim_in_ms = max(0, int(shot["trim_in_ms"] or 0)) if "trim_in_ms" in keys else 0
-        trim_out_ms = max(0, int(shot["trim_out_ms"] or 0)) if "trim_out_ms" in keys else 0
-        transition = ((shot["transition"] if "transition" in keys else "cut") or "cut")
+            if mode == "animatic":
+                use_animatic_image = True
+            else:
+                reasons.append(f"第 {shot['seq']} 镜没有成功的视频作业")
+                continue
+        elif job_source_stale(video_job, shot, loaded_assets, loaded_variants):
+            if mode == "animatic":
+                use_animatic_image = True
+            else:
+                reasons.append(
+                    f"第 {shot['seq']} 镜的素材是旧版分镜／资产生成的（源内容已变），"
+                    f"要重新生成并重新签字")
+                continue
+        else:
+            try:
+                result_paths = json.loads(video_job["result_paths_json"] or "[]")
+            except ValueError:
+                result_paths = []
+            rel = str(result_paths[0]) if result_paths else ""
+            target = jobfiles.resolve_artifact(rel) if rel else None
+            if target is None:
+                if mode == "animatic":
+                    use_animatic_image = True
+                else:
+                    reasons.append(f"第 {shot['seq']} 镜的视频产物不在了（作业 #{video_job['id']}）")
+                    continue
+            else:
+                verdict, why = _shot_review(
+                    video_job, signs_by_job.get(int(video_job["id"]), []),
+                    artifact_version(video_job))
+                if require_approved and verdict != "approved":
+                    if mode == "animatic":
+                        use_animatic_image = True
+                    else:
+                        reasons.append(f"第 {shot['seq']} 镜{why}")
+                        continue
+
+        if use_animatic_image:
+            picked = _pick_animatic_source(
+                shot, image_jobs_by_shot.get(shot_id, []), signs_by_job,
+                loaded_assets, loaded_variants, artifact_version,
+            )
+            if picked is None:
+                reasons.append(f"第 {shot['seq']} 镜没有已过审视频，也找不到可用的关键帧或参考图")
+                continue
+            anim_rel, anim_target, anim_job_id, anim_verdict, anim_why = picked
+            try:
+                info = validators.inspect(anim_target)
+            except validators.MediaInvalid as exc:
+                reasons.append(f"第 {shot['seq']} 镜的关键帧读不出来：{exc.message}")
+                continue
+            if not info["has_video"]:
+                reasons.append(f"第 {shot['seq']} 镜的关键帧里没有图像流")
+                continue
+            raw_duration_ms = max(500, planned_ms or 3000)
+            source_root = "files" if anim_job_id is None else "jobs"
+            media_kind = "image"
+            rel = anim_rel
+            verdict = anim_verdict
+            why = anim_why
+            vid_job_id = anim_job_id
+        else:
+            try:
+                info = validators.inspect(target)
+            except validators.MediaInvalid as exc:
+                reasons.append(f"第 {shot['seq']} 镜的视频读不出来：{exc.message}")
+                continue
+            if not info["has_video"]:
+                reasons.append(f"第 {shot['seq']} 镜的文件里没有视频流")
+                continue
+            raw_duration_ms = int(info["duration_ms"] or 0)
+            if raw_duration_ms < 100:
+                reasons.append(f"第 {shot['seq']} 镜的视频时长无效（{raw_duration_ms}ms）")
+                continue
+            source_root = "jobs"
+            media_kind = "video"
+            vid_job_id = int(video_job["id"])
+
         if trim_in_ms > 0 and trim_in_ms >= raw_duration_ms:
             reasons.append(
                 f"第 {shot['seq']} 镜的入场点（{trim_in_ms}ms）超出视频时长（{raw_duration_ms}ms）"
@@ -194,7 +315,6 @@ def build(project_id: int, episode_id: int, *,
         if duration_ms < 100:
             reasons.append(f"第 {shot['seq']} 镜裁剪后有效时长不足 100ms（{duration_ms}ms）")
             continue
-        planned_ms = max(0, int(round(float(shot["duration"] or 0) * 1000)))
         timeline_shots.append({
             "shot_id": shot_id,
             "seq": int(shot["seq"]),
@@ -206,8 +326,10 @@ def build(project_id: int, episode_id: int, *,
             "transition": transition,
             "planned_duration_ms": planned_ms,
             "video": {
-                "job_id": int(video_job["id"]),
+                "job_id": vid_job_id,
                 "path": rel,
+                "media_kind": media_kind,
+                "source_root": source_root,
                 "bytes": info["bytes"],
                 "width": info["width"],
                 "height": info["height"],
@@ -229,13 +351,20 @@ def build(project_id: int, episode_id: int, *,
             reasons.append(f"音频素材 #{row['id']} 已就绪，但文件不在了")
             continue
         start_ms = 0 if row["kind"] == "music" else starts.get(row["shot_id"], 0)
+        aud_dur = row["duration_ms"]
+        if not aud_dur:
+            try:
+                aud_dur = validators.inspect(target).get("duration_ms")
+            except validators.MediaInvalid:
+                aud_dur = None
         audio.append({
             "clip_id": int(row["id"]),
             "kind": row["kind"],
             "speaker": row["speaker"],
             "path": row["path"],
+            "shot_id": row["shot_id"],
             "start_ms": start_ms,
-            "duration_ms": row["duration_ms"],
+            "duration_ms": aud_dur,
             "bytes": target.stat().st_size,
         })
 
@@ -262,6 +391,7 @@ def build(project_id: int, episode_id: int, *,
 
     return {
         "schema": 1,
+        "mode": mode,
         "project_id": int(project_id),
         "episode": {
             "id": int(episode_id),

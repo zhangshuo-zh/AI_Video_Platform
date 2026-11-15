@@ -864,7 +864,7 @@ def test_清单说得出这一档能不能吃参考图():
     i2v = adapters.find("video", "local", "mlx-video")
     t2v = next(m for m in i2v.models if m.code == "wan2.2-t2v-a14b")
     i2v_model = next(m for m in i2v.models if m.code == "wan2.2-i2v-a14b")
-    assert i2v_model.as_dict()["image_inputs"] == ["image"]
+    assert i2v_model.as_dict()["image_inputs"] == ["image", "last_frame_image"]
     assert t2v.as_dict()["image_inputs"] == []
 
     mflux = adapters.find("image", "local", "mflux")

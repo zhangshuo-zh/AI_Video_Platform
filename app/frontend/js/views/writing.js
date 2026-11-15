@@ -1696,6 +1696,14 @@ function shotModalHtml() {
             <input id="sm-duration" class="ctl u-w-120" type="number" min="1" max="60"
                    step="1" value="5">
 
+            <label for="sm-move">运镜</label>
+            <input id="sm-move" class="ctl u-w-120" list="wr-camera-moves" maxlength="40"
+                   placeholder="如：推镜 / 环绕">
+            <datalist id="wr-camera-moves">
+              <option value="固定"><option value="推镜"><option value="拉镜"><option value="摇镜">
+              <option value="移镜"><option value="环绕"><option value="跟随"><option value="升降">
+            </datalist>
+
             <label class="top">引用资产</label>
             <div class="shot-pick">
               <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
@@ -1936,6 +1944,8 @@ function mountShots(root) {
           trim_in_ms: Number(shot.trim_in_ms || 0),
           trim_out_ms: Number(shot.trim_out_ms || 0),
           transition: shot.transition || 'cut',
+          first_frame_image: shot.first_frame_image || '',
+          last_frame_image: shot.last_frame_image || '',
         } : {},
         variants: {}, variantError: {},
         query: '',
@@ -1945,6 +1955,8 @@ function mountShots(root) {
       root.querySelector('#sm-summary').value = shot ? shot.summary : '';
       root.querySelector('#sm-prompt').value = shot ? shot.prompt : '';
       root.querySelector('#sm-duration').value = shot ? shot.duration : 5;
+      const moveEl = root.querySelector('#sm-move');
+      if (moveEl) moveEl.value = shot ? (shot.camera_move || '') : '';
       const qEl = root.querySelector('#sm-asset-q');
       qEl.value = '';
       qEl.oninput = () => { if (shotEdit) { shotEdit.query = qEl.value; paintPicker(); } };
@@ -1970,6 +1982,7 @@ function mountShots(root) {
         summary,
         prompt: root.querySelector('#sm-prompt').value.trim(),
         duration,
+        camera_move: root.querySelector('#sm-move')?.value.trim() || '',
         asset_ids: [...shotEdit.selected],
         // 服务端会保证父资产也在 asset_ids 里（只勾形态没勾人的那种手滑由它补上）
         variant_ids: [...shotEdit.sel],

@@ -4,11 +4,12 @@
 合成本身由 worker 的子进程跑，接口不在这里等 FFmpeg；这里的 201 只代表
 "成片记录与 Job 都已落库"。
 """
-from fastapi import (APIRouter, Depends, File, HTTPException, UploadFile,
+from fastapi import (APIRouter, Depends, File, HTTPException, Response, UploadFile,
                      status as http_status)
 
 import access
 import jobfiles
+from composition import exporter
 from composition import service as composition_service
 from composition import subtitles
 from composition.subtitles import MAX_SUBTITLE_BYTES
@@ -51,7 +52,8 @@ def create_composition(project_id: int, payload: CompositionIn,
     view = _wrap(composition_service.create, project_id, payload.episode_id,
                  user["id"], params={
                      "width": payload.width, "height": payload.height,
-                     "fps": payload.fps},
+                     "fps": payload.fps, "mode": payload.mode,
+                     "bgm_ducking": payload.bgm_ducking},
                  idempotency_key=payload.idempotency_key,
                  subtitle_path=payload.subtitle_path)
     return CompositionOut(**view)
@@ -65,6 +67,22 @@ def get_composition(composition_id: int,
         raise HTTPException(status_code=404, detail="成片记录不存在")
     access.ensure(user, row["project_id"], "read")
     return CompositionOut(**_wrap(composition_service.view, composition_id))
+
+
+@router.get("/compositions/{composition_id}/export-bundle.zip")
+def export_composition_bundle(composition_id: int,
+                              user=Depends(require_permission("job:read"))):
+    """一键导出剪映草稿（draft_content.json）、FCPXML 与标准化素材包的 ZIP 压缩包。"""
+    row = compositions.get(composition_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="成片记录不存在")
+    access.ensure(user, row["project_id"], "read")
+    zip_bytes, filename = _wrap(exporter.build_export_bundle_zip, composition_id)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------- 字幕（烧进画面的那一路输入） ----------

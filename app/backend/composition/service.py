@@ -84,7 +84,10 @@ def _params(raw: dict | None, timeline: dict | None = None) -> dict:
                  f"{width}×{height}）")
     else:
         basis = "配置默认档（这一集没有可量的素材，或素材尺寸不合规矩）"
+    mode = str(raw.get("mode") or (timeline or {}).get("mode") or "standard")
+    bgm_ducking = bool(raw.get("bgm_ducking", True))
     return {"width": width, "height": height, "fps": fps,
+            "mode": mode, "bgm_ducking": bgm_ducking,
             "video_codec": "h264", "container": "mp4", "size_basis": basis}
 
 
@@ -108,10 +111,11 @@ def create(project_id: int, episode_id: int, created_by: int | None, *,
     episode = episodes.get(episode_id)
     if episode is None or episode["project_id"] != project_id:
         raise CompositionInvalid("这一集不属于该项目")
+    mode = str((params or {}).get("mode") or "standard")
     try:
         timeline = timeline_mod.build(
             project_id, episode_id, require_approved=True,
-            subtitle_path=subtitle_path, shot_jobs=shot_jobs)
+            subtitle_path=subtitle_path, shot_jobs=shot_jobs, mode=mode)
     except timeline_mod.CompositionInvalid as exc:
         raise CompositionInvalid(exc.message, exc.reasons) from exc
     # 参数在时间线之后定：没填分辨率时要按素材那一档出，而素材尺寸只有建好时间线才知道。

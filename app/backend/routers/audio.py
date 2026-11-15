@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, status as http_status
 import access
 import services
 from deps import require_permission
-from models import AudioCapabilitiesOut, AudioClipIn, AudioClipOut, AudioClipUpdateIn
+from models import (AudioBatchTtsIn, AudioBatchTtsOut, AudioCapabilitiesOut,
+                    AudioClipIn, AudioClipOut, AudioClipUpdateIn)
 from repositories.audio import clips
 from repositories.content import episodes, shots
 
@@ -95,6 +96,23 @@ def submit_clip(clip_id: int,
         return AudioClipOut(**services.audio_submit(row, user))
     except services.AudioInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/audio/batch-tts",
+             response_model=AudioBatchTtsOut)
+def batch_tts(project_id: int, episode_id: int, payload: AudioBatchTtsIn,
+              user=Depends(require_permission("audio:write")),
+              _job=Depends(require_permission("job:submit"))) -> AudioBatchTtsOut:
+    """按人物档案音色批量配对并生成/派发整集配音素材。"""
+    access.ensure(user, project_id, "write")
+    try:
+        out = services.audio_batch_tts(
+            project_id, episode_id, user,
+            overwrite_existing=payload.overwrite_existing,
+            auto_submit=payload.auto_submit)
+    except services.AudioInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return AudioBatchTtsOut(**out)
 
 
 @router.delete("/audio-clips/{clip_id}", status_code=http_status.HTTP_204_NO_CONTENT)

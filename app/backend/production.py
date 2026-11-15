@@ -761,9 +761,11 @@ def shot_workbench(shot_id: int) -> dict:
                         and not stale_video and not blockers),
     }
 
+    next_shot = shots.next_in_episode(int(shot["episode_id"]), int(shot["seq"]))
     return {
         "shot_id": shot_id, "project_id": project_id,
         "episode_id": int(shot["episode_id"]),
+        "next_shot_id": int(next_shot["id"]) if next_shot is not None else None,
         "setting": {
             "seq": int(shot["seq"]), "summary": shot["summary"],
             "prompt": shot["prompt"], "duration": float(shot["duration"]),
@@ -776,6 +778,10 @@ def shot_workbench(shot_id: int) -> dict:
             "trim_in_ms": int(shot["trim_in_ms"]) if "trim_in_ms" in shot.keys() else 0,
             "trim_out_ms": int(shot["trim_out_ms"]) if "trim_out_ms" in shot.keys() else 0,
             "transition": (shot["transition"] if "transition" in shot.keys() else "cut") or "cut",
+            "first_frame_image": (shot["first_frame_image"]
+                                  if "first_frame_image" in shot.keys() else ""),
+            "last_frame_image": (shot["last_frame_image"]
+                                 if "last_frame_image" in shot.keys() else ""),
             "revision": int(shot["revision"])},
         "refs": {"assets": refs, "variants": ref_variants,
                  "missing_assets": [a for a in asset_ids if a not in loaded_assets],

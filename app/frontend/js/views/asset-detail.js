@@ -173,6 +173,10 @@ export async function renderDetail(id) {
                  ['文字设定提示词', 'text_prompt']].map(([label, key]) => `
                 <p class="note"><b>${label}</b><br>
                   ${escapeHtml((data.profile && data.profile[key]) || '—')}</p>`).join('')}
+              ${data.profile ? `<p class="note"><b>专属 TTS 配音绑定</b><br>
+                声线：${escapeHtml(data.profile.tts_voice || '默认')} ·
+                语速：${escapeHtml(String(data.profile.tts_rate ?? 1.0))}x ·
+                情绪／造声：${escapeHtml(data.profile.tts_mood || '默认')}</p>` : ''}
               <p class="t-desc">档案与一致性提示词是两回事：这一份讲"这个人是怎么走到今天的"，
                 上面那一格讲"他画出来必须长什么样"。这里只读，改在资产创作。</p>
             </div>

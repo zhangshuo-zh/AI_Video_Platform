@@ -1,7 +1,9 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
-# ---------- 成片中心（阶段 D） ----------
+# ---------- 成片中心（阶段 D / M3 扩展） ----------
 
 class CompositionIn(BaseModel):
     episode_id: int
@@ -10,6 +12,8 @@ class CompositionIn(BaseModel):
     fps: int | None = None
     subtitle_path: str | None = Field(default=None, max_length=300)
     idempotency_key: str | None = Field(default=None, max_length=120)
+    mode: Literal["standard", "animatic"] = "standard"
+    bgm_ducking: bool = True
 
 
 

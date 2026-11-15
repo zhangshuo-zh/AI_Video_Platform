@@ -100,17 +100,79 @@ function shotDuration(s) {
   return fmtDuration(actual);
 }
 
+function multitrackHtml(d) {
+  const tlShots = d.timeline?.shots || [];
+  if (!tlShots.length) return '';
+  let cursor = 0;
+  let prevDur = 0;
+  const videoBlocks = tlShots.map((s, idx) => {
+    const dur = Math.max(100, Number(s.duration_ms) || 1000);
+    if (idx > 0 && s.transition === 'crossfade') {
+      const ov = Math.min(500, Math.floor(prevDur * 0.25), Math.floor(dur * 0.25));
+      cursor = Math.max(0, cursor - ov);
+    }
+    const start = cursor;
+    cursor += dur;
+    prevDur = dur;
+    return { shot: s, start, dur };
+  });
+  const totalMs = Math.max(1000, Number(d.total_duration_ms) || cursor || 1000);
+  const pct = (ms) => `${Math.max(0, Math.min(100, (ms / totalMs) * 100)).toFixed(2)}%`;
+
+  const videoSegs = videoBlocks.map(({ shot, start, dur }) => {
+    const isAnimatic = shot.video?.verdict === 'animatic';
+    const tip = `第 ${shot.seq} 镜 · ${(dur / 1000).toFixed(1)}s · 点击进入镜头工作台`;
+    return `<button type="button" class="cp-track-seg ${isAnimatic ? 'animatic' : 'video'}"
+      data-jump-shot="${shot.shot_id}" style="left:${pct(start)};width:${pct(dur)}"
+      title="${escapeHtml(tip)}">S${shot.seq}${isAnimatic ? ' 预演' : ''}</button>`;
+  }).join('');
+
+  const allAudio = d.audio || [];
+  const voiceClips = allAudio.filter((a) => a.kind !== 'music');
+  const bgmClips = allAudio.filter((a) => a.kind === 'music');
+  const voiceSegs = voiceClips.map((a) => {
+    const start = Math.max(0, Number(a.start_ms) || 0);
+    const dur = Math.max(400, Number(a.duration_ms) || 2000);
+    return `<div class="cp-track-seg voice" style="left:${pct(start)};width:${pct(dur)}"
+      title="${escapeHtml((a.speaker || '对白') + ' · ' + fmtDuration(start))}">${escapeHtml(a.speaker || KIND[a.kind] || '对白')}</div>`;
+  }).join('');
+  const bgmSegs = bgmClips.map((a) => {
+    const start = Math.max(0, Number(a.start_ms) || 0);
+    const dur = Math.max(1000, Number(a.duration_ms) || (totalMs - start));
+    return `<div class="cp-track-seg bgm" style="left:${pct(start)};width:${pct(dur)}"
+      title="BGM · 闪避已${d.params?.bgm_ducking !== false ? '开启' : '关闭'}">🎵 BGM${d.params?.bgm_ducking !== false ? ' (Duck)' : ''}</div>`;
+  }).join('');
+  const subs = d.subtitles || [];
+  const subSegs = subs.length
+    ? videoBlocks.map(({ shot, start, dur }) => `<div class="cp-track-seg sub"
+        style="left:${pct(start)};width:${pct(dur)}" title="${escapeHtml(subs[0].path || '')}">字幕 #${shot.seq}</div>`).join('')
+    : '';
+
+  return `<div class="cp-multitrack">
+    <div class="cp-track-head">
+      <b>四轨可视化时间线</b>
+      <span>模式：${d.params?.mode === 'animatic' ? '动态故事板预演 (Animatic)' : '正式成片'} · 总长 ${fmtDuration(totalMs)} · 点击镜号块直达单镜工作台</span>
+    </div>
+    <div class="cp-track-row"><span class="cp-track-label">🎬 视频镜号</span><div class="cp-track-lane">${videoSegs}</div></div>
+    <div class="cp-track-row"><span class="cp-track-label">🎙️ 对白配音</span><div class="cp-track-lane">${voiceSegs || '<span class="hint u-ml-8">暂无对白轨</span>'}</div></div>
+    <div class="cp-track-row"><span class="cp-track-label">💬 字幕轨</span><div class="cp-track-lane">${subSegs || '<span class="hint u-ml-8">未挂载字幕</span>'}</div></div>
+    <div class="cp-track-row"><span class="cp-track-label">🎵 BGM 音乐</span><div class="cp-track-lane">${bgmSegs || '<span class="hint u-ml-8">未挂载 BGM</span>'}</div></div>
+  </div>`;
+}
+
 function detailHtml(d) {
   const tone = TONE[d.status] || 'gray';
   const shots = (d.timeline?.shots || []).map((s) => `<li class="cp-shot">
       <span class="pl-idx">${s.seq}</span>
       <div class="cp-shot-main">
         <div class="pl-title"><b>第 ${s.seq} 镜</b>
-          <span class="chip green">已审</span>
+          <span class="chip ${s.video?.verdict === 'animatic' ? 'amber' : 'green'}">${s.video?.verdict === 'animatic' ? '预演静帧' : '已审'}</span>
           <span class="t-desc">${shotDuration(s)}</span></div>
         <div class="pl-meta">
           <span>${escapeHtml(s.summary || '')}</span>
-          <button class="btn xs" data-go-job="${s.video.job_id}">作业 #${s.video.job_id}</button>
+          ${s.video?.job_id
+            ? `<button class="btn xs" data-go-job="${s.video.job_id}">作业 #${s.video.job_id}</button>`
+            : `<button class="btn xs" data-jump-shot="${s.shot_id}">去镜头工作台</button>`}
         </div>
       </div>
     </li>`).join('');
@@ -125,6 +187,7 @@ function detailHtml(d) {
       <span class="sub">${escapeHtml(d.episode_title || '')}</span>
       <div class="right">
         <span class="chip ${tone}" title="${escapeHtml(d.status_label)}">${escapeHtml(publicStatus(d.job_status || d.status))}</span>
+        <a class="btn sm" href="${escapeHtml(api.compositionExportBundleUrl(d.id))}" download>📦 导出工程包 (.zip)</a>
         ${d.job_id ? `<button class="btn sm" data-go-job="${d.job_id}">去生成中心</button>` : ''}
       </div></div>
     <div class="card-body">
@@ -142,6 +205,7 @@ function detailHtml(d) {
             : 'worker 跑完后刷新这一页即可看到结果。合成不走定时轮询。'}</p>
           ${canSubmit ? '<div class="empty-form"><button class="btn primary" data-new-comp>重新发起一版</button></div>' : ''}
         </div>`}
+      ${multitrackHtml(d)}
       <div class="cp-sub">时间线（${d.shot_count} 镜 · ${fmtDuration(d.total_duration_ms)}）</div>
       <ol class="pl-nodes">${shots || '<li class="t-desc">没有镜头</li>'}</ol>
       ${audio ? `<div class="cp-sub">音频（${audio.length}）</div><ul class="cp-audios">${audio}</ul>` : ''}
@@ -176,6 +240,14 @@ function createModal(episodes) {
         <select class="ctl" id="cp-fps">
           <option value="24">24 fps</option><option value="30">30 fps</option>
         </select>
+        <label class="modal-label" for="cp-mode">合成模式与混音</label>
+        <div class="cp-mode-row">
+          <select class="ctl u-w-auto" id="cp-mode">
+            <option value="standard">正式成片（全部镜头需有已签字视频）</option>
+            <option value="animatic">动态故事板预演 Animatic（用关键帧／首帧静帧按计划时长合成）</option>
+          </select>
+          <label class="cp-check-opt"><input type="checkbox" id="cp-ducking" checked> BGM 在对白区间自动闪避</label>
+        </div>
         <!-- 0037：合成前检查。数字与判据都来自服务端同一份规则（precheck.py），
              这一栏只负责摊开给人看并给跳转，不在界面重算一遍。 -->
         <label class="modal-label">合成前检查</label>
@@ -324,6 +396,10 @@ export default {
         host.querySelectorAll('[data-go-job]').forEach((b) => b.addEventListener('click', () => {
           goto('generate', 0);
         }));
+        host.querySelectorAll('[data-jump-shot]').forEach((b) => b.addEventListener('click', () => {
+          setParam('shot', Number(b.dataset.jumpShot));
+          window.dispatchEvent(new CustomEvent('app:go', { detail: 'shot' }));
+        }));
         host.querySelectorAll('[data-new-comp]').forEach((b) => b.addEventListener('click', openModal));
       } catch (e) {
         if (!host.isConnected) return;
@@ -465,14 +541,16 @@ export default {
       const episodeId = Number(modal.querySelector('#cp-ep').value);
       const res = RES[Number(modal.querySelector('#cp-res').value)] || RES[0];
       const fps = Number(modal.querySelector('#cp-fps').value) || 24;
+      const mode = modal.querySelector('#cp-mode')?.value || 'standard';
+      const bgmDucking = Boolean(modal.querySelector('#cp-ducking')?.checked);
       if (!episodeId) {
         err.textContent = '先选一集。';
         err.hidden = false;
         return;
       }
-      // 检查跑过且明确阻塞就不发起：服务端那条路也会拒，但那时只剩一句错误原话，
-      // 人已经点过一次"开始合成"了。这里提前一步，界面上还能看见是哪几项。
-      if (preState && preState.status === '阻塞') {
+      // 正式成片模式下，检查跑过且明确阻塞就提前拦截并给出逐镜定位；
+      // 动态故事板预演（animatic）支持用关键帧或首帧图补齐，交由服务端建单判定。
+      if (mode !== 'animatic' && preState && preState.status === '阻塞') {
         err.textContent = '合成前检查有阻塞项：' + preState.items
           .filter((i) => i.level === '阻塞').map((i) => i.text).join('；');
         err.hidden = false;
@@ -481,7 +559,7 @@ export default {
       try {
         const view = await api.createComposition(store.current.id, {
           episode_id: episodeId, width: res.width, height: res.height,
-          fps, idempotency_key: idemKey,
+          fps, mode, bgm_ducking: bgmDucking, idempotency_key: idemKey,
           subtitle_path: modal.querySelector('#cp-sub')?.value || null,
         });
         idemKey = '';

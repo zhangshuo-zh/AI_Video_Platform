@@ -52,3 +52,18 @@ class AudioClipOut(BaseModel):
 class AudioCapabilitiesOut(BaseModel):
     """音频四类能力的真实状态响应（保留所有动态明细键）。"""
     model_config = ConfigDict(extra="allow")
+
+
+class AudioBatchTtsIn(BaseModel):
+    overwrite_existing: bool = False
+    auto_submit: bool = False
+
+
+class AudioBatchTtsOut(BaseModel):
+    project_id: int
+    episode_id: int
+    created_clip_ids: list[int] = []
+    submitted_job_ids: list[int] = []
+    skipped_shot_ids: list[int] = []
+    voice_bindings: dict[str, dict] = {}
+    warnings: list[str] = []

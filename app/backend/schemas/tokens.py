@@ -72,5 +72,6 @@ def profile_version(profile: dict) -> str:
     同一秒内两次真改还是能分开：内容进了哈希，改过的人令牌必变。
     """
     return _digest(str(profile.get("updated_at") or ""),
-                   *(profile.get(k) or "" for k in
-                     ("biography", "personality", "growth_arc", "text_prompt")))
+                   *(str(profile.get(k) or "") for k in
+                     ("biography", "personality", "growth_arc", "text_prompt",
+                      "tts_voice", "tts_rate", "tts_mood")))
