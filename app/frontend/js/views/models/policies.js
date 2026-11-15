@@ -62,7 +62,7 @@ export function pagePolicies() {
      只能挂一枚红 chip 让人反复配。勾选项来自后端算好的标签全集
      （producible，与派生标签同源），界面不自己发明第四个标签名；
      清单产不出的那一项仍然显示，但划灰并写明"清单里没有任何来源"。 */
-  const requiredPicker = (p) => (p.producible || []).map((tag) => {
+  const requiredPicker = (p) => [...new Set([...(p.producible || []), ...p.required])].map((tag) => {
     const on = p.required.includes(tag);
     const impossible = (p.impossible_required || []).includes(tag);
     return `<label class="mc-req-tag ${impossible ? 'impossible' : ''}" title="${escapeHtml(

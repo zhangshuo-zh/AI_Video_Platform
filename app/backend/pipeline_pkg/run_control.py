@@ -53,6 +53,8 @@ def cancel_run(run_id: int, reason: str = "") -> dict:
         run = _need_run(run_id)
         if run["cancelled"]:
             return run_view(run_id)
+        if run["finished_at"]:
+            raise PipelineConflict("这条运行已经结束，不用取消")
         pipeline_repo.set_cancelled(run_id, reason or "人工取消")
         for row in pipeline_repo.nodes_for_run(run_id):
             node = dict(row)

@@ -1,0 +1,84 @@
+FF.F                                                                     [100%]
+=================================== FAILURES ===================================
+______________________ test_已收尾运行取消返回409且保留历史[completed] _______________________
+
+status = 'completed'
+people = {'superadmin': {'id': 1, 'token': 'vtetajLI1jjlJb_kEAWSwHfUbdLofR0pT5DMyb-r1nc', 'name': '超级管理员'}, 'admin': {'id': 2, ...editor 测试账号'}, 'viewer': {'id': 4, 'token': 'AGR8cUIamaS64tBUyPPR-8OdWUn97LQolcaKe1aaZD8', 'name': 'viewer 测试账号'}, ...}
+as_role = <conftest.as_role.<locals>._Factory object at 0x10d2a9730>
+
+    @pytest.mark.parametrize("status", ["completed", "failed"])
+    def test_已收尾运行取消返回409且保留历史(status, people, as_role):
+        setup = _project(people, n_shots=1, with_doc=False)
+        kind = "project_input" if status == "completed" else "document_input"
+        template_id = _template({"nodes": [{"key": "input", "type": kind, "depends_on": []}]})
+        view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                                   template_id, people["editor"]["id"])
+        run_id = view["id"]
+        view = pipeline.advance_run(run_id)
+        assert view["status"] == status and view["finished_at"]
+        before = dict(pipeline_repo.get_run(run_id))
+        nodes = [dict(row) for row in pipeline_repo.nodes_for_run(run_id)]
+        events = [dict(row) for row in pipeline_repo.events_for_run(run_id)]
+    
+        response = as_role("editor").post(f"/api/pipeline/runs/{run_id}/cancel",
+                                          json={"reason": "收尾后取消"})
+>       assert response.status_code == 409, response.text
+E       AssertionError: {"id":1,"project_id":1,"project_name":"产线_e923b8","episode_id":1,"episode_title":"第 1 集","episode_seq":1,"template_id":5,"template_name":"测试产线_62e07d","template_version":1,"status":"cancelled","status_label":"已取消","paused":false,"cancelled":true,"cancel_reason":"收尾后取消","counts":{"pending":0,"running":0,"waiting_review":0,"attention":0,"completed":1,"failed":0,"skipped":0,"cancelled":0},"progress":{"total":1,"done":1,"failed":0,"waiting_review":0,"attention":0,"percent":100.0},"shots":1,"document":null,"nodes":[{"id":1,"run_id":1,"node_key":"input","label":"读取项目","node_type":"project_input","type_label":"读取项目","status":"completed","status_label":"已完成","stored_status":"completed","depends_on":[],"job_id":null,"job_status":null,"job_status_label":"","review_id":null,"retry_count":0,"retryable":false,"retry_hint":"这条运行已经取消；重新起一条运行","error_code":"","error_message":"","diagnosis":{"label":"这一格没有异常","explain":"这一格没有失败记录，目录不替它编原因。","technical":"`error_code` 为空——产线节点只在失败或跳过时写码。","impact":"无。","action":"要看进度就等它往前走；worker 离线时先起 worker。","retryable":false,"may_cost":false,"needs_human":false,"code":"node_not_failed","known":true,"retry_hint":"这条运行已经取消；重新起一条运行"},"output":{"name":"产线_e923b8","project_id":1,"status":"active"},"started_at":"2026-11-15 17:35:08","finished_at":"2026-11-15 17:35:08","created_at":"2026-11-15 17:35:08"}],"events":[{"id":6,"event_type":"run_cancelled","node_id":null,"node_key":null,"node_label":"","payload":{"reason":"收尾后取消"},"created_at":"2026-11-15 17:35:08"},{"id":5,"event_type":"run_completed","node_id":null,"node_key":null,"node_label":"","payload":{"failed":0,"nodes":1},"created_at":"2026-11-15 17:35:08"},{"id":4,"event_type":"node_completed","node_id":1,"node_key":"input","node_label":"读取项目","payload":{"name":"产线_e923b8","project_id":1,"status":"active"},"created_at":"2026-11-15 17:35:08"},{"id":3,"event_type":"run_started","node_id":null,"node_key":null,"node_label":"","payload":{},"created_at":"2026-11-15 17:35:08"},{"id":2,"event_type":"preflight_warning","node_id":null,"node_key":null,"node_label":"","payload":{"warnings":["生成 worker 不在线；运行建好了也不会自己往前走","作业目录剩 138.9 GB（没有可参照的产物，只按固定提醒线 5 GB 判）"]},"created_at":"2026-11-15 17:35:08"},{"id":1,"event_type":"run_created","node_id":null,"node_key":null,"node_label":"","payload":{"nodes":1,"shots":1,"template":"测试产线_62e07d","version":1},"created_at":"2026-11-15 17:35:08"}],"event_labels":{"run_created":"发起运行","run_started":"开始生产","run_paused":"暂停","run_resumed":"恢复","run_cancelled":"取消","run_completed":"全部完成","run_failed":"运行失败","preflight_warning":"生产前检查提醒","job_submitted":"提交作业","node_ready":"节点就绪","node_started":"开始执行","node_completed":"节点完成","node_failed":"节点失败","node_skipped":"节点跳过","node_retried":"重试这一格","node_waiting_review":"等待签字","node_attention":"待人工核对"},"started_at":"2026-11-15 17:35:08","finished_at":"2026-11-15 17:35:08","created_at":"2026-11-15 17:35:08","updated_at":"2026-11-15 17:35:08"}
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+
+tests/test_pipeline.py:701: AssertionError
+________________________ test_已收尾运行取消返回409且保留历史[failed] ________________________
+
+status = 'failed'
+people = {'superadmin': {'id': 1, 'token': 'vtetajLI1jjlJb_kEAWSwHfUbdLofR0pT5DMyb-r1nc', 'name': '超级管理员'}, 'admin': {'id': 2, ...editor 测试账号'}, 'viewer': {'id': 4, 'token': 'AGR8cUIamaS64tBUyPPR-8OdWUn97LQolcaKe1aaZD8', 'name': 'viewer 测试账号'}, ...}
+as_role = <conftest.as_role.<locals>._Factory object at 0x10d25eea0>
+
+    @pytest.mark.parametrize("status", ["completed", "failed"])
+    def test_已收尾运行取消返回409且保留历史(status, people, as_role):
+        setup = _project(people, n_shots=1, with_doc=False)
+        kind = "project_input" if status == "completed" else "document_input"
+        template_id = _template({"nodes": [{"key": "input", "type": kind, "depends_on": []}]})
+        view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                                   template_id, people["editor"]["id"])
+        run_id = view["id"]
+        view = pipeline.advance_run(run_id)
+        assert view["status"] == status and view["finished_at"]
+        before = dict(pipeline_repo.get_run(run_id))
+        nodes = [dict(row) for row in pipeline_repo.nodes_for_run(run_id)]
+        events = [dict(row) for row in pipeline_repo.events_for_run(run_id)]
+    
+        response = as_role("editor").post(f"/api/pipeline/runs/{run_id}/cancel",
+                                          json={"reason": "收尾后取消"})
+>       assert response.status_code == 409, response.text
+E       AssertionError: {"id":2,"project_id":2,"project_name":"产线_9e1210","episode_id":2,"episode_title":"第 1 集","episode_seq":1,"template_id":6,"template_name":"测试产线_78a612","template_version":1,"status":"cancelled","status_label":"已取消","paused":false,"cancelled":true,"cancel_reason":"收尾后取消","counts":{"pending":0,"running":0,"waiting_review":0,"attention":0,"completed":0,"failed":1,"skipped":0,"cancelled":0},"progress":{"total":1,"done":0,"failed":1,"waiting_review":0,"attention":0,"percent":0.0},"shots":1,"document":null,"nodes":[{"id":2,"run_id":2,"node_key":"input","label":"读取剧本","node_type":"document_input","type_label":"读取剧本","status":"failed","status_label":"失败","stored_status":"failed","depends_on":[],"job_id":null,"job_status":null,"job_status_label":"","review_id":null,"retry_count":0,"retryable":false,"retry_hint":"这条运行已经取消；重新起一条运行","error_code":"document_missing","error_message":"这一集没有剧本或小说正文；先去创作中心建一份","diagnosis":{"label":"这一集还没有剧本或小说正文","explain":"解析镜头的节点没有输入——正文一份都没有。","technical":"`export_document`／`parse_*` 类节点在 `document` 表里找不到这一集的行。","impact":"下游全部不开始：解析、分镜、生成都不会排队。","action":"去创作中心把这一集的正文建起来，再回运行页重试这一格。","retryable":false,"may_cost":false,"needs_human":true,"code":"document_missing","known":true,"retry_hint":"这条运行已经取消；重新起一条运行"},"output":{},"started_at":"2026-11-15 17:35:08","finished_at":"2026-11-15 17:35:08","created_at":"2026-11-15 17:35:08"}],"events":[{"id":12,"event_type":"run_cancelled","node_id":null,"node_key":null,"node_label":"","payload":{"reason":"收尾后取消"},"created_at":"2026-11-15 17:35:08"},{"id":11,"event_type":"run_failed","node_id":null,"node_key":null,"node_label":"","payload":{"failed":1,"nodes":1},"created_at":"2026-11-15 17:35:08"},{"id":10,"event_type":"node_failed","node_id":2,"node_key":"input","node_label":"读取剧本","payload":{"detail":"这一集没有剧本或小说正文；先去创作中心建一份","reason":"document_missing"},"created_at":"2026-11-15 17:35:08"},{"id":9,"event_type":"run_started","node_id":null,"node_key":null,"node_label":"","payload":{},"created_at":"2026-11-15 17:35:08"},{"id":8,"event_type":"preflight_warning","node_id":null,"node_key":null,"node_label":"","payload":{"warnings":["生成 worker 不在线；运行建好了也不会自己往前走","作业目录剩 138.9 GB（没有可参照的产物，只按固定提醒线 5 GB 判）"]},"created_at":"2026-11-15 17:35:08"},{"id":7,"event_type":"run_created","node_id":null,"node_key":null,"node_label":"","payload":{"nodes":1,"shots":1,"template":"测试产线_78a612","version":1},"created_at":"2026-11-15 17:35:08"}],"event_labels":{"run_created":"发起运行","run_started":"开始生产","run_paused":"暂停","run_resumed":"恢复","run_cancelled":"取消","run_completed":"全部完成","run_failed":"运行失败","preflight_warning":"生产前检查提醒","job_submitted":"提交作业","node_ready":"节点就绪","node_started":"开始执行","node_completed":"节点完成","node_failed":"节点失败","node_skipped":"节点跳过","node_retried":"重试这一格","node_waiting_review":"等待签字","node_attention":"待人工核对"},"started_at":"2026-11-15 17:35:08","finished_at":"2026-11-15 17:35:08","created_at":"2026-11-15 17:35:08","updated_at":"2026-11-15 17:35:08"}
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+
+tests/test_pipeline.py:701: AssertionError
+___________________________ test_保存保留已有缺来源能力并允许显式移除 ____________________________
+
+as_admin = <starlette.testclient.TestClient object at 0x10d5fcfe0>
+
+    def test_保存保留已有缺来源能力并允许显式移除(as_admin):
+        original = as_admin.get("/api/model-policies").json()["items"]
+        row = next(item for item in original if item["scene_key"] == "character_variant")
+        assert set(row["required"]) == {"图生图", "参考图"}
+        response = as_admin.put("/api/model-policies", json=[row])
+>       assert response.status_code == 200, response.text
+E       AssertionError: {"detail":"character_variant：必需能力 图生图、参考图 不在图像这一轴的标签全集里（能选的与清单派生的同一份）","code":"invalid_payload"}
+E       assert 422 == 200
+E        +  where 422 = <Response [422 Unprocessable Entity]>.status_code
+
+tests/test_model_center.py:1181: AssertionError
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /Users/zhangshuo/AI动漫工作流设计文档/平台设计/app/backend/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_pipeline.py::test_已收尾运行取消返回409且保留历史[completed]
+FAILED tests/test_pipeline.py::test_已收尾运行取消返回409且保留历史[failed]
+FAILED tests/test_model_center.py::test_保存保留已有缺来源能力并允许显式移除
+3 failed, 1 passed, 88 deselected, 1 warning in 1.37s

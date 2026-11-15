@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -122,6 +123,12 @@ def seed_db() -> None:
     from repositories.validation import validations as val_repo
 
     admin = _admin_id()
+    with get_conn() as conn:
+        conn.execute("UPDATE model_policy SET required_json=? WHERE scene_key='character_variant'",
+                     (json.dumps(["图生图", "参考图"]),))
+        conn.execute("UPDATE model_policy SET enabled=0, slot_provider='', slot_model='' "
+                     "WHERE scene_key='character_variant'")
+
 
     # 文本的云端档是唯一默认轨（0014 只把另外四类归位到本地）。空库里这一格
     # 没有 provider，于是永远没有"可用"档，云端探测也没有对象可查。
@@ -869,12 +876,15 @@ def main():
         check("结果窗按实例列出每台引擎（draw_things 与 ollama）",
               'ollama' in txt and 'draw_things' in txt,
               f"窗内 {'含两台' if ('ollama' in txt and 'draw_things' in txt) else txt[:120]}")
-        check("结果窗顶部给了一句汇总结论（不用自己数徽章）",
-              '项检查' in txt and '项通过' in txt and '项异常' in txt,
-              txt[:100])
-        check("结果窗写明「连上 ≠ 模型可用」这层边界",
-              '不代表模型可用' in txt,
-              "连通性只证明进程在线，可用还要过验证")
+        total = re.search(r"(\d+) 项检查", txt)
+        online = re.search(r"(\d+) 项正常在线", txt)
+        offline = re.search(r"(\d+) 项未连通", txt)
+        check("结果窗汇总的在线与未连通数合计等于检查数",
+              total and online and int(total[1]) >= 2
+              and int(total[1]) == int(online[1]) + (int(offline[1]) if offline else 0)
+              and (offline or '全部就绪' in txt), txt[:120])
+        check("结果窗写明连接成功只证明端点响应",
+              '端点已响应' in txt and '不代表模型进入生产可用' in txt, txt[:220])
         check("结果窗提供详情与引擎管理入口",
               bool(P.eval_js(cdp, "!!(document.querySelector('.probe-results .probe-details summary') && document.querySelector('.probe-results [data-manage-engines]'))")),
               "技术详情可展开，管理入口可达")
@@ -1038,10 +1048,7 @@ def main():
         # 必需能力从只读 chip 放开成勾选（§5.4 一直教人"从「必需」降下来"，
         # 服务端也早会写 required_json——缺的只是入口）。勾选项必须来自后端
         # 下发的标签全集（producible），清单缺来源的那一项划灰仍在。
-        # 注意：image 轴的标签全集只有「文生图」——「图生图/参考图」在 image 轴
-        # 根本产不出来（这正是 §5.1 说的清单缺口），所以 character_variant 的
-        # 勾选项少、且种子勾着的两项不该出现。用 scene_prompt（text 轴全集有
-        # 「文本生成/结构化输出」，种子勾着「文本生成+结构化输出」）钉勾选形态。
+        # 既有缺来源标签仍需显示并保持勾选，保存其他场景时要求应原样保留。
         req_ui = P.eval_js(cdp, """(() => {
           const pick = (key) => [...document.querySelectorAll('tr.policy')]
             .find(r => r.dataset.key === key);
@@ -1051,7 +1058,7 @@ def main():
           return JSON.stringify({
             boxes: row.querySelectorAll('[data-req]').length,
             checked: [...row.querySelectorAll('[data-req]:checked')].map(c => c.dataset.req),
-            cv_boxes: cv ? cv.querySelectorAll('[data-req]').length : -1,
+            missing: cv ? [...cv.querySelectorAll('.mc-req-tag.impossible')].map(x => x.textContent.trim()) : [],
           });
         })()""") or "{}"
         import json as _json
@@ -1059,9 +1066,9 @@ def main():
         check("必需能力已是勾选框，选项来自标签全集而非写死",
               req.get('boxes', 0) >= 2 and '文本生成' in req.get('checked', []),
               f"scene_prompt 勾选项 {req.get('boxes')} 个，勾着 {req.get('checked')}")
-        check("清单产不出的标签仍显示但划灰（不假装它是可勾的选项）",
-              req.get('cv_boxes', -1) >= 0 and req.get('cv_boxes', 0) < req.get('boxes', 0),
-              f"image 轴全集 {req.get('cv_boxes')} 项 vs text 轴 {req.get('boxes')} 项")
+        check("缺来源的既有标签仍显示并标注缺来源",
+              all(any(tag in label for label in req.get("missing", []))
+                  for tag in ("图生图", "参考图")), str(req.get("missing")))
         # 降一次必需项再存回去：走一遍真保存，钉住"写路径真的通"。
         # （scene_prompt 种子勾着「文本生成+结构化输出」；降掉「结构化输出」
         # 再存，界面刷新后那一格应只剩「文本生成」。）
@@ -1081,6 +1088,19 @@ def main():
         check("把「结构化输出」从必需里降下来能真的存进去",
               '结构化输出' not in str(req_after),
               f"保存后勾着的必需项：{req_after}")
+        saved_required = cdp.eval("""fetch('/api/model-policies').then(r => r.json())
+            .then(body => body.items.find(row => row.scene_key === 'character_variant').required)""")
+        check("保存其他场景后仍保留图生图和参考图要求",
+              isinstance(saved_required, list) and set(saved_required) == {"图生图", "参考图"},
+              str(saved_required))
+        saved_policy = cdp.eval("""fetch('/api/model-policies').then(r => r.json())
+            .then(body => body.items.find(row => row.scene_key === 'character_variant'))""")
+        check("保存后缺来源告警与必需勾选仍在",
+              saved_policy.get("required_producible") is False
+              and "清单缺能力" in str(P.eval_js(cdp,
+                  "document.querySelector('tr[data-key=character_variant]').innerText"))
+              and P.eval_js(cdp,
+                  "document.querySelectorAll('tr[data-key=character_variant] [data-req]:checked').length") == 2)
         # 存回去，别让降下来的配置留在副本库里影响后面断言
         P.eval_js(cdp, """(() => {
           const row = [...document.querySelectorAll('tr.policy')]
@@ -1090,11 +1110,25 @@ def main():
         P.click(cdp, "#save-policies")
         time.sleep(1.2)
         # 故意"启用但没选建议轨"：后端一次说清，界面必须把原话摊开
-        P.eval_js(cdp, "document.querySelector('tr.policy [data-f=\"on\"]').click()")
+        P.eval_js(cdp, "document.querySelector('tr[data-key=\"character_variant\"] [data-f=\"on\"]').click()")
         P.click(cdp, "#save-policies")
         time.sleep(1.0)
         check("非法策略被拒且错误原话可见",
               P.eval_js(cdp, "document.body.innerText.includes('要启用就得选一条建议轨')"))
+
+        # 恢复合法状态，明确取消一个缺来源要求后保存，再次保存仍应保留另一个。
+        P.eval_js(cdp, """(() => {
+          const row = document.querySelector('tr[data-key=character_variant]');
+          row.querySelector('[data-f="on"]').checked = false;
+          row.querySelector('[data-req="图生图"]').checked = false;
+        })()""")
+        P.click(cdp, "#save-policies")
+        time.sleep(1.2)
+        P.click(cdp, "#save-policies")
+        time.sleep(1.2)
+        reduced = cdp.eval("""fetch('/api/model-policies').then(r => r.json())
+            .then(body => body.items.find(row => row.scene_key === 'character_variant').required)""")
+        check("显式移除图生图后重复保存仍保留参考图", reduced == ["参考图"], str(reduced))
 
         # 工作区 3：运行监控
         go(cdp, f"{BASE}/#models/3")
@@ -1442,6 +1476,9 @@ def go(cdp, url):
 
 # 2026-11-12 弹窗语义断言的变异取证（在临时前端副本执行，不改工作区）：
 MUTATIONS = {
+    "requiredPicker 仅遍历 p.producible，遗漏已有缺来源标签":
+        "保存其他场景后仍保留图生图和参考图要求",
+
     "后端没返回 <code>cloud</code> 段 → 云端检查完成":
         "后端没回 cloud 段时，结果窗必须明说「没查」而不是沉默",
 }

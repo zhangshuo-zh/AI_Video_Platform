@@ -682,6 +682,51 @@ def test_暂停_恢复_取消(mock_route, people, clean_queue):
     assert run_id not in [r["id"] for r in pipeline_repo.tickable_runs(50)]
 
 
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_已收尾运行取消返回409且保留历史(status, people, as_role):
+    setup = _project(people, n_shots=1, with_doc=False)
+    kind = "project_input" if status == "completed" else "document_input"
+    template_id = _template({"nodes": [{"key": "input", "type": kind, "depends_on": []}]})
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               template_id, people["editor"]["id"])
+    run_id = view["id"]
+    view = pipeline.advance_run(run_id)
+    assert view["status"] == status and view["finished_at"]
+    before = dict(pipeline_repo.get_run(run_id))
+    nodes = [dict(row) for row in pipeline_repo.nodes_for_run(run_id)]
+    events = [dict(row) for row in pipeline_repo.events_for_run(run_id)]
+
+    response = as_role("editor").post(f"/api/pipeline/runs/{run_id}/cancel",
+                                      json={"reason": "收尾后取消"})
+    assert response.status_code == 409, response.text
+    assert "已经结束" in response.json()["detail"]
+    assert dict(pipeline_repo.get_run(run_id)) == before
+    assert [dict(row) for row in pipeline_repo.nodes_for_run(run_id)] == nodes
+    assert [dict(row) for row in pipeline_repo.events_for_run(run_id)] == events
+    assert pipeline.run_view(run_id)["status"] == status
+
+
+def test_重复取消返回200并保留首次原因和事件(mock_route, people, as_role):
+    setup = _project(people, n_shots=1)
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               _template(FULL), people["editor"]["id"])
+    run_id = view["id"]
+    client = as_role("editor")
+    first = client.post(f"/api/pipeline/runs/{run_id}/cancel",
+                        json={"reason": "首次取消"})
+    assert first.status_code == 200, first.text
+    assert first.json()["finished_at"]
+    before = dict(pipeline_repo.get_run(run_id))
+    events = [dict(row) for row in pipeline_repo.events_for_run(run_id)]
+    second = client.post(f"/api/pipeline/runs/{run_id}/cancel",
+                         json={"reason": "重复请求"})
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "cancelled"
+    assert second.json()["cancel_reason"] == "首次取消"
+    assert dict(pipeline_repo.get_run(run_id)) == before
+    assert [dict(row) for row in pipeline_repo.events_for_run(run_id)] == events
+
+
 def test_取消会给正在跑的作业发取消请求(mock_route, people, clean_queue):
     setup = _project(people, n_shots=1)
     view = pipeline.create_run(setup["project_id"], setup["episode_id"],

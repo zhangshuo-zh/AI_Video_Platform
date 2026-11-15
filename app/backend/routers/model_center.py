@@ -342,10 +342,10 @@ def save_policies(payload: list[ModelPolicyIn],
     必需能力**认标签全集**（`producible_tags`）：界面从只读 chip 放开成可编辑后
     （《使用说明书》§5.4 本来就教人"把这一项从「必需」降下来"），手滑拼错或
     造一个清单里根本没有的标签，会把这个场景推到"永远 0 候选"还不报错。
-    注意校验的是**可产出全集**而不是"当前已登记档的标签"——把必需项降下来
-    是允许的，但要求它至少在清单的能力轴上存在过。
+    已存在于同一场景、同一能力轴的缺来源要求可以原样保存或显式移除；
+    新增要求仍须来自可产出全集。
     """
-    known = {row["scene_key"] for row in model_center.policies()}
+    known = {row["scene_key"]: dict(row) for row in model_center.policies()}
     producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
     errors: list[str] = []
     for item in payload:
@@ -354,8 +354,13 @@ def save_policies(payload: list[ModelPolicyIn],
                           "（场景名定死在 0035 的种子，界面不提供自由输入）")
         if item.capability not in CAPABILITIES:
             errors.append(f"{item.scene_key}：能力不认识")
-        unknown_tags = [t for t in item.required
-                        if t not in producible.get(item.capability, set())]
+        existing = known.get(item.scene_key)
+        retained = (
+            set(_json_list(existing["required_json"]))
+            if existing and existing["capability"] == item.capability else set()
+        )
+        allowed_tags = producible.get(item.capability, set()) | retained
+        unknown_tags = [t for t in item.required if t not in allowed_tags]
         if unknown_tags:
             errors.append(f"{item.scene_key}：必需能力 "
                           + "、".join(unknown_tags)

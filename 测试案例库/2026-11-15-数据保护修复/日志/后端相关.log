@@ -1,0 +1,139 @@
+.................................................F.....FF............... [ 73%]
+..........................                                               [100%]
+=================================== FAILURES ===================================
+__________________________ test_撤登记必须带confirm且不碰文件与历史 __________________________
+
+as_admin = <starlette.testclient.TestClient object at 0x10ae88c80>
+clean_registrations = None
+fresh_project = <function fresh_project.<locals>._make at 0x10ada8860>
+
+    def test_撤登记必须带confirm且不碰文件与历史(as_admin, clean_registrations, fresh_project):
+        """移除登记 ≠ 删除模型。这句话必须在接口上就成立，不能只写在界面文案里。"""
+        rid = as_admin.post("/api/models", json={
+            "capability": "video", "backend": "local", "provider": "fastmetal",
+            "model_code": "fastmetal-1.3b-qad"}).json()["id"]
+>       job = _succeeded_cloud_job(fresh_project())
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_model_center.py:196: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pid = 45, provider = 'wan', model = 'wan2.7-t2v'
+
+    def _succeeded_cloud_job(pid, provider="wan", model="wan2.7-t2v"):
+        """一条真跑过、产物在盘上、且带计费确认的云端作业——真实调用凭据的唯一合法来源。"""
+        row = job_repo.create({
+            "project_id": pid, "capability": "video", "kind": "video_cloud",
+            "execution_mode": "cloud", "provider_code": provider, "model_code": model,
+            "adapter_version": "test", "prompt_snapshot": "模型中心用", "params": {},
+            "input_refs": [], "user_confirmed_cloud": True,
+        })
+        claimed = job_repo.claim_next("mc-worker", 60)
+>       assert claimed is not None and claimed["id"] == row["id"]
+E       assert (<sqlite3.Row object at 0x10ad9cb20> is not None and 26 == 28)
+
+tests/test_model_center.py:91: AssertionError
+____________________________ test_真调用与产物验收之后人工声明才升级 ____________________________
+
+as_admin = <starlette.testclient.TestClient object at 0x10ae8a6f0>
+clean_registrations = None
+fresh_project = <function fresh_project.<locals>._make at 0x10aeacb80>
+provider_state = None
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ae8b830>
+
+    def test_真调用与产物验收之后人工声明才升级(as_admin, clean_registrations, fresh_project,
+                                                provider_state, monkeypatch):
+        """验证记录只到 provider 粒度，所以还要求"槽位当前用的就是这一档"，
+        换档不许拿旧记录背书。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "not-a-real-key")
+        provider_repo.replace_many([{
+            "id": provider_repo.slot("video", "cloud")["id"], "provider": "wan",
+            "model": "wan2.7-t2v", "enabled": True, "is_default": False,
+            "key_env": "", "notes": ""}])
+        created = as_admin.post("/api/models", json={
+            "capability": "video", "backend": "cloud", "provider": "wan",
+            "model_code": "wan2.7-t2v", "capabilities": ["首尾帧控制"]})
+        assert created.status_code == 201, created.text
+>       job = _succeeded_cloud_job(fresh_project())
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_model_center.py:281: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pid = 46, provider = 'wan', model = 'wan2.7-t2v'
+
+    def _succeeded_cloud_job(pid, provider="wan", model="wan2.7-t2v"):
+        """一条真跑过、产物在盘上、且带计费确认的云端作业——真实调用凭据的唯一合法来源。"""
+        row = job_repo.create({
+            "project_id": pid, "capability": "video", "kind": "video_cloud",
+            "execution_mode": "cloud", "provider_code": provider, "model_code": model,
+            "adapter_version": "test", "prompt_snapshot": "模型中心用", "params": {},
+            "input_refs": [], "user_confirmed_cloud": True,
+        })
+        claimed = job_repo.claim_next("mc-worker", 60)
+>       assert claimed is not None and claimed["id"] == row["id"]
+E       assert (None is not None)
+
+tests/test_model_center.py:91: AssertionError
+______________________________ test_换档之后旧验证记录不背书 _______________________________
+
+as_admin = <starlette.testclient.TestClient object at 0x10ae8b1a0>
+clean_registrations = None
+fresh_project = <function fresh_project.<locals>._make at 0x10aeac5e0>
+provider_state = None
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10ae89250>
+tmp_path = PosixPath('/private/var/folders/b4/wvbj1sfs4jl15qsvv5gw9llr0000gn/T/pytest-of-zhangshuo/pytest-75/test_换档之后旧验证记录不背书0')
+
+    def test_换档之后旧验证记录不背书(as_admin, clean_registrations, fresh_project,
+                                     provider_state, monkeypatch, tmp_path):
+        """验证记录只到 provider 粒度（`model_validation` 按 capability×backend×provider 索引），
+        所以槽位当前用的是哪一档必须再比一次：1.3B 验过，不等于 5B 验过。"""
+        home = _fake_fastmetal_home(tmp_path)
+        # 把 5B 那一档也搭齐：两个入口脚本、两套权重，健康才能都说 ok
+        _touch(home / "examples" / "inference" / "basic" / "mlx_wan22_generate.py")
+        model5 = home / "FastMetal-5B-QAD"
+        for name in ("mlx_dit.json", "mlx_dit.safetensors"):
+            _touch(model5 / name)
+        for name in ("text_encoder", "tokenizer", "vae"):
+            (model5 / name).mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("FASTVIDEO_FASTMETAL_HOME", str(home))
+    
+        slot = provider_repo.slot("video", "local")
+        provider_repo.replace_many([{
+            "id": slot["id"], "provider": "fastmetal", "model": "fastmetal-1.3b-qad",
+            "enabled": True, "is_default": True, "key_env": "", "notes": ""}])
+        for code in ("fastmetal-1.3b-qad", "fastmetal-5b-qad"):
+            as_admin.post("/api/models", json={"capability": "video", "backend": "local",
+                                               "provider": "fastmetal", "model_code": code})
+>       job = _succeeded_local_job(fresh_project(), model="fastmetal-1.3b-qad")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_model_center.py:313: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+pid = 47, provider = 'fastmetal', model = 'fastmetal-1.3b-qad'
+
+    def _succeeded_local_job(pid, provider="fastmetal", model="fastmetal-1.3b-qad"):
+        """本地版的成功作业：不需要计费确认，其余与云端那条同构。"""
+        row = job_repo.create({
+            "project_id": pid, "capability": "video", "kind": "video_local",
+            "execution_mode": "local", "provider_code": provider, "model_code": model,
+            "adapter_version": "test", "prompt_snapshot": "模型中心用", "params": {},
+            "input_refs": [],
+        })
+        claimed = job_repo.claim_next("mc-worker", 60)
+>       assert claimed is not None and claimed["id"] == row["id"]
+E       assert (None is not None)
+
+tests/test_model_center.py:109: AssertionError
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /Users/zhangshuo/AI动漫工作流设计文档/平台设计/app/backend/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_model_center.py::test_撤登记必须带confirm且不碰文件与历史
+FAILED tests/test_model_center.py::test_真调用与产物验收之后人工声明才升级 - ...
+FAILED tests/test_model_center.py::test_换档之后旧验证记录不背书 - assert (No...
+3 failed, 95 passed, 1 warning in 14.80s

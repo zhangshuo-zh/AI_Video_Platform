@@ -1171,3 +1171,30 @@ def test_场景骨架把配不出来与还没配分开(as_admin, clean_registrat
     story = next(it for it in items if it["scene_key"] == "storyboard")
     assert story["required_producible"] is True
     assert story["impossible_required"] == []
+
+
+def test_保存保留已有缺来源能力并允许显式移除(as_admin):
+    original = as_admin.get("/api/model-policies").json()["items"]
+    row = next(item for item in original if item["scene_key"] == "character_variant")
+    assert set(row["required"]) == {"图生图", "参考图"}
+    response = as_admin.put("/api/model-policies", json=[row])
+    assert response.status_code == 200, response.text
+    saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
+                 if item["scene_key"] == "character_variant")
+    assert set(saved["required"]) == {"图生图", "参考图"}
+    assert saved["required_producible"] is False
+
+    invalid = {**row, "required": [*row["required"], "凭空新增能力"]}
+    assert as_admin.put("/api/model-policies", json=[invalid]).status_code == 422
+    other = next(item for item in original if item["scene_key"] == "scene_prompt")
+    assert as_admin.put("/api/model-policies",
+                        json=[{**other, "required": row["required"]}]).status_code == 422
+    assert as_admin.put("/api/model-policies",
+                        json=[{**row, "capability": "text"}]).status_code == 422
+
+    assert as_admin.put("/api/model-policies",
+                        json=[{**row, "required": ["参考图"]}]).status_code == 200
+    saved = next(item for item in as_admin.get("/api/model-policies").json()["items"]
+                 if item["scene_key"] == "character_variant")
+    assert saved["required"] == ["参考图"]
+    assert as_admin.put("/api/model-policies", json=[row]).status_code == 422
