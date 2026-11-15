@@ -67,3 +67,23 @@ class AudioBatchTtsOut(BaseModel):
     skipped_shot_ids: list[int] = []
     voice_bindings: dict[str, dict] = {}
     warnings: list[str] = []
+
+
+class AudioLipSyncIn(BaseModel):
+    shot_id: int | None = None
+    execution_mode: str | None = None
+    provider_code: str | None = None
+    model_code: str | None = None
+    prompt: str = Field(default="", max_length=1000)
+
+
+class AudioLipSyncOut(BaseModel):
+    clip_id: int
+    shot_id: int
+    job_id: int
+    job_status: str
+    provider_code: str
+    model_code: str
+    source_kind: str
+    audio_path: str
+

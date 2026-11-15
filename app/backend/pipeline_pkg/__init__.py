@@ -56,7 +56,7 @@ from .gates import (
 )
 
 from .graph import (
-    _node_map, _find_approval, _idempotency_key, _upstream_image, _deps_of, _shot_of_key,
+    _node_map, _find_approval, _idempotency_key, _upstream_image, _upstream_video, _deps_of, _shot_of_key,
     _snapshot_of, _upstream_job
 )
 
@@ -70,8 +70,8 @@ from .run_create import (
 )
 
 from .templates import (
-    STANDARD_EPISODE, STANDARD_EPISODE_V2, IMAGE_PREVIEW, VIDEO_ONLY, BUILTIN_TEMPLATES,
-    ensure_builtin_templates, validate_definition, _find_cycle, _definition_of
+    STANDARD_EPISODE, STANDARD_EPISODE_V2, IMAGE_PREVIEW, VIDEO_ONLY, LIP_SYNC_EPISODE,
+    BUILTIN_TEMPLATES, ensure_builtin_templates, validate_definition, _find_cycle, _definition_of
 )
 
 from .views import (
@@ -86,6 +86,7 @@ __all__ = [
     "IMAGE_PREVIEW",
     "INTERNAL_NODES",
     "JOB_NODES",
+    "LIP_SYNC_EPISODE",
     "MAX_DISPATCH_PER_TICK",
     "MAX_LAYERS",
     "NODE_STATUS_LABELS",
@@ -131,6 +132,7 @@ __all__ = [
     "_update_node_input",
     "_upstream_image",
     "_upstream_job",
+    "_upstream_video",
     "advance_run",
     "build_input_snapshot",
     "cancel_run",

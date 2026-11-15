@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { store } from '../store.js';
-import { escapeHtml, run } from '../util.js';
+import { bindModalDismiss, escapeHtml, run } from '../util.js';
 import { getParam, setJobPrefill, setParam, setSub } from '../navstate.js';
 import { renderView } from '../router.js';
 import { jobLabel, jobTone, publicStatus } from '../validation.js';
@@ -381,8 +381,17 @@ export default {
       ${section('② 资产引用', refsBlock(d))}
       ${section(`③ 关键帧（${d.keyframes.jobs.length} 条记录）`, jobRows(d.keyframes.jobs, d.keyframes.formal_job_id)
         + '<p class="hint">「正式」＝最新一条签过通过的关键帧作业。要换正式结果，去审核中心签另一条。</p>')}
-      ${section(`④ 视频（${d.videos.jobs.length} 条记录）`, jobRows(d.videos.jobs, d.videos.formal_job_id)
-        + (d.videos.source_stale ? '<p class="modal-err">这一镜的分镜或资产在生成之后改过，最新产物可能已过期。</p>' : ''))}
+      ${section(`④ 视频（${d.videos.jobs.length} 条记录）`, (() => {
+        const candidates = (d.videos.jobs || []).filter(
+          (j) => j.status === 'succeeded' && (j.artifacts || []).length > 0,
+        );
+        const abToolbar = candidates.length >= 2
+          ? `<div class="actions"><button class="btn sm primary" type="button" id="sw-ab-compare">🎬 同镜 A/B 同步对比（${candidates.length} 候选）</button></div>`
+          : '';
+        return abToolbar
+          + jobRows(d.videos.jobs, d.videos.formal_job_id)
+          + (d.videos.source_stale ? '<p class="modal-err">这一镜的分镜或资产在生成之后改过，最新产物可能已过期。</p>' : '');
+      })())}
       ${section('⑤ 音频', audioBlock(d))}
       ${section('⑥ 预览与粗剪', previewStageHtml(d))}
       ${section('⑦ 审核', reviewBlock(d, cl))}
@@ -425,6 +434,49 @@ export default {
         <div class="modal-actions"><button class="btn" data-close="sw-modal">取消</button>
           <button class="btn primary" id="sw-save">保存设定</button></div>
       </div></div>
+      ${(() => {
+        const candidates = (d.videos.jobs || []).filter(
+          (j) => j.status === 'succeeded' && (j.artifacts || []).length > 0,
+        );
+        if (candidates.length < 2) return '';
+        const aDef = candidates[0];
+        const bDef = candidates[1];
+        const optHtml = (selId) => candidates.map((j) => {
+          const signTxt = j.sign?.decision === 'approved' ? ' · 已通过' : '';
+          return `<option value="${j.job_id}"${j.job_id === selId ? ' selected' : ''}>#${j.job_id} · ${escapeHtml(j.provider)}/${escapeHtml(j.model)}${signTxt}</option>`;
+        }).join('');
+        return `<div class="modal" id="sw-ab-modal" hidden><div class="modal-box wb-ab-box">
+          <div class="modal-head neutral">同镜多候选视频 A/B 同步对比</div>
+          <div class="modal-body">
+            <div class="wb-ab-grid">
+              <div class="wb-ab-pane">
+                <label class="hint" for="sw-ab-sel-a">候选 A</label>
+                <select class="ctl sm" id="sw-ab-sel-a">${optHtml(aDef.job_id)}</select>
+                <video id="sw-ab-vid-a" controls preload="metadata" src="${api.jobArtifactUrl(aDef.job_id, 0)}"></video>
+              </div>
+              <div class="wb-ab-pane">
+                <label class="hint" for="sw-ab-sel-b">候选 B</label>
+                <select class="ctl sm" id="sw-ab-sel-b">${optHtml(bDef.job_id)}</select>
+                <video id="sw-ab-vid-b" controls preload="metadata" src="${api.jobArtifactUrl(bDef.job_id, 0)}"></video>
+              </div>
+            </div>
+            <div class="wb-ab-bar">
+              <button class="btn sm primary" type="button" id="sw-ab-toggle">▶ 同步播放</button>
+              <button class="btn sm" type="button" id="sw-ab-reset">⏮ 归零</button>
+              <input type="range" id="sw-ab-seek" min="0" max="10" step="0.05" value="0">
+              <span class="mono hint" id="sw-ab-time">0.0s / 0.0s</span>
+              <select class="ctl sm" id="sw-ab-rate">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1.0x</option>
+                <option value="1.5">1.5x</option>
+              </select>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" type="button" id="sw-ab-close">关闭</button>
+          </div>
+        </div></div>`;
+      })()}
     </section>`;
   },
 
@@ -695,6 +747,106 @@ export default {
           transition: root.querySelector('#sw-trim-trans')?.value || 'cut',
         }),
       ));
+    }
+
+    // M4: 同镜 A/B 双栏同步播放对比弹窗
+    const abModal = root.querySelector('#sw-ab-modal');
+    if (abModal) {
+      const vidA = root.querySelector('#sw-ab-vid-a');
+      const vidB = root.querySelector('#sw-ab-vid-b');
+      const selA = root.querySelector('#sw-ab-sel-a');
+      const selB = root.querySelector('#sw-ab-sel-b');
+      const seek = root.querySelector('#sw-ab-seek');
+      const timeEl = root.querySelector('#sw-ab-time');
+      const toggleBtn = root.querySelector('#sw-ab-toggle');
+      const rateSel = root.querySelector('#sw-ab-rate');
+
+      const stopBoth = () => {
+        vidA?.pause();
+        vidB?.pause();
+        if (toggleBtn) toggleBtn.textContent = '▶ 同步播放';
+      };
+      const closeAb = () => {
+        stopBoth();
+        abModal.hidden = true;
+      };
+      const syncUi = () => {
+        if (!vidA || !seek || !timeEl) return;
+        const dur = Number.isFinite(vidA.duration) && vidA.duration > 0 ? vidA.duration : 10;
+        seek.max = dur.toFixed(2);
+        const cur = Number(vidA.currentTime || 0);
+        seek.value = Math.min(dur, cur).toFixed(2);
+        timeEl.textContent = `${cur.toFixed(1)}s / ${dur.toFixed(1)}s`;
+      };
+
+      root.querySelector('#sw-ab-compare')?.addEventListener('click', () => {
+        abModal.hidden = false;
+        syncUi();
+      });
+      root.querySelector('#sw-ab-close')?.addEventListener('click', closeAb);
+      abModal.addEventListener('click', (e) => { if (e.target === abModal) closeAb(); });
+      bindModalDismiss(abModal, closeAb);
+
+      const loadSide = (vid, jobId) => {
+        if (!vid) return;
+        const wasPlaying = !vidA?.paused;
+        stopBoth();
+        vid.src = api.jobArtifactUrl(Number(jobId), 0);
+        vid.currentTime = 0;
+        if (vidB && vid === vidA) vidB.currentTime = 0;
+        else if (vidA && vid === vidB) vidA.currentTime = 0;
+        syncUi();
+        if (wasPlaying) {
+          vidA?.play().catch(() => {});
+          vidB?.play().catch(() => {});
+        }
+      };
+      selA?.addEventListener('change', (e) => loadSide(vidA, e.target.value));
+      selB?.addEventListener('change', (e) => loadSide(vidB, e.target.value));
+
+      toggleBtn?.addEventListener('click', () => {
+        if (!vidA || !vidB) return;
+        if (vidA.paused) {
+          vidB.currentTime = vidA.currentTime || 0;
+          const rate = Number(rateSel?.value || 1) || 1;
+          vidA.playbackRate = rate;
+          vidB.playbackRate = rate;
+          vidA.play().catch(() => {});
+          vidB.play().catch(() => {});
+          toggleBtn.textContent = '⏸ 同步暂停';
+        } else {
+          stopBoth();
+        }
+      });
+
+      root.querySelector('#sw-ab-reset')?.addEventListener('click', () => {
+        stopBoth();
+        if (vidA) vidA.currentTime = 0;
+        if (vidB) vidB.currentTime = 0;
+        syncUi();
+      });
+
+      seek?.addEventListener('input', () => {
+        const t = Number(seek.value) || 0;
+        if (vidA) vidA.currentTime = t;
+        if (vidB) vidB.currentTime = t;
+        syncUi();
+      });
+
+      rateSel?.addEventListener('change', () => {
+        const rate = Number(rateSel.value || 1) || 1;
+        if (vidA) vidA.playbackRate = rate;
+        if (vidB) vidB.playbackRate = rate;
+      });
+
+      vidA?.addEventListener('loadedmetadata', syncUi);
+      vidA?.addEventListener('timeupdate', () => {
+        syncUi();
+        if (vidB && !vidA.paused && Math.abs((vidB.currentTime || 0) - (vidA.currentTime || 0)) > 0.18) {
+          vidB.currentTime = vidA.currentTime || 0;
+        }
+      });
+      vidA?.addEventListener('ended', stopBoth);
     }
   },
 };

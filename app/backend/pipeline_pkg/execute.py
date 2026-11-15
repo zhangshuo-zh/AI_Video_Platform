@@ -12,7 +12,7 @@ from repositories.projects import projects as project_repo
 from types import SimpleNamespace
 
 from .constants import JOB_NODES, REVIEW_NODES
-from .graph import _idempotency_key, _shot_of_key, _snapshot_of, _upstream_image, _upstream_job
+from .graph import _idempotency_key, _shot_of_key, _snapshot_of, _upstream_image, _upstream_job, _upstream_video
 from .run_create import _pick_document, _ref_image_state
 
 
@@ -70,31 +70,92 @@ def _submit_job_node(run, node: dict, by_key: dict, pending=None) -> None:
     except ValueError:
         node_input = {}
     params = dict(node_input.get("params") or {})
-    # I2V 这类档位要一张条件图，而模板里不该写死路径（路径是运行期才知道的）。
-    # 所以：白名单确实缺图时，从上游关键帧产物补一张；补不出来就明确失败，
-    # 不拿"没有参考图"去跑一条注定失败的作业。
-    missing = _missing_image_params(capability, params)
-    if missing:
-        found = _upstream_image(node, by_key)
-        if found is None:
+    exec_mode: str | None = None
+    prov_code: str | None = None
+    mod_code: str | None = None
+
+    if node["node_type"] == "lip_sync":
+        sid = node_input.get("shot_id")
+        src_video = _upstream_video(node, by_key)
+        src_image = None if src_video else _upstream_image(node, by_key)
+        shot_row = shots.get(int(sid)) if sid else None
+        if not src_video and not src_image and shot_row is not None:
+            latest_v = job_repo.list(None, shot_id=int(sid), capability="video",
+                                     status="succeeded", limit=1)
+            if latest_v:
+                try:
+                    v_paths = json.loads(latest_v[0]["result_paths_json"] or "[]")
+                    src_video = str(v_paths[0]) if v_paths else None
+                except ValueError:
+                    pass
+            if not src_video and str(shot_row["first_frame_image"] or "").strip():
+                src_image = str(shot_row["first_frame_image"]).strip()
+        audio_rel = str(params.get("audio_path") or "").strip()
+        clip_id = params.get("clip_id")
+        if not audio_rel and sid:
+            for c in clips.list(run["project_id"], None, run["episode_id"]):
+                synced = services.audio_sync(c)
+                if (
+                    synced["shot_id"] == sid
+                    and synced["kind"] in ("dialogue", "narration")
+                    and synced["status"] == "ready"
+                    and synced["path"]
+                ):
+                    audio_rel = str(synced["path"])
+                    clip_id = int(synced["id"])
+                    break
+        if bool(params.get("mock")):
+            exec_mode = "local"
+            prov_code = "mock"
+            mod_code = "mock-1"
+            params = {
+                "media": "mp4",
+                "sleep": float(params.get("sleep", 0.05)),
+            }
+        elif not audio_rel or not (src_video or src_image):
             pipeline_repo.finish_node(
-                node["id"], NODE_FAILED, error_code="condition_image_missing",
-                error_message=f"当前默认轨要一张条件图（{', '.join(missing)}），"
-                              f"但上游没有可用的关键帧产物；先重试关键帧那一格，"
-                              f"或把默认轨换成不需要参考图的档。")
+                node["id"], NODE_FAILED, error_code="lipsync_inputs_missing",
+                error_message="对口型节点缺少已就绪的台词音频或镜头画面，请先生成配音与关键帧/视频。")
             pipeline_repo.add_event(run["id"], node["id"], "node_failed",
-                                    {"reason": "condition_image_missing",
-                                     "params": missing})
+                                    {"reason": "lipsync_inputs_missing", "shot_id": sid})
             return
-        params[missing[0]] = found
+        else:
+            exec_mode = "local"
+            prov_code = "ffmpeg"
+            mod_code = "ffmpeg-lipsync-1"
+            params = {
+                "operation": "lip_sync",
+                "clip_id": clip_id,
+                "audio_path": audio_rel,
+                "source_video": src_video or "",
+                "source_image": src_image or "",
+            }
+    else:
+        # I2V 这类档位要一张条件图，而模板里不该写死路径（路径是运行期才知道的）。
+        # 所以：白名单确实缺图时，从上游关键帧产物补一张；补不出来就明确失败，
+        # 不拿"没有参考图"去跑一条注定失败的作业。
+        missing = _missing_image_params(capability, params)
+        if missing:
+            found = _upstream_image(node, by_key)
+            if found is None:
+                pipeline_repo.finish_node(
+                    node["id"], NODE_FAILED, error_code="condition_image_missing",
+                    error_message=f"当前默认轨要一张条件图（{', '.join(missing)}），"
+                                  f"但上游没有可用的关键帧产物；先重试关键帧那一格，"
+                                  f"或把默认轨换成不需要参考图的档。")
+                pipeline_repo.add_event(run["id"], node["id"], "node_failed",
+                                        {"reason": "condition_image_missing",
+                                         "params": missing})
+                return
+            params[missing[0]] = found
     key = _idempotency_key(run, node)
     payload = SimpleNamespace(
         project_id=run["project_id"], episode_id=run["episode_id"],
         shot_id=node_input.get("shot_id"), capability=capability,
         # 三件都不传＝走平台配的默认轨。绝不替人切云端：云端要逐条确认费用，
         # 而 `submit_job` 会在没有确认单时直接拒掉（不兜底）。
-        execution_mode=None, provider_code=None, model_code=None,
-        prompt=node_input.get("prompt") or node.get("label") or "",
+        execution_mode=exec_mode, provider_code=prov_code, model_code=mod_code,
+        prompt=node_input.get("prompt") or dict(node).get("label") or "",
         params=params,
         input_refs=[{"pipeline_run_id": run["id"], "node_key": node["node_key"],
                      "node_type": node["node_type"]}],

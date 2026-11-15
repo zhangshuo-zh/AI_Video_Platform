@@ -184,16 +184,18 @@ def preflight(project_id: int, episode_id: int,
             definition = _definition_of(template)
             needs = {JOB_NODES[n["type"]] for n in definition["nodes"]
                      if isinstance(n, dict) and n.get("type") in JOB_NODES
-                     and n["type"] != "export_compose"}
+                     and n["type"] not in ("export_compose", "lip_sync")}
             for capability in sorted(needs):
                 try:
                     services.resolve_provider(capability)
                 except services.NoRoute as exc:
                     warnings.append(f"{capability} 没有可用的默认轨：{exc}")
-            has_compose = any(isinstance(n, dict) and n.get("type") == "export_compose"
-                              for n in definition["nodes"])
-            if has_compose and shutil.which(FFMPEG_BIN) is None:
-                warnings.append(f"模板含成片节点，但这台机器找不到 {FFMPEG_BIN}")
+            has_ffmpeg_node = any(
+                isinstance(n, dict) and n.get("type") in ("export_compose", "lip_sync")
+                for n in definition["nodes"]
+            )
+            if has_ffmpeg_node and shutil.which(FFMPEG_BIN) is None:
+                warnings.append(f"模板含合成/对口型节点，但这台机器找不到 {FFMPEG_BIN}")
 
     busy = (rows["busy"] if "busy" in rows
             else pipeline_repo.unfinished_for_episode(project_id, episode_id))

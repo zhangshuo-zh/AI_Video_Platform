@@ -24,6 +24,7 @@ NODE_TYPE_LABELS = {
     "artifact_validate": "产物检查",
     "shot_review": "镜头审核",
     "audio_prepare": "音频准备检查",
+    "lip_sync": "视频对口型",
     "export_prepare": "成片导出准备",
     "export_compose": "成片合成",
     "export_validate": "成片验收",
@@ -34,6 +35,7 @@ NODE_TYPE_LABELS = {
 
 # 哪些节点要提交 Job（其余是内部检查或人工审核）
 JOB_NODES = {"image_generate": "image", "video_generate": "video",
+             "lip_sync": "video",
              # 成片合成也走 Job，但它由 composition 服务建单，不经过
              # `submit_job` 的模型白名单；`_execute_node` 里有专门分支。
              "export_compose": "video"}
@@ -45,7 +47,7 @@ REVIEW_NODES = {"human_gate", "image_review", "shot_review", "export_review"}
 
 # 哪些节点按镜头展开（一镜一个节点，互不影响：镜头 2 失败不该重跑镜头 1 和 3）
 FANOUT_TYPES = {"image_generate", "image_review", "video_generate",
-                "artifact_validate", "shot_review"}
+                "lip_sync", "artifact_validate", "shot_review"}
 
 
 # 内部检查节点：调度器当场做完，不排队

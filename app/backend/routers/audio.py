@@ -3,13 +3,14 @@
 音频中心不建第二条队列：提交素材时只落一条 job，执行仍由同一个 worker。
 这一页负责"这条台词/音乐属于哪一集哪一镜"，以及作业成功后把产物路径抄回来。
 """
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Body, Depends, HTTPException, status as http_status
 
 import access
 import services
 from deps import require_permission
 from models import (AudioBatchTtsIn, AudioBatchTtsOut, AudioCapabilitiesOut,
-                    AudioClipIn, AudioClipOut, AudioClipUpdateIn)
+                    AudioClipIn, AudioClipOut, AudioClipUpdateIn,
+                    AudioLipSyncIn, AudioLipSyncOut)
 from repositories.audio import clips
 from repositories.content import episodes, shots
 
@@ -113,6 +114,28 @@ def batch_tts(project_id: int, episode_id: int, payload: AudioBatchTtsIn,
     except services.AudioInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return AudioBatchTtsOut(**out)
+
+
+@router.post("/audio-clips/{clip_id}/lip-sync", response_model=AudioLipSyncOut,
+             status_code=http_status.HTTP_202_ACCEPTED)
+def submit_lip_sync(clip_id: int,
+                    payload: AudioLipSyncIn = Body(default_factory=AudioLipSyncIn),
+                    user=Depends(require_permission("audio:write")),
+                    _job=Depends(require_permission("job:submit"))) -> AudioLipSyncOut:
+    """将已就绪台词音频与所属镜头画面联动，提交视频对口型作业到统一队列。"""
+    row = _clip(clip_id, user, "write")
+    try:
+        out = services.audio_lip_sync(
+            row, user,
+            shot_id=payload.shot_id,
+            execution_mode=payload.execution_mode,
+            provider_code=payload.provider_code,
+            model_code=payload.model_code,
+            prompt=payload.prompt,
+        )
+    except services.AudioInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return AudioLipSyncOut(**out)
 
 
 @router.delete("/audio-clips/{clip_id}", status_code=http_status.HTTP_204_NO_CONTENT)

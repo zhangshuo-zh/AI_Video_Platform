@@ -79,6 +79,22 @@ VIDEO_ONLY = {
     ],
 }
 
+LIP_SYNC_EPISODE = {
+    "nodes": [
+        {"key": "check_shots", "type": "shot_validate", "depends_on": []},
+        {"key": "shot_image", "type": "image_generate", "depends_on": ["check_shots"],
+         "fan_out": "shot"},
+        {"key": "shot_video", "type": "video_generate", "depends_on": ["shot_image"],
+         "fan_out": "shot"},
+        {"key": "shot_lipsync", "type": "lip_sync", "depends_on": ["shot_video"],
+         "fan_out": "shot"},
+        {"key": "check_video", "type": "artifact_validate", "depends_on": ["shot_lipsync"],
+         "fan_out": "shot"},
+        {"key": "review_shot", "type": "shot_review", "depends_on": ["check_video"],
+         "fan_out": "shot"},
+    ],
+}
+
 
 
 BUILTIN_TEMPLATES = [
@@ -94,6 +110,8 @@ BUILTIN_TEMPLATES = [
      IMAGE_PREVIEW),
     ("视频生产", 1, "跳过关乎本帧：查完分镜直接逐镜生成视频、查产物、等镜头审核。",
      VIDEO_ONLY),
+    ("对口型漫剧生产", 1, "逐镜完成关键帧/视频后接入台词音频执行 lip_sync 对口型同步，再做产物与镜头审核。",
+     LIP_SYNC_EPISODE),
 ]
 
 

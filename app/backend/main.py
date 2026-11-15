@@ -22,7 +22,7 @@ from gitrepo import GitError
 from log import get_logger, sanitize_msg
 from migrate import migrate
 from routers import (agents as agents_api, chatgpt_plan as chatgpt_plan_api, audio, auth, compositions, content,
-                     dashboard, documents, extraction, files, jobs,
+                     dashboard, documents, extraction, files, jobs, knowledge,
                      model_center as model_center_api,
                      pipeline as pipeline_api, profiles, production as production_api,
                      projects, review, seasons as seasons_api, settings, system,
@@ -165,6 +165,7 @@ def create_app() -> FastAPI:
     app.include_router(chatgpt_plan_api.router)
     app.include_router(settings.router)
     app.include_router(system.router)
+    app.include_router(knowledge.router)
     app.include_router(users.router)
     # 定妆图走带鉴权的路由（原来是 StaticFiles 挂载，不登录就能拿图）。
     # 必须排在兜底的前端挂载之前，否则 /files 会被它吞掉

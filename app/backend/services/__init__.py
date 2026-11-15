@@ -58,7 +58,8 @@ from .artifact_review import (
 )
 
 from .audio import (
-    AUDIO_KINDS, AUDIO_STATUS, audio_batch_tts, audio_clip_view, audio_sync, audio_submit
+    AUDIO_KINDS, AUDIO_STATUS, audio_batch_tts, audio_clip_view,
+    audio_lip_sync, audio_sync, audio_submit
 )
 
 from .cascade import (
@@ -95,6 +96,10 @@ from .jobs import (
     JobStateConflict, _seconds_since, worker_status, job_detail_view, retry_preview,
     json_loads_dict, reconcile_job, mark_job_attention,
     set_concurrency, concurrency_now
+)
+
+from .knowledge import (
+    affix_view, issue_view, scan_consistency, resolve_consistency_issue
 )
 
 from .project_stats import (
@@ -168,11 +173,13 @@ __all__ = [
     "_signed_ready_for",
     "_tend",
     "_throughput_for",
+    "affix_view",
     "apply_doc_ai",
     "artifact_version",
     "artifact_version_of_manifest",
     "audio_batch_tts",
     "audio_clip_view",
+    "audio_lip_sync",
     "audio_submit",
     "audio_sync",
     "clean_tags",
@@ -191,6 +198,7 @@ __all__ = [
     "extraction_reject",
     "extraction_submit",
     "extraction_view",
+    "issue_view",
     "job_checklist",
     "job_checklist_save",
     "job_detail_view",
@@ -207,6 +215,7 @@ __all__ = [
     "project_dashboard",
     "read_content",
     "reconcile_job",
+    "resolve_consistency_issue",
     "resolve_provider",
     "retry_preview",
     "review_gate",
@@ -214,6 +223,7 @@ __all__ = [
     "review_sign",
     "review_state",
     "save_content",
+    "scan_consistency",
     "shot_asset_ids",
     "shot_source_version",
     "shot_variant_ids",

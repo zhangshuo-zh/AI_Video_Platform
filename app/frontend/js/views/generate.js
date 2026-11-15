@@ -348,6 +348,7 @@ export default {
         <p>唯一队列 · 本地优先 · 云端逐条确认成本</p>
         <div class="right">
           <span class="gen-worker" id="gen-worker"><span class="dot idle"></span> 正在读取 worker 状态</span>
+          <span class="sse-live-badge" id="gen-sse-badge"><span class="sse-dot"></span> 实时待命</span>
           <button class="btn" id="gen-profiles">参数模板</button>
           ${canSubmit ? '<button class="btn primary" id="gen-new">提交作业</button>' : ''}
         </div>
@@ -419,8 +420,11 @@ export default {
               <span class="pf-label top">参数</span>
               <div id="jm-params" class="gen-params"></div>
               <label class="top" for="jm-prompt">提示词</label>
-              <textarea id="jm-prompt" rows="4" maxlength="8000"
-                        placeholder="这次要生成什么；参数在上一栏，不要写成命令行"></textarea>
+              <div class="stack">
+                <div id="jm-affix-bar" class="gen-affix-bar" hidden></div>
+                <textarea id="jm-prompt" rows="4" maxlength="8000"
+                          placeholder="这次要生成什么；参数在上一栏，不要写成命令行"></textarea>
+              </div>
               <span class="pf-label top" id="jm-cost-label" hidden>预计成本</span>
               <div id="jm-cost" class="gen-cost" hidden></div>
             </div>
@@ -1297,6 +1301,109 @@ export default {
         }
       }
       renderParams(p.params || {});
+      syncAffixPillStates?.();
+    }
+
+    let modalAffixes = [];
+    let affixSeq = 0;
+
+    function toggleCsvSegment(raw, seg) {
+      const target = String(seg || '').trim();
+      if (!target) return raw;
+      const parts = String(raw || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+      const idx = parts.indexOf(target);
+      if (idx >= 0) parts.splice(idx, 1);
+      else parts.push(target);
+      return parts.join(', ');
+    }
+
+    function hasCsvSegment(raw, seg) {
+      const target = String(seg || '').trim();
+      if (!target) return false;
+      return String(raw || '').split(/[,，]/).map((s) => s.trim()).includes(target);
+    }
+
+    function syncAffixPillStates() {
+      const bar = root.querySelector('#jm-affix-bar');
+      if (!bar) return;
+      const posVal = root.querySelector('#jm-prompt')?.value || '';
+      const negEl = root.querySelector('#jm-params [data-param="negative_prompt"]');
+      const negVal = negEl ? negEl.value : '';
+      bar.querySelectorAll('[data-affix-id]').forEach((btn) => {
+        const a = modalAffixes.find((x) => String(x.id) === btn.dataset.affixId);
+        if (!a) return;
+        const onPos = a.positive ? hasCsvSegment(posVal, a.positive) : true;
+        const onNeg = a.negative ? (negEl ? hasCsvSegment(negVal, a.negative) : true) : true;
+        const active = Boolean((a.positive || a.negative) && onPos && onNeg);
+        btn.classList.toggle('on', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function renderAffixBar() {
+      const bar = root.querySelector('#jm-affix-bar');
+      if (!bar) return;
+      if (!modalAffixes.length) {
+        bar.hidden = true;
+        bar.innerHTML = '';
+        return;
+      }
+      bar.hidden = false;
+      const hasDefault = modalAffixes.some((a) => a.is_default);
+      bar.innerHTML = '<span class="t-dim">画风词缀：</span>'
+        + modalAffixes.map((a) => `
+          <button type="button" class="gen-affix-pill" data-affix-id="${a.id}"
+                  title="${escapeHtml([a.positive && '+ ' + a.positive, a.negative && '- ' + a.negative].filter(Boolean).join(' | '))}">
+            ${a.is_default ? '★ ' : ''}${escapeHtml(a.name)}
+          </button>`).join('')
+        + (hasDefault
+          ? '<button type="button" class="btn xs" id="jm-affix-apply-default">注入默认词缀</button>'
+          : '');
+      syncAffixPillStates();
+    }
+
+    function applySingleAffix(affix, forceOn = null) {
+      const promptEl = root.querySelector('#jm-prompt');
+      const negEl = root.querySelector('#jm-params [data-param="negative_prompt"]');
+      const currentlyOn = Boolean(
+        (affix.positive ? hasCsvSegment(promptEl?.value || '', affix.positive) : true)
+        && (affix.negative && negEl ? hasCsvSegment(negEl.value || '', affix.negative) : true),
+      );
+      const wantOn = forceOn === null ? !currentlyOn : forceOn;
+      if (promptEl && affix.positive) {
+        if (wantOn && !hasCsvSegment(promptEl.value, affix.positive)) {
+          promptEl.value = toggleCsvSegment(promptEl.value, affix.positive);
+        } else if (!wantOn && hasCsvSegment(promptEl.value, affix.positive)) {
+          promptEl.value = toggleCsvSegment(promptEl.value, affix.positive);
+        }
+      }
+      if (negEl && affix.negative) {
+        if (wantOn && !hasCsvSegment(negEl.value, affix.negative)) {
+          negEl.value = toggleCsvSegment(negEl.value, affix.negative);
+        } else if (!wantOn && hasCsvSegment(negEl.value, affix.negative)) {
+          negEl.value = toggleCsvSegment(negEl.value, affix.negative);
+        }
+      }
+      syncAffixPillStates();
+    }
+
+    async function loadModalAffixes(pid) {
+      const seq = ++affixSeq;
+      if (!pid) {
+        modalAffixes = [];
+        renderAffixBar();
+        return;
+      }
+      try {
+        const list = await api.knowledgeAffixes(pid);
+        if (!alive() || seq !== affixSeq) return;
+        modalAffixes = Array.isArray(list) ? list : [];
+        renderAffixBar();
+      } catch {
+        if (!alive() || seq !== affixSeq) return;
+        modalAffixes = [];
+        renderAffixBar();
+      }
     }
 
     async function openJobModal(prefill) {
@@ -1333,6 +1440,7 @@ export default {
         state.profiles = await api.generationProfiles(projectSel.value || undefined);
         refreshTemplateSelect();
       } catch { /* 模板读不到不影响提交 */ }
+      void loadModalAffixes(projectSel.value);
       root.querySelector('#jm-project').focus();
     }
 
@@ -2046,7 +2154,20 @@ export default {
         state.profiles = await api.generationProfiles(e.target.value || undefined);
         refreshTemplateSelect();
       } catch { /* 模板读不到不影响提交 */ }
+      void loadModalAffixes(e.target.value);
     });
+    root.querySelector('#jm-affix-bar')?.addEventListener('click', (e) => {
+      const pill = e.target.closest('[data-affix-id]');
+      if (pill) {
+        const affix = modalAffixes.find((a) => String(a.id) === pill.dataset.affixId);
+        if (affix) applySingleAffix(affix, null);
+        return;
+      }
+      if (e.target.closest('#jm-affix-apply-default')) {
+        modalAffixes.filter((a) => a.is_default).forEach((a) => applySingleAffix(a, true));
+      }
+    });
+    root.querySelector('#jm-prompt').addEventListener('input', syncAffixPillStates);
 
     root.querySelector('#gen-profiles').addEventListener('click', openProfiles);
     root.querySelector('#pf-close').addEventListener('click', closeProfiles);
@@ -2148,10 +2269,51 @@ export default {
       refresh({ quiet: true });
     };
     document.addEventListener('visibilitychange', visHandler);
+    let genEs = null;
+    let sseLastSig = null;
+    const sseBadge = root.querySelector('#gen-sse-badge');
+    const closeGenEs = () => {
+      if (genEs) { genEs.close(); genEs = null; }
+    };
+    if (typeof EventSource !== 'undefined') {
+      genEs = new EventSource(api.eventsStreamUrl(state.projectId || store.currentId || ''));
+      genEs.addEventListener('open', () => {
+        if (!alive()) { closeGenEs(); return; }
+        if (sseBadge) {
+          sseBadge.classList.add('on');
+          sseBadge.innerHTML = '<span class="sse-dot"></span> 实时推流已连接';
+        }
+      });
+      genEs.addEventListener('snapshot', (ev) => {
+        if (!alive()) { closeGenEs(); return; }
+        try {
+          const snap = JSON.parse(ev.data || '{}');
+          if (sseBadge) {
+            sseBadge.classList.add('on');
+            sseBadge.innerHTML = `<span class="sse-dot"></span> 实时同步 (${snap.active_jobs ?? 0} 活跃)`;
+          }
+          const sig = JSON.stringify({ j: snap.jobs || [], r: snap.pipeline_runs || [] });
+          if (sseLastSig !== null && sig !== sseLastSig
+              && jobModal.hidden && profileModal.hidden && reconcileModal.hidden && !document.hidden) {
+            refresh({ quiet: true });
+          }
+          sseLastSig = sig;
+        } catch { /* ignore invalid sse chunk */ }
+      });
+      genEs.addEventListener('error', () => {
+        if (!alive()) { closeGenEs(); return; }
+        if (sseBadge) {
+          sseBadge.classList.remove('on');
+          sseBadge.innerHTML = '<span class="sse-dot"></span> 实时推流重连中';
+        }
+      });
+    }
+
     return () => {
       clearTimeout(searchTimer);
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
+      closeGenEs();
       if (visHandler) document.removeEventListener('visibilitychange', visHandler);
       visHandler = null;
     };

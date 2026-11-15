@@ -239,6 +239,121 @@ export function mountRuntimePaths(root) {
   }, { once: false });
 }
 
+/* ================= 历史废片安全清理器（M4 GC） ================= */
+function fmtBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+export function gcCleanerCard() {
+  const data = cache.gcPreview || {
+    candidate_count: 0,
+    reclaimable_bytes: 0,
+    protected_count: 0,
+    items: [],
+  };
+  const items = data.items || [];
+  const rows = items.map((it) => `<tr>
+    <td><input type="checkbox" data-gc-job="${it.job_id}" checked></td>
+    <td class="mono">#${it.job_id} <span class="t-dim">P${it.project_id}</span></td>
+    <td>${escapeHtml(it.capability)} <span class="chip gray">${escapeHtml(it.status)}</span></td>
+    <td class="mono">${escapeHtml(fmtBytes(it.bytes))}</td>
+    <td><span class="t-desc mono">${escapeHtml((it.files || []).join('、'))}</span></td>
+    <td><span class="t-desc">${escapeHtml(it.reason)}</span></td>
+  </tr>`).join('');
+
+  return `<div class="card mt-card" id="mc-gc-cleaner">
+    <div class="card-head">
+      <h2>历史废片安全清理器（GC）</h2>
+      <span class="sub">仅清理未钉住、非最新成功且未签字的历史 outputs/ 文件；保留 run.log 与数据库记录</span>
+      <div class="right actions">
+        <button class="btn sm" type="button" id="gc-scan-btn">扫描可回收废片</button>
+        <button class="btn sm danger" type="button" id="gc-exec-btn" ${items.length ? '' : 'disabled'}>
+          清理选中废片
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="gc-stats">
+        <div class="gc-stat-card">
+          <div class="gc-stat-val">${data.candidate_count || 0}</div>
+          <div class="gc-stat-lbl">可安全清理作业</div>
+        </div>
+        <div class="gc-stat-card">
+          <div class="gc-stat-val">${escapeHtml(fmtBytes(data.reclaimable_bytes || 0))}</div>
+          <div class="gc-stat-lbl">预计释放磁盘空间</div>
+        </div>
+        <div class="gc-stat-card">
+          <div class="gc-stat-val">${data.protected_count || 0}</div>
+          <div class="gc-stat-lbl">受保护作业（绝不清理）</div>
+        </div>
+      </div>
+      ${items.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>选</th><th>作业</th><th>能力 / 状态</th><th>可释放</th><th>目标文件</th><th>原因</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>` : '<p class="hint u-mb-0">当前没有可安全回收的历史废片；正在运行、最新成功、已签字及分镜/成片/音频引用的作业均受严格保护。</p>'}
+    </div>
+  </div>`;
+}
+
+export function mountGcCleaner(root) {
+  const card = root.querySelector('#mc-gc-cleaner');
+  if (!card || card.__gcBound) return;
+  card.__gcBound = true;
+
+  const rerenderCard = () => {
+    const host = card.parentElement;
+    const idx = host ? [...host.children].indexOf(card) : -1;
+    card.outerHTML = gcCleanerCard();
+    if (host && idx >= 0 && host.children[idx]) mountGcCleaner(root);
+  };
+
+  card.addEventListener('click', async (e) => {
+    if (e.target.closest('#gc-scan-btn')) {
+      const btn = card.querySelector('#gc-scan-btn');
+      if (btn) btn.disabled = true;
+      try {
+        cache.gcPreview = await api.systemGcPreview();
+        rerenderCard();
+        alertNotify(`扫描完成：发现 ${cache.gcPreview.candidate_count} 条可清理废片，可释放 ${fmtBytes(cache.gcPreview.reclaimable_bytes)}。`);
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        alertNotify(`扫描失败：${err.message}`, 'err');
+      }
+      return;
+    }
+
+    if (e.target.closest('#gc-exec-btn')) {
+      const ids = [...card.querySelectorAll('[data-gc-job]:checked')]
+        .map((el) => Number(el.dataset.gcJob))
+        .filter((n) => Number.isInteger(n) && n > 0);
+      if (!ids.length) {
+        alertNotify('请至少勾选一条待清理作业。', 'err');
+        return;
+      }
+      if (!(await confirmDanger({
+        title: '确认安全清理历史废片',
+        body: `仅删除所选 ${ids.length} 条未受保护历史作业的 outputs/ 产物文件（run.log 与数据库台账保留），操作不可撤销。`,
+        okText: '确认清理',
+      }))) return;
+
+      const btn = card.querySelector('#gc-exec-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await api.systemGcExecute({ job_ids: ids });
+        cache.gcPreview = await api.systemGcPreview().catch(() => null);
+        rerenderCard();
+        alertNotify(`清理完成：处理 ${res.deleted_jobs} 条作业，删除 ${res.deleted_files} 个文件，释放 ${fmtBytes(res.reclaimed_bytes)}。`);
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        alertNotify(`清理失败：${err.message}`, 'err');
+      }
+    }
+  });
+}
+
 /* ================= 子页出口（挂到「系统设置 · 参数管理」） =================
  * 这两张卡原来在引擎管理页，由 `models.js` 的 `sub === 1` 分支挂载；
  * 搬过来之后挂载点归本文件自己，`models.js` 那边不再知道它们存在。
@@ -251,18 +366,22 @@ export default {
     // （它们只看模块能不能加载）。这正是本仓踩过两次的坑，第三次不再犯。
     //
     // 读不到就保留旧缓存/空态、不挡整页：这两张是配置面，不是这一屏的主内容。
-    const [runtimePaths, secretValues] = await Promise.all([
+    const [runtimePaths, secretValues, gcPreview] = await Promise.all([
       api.runtimePaths().catch(() => null),
       api.secretValues().catch(() => null),
+      api.systemGcPreview().catch(() => null),
     ]);
     if (runtimePaths) cache.runtimePaths = runtimePaths;
     if (secretValues) cache.secretValues = secretValues;
+    if (gcPreview) cache.gcPreview = gcPreview;
     return `${runtimePathsCard()}
-      ${secretValuesCard()}`;
+      ${secretValuesCard()}
+      ${gcCleanerCard()}`;
   },
 
   mount(root) {
     mountRuntimePaths(root);
     mountSecretValues(root);
+    mountGcCleaner(root);
   },
 };

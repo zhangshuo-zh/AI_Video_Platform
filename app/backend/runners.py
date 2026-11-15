@@ -363,6 +363,176 @@ def _mflux(job, params: dict, outputs: Path) -> RunSpec:
 DRAW_THINGS_PATH = "/sdapi/v1/txt2img"
 
 
+def _comfyui_workflow_payload(
+    prompt_text: str,
+    params: dict,
+    *,
+    init_filename: str | None = None,
+) -> dict:
+    """组装或参数化注入 ComfyUI API Workflow JSON 节点图。"""
+    raw_wf = str(params.get("workflow_json") or "").strip()
+    width = int(params.get("width", 1024) or 1024)
+    height = int(params.get("height", 1024) or 1024)
+    steps = int(params.get("steps", 20) or 20)
+    cfg = float(7.0 if params.get("cfg") is None else params["cfg"])
+    seed = int(params["seed"]) if params.get("seed") is not None else 42
+    denoise = float(0.75 if params.get("denoise") is None else params["denoise"])
+    negative = str(params.get("negative_prompt") or "").strip()
+    checkpoint = str(params.get("checkpoint") or "").strip()
+    image_val = init_filename or "__UPLOADED_IMAGE__"
+
+    if raw_wf:
+        try:
+            wf = json.loads(raw_wf)
+        except ValueError as exc:
+            raise RunnerUnavailable(f"ComfyUI workflow_json 不是合法的 JSON：{exc}") from exc
+        if not isinstance(wf, dict) or not wf:
+            raise RunnerUnavailable("ComfyUI workflow_json 必须是非空节点映射对象")
+
+        exact_map: dict[str, object] = {
+            "{{prompt}}": prompt_text,
+            "{{negative_prompt}}": negative,
+            "{{width}}": width,
+            "{{height}}": height,
+            "{{steps}}": steps,
+            "{{cfg}}": cfg,
+            "{{seed}}": seed,
+            "{{denoise}}": denoise,
+            "{{checkpoint}}": checkpoint,
+            "{{image}}": image_val,
+        }
+        str_map: dict[str, str] = {k: str(v) for k, v in exact_map.items()}
+
+        def _subst(val):
+            if isinstance(val, str):
+                if val in exact_map:
+                    return exact_map[val]
+                out_s = val
+                for token, rep in str_map.items():
+                    if token in out_s:
+                        out_s = out_s.replace(token, rep)
+                return out_s
+            if isinstance(val, list):
+                return [_subst(x) for x in val]
+            if isinstance(val, dict):
+                return {k: _subst(v) for k, v in val.items()}
+            return val
+
+        injected = _subst(wf)
+        for node in injected.values():
+            if not isinstance(node, dict):
+                continue
+            ctype = str(node.get("class_type") or "")
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if checkpoint and ctype == "CheckpointLoaderSimple" and "ckpt_name" in inputs:
+                inputs["ckpt_name"] = checkpoint
+            if init_filename and ctype == "LoadImage":
+                inputs["image"] = init_filename
+        return injected
+
+    ckpt_name = checkpoint or "v1-5-pruned-emaonly.safetensors"
+    if init_filename:
+        return {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt_name}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt_text, "clip": ["1", 1]}},
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["1", 1]}},
+            "4": {"class_type": "LoadImage", "inputs": {"image": init_filename}},
+            "5": {"class_type": "VAEEncode", "inputs": {"pixels": ["4", 0], "vae": ["1", 2]}},
+            "6": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["5", 0],
+                    "seed": seed,
+                    "steps": steps,
+                    "cfg": cfg,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": denoise,
+                },
+            },
+            "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+            "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": f"job_{seed}"}},
+        }
+    return {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt_name}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt_text, "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["1", 1]}},
+        "4": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
+        "5": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["2", 0],
+                "negative": ["3", 0],
+                "latent_image": ["4", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1.0,
+            },
+        },
+        "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+        "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": f"job_{seed}"}},
+    }
+
+
+def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
+    """ComfyUI：把参数注入 API Workflow JSON，经由 engine_http_run 跑 /prompt→/history→/view。"""
+    status = engines.probe("comfyui", fresh=True)
+    if status.state != "ok":
+        raise RunnerUnavailable(f"ComfyUI 现在不能用：{status.detail}")
+    endpoint = status.values.get("endpoint") or ""
+    out = outputs / f"{job['id']}-comfyui.png"
+    receipt = outputs / f"{job['id']}-comfyui-receipt.json"
+    request_path = outputs / f"{job['id']}-comfyui-request.json"
+
+    init_image = str(params.get("image") or "").strip()
+    init_target: Path | None = None
+    if init_image:
+        init_target = _resolve_input_image(init_image, job, label="参考底图")
+    workflow = _comfyui_workflow_payload(
+        str(job["prompt_snapshot"] or ""),
+        params,
+        init_filename="__UPLOADED_IMAGE__" if init_target is not None else None,
+    )
+    request: dict = {
+        "engine": "comfyui",
+        "endpoint": endpoint,
+        "workflow": workflow,
+        "init_image": str(init_target) if init_target is not None else "",
+        "client_id": f"fastvideo-{job['id']}",
+        "output": str(out),
+        "receipt": str(receipt),
+        "poll_interval": 0.8,
+        "poll_timeout": 300,
+    }
+    request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    argv = [sys.executable, str(ENGINE_HTTP_RUNNER), str(request_path)]
+    return RunSpec(
+        runner="comfyui",
+        argv=argv,
+        cwd=outputs,
+        expected=[out],
+        media="image",
+        meta={
+            "adapter": "comfyui",
+            "model": model_code,
+            "endpoint": endpoint,
+            "request_path": str(request_path),
+            "result_path": str(receipt),
+            "node_count": len(workflow),
+        },
+        pass_env=_secret_envs(request),
+    )
+
+
 def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
     # 起跑前现查一次（fresh）：worker 可能刚从队列里领到一条几分钟前排的活，
     # 拿 15 秒缓存里的端点去发请求，会把"换了机器"这件事静默地漏过去。
@@ -634,6 +804,8 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         return _mflux(job, params, outputs)
     if capability == "image" and provider in ("draw_things", "drawthings"):
         return _draw_things(job, params, outputs, model)
+    if capability == "image" and provider in ("comfyui", "comfy", "comfy-desktop"):
+        return _comfyui(job, params, outputs, model)
     if capability == "text" and provider in ("ollama",):
         return _ollama(job, params, outputs, model)
     if capability == "tts" and provider in ("voxcpm2", "voxcpm"):
@@ -655,10 +827,7 @@ def has_branch(capability: str, provider: str) -> bool:
     if capability == "video":
         return provider in ("fastmetal", "mlx-video")
     if capability == "image":
-        # comfyui **故意不在**这里：它只有探测器、没有 workflow 契约
-        # （见 `adapters._COMFYUI` 的注释）。加它进这张名单等于对提交框
-        # 承诺"这一档能出图"，而 `build()` 里并没有对应分支。
-        return provider in ("mflux", "draw_things")
+        return provider in ("mflux", "draw_things", "comfyui")
     if capability == "tts":
         return provider in ("voxcpm2", "voxcpm")
     if capability == "music":

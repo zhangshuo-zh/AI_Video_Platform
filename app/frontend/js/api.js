@@ -558,4 +558,21 @@ export const api = {
   compositionPrecheck: (pid, episodeId, subtitlePath) => get(`/api/projects/${pid}/composition-precheck?` + new URLSearchParams({
       episode_id: episodeId, ...(subtitlePath ? { subtitle_path: subtitlePath } : {}),
     })),
+  knowledgeAffixes: (pid) => get(`/api/projects/${pid}/knowledge/affixes`),
+  createKnowledgeAffix: (pid, body) => send('POST', `/api/projects/${pid}/knowledge/affixes`, body),
+  updateKnowledgeAffix: (pid, id, body) => send('PUT', `/api/projects/${pid}/knowledge/affixes/${id}`, body),
+  deleteKnowledgeAffix: (pid, id) => send('DELETE', `/api/projects/${pid}/knowledge/affixes/${id}`),
+  knowledgeConsistency: (pid, status = '') => get(`/api/projects/${pid}/knowledge/consistency`
+    + (status ? `?status=${encodeURIComponent(status)}` : '')),
+  scanKnowledgeConsistency: (pid) => send('POST', `/api/projects/${pid}/knowledge/consistency/scan`, {}),
+  resolveKnowledgeIssue: (pid, id, action) => send(
+    'POST', `/api/projects/${pid}/knowledge/consistency/${id}/resolve`, { action },
+  ),
+  submitAudioLipSync: (clipId, body = {}) => send('POST', `/api/audio-clips/${clipId}/lip-sync`, body),
+  eventsStreamUrl: (pid, once = false) => '/api/events/stream?' + new URLSearchParams({
+    ...(pid ? { project_id: String(pid) } : {}),
+    ...(once ? { once: '1' } : {}),
+  }),
+  systemGcPreview: (pid) => get('/api/system/gc-preview' + (pid ? `?project_id=${encodeURIComponent(pid)}` : '')),
+  systemGcExecute: (body = {}) => send('POST', '/api/system/gc-execute', body),
 };

@@ -36,6 +36,7 @@ const TYPE_LABEL = {
   shot_validate: '分镜检查', asset_validate: '资产检查',
   artifact_validate: '产物检查', audio_prepare: '音频准备',
   image_generate: '关键帧生成', video_generate: '镜头视频',
+  lip_sync: '视频对口型',
   image_review: '关键帧验收', shot_review: '镜头审核',
   human_gate: '人工确认', export_prepare: '成片准备',
   export_compose: '成片合成', export_validate: '成片验收', export_review: '成片审核',
@@ -53,6 +54,7 @@ const FINISHED = ['completed', 'completed_with_errors', 'failed', 'cancelled'];
  * 兜底：响应没带（老后端）就原样显示事件码，不显示空白。
  */
 let eventLabels = {};
+let pipelineEs = null;
 
 function eventLabel(eventType) {
   return eventLabels[eventType] || eventType;
@@ -614,7 +616,9 @@ export default {
     const head = `<div class="page-head">
         <h1>产线中心</h1>
         <p>${HEAD_DESC[tab] || HEAD_DESC[0]} · ${escapeHtml(project.name)}</p>
-        <div class="row" style="gap:6px">${subChipRow(TABS, tab)}</div>
+        <div class="row" style="gap:6px">${subChipRow(TABS, tab)}
+          <span class="sse-live-badge" id="pl-sse-badge"><span class="sse-dot"></span> 实时待命</span>
+        </div>
       </div>`;
 
     if (tab === 2) {
@@ -763,9 +767,46 @@ export default {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     bindSubChips(root, (i) => { setSub('pipeline', i); refresh(); });
 
+    const sseBadge = root.querySelector('#pl-sse-badge');
+    const closeEs = () => {
+      if (pipelineEs) { pipelineEs.close(); pipelineEs = null; }
+    };
+    closeEs();
+    const alive = () => Boolean(sseBadge && sseBadge.isConnected);
+    if (typeof EventSource !== 'undefined') {
+      let lastSig = null;
+      const es = new EventSource(api.eventsStreamUrl(store.current.id));
+      pipelineEs = es;
+      es.addEventListener('open', () => {
+        if (!alive()) { closeEs(); return; }
+        sseBadge.classList.add('on');
+        sseBadge.innerHTML = '<span class="sse-dot"></span> 实时推送已连接';
+      });
+      es.addEventListener('snapshot', (ev) => {
+        if (!alive()) { closeEs(); return; }
+        try {
+          const snap = JSON.parse(ev.data || '{}');
+          sseBadge.classList.add('on');
+          sseBadge.innerHTML = `<span class="sse-dot"></span> 实时同步 (${(snap.pipeline_runs || []).length} 条活跃)`;
+          const sig = JSON.stringify({ r: snap.pipeline_runs || [], a: snap.active_jobs || 0 });
+          if (lastSig !== null && sig !== lastSig) {
+            const modalOpen = !root.querySelector('#pl-modal')?.hidden
+              || !root.querySelector('#ss-modal')?.hidden;
+            if (!modalOpen && !document.hidden) refresh();
+          }
+          lastSig = sig;
+        } catch { /* ignore invalid sse chunk */ }
+      });
+      es.addEventListener('error', () => {
+        if (!alive()) { closeEs(); return; }
+        sseBadge.classList.remove('on');
+        sseBadge.innerHTML = '<span class="sse-dot"></span> 实时推流重连中';
+      });
+    }
+
     if (currentSubTab('pipeline', TABS) === 2) {
       bindSeasons(root, refresh);
-      return;
+      return closeEs;
     }
 
     const detailHost = root.querySelector('#pl-detail-host');
@@ -920,5 +961,6 @@ export default {
       noticeKey = `${store.current.id}:0`;
       refresh();
     });
+    return closeEs;
   },
 };

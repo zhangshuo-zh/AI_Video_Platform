@@ -33,11 +33,91 @@ class CompositionJobInvalid(Exception):
     """作业参数或成片记录不成立（不是环境问题，重试同样会失败）。"""
 
 
+def _resolve_lip_sync_file(raw: str) -> Path | None:
+    """安全解析对口型媒体路径，兼容 JOBS_DIR 产物与 FILES_DIR 资产库。"""
+    cleaned = str(raw or "").strip()
+    if cleaned.startswith("/api/files/"):
+        cleaned = cleaned[len("/api/files/"):]
+    elif cleaned.startswith("/files/"):
+        cleaned = cleaned[len("/files/"):]
+    if not cleaned:
+        return None
+    target = resolve_artifact(cleaned)
+    if target is not None and target.is_file():
+        return target
+    fallback = resolve_within(FILES_DIR, cleaned)
+    return fallback if (fallback is not None and fallback.is_file()) else None
+
+
+def _build_lip_sync(job, params: dict, outputs: Path, ffmpeg: str) -> RunSpec:
+    """使用 FFmpeg 将已就绪配音音轨与分镜视频或关键帧合成对口型预览视频。"""
+    audio_rel = str(params.get("audio_path") or "").strip()
+    audio_path = _resolve_lip_sync_file(audio_rel)
+    if audio_path is None:
+        raise CompositionJobInvalid("对口型作业缺少有效的配音音频文件")
+
+    out_mp4 = outputs / f"{job['id']}-lipsync.mp4"
+    src_video_rel = str(params.get("source_video") or "").strip()
+    src_img_raw = str(params.get("source_image") or "").strip()
+
+    if src_video_rel:
+        src_video = _resolve_lip_sync_file(src_video_rel)
+        if src_video is None:
+            raise CompositionJobInvalid("对口型源视频文件不存在")
+        argv = [
+            ffmpeg, "-hide_banner", "-y",
+            "-i", str(src_video),
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", COMPOSE_PRESET,
+            "-crf", str(COMPOSE_CRF), "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest", str(out_mp4),
+        ]
+        expected: dict = {"audio": True, "format": "mp4"}
+        source_kind = "video"
+        source_rel = src_video_rel
+    else:
+        src_img = _resolve_lip_sync_file(src_img_raw)
+        if src_img is None:
+            raise CompositionJobInvalid("对口型作业缺少有效的源视频或关键帧图片")
+        argv = [
+            ffmpeg, "-hide_banner", "-y",
+            "-loop", "1", "-i", str(src_img),
+            "-i", str(audio_path),
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-preset", COMPOSE_PRESET, "-crf", str(COMPOSE_CRF),
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+            "-c:a", "aac", "-shortest", str(out_mp4),
+        ]
+        expected = {"width": 1280, "height": 720, "audio": True, "format": "mp4"}
+        source_kind = "image"
+        source_rel = src_img_raw
+
+    return RunSpec(
+        runner="ffmpeg",
+        argv=argv,
+        cwd=outputs,
+        expected=[out_mp4],
+        media="video",
+        meta={
+            "composition_id": 0,
+            "operation": "lip_sync",
+            "source_kind": source_kind,
+            "source_path": source_rel,
+            "audio_path": audio_rel,
+            "expected": expected,
+        },
+    )
+
+
 def build(job, params: dict, outputs: Path) -> RunSpec:
     ffmpeg = shutil.which(FFMPEG_BIN)
     if not ffmpeg:
         raise RunnerUnavailable(
             f"找不到 ffmpeg（{FFMPEG_BIN}）；装好 FFmpeg 或设置 FASTVIDEO_FFMPEG")
+    if str(params.get("operation") or "") == "lip_sync" or job["model_code"] == "ffmpeg-lipsync-1":
+        return _build_lip_sync(job, params, outputs, ffmpeg)
     composition_id = int(params.get("composition_id") or 0)
     if composition_id <= 0:
         raise CompositionJobInvalid("合成作业缺少 composition_id")

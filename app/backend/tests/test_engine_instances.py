@@ -473,7 +473,7 @@ def test_comfyui_只接探测不接执行():
     assert "comfyui" in engines.SERVICE_ENGINES
     assert "comfyui" in engines._INFO_PATHS
     assert engines._INFO_PATHS["comfyui"] == "/system_stats"
-    assert not runners.has_branch("image", "comfyui")
+    assert runners.has_branch("image", "comfyui")
 
 
 def test_comfyui的自述被翻译成人话(monkeypatch):

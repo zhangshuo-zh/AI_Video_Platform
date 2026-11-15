@@ -72,8 +72,9 @@ def _upstream_image(node: dict, by_key: dict) -> str | None:
         up = by_key.get(key)
         if not up:
             continue
-        if up.get("node_type") == "image_generate" and up.get("job_id"):
-            job = job_repo.get(up["job_id"])
+        up_map = dict(up)
+        if up_map.get("node_type") == "image_generate" and up_map.get("job_id"):
+            job = job_repo.get(up_map["job_id"])
             if job is not None and job["status"] == "succeeded":
                 target = jobfiles.artifact_at(job["result_paths_json"], 0)
                 if target is not None:
@@ -82,6 +83,35 @@ def _upstream_image(node: dict, by_key: dict) -> str | None:
     return None
 
 
+
+
+def _upstream_video(node: dict, by_key: dict) -> str | None:
+    """顺着依赖往上找一条镜头视频产物相对路径/绝对路径，给对口型节点用。"""
+    seen: set[str] = set()
+    stack = _deps_of(node)
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        up = by_key.get(key)
+        if not up:
+            continue
+        up_map = dict(up)
+        if up_map.get("node_type") == "video_generate" and up_map.get("job_id"):
+            job = job_repo.get(up_map["job_id"])
+            if job is not None and job["status"] == "succeeded":
+                target = jobfiles.artifact_at(job["result_paths_json"], 0)
+                if target is not None:
+                    try:
+                        paths = json.loads(job["result_paths_json"] or "[]")
+                    except ValueError:
+                        paths = []
+                    if paths:
+                        return str(paths[0])
+                    return str(target)
+        stack += _deps_of(up)
+    return None
 
 
 def _deps_of(node) -> list[str]:
@@ -133,8 +163,9 @@ def _upstream_job(node: dict, by_key: dict) -> int | None:
             up = by_key.get(key)
             if not up:
                 continue
-            if up.get("job_id"):
-                return int(up["job_id"])
+            up_job_id = dict(up).get("job_id")
+            if up_job_id:
+                return int(up_job_id)
             nxt += _deps_of(up)
         frontier = nxt
     return None

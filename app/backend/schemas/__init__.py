@@ -42,7 +42,7 @@ from .assets import (
 
 from .audio import (
     AudioClipIn, AudioClipUpdateIn, AudioClipOut, AudioCapabilitiesOut,
-    AudioBatchTtsIn, AudioBatchTtsOut
+    AudioBatchTtsIn, AudioBatchTtsOut, AudioLipSyncIn, AudioLipSyncOut
 )
 
 from .composition import (
@@ -99,6 +99,13 @@ from .jobs import (
     JobReconcileIn, JobAttentionIn, JobRetryBatchIn, JobRetryPreviewOut, JobRetryBatchOut
 )
 
+from .knowledge import (
+    AFFIX_CATEGORIES, AffixCategory, ISSUE_CATEGORIES, IssueCategory,
+    ISSUE_SEVERITIES, IssueSeverity, ISSUE_STATUSES, IssueStatus,
+    StyleAffixIn, StyleAffixUpdateIn, StyleAffixOut,
+    ConsistencyIssueOut, ConsistencyScanOut, ConsistencyResolveIn
+)
+
 from .members import (
     ProjectMemberOut, ProjectMemberIn, ProjectTransferIn, ProjectMembersOut,
     UserDeleteIn
@@ -146,7 +153,7 @@ from .review import (
 )
 
 from .system import (
-    HealthOut, ProviderManifestOut
+    GcExecuteIn, GcExecuteOut, GcItemOut, GcPreviewOut, HealthOut, ProviderManifestOut
 )
 
 from .tokens import (
@@ -163,8 +170,10 @@ from .workbench import (
 )
 
 __all__ = [
+    "AFFIX_CATEGORIES",
     "ASSET_GEN_OPERATIONS",
     "ASSET_KINDS",
+    "AffixCategory",
     "AgentRunIn",
     "AssetCoverIn",
     "AssetGenIn",
@@ -186,8 +195,22 @@ __all__ = [
     "AudioClipOut",
     "AudioClipUpdateIn",
     "AudioKind",
+    "AudioLipSyncIn",
+    "AudioLipSyncOut",
     "BACKENDS",
     "BACKEND_ORDER",
+    "ConsistencyIssueOut",
+    "ConsistencyResolveIn",
+    "ConsistencyScanOut",
+    "ISSUE_CATEGORIES",
+    "ISSUE_SEVERITIES",
+    "ISSUE_STATUSES",
+    "IssueCategory",
+    "IssueSeverity",
+    "IssueStatus",
+    "StyleAffixIn",
+    "StyleAffixOut",
+    "StyleAffixUpdateIn",
     "BILLABLE_LABELS",
     "CAPABILITIES",
     "Capability",
@@ -239,6 +262,10 @@ __all__ = [
     "ExtractShotImportIn",
     "ExtractShotImportOut",
     "ExtractSubmitIn",
+    "GcExecuteIn",
+    "GcExecuteOut",
+    "GcItemOut",
+    "GcPreviewOut",
     "GenerationProfileIn",
     "GenerationProfileOut",
     "GenerationProfileUpdateIn",

@@ -147,6 +147,7 @@ ROUTES = [
      {"kind": "dialogue", "speaker": "", "text": "改", "notes": ""}, 404),
     ("POST", "/api/audio-clips/{q}/submit", None, 404),
     ("POST", "/api/projects/{p}/episodes/{e}/audio/batch-tts", {}, 404),
+    ("POST", "/api/audio-clips/{q}/lip-sync", {}, 404),
     ("DELETE", "/api/audio-clips/{q}", None, 404),
     # ---------- 项目看板与导出（W16） ----------
     ("GET", "/api/projects/{p}/dashboard", None, 404),
@@ -369,6 +370,21 @@ ROUTES = [
     ("GET", "/api/agent-steps/{x}/review", None, 404),
     ("POST", "/api/agent-steps/{x}/review-sign",
      {"anchor": "execute", "decision": "approved", "note": "越权签"}, 404),
+    # ---------- M4：设定中心（词缀库与矛盾审阅） ----------
+    ("GET", "/api/projects/{p}/knowledge/affixes", None, 404),
+    ("POST", "/api/projects/{p}/knowledge/affixes",
+     {"name": "越权词缀", "category": "general", "positive": "cel shading"}, 404),
+    ("PUT", "/api/projects/{p}/knowledge/affixes/{x}",
+     {"name": "越权词缀", "category": "general", "positive": "cel shading"}, 404),
+    ("DELETE", "/api/projects/{p}/knowledge/affixes/{x}", None, 404),
+    ("GET", "/api/projects/{p}/knowledge/consistency", None, 404),
+    ("POST", "/api/projects/{p}/knowledge/consistency/scan", None, 404),
+    ("POST", "/api/projects/{p}/knowledge/consistency/{x}/resolve",
+     {"action": "adopt"}, 404),
+    # ---------- M4：SSE 实时状态流与历史废片安全清理（GC） ----------
+    ("GET", "/api/events/stream?once=1", None, 200),
+    ("GET", "/api/system/gc-preview", None, 403),
+    ("POST", "/api/system/gc-execute", {}, 403),
 ]
 
 # auth 四条与 health 不参与"匿名 401"这张表，单独测

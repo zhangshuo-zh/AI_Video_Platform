@@ -255,3 +255,66 @@ class JobsCrudMixin:
             return "0", []
         marks = ",".join("?" for _ in project_ids)
         return f"project_id IN ({marks})", list(project_ids)
+
+    def gc_reference_snapshot(self, project_id: int | None = None) -> dict:
+        """收集历史废片 GC 所需的作业清单与全库受保护（已签字/最新成功/在用）作业 ID。"""
+        import re
+
+        with get_conn() as conn:
+            if project_id is None:
+                job_rows = conn.execute(
+                    """SELECT id, project_id, shot_id, capability, kind, status,
+                              created_at, result_paths_json
+                         FROM job
+                        ORDER BY id DESC"""
+                ).fetchall()
+            else:
+                job_rows = conn.execute(
+                    """SELECT id, project_id, shot_id, capability, kind, status,
+                              created_at, result_paths_json
+                         FROM job
+                        WHERE project_id = ?
+                        ORDER BY id DESC""",
+                    (project_id,),
+                ).fetchall()
+
+            protected: set[int] = set()
+            for r in job_rows:
+                if r["status"] in ("queued", "starting", "running",
+                                   "cancel_requested", "needs_attention"):
+                    protected.add(int(r["id"]))
+
+            for sql in (
+                "SELECT MAX(id) FROM job WHERE status = 'succeeded' AND shot_id IS NOT NULL "
+                "GROUP BY project_id, shot_id, capability",
+                "SELECT MAX(id) FROM job WHERE status = 'succeeded' AND shot_id IS NULL "
+                "GROUP BY project_id, capability, kind, input_refs_json",
+                "SELECT DISTINCT target_id FROM review_item "
+                "WHERE target_kind = 'job' AND decision = 'approved'",
+                "SELECT DISTINCT job_id FROM audio_clip WHERE job_id IS NOT NULL",
+                "SELECT DISTINCT job_id FROM composition WHERE job_id IS NOT NULL",
+                "SELECT DISTINCT n.job_id FROM pipeline_node_run n "
+                "JOIN pipeline_run r ON r.id = n.run_id "
+                "WHERE n.job_id IS NOT NULL AND r.cancelled = 0 AND r.finished_at IS NULL",
+                "SELECT DISTINCT job_id FROM extraction_run WHERE job_id IS NOT NULL",
+            ):
+                for row in conn.execute(sql).fetchall():
+                    if row[0] is not None:
+                        protected.add(int(row[0]))
+
+            job_prefix_re = re.compile(r"(?:^|/|jobs/)(\d+)/")
+            ref_texts: builtins.list[str] = []
+            for row in conn.execute(
+                "SELECT first_frame_image, last_frame_image FROM shot"
+            ).fetchall():
+                ref_texts.append(str(row[0] or ""))
+                ref_texts.append(str(row[1] or ""))
+            for row in conn.execute(
+                "SELECT ref_images FROM asset UNION ALL SELECT ref_images FROM asset_variant"
+            ).fetchall():
+                ref_texts.append(str(row[0] or ""))
+            for txt in ref_texts:
+                for m in job_prefix_re.findall(txt):
+                    protected.add(int(m))
+
+        return {"jobs": job_rows, "protected_ids": protected}

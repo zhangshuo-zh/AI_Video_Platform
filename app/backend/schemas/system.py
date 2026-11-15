@@ -24,3 +24,35 @@ class ProviderManifestOut(BaseModel):
     manifest_version: int | str = 1
     adapters: Any = None
     capabilities: Any = None
+
+
+class GcItemOut(BaseModel):
+    job_id: int
+    project_id: int
+    capability: str
+    status: str
+    created_at: str
+    bytes: int
+    files: list[str] = []
+    reason: str
+
+
+class GcPreviewOut(BaseModel):
+    project_id: int | None = None
+    candidate_count: int
+    reclaimable_bytes: int
+    protected_count: int
+    items: list[GcItemOut] = []
+
+
+class GcExecuteIn(BaseModel):
+    project_id: int | None = None
+    job_ids: list[int] | None = None
+
+
+class GcExecuteOut(BaseModel):
+    deleted_jobs: int
+    deleted_files: int
+    reclaimed_bytes: int
+    skipped_job_ids: list[int] = []
+

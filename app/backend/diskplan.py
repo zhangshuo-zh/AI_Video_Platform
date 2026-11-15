@@ -20,8 +20,12 @@
 """
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import jobfiles
 from config import DISK_MIN_FREE_GB
+from paths import within
 from repositories.jobs import jobs as job_repo
 
 # 样本条数上限：估算要的是"这个项目的典型大小"，取最近几条就够，
@@ -124,3 +128,132 @@ def disk_readout(project_id: int, *, shots_missing: int,
                    compose=sizes["compose"], free_bytes=usage.free if usage else None)
     est["sentence"] = sentence(est)
     return est
+
+
+def _job_reclaimable_files(job_id: int) -> tuple[int, list[Path]]:
+    """列出某条历史作业 outputs/ 下可安全清理的媒体/临时文件与总字节数（不动 run.log）。"""
+    jdir = jobfiles.job_dir(job_id)
+    outputs_dir = jdir / "outputs"
+    if not outputs_dir.is_dir() or not within(jobfiles.JOBS_DIR, outputs_dir):
+        return 0, []
+    total = 0
+    files: list[Path] = []
+    for p in sorted(outputs_dir.rglob("*")):
+        if not p.is_file() or not within(outputs_dir, p):
+            continue
+        try:
+            total += int(p.stat().st_size)
+            files.append(p)
+        except OSError:
+            continue
+    return total, files
+
+
+def _gc_scan(project_id: int | None = None) -> tuple[list[dict], int, dict[int, list[Path]]]:
+    snap = job_repo.gc_reference_snapshot(project_id)
+    protected: set[int] = snap["protected_ids"]
+    items: list[dict] = []
+    file_map: dict[int, list[Path]] = {}
+    protected_count = 0
+
+    for row in snap["jobs"]:
+        jid = int(row["id"])
+        if jid in protected:
+            protected_count += 1
+            continue
+        size, files = _job_reclaimable_files(jid)
+        if not files:
+            continue
+        status = str(row["status"])
+        if status == "failed":
+            reason = "失败历史作业残留产物"
+        elif status == "cancelled":
+            reason = "已取消作业残留产物"
+        else:
+            reason = "已被更新版本取代且未签字的冗余废片"
+        base_out = jobfiles.job_dir(jid) / "outputs"
+        rel_files = []
+        for p in files[:8]:
+            try:
+                rel_files.append(str(p.relative_to(base_out)))
+            except ValueError:
+                rel_files.append(p.name)
+        items.append({
+            "job_id": jid,
+            "project_id": int(row["project_id"]),
+            "capability": str(row["capability"]),
+            "status": status,
+            "created_at": str(row["created_at"]),
+            "bytes": size,
+            "files": rel_files,
+            "reason": reason,
+        })
+        file_map[jid] = files
+    return items, protected_count, file_map
+
+
+def gc_preview(project_id: int | None = None) -> dict:
+    """只读预览可释放的历史废片清单与字节数；严格跳过最新成功、已签字及关联产物。"""
+    items, protected_count, _ = _gc_scan(project_id)
+    return {
+        "project_id": project_id,
+        "candidate_count": len(items),
+        "reclaimable_bytes": sum(it["bytes"] for it in items),
+        "protected_count": protected_count,
+        "items": items,
+    }
+
+
+def gc_execute(*, project_id: int | None = None, job_ids: list[int] | None = None) -> dict:
+    """确认清理未受保护的历史废片文件（不动数据库审计行与受保护资产）。"""
+    items, _, file_map = _gc_scan(project_id)
+    item_by_id = {int(it["job_id"]): it for it in items}
+    if job_ids is None:
+        target_ids = [int(it["job_id"]) for it in items]
+        skipped: list[int] = []
+    else:
+        wanted = []
+        seen: set[int] = set()
+        for raw in job_ids:
+            jid = int(raw)
+            if jid not in seen:
+                seen.add(jid)
+                wanted.append(jid)
+        target_ids = [jid for jid in wanted if jid in item_by_id]
+        skipped = [jid for jid in wanted if jid not in item_by_id]
+
+    deleted_jobs = 0
+    deleted_files = 0
+    reclaimed_bytes = 0
+    for jid in target_ids:
+        files = file_map.get(jid, [])
+        job_freed = 0
+        job_files = 0
+        outputs_dir = jobfiles.job_dir(jid) / "outputs"
+        for p in files:
+            if not within(outputs_dir, p):
+                continue
+            try:
+                sz = int(p.stat().st_size)
+                p.unlink(missing_ok=True)
+                job_freed += sz
+                job_files += 1
+            except OSError:
+                continue
+        if job_files > 0:
+            deleted_jobs += 1
+            deleted_files += job_files
+            reclaimed_bytes += job_freed
+            # 清空已无文件的子目录，但保留 job 目录与 run.log
+            if outputs_dir.is_dir():
+                try:
+                    if not any(outputs_dir.rglob("*")):
+                        shutil.rmtree(outputs_dir, ignore_errors=True)
+                except OSError:
+                    pass
+    return {
+        "deleted_jobs": deleted_jobs,
+        "deleted_files": deleted_files,
+        "reclaimed_bytes": reclaimed_bytes,
+        "skipped_job_ids": skipped,
+    }

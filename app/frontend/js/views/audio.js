@@ -17,7 +17,7 @@ const TABS = [
   { key: 'music', label: '音乐管理', kinds: ['music'],
     hint: '一集可以有多条音乐；按用途写在文本里，生成时整段送进队列。' },
   { key: 'viseme', label: '口型对齐', kinds: ['dialogue'],
-    hint: '口型是台词的后处理；Rhubarb 适配器尚未接线，这一版只记录素材与占用空间。' },
+    hint: '对口型将已就绪台词与镜头最新画面联动，支持 FFmpeg 音画合成与 Mock 全链校验，提交到统一队列。' },
   { key: 'sfx', label: '音效管理', kinds: ['sfx'],
     hint: '环境音与音效还没有可核对的自托管适配器，这一档标为实验态：能登记，不能提交。' },
 ];
@@ -103,9 +103,11 @@ export default {
               ? `<button class="btn sm" disabled title="${escapeHtml(cap.why)}">送进队列（未接线）</button>`
               : `<button class="btn sm primary" data-audio-submit="${c.id}">送进队列</button>`;
           })()}
-          ${tab === 2 && c.status === 'ready'
-            ? `<button class="btn sm" disabled title="${escapeHtml(capOf('lipsync')?.why
-                || '口型执行未接线')}">生成口型</button>` : ''}
+          ${(tab === 0 || tab === 2) && canWrite && c.status === 'ready'
+            ? (c.shot_id
+              ? `<button class="btn sm" data-audio-lipsync="${c.id}">生成对口型</button>`
+              : (tab === 2 ? '<button class="btn sm" disabled title="需先关联到具体分镜才能生成对口型">生成对口型</button>' : ''))
+            : ''}
           ${canWrite ? `<button class="btn sm danger" data-audio-del="${c.id}">删除</button>` : ''}
         </td>
       </tr>`;
@@ -283,6 +285,26 @@ export default {
           refresh();
           return;
         }
+        refresh();
+      });
+    });
+    root.querySelectorAll('[data-audio-lipsync]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        audioNotice = ''; audioNoticeKey = '';
+        let out = null;
+        try {
+          out = await api.submitAudioLipSync(Number(btn.dataset.audioLipsync));
+        } catch (e) {
+          audioNotice = `生成对口型失败：${e.message || e}`;
+          audioNoticeKey = noticeKeyOf(store.currentId, currentSubTab('audio', TABS));
+          btn.disabled = false;
+          refresh();
+          return;
+        }
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: `对口型作业已入队（#${out.job_id}）`, kind: 'ok' },
+        }));
         refresh();
       });
     });

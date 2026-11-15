@@ -308,3 +308,129 @@ def audio_batch_tts(project_id: int, episode_id: int, user: dict, *,
         "voice_bindings": voice_bindings,
         "warnings": warnings,
     }
+
+
+def _shot_latest_media(shot_id: int) -> tuple[str, str]:
+    """返回某镜最新一条已成功产出的视频相对路径或图像相对路径。"""
+    video_jobs = job_repo.list(None, shot_id=shot_id, capability="video",
+                               status="succeeded", limit=5)
+    for vj in video_jobs:
+        try:
+            paths = json.loads(vj["result_paths_json"] or "[]")
+        except ValueError:
+            paths = []
+        if paths and str(paths[0]).strip():
+            return "video", str(paths[0]).strip()
+    shot = shots.get(shot_id)
+    if shot is not None and str(shot["first_frame_image"] or "").strip():
+        return "image", str(shot["first_frame_image"]).strip()
+    img_jobs = job_repo.list(None, shot_id=shot_id, capability="image",
+                             status="succeeded", limit=5)
+    for ij in img_jobs:
+        try:
+            paths = json.loads(ij["result_paths_json"] or "[]")
+        except ValueError:
+            paths = []
+        if paths and str(paths[0]).strip():
+            return "image", str(paths[0]).strip()
+    return "", ""
+
+
+def audio_lip_sync(
+    clip,
+    user: dict,
+    *,
+    shot_id: int | None = None,
+    execution_mode: str | None = None,
+    provider_code: str | None = None,
+    model_code: str | None = None,
+    prompt: str = "",
+) -> dict:
+    """把已就绪配音提交为视频对口型任务，统一进入 Job 队列。"""
+    clip = audio_sync(clip)
+    if clip["status"] != "ready" or not str(clip["path"] or "").strip():
+        raise AudioInvalid("台词音频尚未生成就绪，请先完成配音后再发起对口型")
+
+    target_shot_id = shot_id if shot_id is not None else clip["shot_id"]
+    if target_shot_id is None:
+        raise AudioInvalid("请先为该音频绑定所属分镜，或在请求中指定 shot_id")
+    shot = shots.get(int(target_shot_id))
+    if shot is None:
+        raise AudioInvalid("指定的分镜不存在")
+    ep = episodes.get(int(shot["episode_id"]))
+    if ep is None or int(ep["project_id"]) != int(clip["project_id"]):
+        raise AudioInvalid("指定分镜不属于该音频所在项目")
+
+    audio_path = str(clip["path"]).strip()
+    use_provider = (provider_code or "").strip()
+    use_model = (model_code or "").strip()
+    use_mode = execution_mode
+
+    src_kind, src_path = _shot_latest_media(int(target_shot_id))
+    if use_provider == "mock":
+        use_mode = "local"
+        use_model = use_model or "mock-1"
+        src_kind = src_kind or "mock"
+        params: dict = {
+            "media": "mp4",
+            "sleep": 0.05,
+        }
+    elif use_provider and use_provider != "ffmpeg":
+        if not src_path:
+            raise AudioInvalid("该分镜尚未生成可用视频或首帧图，无法对口型")
+        params = {
+            "operation": "lip_sync",
+            "clip_id": int(clip["id"]),
+            "shot_id": int(target_shot_id),
+            "audio_path": audio_path,
+            "source_video": src_path if src_kind == "video" else "",
+            "source_image": src_path if src_kind == "image" else "",
+        }
+    else:
+        if not src_path:
+            raise AudioInvalid("该分镜尚未生成可用视频或首帧图，无法对口型")
+        use_mode = "local"
+        use_provider = "ffmpeg"
+        use_model = "ffmpeg-lipsync-1"
+        params = {
+            "operation": "lip_sync",
+            "clip_id": int(clip["id"]),
+            "shot_id": int(target_shot_id),
+            "audio_path": audio_path,
+            "source_video": src_path if src_kind == "video" else "",
+            "source_image": src_path if src_kind == "image" else "",
+        }
+
+    text_hint = (prompt or str(clip["text"] or "")).strip()[:160]
+    payload = SimpleNamespace(
+        project_id=int(clip["project_id"]),
+        episode_id=int(shot["episode_id"]),
+        shot_id=int(target_shot_id),
+        capability="video",
+        execution_mode=use_mode,
+        provider_code=use_provider,
+        model_code=use_model,
+        prompt=f"对口型（{clip['speaker'] or '配音'}）：{text_hint}",
+        params=params,
+        input_refs=[
+            {"clip_id": int(clip["id"]), "shot_id": int(target_shot_id), "operation": "lip_sync"},
+        ],
+        estimate=None,
+        user_confirmed_cloud=False,
+        priority=0,
+        idempotency_key=None,
+    )
+    try:
+        job = submit_job(payload, user["id"])
+    except JobInvalid as exc:
+        raise AudioInvalid(str(exc)) from exc
+    return {
+        "clip_id": int(clip["id"]),
+        "shot_id": int(target_shot_id),
+        "job_id": int(job["id"]),
+        "job_status": str(job["status"]),
+        "provider_code": str(job["provider_code"]),
+        "model_code": str(job["model_code"]),
+        "source_kind": src_kind or "mock",
+        "audio_path": audio_path,
+    }

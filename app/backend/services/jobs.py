@@ -302,6 +302,15 @@ def submit_job(payload, created_by: int | None) -> sqlite3.Row:
             raise JobInvalid("；".join(errors))
         mode = "local"
         adapter_version = "mock"
+    elif provider == "ffmpeg":
+        if mode not in (None, "local"):
+            raise JobInvalid("FFmpeg 只能走本地执行")
+        if capability != "video" or model != "ffmpeg-lipsync-1":
+            raise JobInvalid("FFmpeg 仅支持 video/ffmpeg-lipsync-1 对口型任务")
+        if str(payload.params.get("operation") or "") != "lip_sync" or not str(payload.params.get("audio_path") or "").strip():
+            raise JobInvalid("对口型任务缺少 operation=lip_sync 或 audio_path")
+        mode = "local"
+        adapter_version = "ffmpeg"
     elif explicit:
         if not (mode and provider and model):
             raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")

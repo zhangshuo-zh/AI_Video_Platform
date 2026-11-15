@@ -418,14 +418,41 @@ _COMFYUI = Adapter(
            "Comfy Desktop 1.1.8（/Applications/Comfy Desktop.app，bundle "
            "com.todesktop.241012ess7yxs0e），默认端口 8188",
     aliases=("comfy", "comfy-desktop"),
-    params_source="",       # 空＝参数未核验；workflow 契约还没有，平台不猜它收什么
+    params_source="ComfyUI /prompt API Workflow + KSampler/CLIPTextEncode/LoadImage 参数注入",
     home_env="",
-    note="**只接探测，不接执行。** 平台里没有 ComfyUI 的 workflow 契约："
-         "它收的是一整张参数化节点图，不是一张平坦参数表，所以拿不出可信的"
-         "参数白名单，也就不会有一个「提交」入口。这一档存在的意义只有一条——"
-         "在引擎管理里看得见它通不通。接执行是独立工作包（要定 workflow 模板、"
-         "参数注入点与产物取回），不是加几行配置。",
-    models=(),          # 空：没有已核验的参数表，就不该有"可选的模型档"
+    note="支持参数化 ComfyUI API Workflow JSON 模板执行：可传入自定义工作流节点图"
+         "（支持 {{prompt}} / {{negative_prompt}} / {{seed}} / {{steps}} / {{width}} / "
+         "{{height}} / {{cfg}} / {{denoise}} / {{checkpoint}} / {{image}} 占位符）"
+         "或使用默认标准文生图/图生图骨架，经由 /prompt → /history → /view 回收产物。",
+    models=(
+        ModelSpec(
+            code="comfyui-workflow",
+            label="ComfyUI API Workflow（节点图模板）",
+            note="提交参数化节点图给 ComfyUI；workflow_json 留空时自动生成默认节点图。",
+            params=(
+                Param("workflow_json", "str", "",
+                      note="ComfyUI API 格式 JSON 节点图模板（支持占位符注入）",
+                      required=False),
+                Param("checkpoint", "str", "",
+                      note="CheckpointLoaderSimple.ckpt_name 覆盖名",
+                      required=False),
+                Param("width", "int", 1024, 256, 4096, 8),
+                Param("height", "int", 1024, 256, 4096, 8),
+                Param("steps", "int", 20, 1, 150),
+                Param("cfg", "float", 7.0, 0.5, 30.0),
+                Param("seed", "int", None, 0, 2147483647),
+                Param("negative_prompt", "str", "",
+                      note="负向提示词",
+                      required=False),
+                Param("image", "image", None,
+                      note="参考底图（填入时自动切换为 LoadImage 图生图节点图）",
+                      required=False),
+                Param("denoise", "float", 0.75, 0.05, 1.0,
+                      note="图生图重绘强度（KSampler.denoise）",
+                      required=False),
+            ),
+        ),
+    ),
 )
 
 # ---------- 配音 / 音乐：本地 ----------
@@ -617,7 +644,8 @@ ADAPTERS: tuple[Adapter, ...] = (
 # 2026-11-06.2＝智能体中心 A4：新增本地文本腿 ollama（平台第一条 text×local）。
 # 2026-11-13.1＝ComfyUI **只接探测**：新增一条 models=() 的壳，让引擎页看得见它
 #   通不通；没有 workflow 契约，所以不进 runners.build()、不进提交框。
-MANIFEST_VERSION = "2026-11-13.1"
+# 2026-11-16.1＝ComfyUI 接通工作流执行契约（comfyui-workflow）。
+MANIFEST_VERSION = "2026-11-16.1"
 
 # 假适配器只给测试与演示用（config.ALLOW_MOCK 控制），不进清单。
 # 它不执行任何命令，只按参数睡一会儿、写一个文本结果——这样队列语义可以

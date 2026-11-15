@@ -25,13 +25,192 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request
 
 import safenet
 
 POLL_HINT = 600     # 单次本机出图的上限（秒）。远小于 worker 的 7200 作业上限
+
+
+def _comfyui_headers(secret_env: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if secret_env:
+        secret = (os.environ.get(secret_env) or "").strip()
+        if not secret:
+            raise ValueError(f"密钥环境变量 {secret_env} 没配或值为空")
+        headers["Authorization"] = f"Bearer {secret}"
+        headers["x-shared-secret"] = secret
+    return headers
+
+
+def _comfyui_upload_image(endpoint: str, init_path: Path, headers: dict[str, str], timeout: int) -> str:
+    boundary = f"----FastVideoComfy{uuid.uuid4().hex}"
+    content = init_path.read_bytes()
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="image"; filename="{init_path.name}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8")
+    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    body = head + content + tail
+    upload_url = endpoint + "/upload/image"
+    safenet.check_url(upload_url)
+    req = Request(
+        upload_url,
+        data=body,
+        method="POST",
+        headers={**headers, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with safenet.safe_urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return str(data.get("name") or init_path.name)
+
+
+def _comfyui_first_image(history_entry: dict) -> dict | None:
+    outputs = history_entry.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return None
+    for node_out in outputs.values():
+        if not isinstance(node_out, dict):
+            continue
+        imgs = node_out.get("images") or []
+        if imgs and isinstance(imgs[0], dict) and imgs[0].get("filename"):
+            return imgs[0]
+    return None
+
+
+def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Path) -> int:
+    started = time.monotonic()
+    secret_env = (request.get("secret_env") or "").strip()
+    timeout = int(request.get("timeout") or 120)
+    poll_timeout = float(request.get("poll_timeout") or 300)
+    poll_interval = max(0.02, float(request.get("poll_interval") or 0.8))
+    if not endpoint:
+        return _finish(receipt_path, ok=False, code="endpoint_missing",
+                       message="没有可用的 ComfyUI 端点（实例没登记或已停用）")
+    workflow = request.get("workflow")
+    if not isinstance(workflow, dict) or not workflow:
+        return _finish(receipt_path, ok=False, code="workflow_missing",
+                       message="ComfyUI workflow 定义为空")
+    try:
+        headers = _comfyui_headers(secret_env)
+    except ValueError as exc:
+        return _finish(receipt_path, ok=False, code="secret_env_missing", message=str(exc))
+
+    init_image = str(request.get("init_image") or "").strip()
+    if init_image:
+        init_path = Path(init_image)
+        if not init_path.is_file():
+            return _finish(receipt_path, ok=False, code="init_image_missing",
+                           message="参考底图不存在", endpoint=endpoint)
+        try:
+            uploaded_name = _comfyui_upload_image(endpoint, init_path, headers, timeout)
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            return _finish(receipt_path, ok=False, code="comfyui_upload_failed",
+                           message=f"上传参考底图到 ComfyUI 失败：{exc}", endpoint=endpoint)
+        for node in workflow.values():
+            if not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs")
+            if isinstance(inputs, dict) and node.get("class_type") == "LoadImage":
+                if inputs.get("image") in (None, "", "__UPLOADED_IMAGE__"):
+                    inputs["image"] = uploaded_name
+                elif "{{image}}" in str(inputs.get("image")):
+                    inputs["image"] = uploaded_name
+
+    prompt_url = endpoint + "/prompt"
+    try:
+        safenet.check_url(prompt_url)
+    except safenet.UnsafeTarget as exc:
+        return _finish(receipt_path, ok=False, code="unsafe_target", message=str(exc), endpoint=endpoint)
+    payload_bytes = json.dumps(
+        {"prompt": workflow, "client_id": request.get("client_id") or "fastvideo"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    try:
+        req = Request(
+            prompt_url,
+            data=payload_bytes,
+            method="POST",
+            headers={**headers, "Content-Type": "application/json"},
+        )
+        with safenet.safe_urlopen(req, timeout=timeout) as resp:
+            submitted = json.loads(resp.read().decode("utf-8", "replace"))
+    except (HTTPError, URLError, OSError, ValueError) as exc:
+        return _finish(receipt_path, ok=False, code="comfyui_submit_failed",
+                       message=f"提交 ComfyUI /prompt 失败：{exc}", endpoint=endpoint)
+
+    prompt_id = str(submitted.get("prompt_id") or "").strip()
+    if not prompt_id:
+        return _finish(receipt_path, ok=False, code="comfyui_no_prompt_id",
+                       message="ComfyUI /prompt 未返回 prompt_id", endpoint=endpoint)
+
+    history_url = f"{endpoint}/history/{prompt_id}"
+    try:
+        safenet.check_url(history_url)
+    except safenet.UnsafeTarget as exc:
+        return _finish(receipt_path, ok=False, code="unsafe_target", message=str(exc), endpoint=endpoint)
+
+    deadline = time.monotonic() + poll_timeout
+    image_meta: dict | None = None
+    while time.monotonic() <= deadline:
+        try:
+            with safenet.safe_urlopen(Request(history_url, headers=headers), timeout=timeout) as resp:
+                history_raw = json.loads(resp.read().decode("utf-8", "replace"))
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            return _finish(receipt_path, ok=False, code="comfyui_history_failed",
+                           message=f"查询 ComfyUI /history 失败：{exc}", prompt_id=prompt_id)
+        entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
+        if isinstance(entry, dict):
+            status_obj = entry.get("status") or {}
+            if status_obj.get("status_str") == "error":
+                return _finish(receipt_path, ok=False, code="comfyui_exec_error",
+                               message="ComfyUI 工作流执行失败", prompt_id=prompt_id)
+            image_meta = _comfyui_first_image(entry)
+            if image_meta is not None:
+                break
+        time.sleep(poll_interval)
+
+    if image_meta is None:
+        return _finish(receipt_path, ok=False, code="comfyui_timeout",
+                       message="等待 ComfyUI 出图超时", prompt_id=prompt_id)
+
+    view_qs = urlencode({
+        "filename": str(image_meta.get("filename") or ""),
+        "subfolder": str(image_meta.get("subfolder") or ""),
+        "type": str(image_meta.get("type") or "output"),
+    })
+    view_url = f"{endpoint}/view?{view_qs}"
+    try:
+        safenet.check_url(view_url)
+        with safenet.safe_urlopen(Request(view_url, headers=headers), timeout=timeout) as resp:
+            blob = resp.read()
+    except (HTTPError, URLError, OSError, ValueError) as exc:
+        return _finish(receipt_path, ok=False, code="comfyui_view_failed",
+                       message=f"回收 ComfyUI 图像失败：{exc}", prompt_id=prompt_id)
+
+    if len(blob) < 64:
+        return _finish(receipt_path, ok=False, code="empty_image",
+                       message=f"ComfyUI 回收图像只有 {len(blob)} 字节", prompt_id=prompt_id)
+    tmp = out_path.with_suffix(out_path.suffix + ".part")
+    tmp.write_bytes(blob)
+    tmp.replace(out_path)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    return _finish(
+        receipt_path,
+        ok=True,
+        code="",
+        message="",
+        engine="comfyui",
+        prompt_id=prompt_id,
+        latency_ms=latency_ms,
+        bytes=len(blob),
+        filename=str(image_meta.get("filename") or ""),
+    )
 
 
 def main() -> int:
@@ -46,9 +225,12 @@ def main() -> int:
         return 2
 
     endpoint = (request.get("endpoint") or "").rstrip("/")
-    path = request.get("path") or "/sdapi/v1/txt2img"
     out_path = Path(request["output"])
     receipt_path = Path(request["receipt"])
+    if request.get("engine") == "comfyui":
+        return _run_comfyui(request, endpoint, out_path, receipt_path)
+
+    path = request.get("path") or "/sdapi/v1/txt2img"
     body = dict(request.get("body") or {})
     secret_env = (request.get("secret_env") or "").strip()
 

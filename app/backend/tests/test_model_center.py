@@ -739,8 +739,8 @@ def test_未接入引擎单独列出不计入引擎数(as_admin, clean_registrat
     assert any(i["provider"] == "comfyui" for i in body["items"]), \
         "ComfyUI 必须在清单侧看得见，否则引擎页连它通不通都问不了"
     import runners
-    assert not runners.has_branch("image", "comfyui"), \
-        "ComfyUI 没有 workflow 契约：一旦有了执行分支，这条断言就该翻面"
+    assert runners.has_branch("image", "comfyui"), \
+        "ComfyUI 已接入 workflow 契约与执行分支"
 
     # Draw Things 是反方向的那半件事：真接进来了，就必须在清单里
     assert any(i["provider"] == "draw_things" for i in body["items"])
