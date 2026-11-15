@@ -1022,6 +1022,25 @@ def test_模型中心核心表格统一共享左侧微光聚焦指示条与薄�
     assert ".policy:hover td:first-child::before" in css, "调用策略表未配置悬停指示条"
     assert "#repo-rows tr:hover td:first-child::before" in css, "模型仓库未配置悬停指示条"
 
+def test_帮助提示浮层不撑爆窄屏横向布局():
+    """帮助提示气泡（.tip-pop 与 [data-tip]::before）未悬停时必须脱离布局流（display:none），
+    窄屏（max-width:640px）下贴底视口停靠（position:fixed），避免把 380px 页面撑出横向溢出。
+    """
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+    pop_rule = css.split(".help-tip .tip-pop{", 1)[1].split("}", 1)[0]
+    pop_hover = css.split(".help-tip:hover .tip-pop{", 1)[1].split("}", 1)[0]
+    attr_rule = css.split(".help-tip[data-tip]:not(:has(.tip-pop))::before{", 1)[1].split("}", 1)[0]
+    attr_hover = css.split(".help-tip[data-tip]:not(:has(.tip-pop)):hover::before{", 1)[1].split("}", 1)[0]
+    assert "display:none" in pop_rule, ".help-tip .tip-pop 未悬停时未设为 display:none"
+    assert "display:block" in pop_hover, ".help-tip:hover .tip-pop 悬停时未恢复 display:block"
+    assert "display:none" in attr_rule, "[data-tip]::before 未悬停时未设为 display:none"
+    assert "display:block" in attr_hover, "[data-tip]:hover::before 悬停时未恢复 display:block"
+
+    narrow = css.split("@media (max-width:640px){", 1)[1]
+    assert ".help-tip .tip-pop" in narrow and "position:fixed" in narrow, "窄屏未将 .tip-pop 转为视口安全停靠"
+
 def test_带布局属性的排版类不许直接用在单元格上():
     """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
 
