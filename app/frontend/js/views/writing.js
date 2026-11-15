@@ -271,7 +271,7 @@ async function renderDocs(tab, subRow) {
       <div class="right">${subRow}</div>
     </div>
 
-    <div style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start">
+    <div class="as-split" style="display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start">
       <div class="card tree">
         <div class="grp" style="display:flex;justify-content:space-between;align-items:center">
           <span>${KIND_LABEL[kind]}文档 · ${docs.length} 份</span>
@@ -1570,7 +1570,7 @@ async function renderShots(tab, subRow) {
         <div class="right"><span class="chip plain">${shots.length} 镜</span>${subRow}</div>
       </div>
 
-      <div style="display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;align-items:start">
+      <div class="as-split" style="display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;align-items:start">
         <div class="card tree">
           <div class="grp">创作单元 · 建与删都在这一栏</div>
           ${epList}

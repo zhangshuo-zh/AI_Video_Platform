@@ -1041,6 +1041,26 @@ def test_帮助提示浮层不撑爆窄屏横向布局():
     narrow = css.split("@media (max-width:640px){", 1)[1]
     assert ".help-tip .tip-pop" in narrow and "position:fixed" in narrow, "窄屏未将 .tip-pop 转为视口安全停靠"
 
+
+def test_移动端与平板窄屏排版及Safari防放大适配():
+    """保障 iPhone/iPad 窄屏下的基础可用性：
+    1. 创作中心两处双栏容器挂了 .as-split，<=820px 自动收成单列，不挤爆右侧编辑器与分镜卡；
+    2. 模型中心新增实例四列面板 .mc-add-inst-grid 配齐 <=860px（2 列）与 <=640px（1 列）断点；
+    3. <=640px 下表单输入控件抬升至 16px，避免 iOS Safari 聚焦自动放大页面。
+    """
+    from pathlib import Path
+
+    fe = Path(__file__).resolve().parents[2] / "frontend"
+    css = (fe / "css" / "app.css").read_text(encoding="utf-8")
+    writing_js = (fe / "js" / "views" / "writing.js").read_text(encoding="utf-8")
+
+    assert writing_js.count('class="as-split"') >= 2, "writing.js 两处双栏未挂 .as-split 响应类"
+    assert ".as-split{grid-template-columns:minmax(0,1fr)!important}" in css, "缺少 <=820px 的 .as-split 单列规则"
+    assert "@media (max-width:860px){.mc-add-inst-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}" in css
+    assert "@media (max-width:640px){.mc-add-inst-grid{grid-template-columns:minmax(0,1fr)}}" in css
+    narrow_640 = css.split("@media (max-width:640px){", 1)[1].split("/* ---------- W12", 1)[0]
+    assert "font-size:16px" in narrow_640, "<=640px 缺少 16px 输入控件防 iOS Safari 自动放大规则"
+
 def test_带布局属性的排版类不许直接用在单元格上():
     """把「哪些类能挂 <td> 上」判成一条可执行的规则，而不是只认识 .t-desc。
 
