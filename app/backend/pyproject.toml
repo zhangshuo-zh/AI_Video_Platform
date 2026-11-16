@@ -59,10 +59,15 @@ python_version = "3.12"
 files = ["."]
 # 仅排除测试、运行数据、迁移脚本与虚拟环境；其余 Python 文件均为业务源码。
 exclude = ['(^|/)(tests|data|migrations|\.venv|__pycache__)(/|$)']
-ignore_missing_imports = true
 # 不要求"每个函数都必须有注解"：这是渐进式，先守住已有的注解别写错。
 # 哪天要收紧，改 `disallow_untyped_defs = true` 并单开一轮补注解。
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unused_configs = true
+
+# 仅补帧独立子进程使用这些可选模型环境依赖，Web/Worker 基础环境不安装它们。
+# 业务模块拼写错误或内部缺失导入仍须报错，不使用全局 ignore_missing_imports。
+[[tool.mypy.overrides]]
+module = ["imageio", "imageio.v3", "numpy", "fastvideo.mlx_runtime.rife_interp"]
+ignore_missing_imports = true

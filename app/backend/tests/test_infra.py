@@ -1630,6 +1630,7 @@ def test_mypy_门禁真的在检查而不是空转():
     assert cfg["files"] == ["."], "全仓类型门禁必须递归覆盖业务目录"
     assert cfg.get("follow_imports", "normal") == "normal", "不允许静默或跳过跨模块错误"
     assert not cfg.get("ignore_errors", False)
+    assert not cfg.get("ignore_missing_imports", False), "内部缺失导入不允许全局忽略"
     assert cfg["check_untyped_defs"] is True
     for override in cfg.get("overrides", []):
         assert not override.get("ignore_errors", False)
@@ -1649,7 +1650,7 @@ def test_mypy_门禁真的在检查而不是空转():
     runtime_probe = root / "_mypy_runtime_probe_tmp.py"
     try:
         probe.write_text('x: int = "这明明是字符串"\n', encoding="utf-8")
-        runtime_probe.write_text('def untyped():\n    value: int = "wrong"\n    return value\n', encoding="utf-8")
+        runtime_probe.write_text('import _round3_missing_internal_module\ndef untyped():\n    value: int = "wrong"\n    return value\n', encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-m", "mypy"],
             cwd=root, capture_output=True, text=True, timeout=300)
@@ -1662,6 +1663,7 @@ def test_mypy_门禁真的在检查而不是空转():
             f"mypy 报了错但不是探针文件，说明它没在查 schemas/：{proc.stdout[:300]}")
         assert "_mypy_runtime_probe_tmp.py" in (proc.stdout + proc.stderr), (
             "根目录未标注函数体的类型错误没有被检出")
+        assert "_round3_missing_internal_module" in proc.stdout, "业务缺失导入被静默忽略"
     finally:
         probe.unlink(missing_ok=True)
         runtime_probe.unlink(missing_ok=True)

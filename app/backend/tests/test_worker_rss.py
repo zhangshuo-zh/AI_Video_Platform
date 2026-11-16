@@ -109,3 +109,11 @@ def test_统计走的是同一条采样口径(as_role, fresh_project):
     stats = c.get(f"/api/projects/{pid}/production?episode_id={eid}").json()["stats"]
     assert stats["memory"]["by_capability"]["video"]["peak_gb"] == 4.5
     assert stats["memory"]["by_capability"]["video"]["sampled_jobs"] == 1
+
+
+def test_ps缺失时内存采样明确无读数(monkeypatch):
+    from worker_pkg import rss
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("synthetic missing ps")
+    monkeypatch.setattr(rss.subprocess, "run", missing)
+    assert worker._ps_rows() == []

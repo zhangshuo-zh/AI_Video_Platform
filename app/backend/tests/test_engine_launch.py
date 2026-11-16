@@ -42,6 +42,8 @@ def spawns(monkeypatch):
         return _Fake()
 
     monkeypatch.setattr(engine_launch.subprocess, "Popen", fake_popen)
+    # 单元测试同时替换命令发现，不能假定 macOS open 或 ollama 已安装。
+    monkeypatch.setattr(engine_launch.shutil, "which", lambda cmd: f"/test/bin/{cmd}")
     return calls
 
 
@@ -145,9 +147,10 @@ def test_起了但没答话要说清楚不是能用了(monkeypatch, spawns, offl
     assert "API Server" in result.message, result.message
 
 
-def test_命令没装时给出能动手的提示而不是抛栈(monkeypatch, spawns):
+@pytest.mark.parametrize("engine_code", ["ollama", "draw_things", "comfyui"])
+def test_命令没装时给出能动手的提示而不是抛栈(monkeypatch, spawns, offline, engine_code):
     monkeypatch.setattr(engine_launch.shutil, "which", lambda _: None)
-    result = engine_launch.launch("ollama", SLOT)
+    result = engine_launch.launch(engine_code, SLOT)
     assert result.ok is False and result.started is False
     assert "不在 PATH" in result.message, result.message
     assert spawns == [], "命令不在 PATH 上却还是执行了"

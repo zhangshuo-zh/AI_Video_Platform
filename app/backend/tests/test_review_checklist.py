@@ -27,7 +27,7 @@ def _has_ffmpeg() -> bool:
     try:
         subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, check=True)
         return True
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 

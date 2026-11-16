@@ -286,7 +286,7 @@ def _ffmpeg_ok() -> bool:
     try:
         subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, check=True)
         return True
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 

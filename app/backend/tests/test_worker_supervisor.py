@@ -238,7 +238,6 @@ class TestStartStop:
             测试里做不成也不该做。**进程组归属才是那个保证的机制本身**，
             验它比验一个模拟的重启更准。
             """
-            import subprocess
             # 用真 worker.py 起（要真的走 start() 的那条 Popen 分支）
             sup.WORKER_PID.parent.mkdir(parents=True, exist_ok=True)
             if sup.WORKER_PID.exists():
@@ -263,14 +262,8 @@ class TestStartStop:
             assert result["ok"] is True, result
             pid = result["pids"][0]
             try:
-                out = subprocess.run(["ps", "-o", "pgid=,sess=", "-p", str(pid)],
-                                     capture_output=True, text=True, timeout=5)
-                parts = out.stdout.split()
-                assert len(parts) >= 2, f"ps 输出不可解析：{out.stdout!r}"
-                pgid = int(parts[0])
-                # **只断言 pgid**：macOS 的 `ps -o sess=` 恒返回 0（实测），
-                # 拿它当判据会让这条测试在 Mac 上永远红。而"自成进程组"已经是
-                # setsid() 的直接后果——进程组组长必须是自己，这一条就够了。
+                # POSIX 原生接口直接读取进程组，不依赖 ps 列名与跨系统输出格式。
+                pgid = os.getpgid(pid)
                 assert pgid == pid, (
                     f"worker 的进程组 {pgid} 不等于自己的 pid {pid}——"
                     f"没有 setsid，API 退出会把它带走或让它变孤儿")
@@ -305,3 +298,19 @@ class TestEnv:
         monkeypatch.setenv("FASTVIDEO_FASTMETAL_HOME", "/custom/where")
         env = sup._worker_env()
         assert env["FASTVIDEO_FASTMETAL_HOME"] == "/custom/where"
+
+
+@pytest.mark.parametrize("state", ["missing", "timeout", "zombie", "running"])
+def test_外部进程探测缺少ps时保守判活(sup, monkeypatch, state):
+    import subprocess
+    from types import SimpleNamespace
+    monkeypatch.setattr(sup.os, "kill", lambda *_: None)
+    def probe(argv, **kwargs):
+        assert argv[0] == "ps"
+        if state == "missing":
+            raise FileNotFoundError("synthetic missing ps")
+        if state == "timeout":
+            raise subprocess.TimeoutExpired(argv, 3)
+        return SimpleNamespace(stdout="Z" if state == "zombie" else "S")
+    monkeypatch.setattr(sup.subprocess, "run", probe)
+    assert sup._pid_alive(123456789) is (state != "zombie")

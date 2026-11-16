@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ import config
 import runtime
 import runners
 from composition import ffmpeg_runner, interpolate, validators
-from config import FFMPEG_BIN
+from config import FFMPEG_BIN, FFPROBE_BIN
 
 
 def _fake_rife_home(root: Path) -> Path:
@@ -117,6 +118,8 @@ def _timeline(tmp_path: Path, shots: list[tuple[int, str]]) -> dict:
 
 def _stub_build_env(monkeypatch, tmp_path: Path, rates: list[float | None]):
     """把 build() 需要的库与文件都换成假的，只留"帧率怎么定"这一件事。"""
+    # 只验命令构造，不依赖宿主是否安装 FFmpeg；真实片段测试不使用此替身。
+    monkeypatch.setattr(ffmpeg_runner.shutil, "which", lambda cmd: "/test/bin/ffmpeg")
     outputs = tmp_path / "outputs"
     outputs.mkdir(exist_ok=True)
     files = []
@@ -173,6 +176,8 @@ def test_镜头帧率不一致就停下点名(tmp_path, monkeypatch):
 # ---------- post_check 的帧率闸门 ----------
 
 def _clip_at(tmp_path: Path, fps: int) -> Path:
+    if not all(shutil.which(cmd) for cmd in (FFMPEG_BIN, FFPROBE_BIN)):
+        pytest.skip("真实媒体集成测试需要 ffmpeg 与 ffprobe；CI 显式安装")
     path = tmp_path / f"clip{fps}.mp4"
     subprocess.run([FFMPEG_BIN, "-hide_banner", "-y", "-f", "lavfi",
                     "-i", "color=c=red:s=128x96:d=1", "-r", str(fps),
@@ -266,3 +271,10 @@ def test_三个新参数的范围在清单里核过():
     assert adapters.validate_params(adapter, "fastmetal-1.3b-qad",
                                     {"fast_factor": 4}) == [], "4 在范围内应当放行"
     assert adapters.validate_params(adapter, "fastmetal-1.3b-qad", {"fast_factor": 9})
+
+
+def test_未安装ffmpeg时构造前返回明确错误(tmp_path, monkeypatch):
+    from runners import RunnerUnavailable
+    monkeypatch.setattr(ffmpeg_runner.shutil, "which", lambda _: None)
+    with pytest.raises(RunnerUnavailable, match="找不到 ffmpeg"):
+        ffmpeg_runner.build({"model_code": ""}, {}, tmp_path)
