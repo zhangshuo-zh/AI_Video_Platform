@@ -40,6 +40,7 @@ from log import get_logger
 from migrate import migrate
 from repositories.jobs import JobOwnershipLost, jobs
 from worker_pkg.helpers import (
+    _path_for_record,
     _ARGV_TEXT_PREVIEW,
     _CHILD_ENV_DENY,
     _CHILD_ENV_EXACT,
@@ -183,7 +184,7 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     child_rss_kb = 0
     _write(log, "命令：" + json.dumps(_argv_for_record(spec.argv),
                                       ensure_ascii=False))
-    _write(log, "工作目录：" + str(spec.cwd))
+    _write(log, "工作目录：" + _path_for_record(spec.cwd))
     env = _child_env(spec)
     try:
         proc = subprocess.Popen(
@@ -326,6 +327,8 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                     record_composition(job)
                     _write(log, "成片记录：最终产物与 sha256 已回填")
                 except Exception as exc:
+                    # 作业已成功：附加记录失败不能改写终态，单独记录以供修复。
+                    logger.warning("composition_record_failed job=%s error=%s", job["id"], type(exc).__name__)
                     _write(log, f"成片回填未写入：{type(exc).__name__}")
             if job["execution_mode"] != "mock" and job["provider_code"] != "mock":
                 try:
@@ -333,6 +336,8 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                                          f"作业 #{job['id']} 跑通，产物校验通过。")
                     _write(log, "验证记录：真实调用已登记")
                 except Exception as exc:
+                    # 成功产物不因验证登记故障丢失；仅记录异常类型，不自动补签。
+                    logger.warning("validation_record_failed job=%s error=%s", job["id"], type(exc).__name__)
                     _write(log, f"验证记录未写入：{type(exc).__name__}")
         except JobOwnershipLost as exc:
             _write(log, f"状态：本次结果作废，不写库（{exc}）")
@@ -412,6 +417,7 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                                                child_cpu_start, extra=extra),
                           provider_request_id=exc.provider_request_id)
         except Exception as exc:
+            # 单作业顶层：任意适配器故障都必须落终态，避免租约卡住或拖垮后续作业。
             elapsed = int((time.monotonic() - started) * 1000)
             detail = " → ".join(f"{frame.name}:{frame.lineno}"
                                   for frame in traceback.extract_tb(exc.__traceback__, limit=6))
@@ -472,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
                    limits=limits, resources=_node_resources())
     cap = ", ".join(f"{k}={v}" for k, v in sorted(limits["per"].items())) or "默认"
     logger.info("worker_started wid=%s global=%s per=%s", wid, limits["global"], cap)
+    # 每个调度子域独立兜底：某一域的编程错误不能停止其他域或心跳。
+    # 以下捕获统一只记录类型；失败轮次保留现有状态，下一轮重试。
     while not STOP:
         try:
             jobs.recover_stale()

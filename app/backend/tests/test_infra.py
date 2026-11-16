@@ -2239,12 +2239,10 @@ def test_宽泛异常只用于已审计的恢复边界():
         ("agents_pkg/executor.py", "_execute"): 1,
         ("agents_pkg/executor.py", "_record_error"): 1,
         ("agents_pkg/executor.py", "tick"): 1,
-        ("asset_studio_pkg/images.py", "_prepare_generated_image"): 1,
         ("asset_studio_pkg/images.py", "import_generated_image"): 1,
         ("asset_studio_pkg/images.py", "import_generated_image_tx"): 1,
         ("pipeline_pkg/execute.py", "_run_internal_node"): 1,
         ("pipeline_pkg/dispatch.py", "_prefetch_export_probes"): 1,
-        ("worker_pkg/helpers.py", "_child_env"): 1,
         ("services/documents.py", "create_document"): 1,
     }
     found = Counter()

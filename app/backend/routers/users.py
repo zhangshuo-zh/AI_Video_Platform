@@ -163,6 +163,7 @@ def delete_user(user_id: int, payload: UserDeleteIn,
         try:
             users.transfer_and_delete(user_id, payload.transfer_to, [row["id"] for row in owned])
         except Exception as exc:
+            # 跨表操作已回滚，任意故障均需向用户确认账号与项目未变。
             _logger.error("user_transfer_failed error=%s", type(exc).__name__)
             raise HTTPException(
                 status_code=500,
@@ -178,6 +179,7 @@ def delete_user(user_id: int, payload: UserDeleteIn,
             try:
                 delete_project_cascade(row["id"], actor=actor_name(user))
             except Exception as exc:
+                # 跨文件／Git 删除无法整体回滚，任意故障均须报告实际完成数量。
                 _logger.error("user_cascade_failed error=%s", type(exc).__name__)
                 raise HTTPException(
                     status_code=500,

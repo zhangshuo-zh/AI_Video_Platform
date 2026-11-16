@@ -17,6 +17,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from log import get_logger
+
 from config import DB_PATH
 from db import get_conn
 
@@ -220,7 +222,9 @@ def migrate(*, verbose: bool = True) -> int:
                     (version, path.name),
                 )
                 conn.execute("COMMIT")
-            except Exception:
+            except Exception as exc:
+                # 补偿边界必须覆盖编程错误，完成回滚／清理后继续向上传播。
+                get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
                 conn.execute("ROLLBACK")
                 raise
             applied_now += 1

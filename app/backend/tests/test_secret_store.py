@@ -351,3 +351,28 @@ def test_KEK变量名不带任何具体项目或模型名(kek):
     # 正例：确实叫这个，且语义上说得清"平台级"
     assert name == "PLATFORM_SECRET_KEK"
     assert "PLATFORM" in name and "SECRET" in name and "KEK" in name
+
+
+@pytest.mark.parametrize("error", [secret_store.SecretStoreUnavailable("private"),
+    secret_store.InvalidTag("private"), __import__("sqlite3").OperationalError("private")])
+def test_worker密钥预期故障脱敏且不注入(monkeypatch, caplog, error):
+    from types import SimpleNamespace
+    import worker
+    monkeypatch.delenv("ROUND3_TEST_KEY", raising=False)
+    def fail(_):
+        raise error
+    monkeypatch.setattr(secret_store, "resolve", fail)
+    assert "ROUND3_TEST_KEY" not in worker._child_env(SimpleNamespace(pass_env=["ROUND3_TEST_KEY"]))
+    assert type(error).__name__ in caplog.text
+    assert "private" not in caplog.text
+
+
+def test_worker密钥编程错误不伪装为缺失(monkeypatch):
+    from types import SimpleNamespace
+    import worker
+    monkeypatch.delenv("ROUND3_TEST_KEY", raising=False)
+    def fail(_):
+        raise TypeError("injected programming error")
+    monkeypatch.setattr(secret_store, "resolve", fail)
+    with pytest.raises(TypeError, match="programming error"):
+        worker._child_env(SimpleNamespace(pass_env=["ROUND3_TEST_KEY"]))

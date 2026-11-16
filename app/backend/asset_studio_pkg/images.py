@@ -12,6 +12,7 @@ import jobfiles
 import json
 import shutil
 import uuid
+from log import get_logger
 from .policy import IMAGE_CAPABILITY
 from .policy import ImportArtifactBad
 from .policy import ImportImageRejected
@@ -19,6 +20,8 @@ from .policy import ImportUnusable
 from .policy import VariantMissing
 from .generation import _status_label
 
+
+_logger = get_logger(__name__)
 
 
 # ---------- 从成功作业产物导入资产图 ----------
@@ -76,7 +79,8 @@ def _prepare_generated_image(asset, payload) -> dict:
     try:
         shutil.copyfile(source, copied)
         asset_import_recovery.sync_image(copied)
-    except Exception:
+    except OSError as exc:
+        _logger.warning("asset_image_copy_failed job=%s error=%s", job["id"], type(exc).__name__)
         asset_import_recovery.discard(token)
         raise
     return {"_import_marker": token, "asset_id": asset["id"],
@@ -107,7 +111,9 @@ def import_generated_image(asset, payload) -> dict:
     prepared = _prepare_generated_image(asset, payload)
     try:
         return _register_generated_image(prepared)
-    except Exception:
+    except Exception as exc:
+        # 任意登记失败都须撤销已复制的文件／恢复意图，再抛回原错误。
+        _logger.warning("asset_image_register_failed error=%s", type(exc).__name__)
         asset_import_recovery.discard(prepared["_import_marker"])
         raise
 
@@ -130,7 +136,9 @@ def import_generated_image_tx(asset, payload) -> dict:
         try:
             with transaction():
                 out = _register_generated_image(prepared)
-        except Exception:
+        except Exception as exc:
+            # 任意登记失败都须撤销已复制的文件／恢复意图，再抛回原错误。
+            _logger.warning("asset_image_register_failed error=%s", type(exc).__name__)
             asset_import_recovery.discard(prepared["_import_marker"])
             raise
         asset_import_recovery.committed(out.pop("_import_marker"))

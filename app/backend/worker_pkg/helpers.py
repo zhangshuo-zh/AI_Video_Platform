@@ -18,6 +18,8 @@ import jobfiles
 from composition import ffmpeg_runner, interpolate
 from composition.validators import MediaInvalid
 import runners
+import secret_store
+from paths import describe
 from config import (ALLOW_MOCK, FFMPEG_BIN, RESOURCE_CLASSES,
                     WORKER_LEASE_SECONDS, WORKER_MAX_GLOBAL)
 
@@ -116,14 +118,14 @@ def _child_env(spec) -> dict:
         # 也不缓存到 os.environ：那是**跨作业残留**，会让 A 作业用的密钥
         # 悄悄留在进程里给 B 作业看见。
         try:
-            import secret_store
             value, _source = secret_store.resolve(extra)
             if value:
                 env[extra] = value
-        except Exception as exc:
-            # 密钥注入是失败关闭边界，任何解密或读取错误都不传递密钥。
+        except (secret_store.SecretStoreUnavailable, secret_store.InvalidTag,
+                sqlite3.Error, OSError, ValueError) as exc:
+            # 预期读取／解密失败不注入密钥；编程错误交给作业顶层失败边界。
             # 只记录类型，避免异常文本包含密钥或存储路径。
-            _logger.debug("worker_secret_env_skipped error=%s", type(exc).__name__)
+            _logger.warning("worker_secret_env_skipped error=%s", type(exc).__name__)
             continue
     return env
 
@@ -133,35 +135,37 @@ def _write(log, message: str) -> None:
     log.flush()
 
 
-# 这些 argv 键后面跟的那一格是**用户创作正文**（提示词/负向提示词/文本）。
-# 它们既进 `run.log`，也随 `extra["command"]` 进 `resources_json` 落库，
-# 于是"日志里躺着完整提示词"——排查时没用（要复现看的是参数与种子），
-# 转发日志给外部时却是白送出去的创作内容。
+# 记录 argv 时隐藏创作正文，仅保留标志与字数；真实执行 argv 保持完整。
 _PROMPT_ARGV_FLAGS = frozenset({"--prompt", "--negative-prompt", "-p", "--text",
                                 "--caption", "--negative"})
-# 截断长度：留够"这是在讲什么"的判断量，又不至于把整段正文抄走。
+# 旧调用方兼容常量；正文记录已改为全长度隐藏。
 _ARGV_TEXT_PREVIEW = 40
 
 
+def _path_for_record(path: Path | str) -> str:
+    """日志只保留配置目录标签；外部绝对路径只保留文件名。"""
+    text = describe(path)
+    return f"<path:{Path(text).name}>" if Path(text).is_absolute() else text
+
+
 def _argv_for_record(argv: list[str]) -> list[str]:
-    """把要落盘/进日志的 argv 里那一格正文换成摘要。
-
-    **只动记录，不动真跑的 argv**：`_run_spec` 用原始 `spec.argv` 拉起子进程，
-    这里返回的是副本，两个用途必须分开——写进日志的东西和交给内核的东西
-    不该是同一个对象，否则以后有人图省事在这里原地改就会改坏执行。
-
-    形状：`--prompt 一只猫…(共 812 字)`。字数照实给，因为排查时"提示词多长"
-    常常就是线索（比如撞到 77 token 上限）；内容本身不给。
-    """
+    """仅脱敏记录副本：正文只留长度，绝对路径换标签，不改变执行参数。"""
     out = list(argv)
-    for i, item in enumerate(out[:-1]):
-        if item not in _PROMPT_ARGV_FLAGS:
-            continue
-        text = out[i + 1]
-        # 已经短到没必要截的就原样留：把 "1girl, solo" 换成摘要反而更难读。
-        if len(text) <= _ARGV_TEXT_PREVIEW:
-            continue
-        out[i + 1] = f"{text[:_ARGV_TEXT_PREVIEW]}…(共 {len(text)} 字)"
+    redact_next = False
+    for i, item in enumerate(argv):
+        flag, separator, value = item.partition("=")
+        if redact_next:
+            out[i] = f"<正文已隐藏，共 {len(item)} 字>"
+            redact_next = False
+        elif flag in _PROMPT_ARGV_FLAGS:
+            if separator:
+                out[i] = f"{flag}=<正文已隐藏，共 {len(value)} 字>"
+            else:
+                redact_next = True
+        elif separator and Path(value).is_absolute():
+            out[i] = f"{flag}={_path_for_record(value)}"
+        else:
+            out[i] = _path_for_record(item)
     return out
 
 

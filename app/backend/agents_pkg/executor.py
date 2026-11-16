@@ -40,7 +40,7 @@ def tick() -> dict:
         stats["runs"] += 1
         try:
             stats.update(_tick_run(run))
-        except Exception as exc:                 # noqa: BLE001
+        except Exception as exc:                 # 单运行顶层，不能阻断其他运行推进
             stats["errors"] += 1
             _record_error(run, exc)
     return stats
@@ -281,7 +281,8 @@ def _execute(run, step) -> None:
             payload={"seq": step["seq"], "code": exc.code},
         )
         return
-    except Exception as exc:                   # noqa: BLE001
+    except Exception as exc:                   # 工具插件边界，必须将步骤落为失败
+        _logger.error("agent_step_failed run=%s step=%s error=%s", run["id"], step["id"], type(exc).__name__)
         agent_runs.update_step(step["id"], {
             "status": STEP_FAILED,
             "error_code": "internal",
@@ -412,6 +413,7 @@ def _fail_run(run, code: str, message: str) -> None:
 
 
 def _record_error(run, exc: Exception) -> None:
+    _logger.error("agent_tick_failed run=%s error=%s", run["id"], type(exc).__name__)
     try:
         agent_runs.add_event(
             "preflight_warning",

@@ -1,6 +1,8 @@
 import gitrepo
 import hashlib
 
+from log import get_logger
+
 from config import DOC_MAX_BYTES, LOCK_MINUTES
 from datetime import datetime
 from paths import describe as describe_path
@@ -79,7 +81,9 @@ def create_document(project_id: int, episode_id: int | None, kind: str,
         raise
     try:
         row = docs.create(project_id, episode_id, kind, title, rel_path, commit)
-    except Exception:
+    except Exception as exc:
+        # 补偿边界必须覆盖编程错误，完成回滚／清理后继续向上传播。
+        get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
         path_of(rel_path).unlink(missing_ok=True)
         raise
     return {"row": row, "content": content, "version": version_token(content),

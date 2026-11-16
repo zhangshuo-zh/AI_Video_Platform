@@ -164,8 +164,8 @@ def test_真交给子进程的_rgv_是完整的(run_spec_env):
     assert SECRET_PROMPT in seen["spawn_argv"], "交给子进程的提示词被截断了"
 
 
-def test_短提示词原样保留(run_spec_env):
-    """`1girl, solo` 这种本来就不长，换成摘要反而更难读。"""
+def test_短提示词同样不进入日志(run_spec_env):
+    """正文保护不取决于长度；短正文也只记录字数。"""
     log_path, _seen = run_spec_env
     extra: dict = {}
     short = "1girl, solo"
@@ -174,7 +174,9 @@ def test_短提示词原样保留(run_spec_env):
                           "execution_mode": "local"}, _spec(short),
                          log, "wid", extra)
     text = log_path.read_text(encoding="utf-8")
-    assert short in text, "短提示词被无谓地折叠了"
+    assert short not in text
+    assert str(len(short)) in text
+    assert short not in json.dumps(extra.get("command"))
 
 
 def test_log_sanitize_masks_secrets_and_truncates(monkeypatch):
@@ -226,3 +228,17 @@ def test_worker_and_agents_facade_exports():
     for sym in ("create_run", "EVENT_LABEL", "tick", "plan_route", "loads"):
         assert hasattr(agents, sym), f"agents facade missing {sym}"
 
+
+
+def test_记录命令与工作目录不泄露绝对路径(run_spec_env):
+    log_path, seen = run_spec_env
+    spec = _spec("private short prompt")
+    spec.argv.extend(["--input=/server/private/source.png", "--negative=private negative"])
+    extra = {}
+    with log_path.open("a", encoding="utf-8") as log:
+        worker._run_spec({"id": 1, "execution_mode": "local"}, spec, log, "wid", extra)
+    recorded = log_path.read_text() + json.dumps(extra.get("command"))
+    for private in (str(spec.cwd), "/usr/bin/python", "/server/private", "private short prompt", "private negative"):
+        assert private not in recorded
+    assert seen["spawn_argv"] == spec.argv
+    assert "--seed" in recorded and "20261109" in recorded
