@@ -175,6 +175,7 @@ def test_起来并答话了才留痕(monkeypatch, as_role):
         state["up"] = True
 
     monkeypatch.setattr(engine_launch.subprocess, "Popen", popen_and_up)
+    monkeypatch.setattr(engine_launch.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     monkeypatch.setattr(engines, "probe", fake_probe)
     monkeypatch.setattr(engine_launch, "LOOPBACK", frozenset({"testclient"}))
     monkeypatch.setattr(engine_launch, "WAIT_SECONDS", 2.0)
