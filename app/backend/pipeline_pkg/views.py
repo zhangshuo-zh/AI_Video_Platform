@@ -227,7 +227,7 @@ def template_view(row) -> dict:
         "description": row["description"], "enabled": bool(row["enabled"]),
         "builtin": bool(row["builtin"]),
         "nodes": [{"key": n.get("key"), "type": n.get("type"),
-                   "label": n.get("label") or NODE_TYPE_LABELS.get(n.get("type"),
+                   "label": n.get("label") or NODE_TYPE_LABELS.get(n.get("type") or "",
                                                                   n.get("type")),
                    "depends_on": n.get("depends_on") or [],
                    "fan_out": n.get("fan_out")}

@@ -302,7 +302,7 @@ def _commit_composition(run, node: dict, key: str) -> None:
         pipeline_repo.add_event(run["id"], node["id"], "node_failed",
                                 {"reason": "composition_missing"})
         return
-    job_id = view.get("job_id")
+    job_id = view["job_id"]
     pipeline_repo.attach_job(node["id"], job_id)
     pipeline_repo.add_event(run["id"], node["id"], "job_submitted", {
         "job_id": job_id, "composition_id": view["id"], "version": view["version"],
@@ -466,11 +466,11 @@ def _run_internal_node(run, node: dict, by_key: dict, probes=None) -> None:
             job_id = _upstream_job(node, by_key)
             if job_id is None:
                 raise _NodeFail("upstream_job_missing", "找不到要验收的合成作业")
-            row = compositions.by_job(job_id)
-            if row is None:
+            composition_row = compositions.by_job(job_id)
+            if composition_row is None:
                 raise _NodeFail("composition_missing",
                                 f"作业 #{job_id} 没有对应的成片记录")
-            view = composition_service.view(row["id"])
+            view = composition_service.view(composition_row["id"])
             if view["status"] != "succeeded":
                 raise _NodeFail("composition_not_ready",
                                 f"合成作业现在是「{view['status_label']}」，还不能验收")

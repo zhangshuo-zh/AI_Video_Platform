@@ -332,7 +332,7 @@ def test_每张表都在横向滚动容器里():
     for f in list((FRONTEND / "js" / "views").glob("*.js")) + list((FRONTEND / "js" / "views").rglob("models/*.js")):
         text = f.read_text()
         tables = text.count("<table")
-        wraps = text.count('class="table-wrap"')
+        wraps = sum("table-wrap" in classes.split() for classes in re.findall(r'class="([^"]*)"', text))
         if tables != wraps:
             offenders.append(f"{f.name}: table={tables} wrap={wraps}")
     assert not offenders, f"表格没包 .table-wrap：{offenders}"
@@ -1030,11 +1030,11 @@ def test_帮助提示浮层不撑爆窄屏横向布局():
 
     css = (Path(__file__).resolve().parents[2] / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
     pop_rule = css.split(".help-tip .tip-pop{", 1)[1].split("}", 1)[0]
-    pop_hover = css.split(".help-tip:hover .tip-pop{", 1)[1].split("}", 1)[0]
+    pop_hover = css.split(".help-tip.is-open .tip-pop{", 1)[1].split("}", 1)[0]
     attr_rule = css.split(".help-tip[data-tip]:not(:has(.tip-pop))::before{", 1)[1].split("}", 1)[0]
     attr_hover = css.split(".help-tip[data-tip]:not(:has(.tip-pop)):hover::before{", 1)[1].split("}", 1)[0]
     assert "display:none" in pop_rule, ".help-tip .tip-pop 未悬停时未设为 display:none"
-    assert "display:block" in pop_hover, ".help-tip:hover .tip-pop 悬停时未恢复 display:block"
+    assert "display:block" in pop_hover, ".help-tip.is-open .tip-pop 展开时未恢复 display:block"
     assert "display:none" in attr_rule, "[data-tip]::before 未悬停时未设为 display:none"
     assert "display:block" in attr_hover, "[data-tip]:hover::before 悬停时未恢复 display:block"
 

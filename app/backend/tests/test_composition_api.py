@@ -202,3 +202,19 @@ def test_删项目会连字幕一起清掉(as_role, stage):  # noqa: F811
 
     services.delete_project_cascade(pid)
     assert not target.exists()
+
+
+def test_自动字幕采用成功视频的实际时长(stage):
+    from composition import subtitles, validators
+    import jobfiles
+
+    first = jobfiles.artifact_at(stage["jobs"][0]["result_paths_json"], 0)
+    assert first is not None
+    duration = validators.inspect(first)["duration_ms"]
+    text = subtitles.build_srt_text(stage["project_id"], stage["episode_id"])
+    expected = subtitles._fmt_srt_ts(duration)
+    assert f"00:00:00,000 --> {expected}" in text
+    assert f"2\n{expected} --> " in text
+    path = subtitles.generate_srt_from_shots(stage["project_id"], stage["episode_id"])
+    saved = jobfiles.resolve_subtitle(stage["project_id"], path)
+    assert saved is not None and saved.read_text() == text

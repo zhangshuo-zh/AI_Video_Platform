@@ -875,33 +875,33 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .help-tip .tip-pop{
   display:none;
   position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%) translateY(-4px);
-  padding:12px 14px;width:max-content;max-width:380px;background:var(--sheet,#1a1a20);
+  padding:12px 14px;width:max-content;max-width:380px;background:var(--sheet);
   color:var(--ink);font-size:11.5px;font-weight:normal;line-height:1.6;border-radius:8px;
-  border:1px solid var(--line-strong);box-shadow:var(--sh-pop,0 8px 28px rgba(0,0,0,0.45));
+  border:1px solid var(--line-strong);box-shadow:var(--sh-pop);
   pointer-events:none;opacity:0;visibility:hidden;
   transition:opacity .15s ease,transform .15s ease,visibility .15s;
   z-index:var(--z-pick);white-space:normal;text-align:left;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
 }
 .help-tip .tip-pop.tip-right{left:0;transform:translateX(-8px) translateY(-4px)}
-.help-tip:hover .tip-pop.tip-right{transform:translateX(-8px) translateY(0)}
+.help-tip.is-open .tip-pop.tip-right{transform:translateX(-8px) translateY(0)}
 .help-tip .tip-pop.tip-up{top:auto;bottom:calc(100% + 8px);transform:translateX(-50%) translateY(4px)}
-.help-tip:hover .tip-pop.tip-up{transform:translateX(-50%) translateY(0)}
-.help-tip:hover .tip-pop{display:block;opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
-.help-tip .tip-pop::after{content:'';position:absolute;bottom:100%;left:14px;border:5px solid transparent;border-bottom-color:var(--sheet,#1a1a20)}
+.help-tip.is-open .tip-pop.tip-up{transform:translateX(-50%) translateY(0)}
+.help-tip.is-open .tip-pop{display:block;opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+.help-tip .tip-pop::after{content:'';position:absolute;bottom:100%;left:14px;border:5px solid transparent;border-bottom-color:var(--sheet)}
 .help-tip .tip-pop:not(.tip-right)::after{left:50%;transform:translateX(-50%)}
-.help-tip .tip-pop.tip-up::after{bottom:auto;top:100%;border-bottom-color:transparent;border-top-color:var(--sheet,#1a1a20)}
+.help-tip .tip-pop.tip-up::after{bottom:auto;top:100%;border-bottom-color:transparent;border-top-color:var(--sheet)}
 .tip-pop .tip-title{display:block;font-weight:700;font-size:12.5px;color:var(--accent);margin-bottom:6px;letter-spacing:.02em}
 .tip-pop .tip-desc{color:var(--ink-2);font-size:11.5px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px dashed var(--line);line-height:1.55}
 .tip-pop .tip-list{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:5px}
 .tip-pop .tip-list li{color:var(--ink-2);line-height:1.55}
 .tip-pop .tip-list li b{color:var(--ink);font-weight:600}
-.tip-pop code{font-family:var(--font-mono,monospace);font-size:11px;padding:1px 4px;border-radius:3px;background:rgba(255,255,255,0.08);color:var(--accent)}
+.tip-pop code{font-family:var(--font-mono,monospace);font-size:11px;padding:1px 4px;border-radius:3px;background:var(--field);color:var(--accent)}
 .help-tip[data-tip]:not(:has(.tip-pop))::before{
   display:none;
   content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;
   transform:translateX(-50%) translateY(3px);padding:6px 10px;width:max-content;max-width:280px;
-  background:var(--sheet,#1a1a20);color:var(--ink);font-size:11px;font-weight:normal;line-height:1.5;
-  border-radius:6px;border:1px solid var(--line-strong);box-shadow:var(--sh-pop,0 6px 20px rgba(0,0,0,0.4));
+  background:var(--sheet);color:var(--ink);font-size:11px;font-weight:normal;line-height:1.5;
+  border-radius:6px;border:1px solid var(--line-strong);box-shadow:var(--sh-pop);
   pointer-events:none;opacity:0;visibility:hidden;
   transition:opacity .15s ease,transform .15s ease,visibility .15s;
   z-index:var(--z-pick);white-space:normal;text-align:left;
@@ -2343,9 +2343,9 @@ pre.diff.ai{max-height:min(46vh,420px);overflow:auto;margin:6px 0 2px}
     position:fixed;left:12px;right:12px;top:auto;bottom:16px;
     width:auto;max-width:none;transform:translateY(6px);
   }
-  .help-tip:hover .tip-pop,
-  .help-tip:hover .tip-pop.tip-right,
-  .help-tip:hover .tip-pop.tip-up{transform:translateY(0)}
+  .help-tip.is-open .tip-pop,
+  .help-tip.is-open .tip-pop.tip-right,
+  .help-tip.is-open .tip-pop.tip-up{transform:translateY(0)}
   .help-tip .tip-pop::after{display:none}
   /* iOS Safari 点击字号小于 16px 的输入框会强制放大整页；窄屏统一抬到 16px 避免聚焦跳缩放 */
   input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),
@@ -3717,3 +3717,9 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   .wb-ab-grid{grid-template-columns:minmax(0,1fr)}
   .gc-stats{grid-template-columns:minmax(0,1fr)}
 }
+
+/* 帮助提示可聚焦、点按开合；内容较长时在视口内滚动。 */
+.help-tip:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.help-tip.is-open .tip-pop{translate:var(--help-shift,0px) 0;pointer-events:auto;max-height:60dvh;overflow:auto}
+.pl-progress-cell{min-width:150px}
+.pl-episode-progress-cell{min-width:140px}

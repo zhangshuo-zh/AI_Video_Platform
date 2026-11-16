@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import jobfiles
 from config import COMPOSE_MAX_SHOTS, FILES_DIR
@@ -65,7 +66,7 @@ def _shot_review(job, signs: list, version: str) -> tuple[str, str]:
 
 def _pick_animatic_source(shot, image_jobs: list, signs_by_job: dict[int, list],
                           loaded_assets: dict, loaded_variants: dict,
-                          artifact_version_fn) -> tuple[str, object | None, int | None, str, str] | None:
+                          artifact_version_fn) -> tuple[str, Path, int | None, str, str] | None:
     """动态故事板预演降级取源：已过审关键帧 -> 最新成功关键帧 -> 分镜首帧 -> 形态参考图 -> 资产参考图。"""
     # 1) 关键帧作业（优先已过审，否则最新成功）
     sorted_imgs = sorted(image_jobs, key=lambda r: (str(r["finished_at"] or ""), int(r["id"])), reverse=True)
@@ -149,7 +150,7 @@ def build(project_id: int, episode_id: int, *,
     pinned = shot_jobs if shot_jobs is not None else None
     # "这一镜用哪条视频"只有一个出处：与分镜列表那枚「源已变」共用同一条选择器，
     # 否则界面说没事、这里却把这一镜拒掉（见 jobs.latest_succeeded_videos_by_shot）。
-    jobs_by_shot = None if pinned is not None else job_repo.latest_succeeded_videos_by_shot(
+    jobs_by_shot = {} if pinned is not None else job_repo.latest_succeeded_videos_by_shot(
         episode_id)
     reasons: list[str] = []
     timeline_shots: list[dict] = []
@@ -285,6 +286,7 @@ def build(project_id: int, episode_id: int, *,
             why = anim_why
             vid_job_id = anim_job_id
         else:
+            assert target is not None and video_job is not None
             try:
                 info = validators.inspect(target)
             except validators.MediaInvalid as exc:

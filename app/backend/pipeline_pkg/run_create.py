@@ -153,7 +153,7 @@ def preflight(project_id: int, episode_id: int,
             warnings.append(f"第 {shot['seq']} 镜没有提示词，生成时会拿内容那一栏代替")
         for asset_id in services.shot_asset_ids(shot):
             referenced.setdefault(asset_id, []).append(str(shot["seq"]))
-    loaded = assets.get_many(referenced)
+    loaded = assets.get_many(set(referenced))
     for asset_id in sorted(referenced):
         seqs = "／".join(referenced[asset_id])
         row = loaded.get(asset_id)
@@ -260,7 +260,7 @@ def create_run(project_id: int, episode_id: int, template_id: int,
 
     # 云端节点这一版不代发：云端作业必须逐条确认预计费用（`submit_job` 强制），
     # 产线替人按下去＝在人没看过价格的情况下花钱。要说清是哪些节点，别只回一句"不行"。
-    cloud_nodes = [n.get("key") for n in definition["nodes"]
+    cloud_nodes = [str(n.get("key")) for n in definition["nodes"]
                    if isinstance(n, dict) and n.get("execution_mode") == "cloud"]
     if cloud_nodes:
         raise PipelineInvalid(

@@ -7,8 +7,6 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import jobfiles
 from composition import timeline, validators
 from config import FFMPEG_BIN
@@ -99,16 +97,14 @@ def build_srt_text(project_id: int, episode_id: int) -> str:
         raw_ms = max(100, int(round(float(shot["duration"] or 5.0) * 1000)))
         video_job = latest_videos.get(sid)
         if video_job is not None:
-            manifest = jobfiles.parse_manifest(video_job["result_manifest"])
-            if manifest and manifest.get("path"):
-                target: Path | None = jobfiles.resolve_artifact(str(manifest["path"]))
-                if target is not None:
-                    try:
-                        info = validators.inspect(target)
-                        if int(info.get("duration_ms") or 0) >= 100:
-                            raw_ms = int(info["duration_ms"])
-                    except validators.MediaInvalid:
-                        pass
+            target = jobfiles.artifact_at(video_job["result_paths_json"], 0)
+            if target is not None:
+                try:
+                    info = validators.inspect(target)
+                    if int(info.get("duration_ms") or 0) >= 100:
+                        raw_ms = int(info["duration_ms"])
+                except validators.MediaInvalid:
+                    pass
         trim_in_ms = max(0, int(shot["trim_in_ms"] or 0)) if "trim_in_ms" in keys else 0
         trim_out_ms = max(0, int(shot["trim_out_ms"] or 0)) if "trim_out_ms" in keys else 0
         transition = str((shot["transition"] if "transition" in keys else "cut") or "cut")

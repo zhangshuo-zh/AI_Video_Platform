@@ -772,7 +772,32 @@ export default {
       </details>`;
     }
 
-    function drawerHtml(job, logs, arts, diag) {
+    function artifactHtml(arts, error = '') {
+      if (error) return `<div role="status"><p class="bar bad">产物读取失败：${escapeHtml(error)}</p>
+        <button type="button" class="btn" data-artifacts-retry>重试读取产物</button></div>`;
+      return (arts || []).length ? arts.map((a, i) => {
+        const name = a.path.split('/').pop() || a.path;
+        const url = api.jobArtifactUrl(openJobId, i);
+        const ext = name.split('.').pop().toLowerCase();
+        let preview = '';
+        if (a.exists && /^(mp4|webm|mov|m4v)$/.test(ext)) {
+          preview = `<video class="artifact-video" controls preload="metadata" src="${url}"></video>`;
+        } else if (a.exists && /^(png|jpg|jpeg|webp|gif)$/.test(ext)) {
+          preview = `<img class="artifact-image" src="${url}" alt="${escapeHtml(name)}" loading="lazy">`;
+        } else if (a.exists && /^(mp3|wav|m4a|flac|ogg)$/.test(ext)) {
+          preview = `<audio class="artifact-audio" controls preload="metadata" src="${url}"></audio>`;
+        }
+        return `<div class="artifact-item">
+          <a class="artifact" href="${url}" target="_blank" rel="noopener">
+            <span>${escapeHtml(name)}</span>
+            <i>${a.exists ? `${(a.size / 1024).toFixed(1)} KB` : '文件已不在'}</i>
+          </a>
+          ${preview}
+        </div>`;
+      }).join('') : '<p class="hint">还没有产物。</p>';
+    }
+
+    function drawerHtml(job, logs, arts, diag, artifactError = '') {
       const res = job.resources || {};
       const price = job.unit_price_micros == null ? '—'
         : `${money(job.unit_price_micros, job.currency)} / ${unitLabel(job.unit)}`;
@@ -839,26 +864,7 @@ export default {
         ? '这里没有你能按的钮：取消要 job:cancel，重试／核对要 job:submit。'
         : '已结束，可关闭。';
 
-      const artifacts = (arts || []).length ? arts.map((a, i) => {
-        const name = a.path.split('/').pop() || a.path;
-        const url = api.jobArtifactUrl(job.id, i);
-        const ext = name.split('.').pop().toLowerCase();
-        let preview = '';
-        if (a.exists && /^(mp4|webm|mov|m4v)$/.test(ext)) {
-          preview = `<video class="artifact-video" controls preload="metadata" src="${url}"></video>`;
-        } else if (a.exists && /^(png|jpg|jpeg|webp|gif)$/.test(ext)) {
-          preview = `<img class="artifact-image" src="${url}" alt="${escapeHtml(name)}" loading="lazy">`;
-        } else if (a.exists && /^(mp3|wav|m4a|flac|ogg)$/.test(ext)) {
-          preview = `<audio class="artifact-audio" controls preload="metadata" src="${url}"></audio>`;
-        }
-        return `<div class="artifact-item">
-          <a class="artifact" href="${url}" target="_blank" rel="noopener">
-            <span>${escapeHtml(name)}</span>
-            <i>${a.exists ? `${(a.size / 1024).toFixed(1)} KB` : '文件已不在'}</i>
-          </a>
-          ${preview}
-        </div>`;
-      }).join('') : '<p class="hint">还没有产物。</p>';
+      const artifacts = artifactHtml(arts, artifactError);
 
       return `
         <div class="drawer-actions">${actions || `<span class="hint">${actionsHint}</span>`}</div>
@@ -904,7 +910,10 @@ export default {
       try {
         const [job, logs, arts, diag] = await Promise.all([
           api.job(id), api.jobLogs(id).catch(() => ({ text: '' })),
-          api.jobArtifacts(id).catch(() => []),
+          api.jobArtifacts(id).then(
+            (items) => ({ items, error: '' }),
+            (err) => ({ items: [], error: err.message || '请求失败' }),
+          ),
           // 读不到诊断不影响看详情：这一栏是辅助信息，不能反过来把主信息挡掉
           api.jobDiagnosis(id).catch(() => null),
         ]);
@@ -929,7 +938,7 @@ export default {
         // 那是比多做一次重画更坏的 bug。用**下标**做键：详情面板每拍结构一致。
         const openDetails = [...drawerBody.querySelectorAll('details')]
           .map((d, i) => (d.open ? i : -1)).filter((i) => i >= 0);
-        drawerBody.innerHTML = drawerHtml(job, logs, arts, diag);
+        drawerBody.innerHTML = drawerHtml(job, logs, arts.items, diag, arts.error);
         if (openDetails.length) {
           const again = drawerBody.querySelectorAll('details');
           for (const i of openDetails) {
@@ -2072,6 +2081,22 @@ export default {
       if (e.target === drawer) closeDrawer();
     });
     drawerBody.addEventListener('click', (e) => {
+      const artifactsRetry = e.target.closest('[data-artifacts-retry]');
+      if (artifactsRetry) {
+        const id = openJobId;
+        const list = artifactsRetry.closest('.artifact-list');
+        artifactsRetry.disabled = true;
+        artifactsRetry.textContent = '正在读取…';
+        api.jobArtifacts(id).then(
+          (items) => {
+            if (openJobId === id && list.isConnected) list.innerHTML = artifactHtml(items);
+          },
+          (err) => {
+            if (openJobId === id && list.isConnected) list.innerHTML = artifactHtml([], err.message || '请求失败');
+          },
+        );
+        return;
+      }
       const cancel = e.target.closest('[data-cancel]');
       if (cancel) { askCancel(Number(cancel.dataset.cancel)); return; }
       const reconcile = e.target.closest('[data-reconcile]');

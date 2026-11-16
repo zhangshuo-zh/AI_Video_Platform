@@ -118,6 +118,7 @@ def retry_node(node_id: int, user_id: int | None) -> dict:
     # 符合 `db.transaction()` 文档写的那条边界。
     with transaction():
         if node["node_type"] in JOB_NODES and node["job_id"]:
+            assert job is not None
             new_job_id = job_repo.retry(job, user_id)["id"]
             # 新作业已经排进队列了，节点直接跟着它走；回 pending 会让调度器再提交一条
             new_status = NODE_RUNNING

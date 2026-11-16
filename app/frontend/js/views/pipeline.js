@@ -142,7 +142,7 @@ function createModal(episodes, templates, busy) {
       <div class="modal-body">
         <label class="modal-label" for="pl-ep">哪一集</label>
         <select id="pl-ep" class="ctl">${epOptions || '<option value="">本项目还没有集</option>'}</select>
-        <label class="modal-label" for="pl-tpl" style="margin-top:12px">用哪个模板</label>
+        <label class="u-mt-12 modal-label" for="pl-tpl">用哪个模板</label>
         <select id="pl-tpl" class="ctl">${tplOptions || '<option value="">没有可用模板</option>'}</select>
         <div class="pl-pre" id="pl-pre"><p class="hint">正在做生产前检查…</p></div>
         <p class="modal-meta">发起后由 worker 的节拍按依赖推进；同一集同时只允许一条未结束的运行。
@@ -240,11 +240,11 @@ function nodeRows(detail, canSubmit) {
         ${n.diagnosis && n.error_code ? `<div class="pl-diag">`
           + diagnosisHtml({ error_message: n.error_message, diagnosis: n.diagnosis },
             '这一格为什么停在这里，接下来怎么办') + `</div>` : ''}
-        ${retryable ? `<div class="row" style="gap:6px;margin-top:6px">
+        ${retryable ? `<div class="u-gap-6 u-mt-6 row">
           <button class="btn sm" data-retry-node="${n.id}">重试这一格</button>
           <span class="t-desc">旧作业、旧产物、旧签字都留着，新作业另起一行</span></div>` : ''}
         ${canSubmit && !retryable && n.status === 'failed'
-          ? `<p class="t-desc" style="margin-top:6px">${escapeHtml(n.retry_hint || retryHint)}</p>`
+          ? `<p class="u-mt-6 t-desc">${escapeHtml(n.retry_hint || retryHint)}</p>`
           : ''}
       </div>
     </li>`;
@@ -285,7 +285,7 @@ function detailHtml(detail) {
       <ol class="pl-nodes">${nodeRows(detail, canSubmit)}</ol>
       ${detail.events.length ? `<div class="pl-events-head">时间线</div>
         <ol class="pl-events">${events}</ol>` : ''}
-      <p class="t-desc" style="margin-top:10px">成本、日志与产物都不在这一页：点「去生成中心」按作业号看。
+      <p class="u-mt-10 t-desc">成本、日志与产物都不在这一页：点「去生成中心」按作业号看。
         审核结论也不在这一页：点「去审核」到审核中心的产物审核页签签字。</p>
     </div>
   </div>`;
@@ -363,12 +363,12 @@ function workerPanel() {
       <span class="sub">占用是机器实况、上限是人给的额度；能不能并行看槽位，该不该再开一个看左边</span>
       <div class="right"><span class="chip ${w?.online ? 'green' : 'gray'}">${w?.online ? '在线' : '离线'}</span></div></div>
     <div class="card-body">
-      <div class="row" style="gap:6px;flex-wrap:wrap">${resChips}</div>
-      ${workers.length ? `<div class="table-wrap" style="margin-top:10px"><table>
+      <div class="u-gap-6 u-wrap row">${resChips}</div>
+      ${workers.length ? `<div class="u-mt-10 table-wrap"><table>
         <thead><tr><th>进程</th><th>状态</th><th class="num">心跳</th>
           <th class="num">占用与上限</th><th>正在跑</th></tr></thead>
         <tbody>${rows}</tbody></table></div>
-        ${deadCount ? `<div class="row" style="margin-top:10px;gap:8px;align-items:center">
+        ${deadCount ? `<div class="u-mt-10 u-gap-8 row">
           <button class="btn xs" id="sp-worker-history">${
             showWorkerHistory ? '收起离线进程'
               : `另有 ${deadCount} 个进程在 7 天内登记过 · 现已离线（点开看）`}</button>
@@ -386,7 +386,7 @@ function seasonRows(list) {
       <td><b>${escapeHtml(s.name)}</b></td>
       <td>${escapeHtml(s.template_name)} <span class="t-desc">v${s.template_version}</span></td>
       <td><span class="chip ${tone}">${escapeHtml(s.status_label)}</span></td>
-      <td style="min-width:150px">${progressBar(s.progress)}</td>
+      <td class="pl-progress-cell">${progressBar(s.progress)}</td>
       <td class="num">${s.max_active_runs} 条</td>
       <td class="num">${money(s.cost)}</td>
       <td class="num t-dim">${escapeHtml(s.created_at)}</td>
@@ -407,7 +407,7 @@ function seasonDetailHtml(d, canSubmit) {
         ${i.episode_title && i.episode_title !== `第 ${i.episode_seq} 集`
           ? `<span class="t-desc">${escapeHtml(i.episode_title)}</span>` : ''}</td>
       <td><span class="chip ${itemTone}">${escapeHtml(i.status_label)}</span></td>
-      <td style="min-width:140px">${i.run_id ? progressBar(i.progress) : '<span class="t-desc">还没开始</span>'}</td>
+      <td class="pl-episode-progress-cell">${i.run_id ? progressBar(i.progress) : '<span class="t-desc">还没开始</span>'}</td>
       <td class="num">${money(i.cost)}<span class="t-desc">${i.cost?.jobs ?? 0} 条作业</span></td>
       <td>${i.error_message ? `<span class="season-err">${escapeHtml(i.error_message)}</span>` : '<span class="t-desc">—</span>'}</td>
       <td class="r">${i.run_id ? `<button class="btn xs" data-open-run="${i.run_id}">运行</button>` : ''}</td>
@@ -433,7 +433,7 @@ function seasonDetailHtml(d, canSubmit) {
         ${canRetry ? '<button class="btn sm" data-season-retry>继续失败集</button>' : ''}
         ${canRun ? '<button class="btn sm danger" data-season-cancel>取消整季</button>' : ''}
       </div>` : ''}
-      <div class="table-wrap" style="margin-top:10px"><table>
+      <div class="u-mt-10 table-wrap"><table>
         <thead><tr><th>集</th><th>状态</th><th>进度</th><th class="num">成本</th>
           <th>原因</th><th class="r"></th></tr></thead>
         <tbody>${items}</tbody></table></div>
@@ -457,9 +457,9 @@ function seasonModal(templates, episodes) {
       <div class="modal-body">
         <label class="modal-label" for="season-name">批次名（可不填）</label>
         <input class="ctl" id="season-name" maxlength="80" placeholder="例如：第一季 · 十二集">
-        <label class="modal-label" for="season-tpl" style="margin-top:10px">用哪个模板</label>
+        <label class="u-mt-10 modal-label" for="season-tpl">用哪个模板</label>
         <select class="ctl" id="season-tpl">${tplOptions || '<option value="">没有可用模板</option>'}</select>
-        <label class="modal-label" for="season-max" style="margin-top:10px">同时推进几集</label>
+        <label class="u-mt-10 modal-label" for="season-max">同时推进几集</label>
         <select class="ctl" id="season-max">
           <option value="1">1 集（串行，默认）</option>
           <option value="2">2 集</option>
@@ -616,7 +616,7 @@ export default {
     const head = `<div class="page-head">
         <h1>产线中心</h1>
         <p>${HEAD_DESC[tab] || HEAD_DESC[0]} · ${escapeHtml(project.name)}</p>
-        <div class="row" style="gap:6px">${subChipRow(TABS, tab)}
+        <div class="u-gap-6 row">${subChipRow(TABS, tab)}
           <span class="sse-live-badge" id="pl-sse-badge"><span class="sse-dot"></span> 实时待命</span>
         </div>
       </div>`;
@@ -726,7 +726,7 @@ export default {
           ${epName}</td>
         <td>${escapeHtml(r.template_name)} <span class="t-desc">v${r.template_version}</span></td>
         <td><span class="chip ${tone}">${escapeHtml(r.status_label)}</span></td>
-        <td style="min-width:150px">${progressBar(r.progress)}</td>
+        <td class="pl-progress-cell">${progressBar(r.progress)}</td>
         <td class="num t-dim">${escapeHtml(r.started_at || r.created_at)}</td>
         <td class="r"><button class="btn sm primary" data-open-run="${r.id}">查看</button></td>
       </tr>`;

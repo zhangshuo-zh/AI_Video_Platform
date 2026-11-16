@@ -79,7 +79,7 @@ def _params(raw: dict | None, timeline: dict | None = None) -> dict:
         raise CompositionInvalid(f"帧率 {fps} 不合法：只接受 1—60")
     if raw.get("width") or raw.get("height"):
         basis = "人填的"
-    elif derived:
+    elif derived and size:
         basis = (f"与素材同尺寸（{size['same_as']}/{size['of']} 镜是 "
                  f"{width}×{height}）")
     else:

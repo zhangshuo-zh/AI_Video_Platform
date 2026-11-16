@@ -2,6 +2,7 @@
  * 应用入口：侧栏、命令面板、项目选择器、启动流程。
  * 页面内容全部由 router + views 负责，这里只管壳。
  */
+import { mountHelpTips } from './help-tips.js';
 import { MODULES } from './modules.js';
 import { store } from './store.js';
 import { api } from './api.js';
@@ -819,6 +820,7 @@ async function startApp() {
 }
 
 async function boot() {
+  mountHelpTips();
   setupTheme();       // 要在问身份之前：未登录时能看见的只有闸门里那枚切换钮
   // 通知铃铛（0049）：DOM 就绪就能挂；未登录时接口 401，refresh 内部 catch
   // 掉、不显示角标——所以不必等身份回来。
