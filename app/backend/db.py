@@ -91,8 +91,9 @@ def get_conn():
         conn.commit()
     except Exception as exc:
         # 补偿边界必须覆盖编程错误，完成回滚／清理后继续向上传播。
-        get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
         conn.rollback()
+        # 写锁释放后再记录，回滚路径也不在事务内做日志 I/O。
+        get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
         raise
     finally:
         conn.close()
@@ -124,8 +125,9 @@ def transaction():
         conn.commit()
     except Exception as exc:
         # 补偿边界必须覆盖编程错误，完成回滚／清理后继续向上传播。
-        get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
         conn.rollback()
+        # 写锁释放后再记录，回滚路径也不在事务内做日志 I/O。
+        get_logger(__name__).warning("operation_rollback error=%s", type(exc).__name__)
         raise
     finally:
         _HELD.reset(token)

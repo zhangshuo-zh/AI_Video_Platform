@@ -2316,3 +2316,43 @@ def test_模型中心分域依赖无环且可独立导入():
                                 cwd=BACKEND, capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, result.stderr
     assert set(graphlib.TopologicalSorter(edges).static_order()) == domains
+
+
+@pytest.mark.parametrize("context_name", ["get_conn", "transaction"])
+def test_数据库回滚日志在写事务释放后记录(monkeypatch, context_name):
+    import db
+    from types import SimpleNamespace
+    observations = []
+    def warning(*args):
+        assert not connection.in_transaction, "日志 I/O 不得占着 SQLite 写锁"
+        observations.append(args)
+    monkeypatch.setattr(db, "get_logger", lambda _: SimpleNamespace(warning=warning))
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        with getattr(db, context_name)() as connection:
+            connection.execute("CREATE TEMP TABLE round3_rollback_probe (value INTEGER)")
+            connection.execute("INSERT INTO round3_rollback_probe VALUES (1)")
+            assert connection.in_transaction
+            raise RuntimeError("synthetic failure")
+    assert observations == [("operation_rollback error=%s", "RuntimeError")]
+
+
+def test_迁移回滚完成后才记录日志(monkeypatch, tmp_path):
+    import sqlite3
+    import migrate as migration
+    from types import SimpleNamespace
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    script = tmp_path / "9999_synthetic.sql"
+    script.write_text("CREATE TABLE round3_probe (id INTEGER);\nINSERT INTO missing_table VALUES (1);\n")
+    observations = []
+    def warning(*args):
+        assert not connection.in_transaction
+        assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='round3_probe'").fetchone() is None
+        observations.append(args)
+    monkeypatch.setattr(migration, "_connect", lambda: connection)
+    monkeypatch.setattr(migration, "_discover", lambda: [(9999, script)])
+    monkeypatch.setattr(migration, "_backup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(migration, "get_logger", lambda _: SimpleNamespace(warning=warning))
+    with pytest.raises(sqlite3.OperationalError):
+        migration.migrate(verbose=False)
+    assert observations == [("operation_rollback error=%s", "OperationalError")]

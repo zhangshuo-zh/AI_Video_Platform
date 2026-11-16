@@ -39,6 +39,7 @@ from config import (RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
 from log import get_logger
 from migrate import migrate
 from repositories.jobs import JobOwnershipLost, jobs
+from worker_pkg.output import OutputLog, private_output_values
 from worker_pkg.helpers import (
     _path_for_record,
     _ARGV_TEXT_PREVIEW,
@@ -124,7 +125,8 @@ logger = get_logger("fastvideo.worker")
 STOP = False
 
 
-def _pump(proc: subprocess.Popen[bytes], log, job, wid: str, deadline: float | None = None) -> None:
+def _pump(proc: subprocess.Popen[bytes], log, job, wid: str, deadline: float | None = None,
+          private_values: tuple[str, ...] = ()) -> None:
     """把子进程输出边跑边写进日志；每 0.2 秒续租并看一次取消。
 
     用 os.read + select 而不是 readline：模型输出里有 tqdm 的 \r 进度条，
@@ -139,38 +141,41 @@ def _pump(proc: subprocess.Popen[bytes], log, job, wid: str, deadline: float | N
     fd = stdout.fileno()
     last_beat = 0.0
     db = _db_guard(log)
-    while True:
-        if STOP:
-            _terminate(proc)
-            raise JobFailure("worker_stopped", "worker 收到停止信号，作业未完成；可以重试")
-        if deadline is not None and time.monotonic() > deadline:
-            _terminate(proc)
-            raise JobFailure("run_timeout",
-                             f"执行超过上限 {WORKER_MAX_RUNTIME_SECONDS} 秒，已终止；"
-                             "先看日志再决定是否重试")
-        status = db(jobs.status_of, job["id"], label="查取消状态")
-        if status == "cancel_requested":
-            _terminate(proc)
-            raise Cancelled("收到取消请求")
-        ready, _, _ = select.select([fd], [], [], 0.2)
-        if ready:
-            chunk = os.read(fd, 8192)
-            if not chunk:
-                break
-            log.write(chunk.decode("utf-8", errors="replace"))
-            log.flush()
-        # 续租与心跳不能挂在"没输出"上：模型连续刷进度条时管道一直 ready，
-        # 如果只在 else 分支续租，租约到期就会被恢复逻辑误判成 worker 死了。
-        db(jobs.renew, job["id"], wid, WORKER_LEASE_SECONDS, label="续租")
-        if time.monotonic() - last_beat >= 2:
-            db(jobs.heartbeat, wid, os.getpid(), job["id"],
-               adapters.MANIFEST_VERSION, label="心跳")
-            last_beat = time.monotonic()
-        if proc.poll() is not None:
-            # 进程已退出，但管道里可能还有尾巴；再读一轮由 select 处理
-            ready, _, _ = select.select([fd], [], [], 0.05)
-            if not ready:
-                break
+    output = OutputLog(log, private_output_values(job) + private_values)
+    try:
+        while True:
+            if STOP:
+                _terminate(proc)
+                raise JobFailure("worker_stopped", "worker 收到停止信号，作业未完成；可以重试")
+            if deadline is not None and time.monotonic() > deadline:
+                _terminate(proc)
+                raise JobFailure("run_timeout",
+                                 f"执行超过上限 {WORKER_MAX_RUNTIME_SECONDS} 秒，已终止；"
+                                 "先看日志再决定是否重试")
+            status = db(jobs.status_of, job["id"], label="查取消状态")
+            if status == "cancel_requested":
+                _terminate(proc)
+                raise Cancelled("收到取消请求")
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 8192)
+                if not chunk:
+                    break
+                output.write(chunk)
+            # 续租与心跳不能挂在"没输出"上：模型连续刷进度条时管道一直 ready，
+            # 如果只在 else 分支续租，租约到期就会被恢复逻辑误判成 worker 死了。
+            db(jobs.renew, job["id"], wid, WORKER_LEASE_SECONDS, label="续租")
+            if time.monotonic() - last_beat >= 2:
+                db(jobs.heartbeat, wid, os.getpid(), job["id"],
+                   adapters.MANIFEST_VERSION, label="心跳")
+                last_beat = time.monotonic()
+            if proc.poll() is not None:
+                # 进程已退出，但管道里可能还有尾巴；再读一轮由 select 处理
+                ready, _, _ = select.select([fd], [], [], 0.05)
+                if not ready:
+                    break
+    finally:
+        output.finish()
 
 
 def _run_spec(job, spec: runners.RunSpec, log, wid: str,
@@ -198,7 +203,8 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
                          f"起不了子进程：{exc.strerror or exc}") from exc
     watch = _RssWatch(proc.pid).start()
     try:
-        _pump(proc, log, job, wid, deadline=started + WORKER_MAX_RUNTIME_SECONDS)
+        _pump(proc, log, job, wid, deadline=started + WORKER_MAX_RUNTIME_SECONDS,
+              private_values=tuple(env.get(key, "") for key in spec.pass_env))
         return_code = proc.wait()
     except JobFailure as exc:
         if spec.meta.get("result_path"):

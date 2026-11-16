@@ -1,33 +1,8 @@
-"""`run.log` 与 `resources_json` 里不落完整提示词（2026-11-09 体检 B2）。
+"""Worker 日志边界：命令副本与真实子进程输出均不得记录正文、密钥和绝对路径。
 
-## 原来是什么样
-
-`worker._run_spec` 做两件事：
-
-    _write(log, "命令：" + json.dumps(spec.argv, ensure_ascii=False))
-    extra["command"] = spec.argv          # → _resources() → resources_json 落库
-
-而 `runners.py` 把 `job["prompt_snapshot"]` 直接拼进 argv（`:123` `:136`
-`:223` `:261`，以及 engine_http/llm 那条走请求文件）。于是**用户写的整段创作
-提示词**同时躺在两个地方：作业日志（`GET /jobs/{id}/logs` 原样回）与
-`resources_json`（跟着 Job 落库、回给界面）。
-
-## 这条算不算安全问题
-
-**不算越权**：日志与提示词走同一个 `job:read` 权限，能读日志的人本来就能读提示词，
-所以没有"低权限者看到高敏内容"这一层。
-
-算的是**卫生**：日志的实际用法是"出问题贴进工单/发给外部排查"。贴出去的时候，
-模型档位、种子、帧数、耗时才是排查要的；整段创作正文既没用，又是白送的创作内容。
-另外同一个字串在两处各存一份，改口径时容易只改一处。
-
-## 为什么这一版测试直接调 `_run_spec`
-
-第一版只测了辅助函数 `_argv_for_record`，反向验证时把 `_run_spec` 改回裸
-`spec.argv` 仍然全绿——那种测试测的是"我加了个函数"，不是"落盘产物里没原文"。
-现在把 `subprocess.Popen` 换成替身，让 `_run_spec` 真跑一遍，
-再从**它写出的日志文件**和**它填的 extra** 里找原文。反向验证：改回裸
-`spec.argv`，本文件立刻红。
+命令测试检查 _run_spec 写出的实际日志及 resources.command，真实 argv 保持完整。
+流式测试起真实 Python 子进程、强制七字节读取，验证 UTF-8、跨块正文／密钥、
+路径、超长行和无换行尾部。撤销调用点过滤或密钥传递时，对应回归必须验红。
 """
 import json
 import sys
@@ -242,3 +217,57 @@ def test_记录命令与工作目录不泄露绝对路径(run_spec_env):
         assert private not in recorded
     assert seen["spawn_argv"] == spec.argv
     assert "--seed" in recorded and "20261109" in recorded
+
+
+def test_真实子进程分块输出同样脱敏(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    prompt = "隐私短正文\n第二行创作内容"
+    negative = "不应进入日志的负向正文"
+    database_key = "db-only-value-123"
+    environment_key = "env-only-value-789"
+    monkeypatch.setenv("ROUND3_API_KEY", environment_key)
+    text = (prompt + "\n" + json.dumps(prompt, ensure_ascii=False) + "\n" + negative + "\n" +
+            database_key + "\n" + environment_key + "\n/server/private/model.ckpt\n" +
+            "x" * 9000 + "\n进度 50%\rhttps://example.test/status\n末尾完成")
+    proc = subprocess.Popen([sys.executable, "-c", f"import sys;sys.stdout.buffer.write({text.encode()!r})"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    monkeypatch.setattr(worker, "STOP", False)
+    for method in ("status_of", "renew", "heartbeat"):
+        monkeypatch.setattr(worker.jobs, method, lambda *args, **kwargs: None)
+    original_read = worker.os.read
+    monkeypatch.setattr(worker.os, "read", lambda fd, size: original_read(fd, min(size, 7)))
+    path = tmp_path / "stream.log"
+    try:
+        with path.open("w", encoding="utf-8") as log:
+            worker._pump(proc, log, {"id": 123, "prompt_snapshot": prompt,
+                         "params_json": json.dumps({"negative_prompt": negative})}, "test",
+                         deadline=time.monotonic() + 10, private_values=(database_key,))
+        assert proc.wait(timeout=5) == 0
+    finally:
+        if proc.poll() is None:
+            worker._terminate(proc, grace=1)
+        proc.stdout.close()
+    recorded = path.read_text()
+    for private in (*prompt.splitlines(), negative, database_key, environment_key, "/server/private"):
+        assert private not in recorded
+    assert "进度 50%" in recorded and "末尾完成" in recorded
+    assert "https://example.test/status" in recorded
+    assert "超长输出已隐藏" in recorded and "x" * 100 not in recorded
+    assert "\ufffd" not in recorded
+
+
+def test_执行路径将数据库密钥交给输出脱敏边界(run_spec_env, monkeypatch):
+    log_path, _ = run_spec_env
+    from dataclasses import replace
+    key = "synthetic-database-key"
+    spec = replace(_spec("正文"), pass_env=("ROUND3_KEY",))
+    seen = {}
+    monkeypatch.setattr(worker, "_child_env", lambda _: {"ROUND3_KEY": key})
+    def pump(*args, **kwargs):
+        seen.update(kwargs)
+    monkeypatch.setattr(worker, "_pump", pump)
+    with log_path.open("a", encoding="utf-8") as log:
+        worker._run_spec({"id": 1, "execution_mode": "local"}, spec, log, "wid", {})
+    assert seen["private_values"] == (key,)
+    assert key not in log_path.read_text()
