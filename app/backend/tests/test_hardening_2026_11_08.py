@@ -905,7 +905,8 @@ def test_services_各模块能单独导入且无环():
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    names = sorted(p.stem for p in (root / "services").glob("*.py") if p.name != "__init__.py")
+    names = sorted(".".join(p.relative_to(root / "services").with_suffix("").parts)
+                   for p in (root / "services").rglob("*.py") if p.name != "__init__.py")
     assert names, "services 包是空的？"
     for name in names:
         importlib.import_module(f"services.{name}")    # 失败会直接抛

@@ -796,7 +796,7 @@ def test_建单路径只有这一份清单():
     # composition 一处：合成建单，它带自己的幂等键与事务。
     # **这张表的意义不变**：旁路不许再长；要新增一条，就得同时说清它的闸门。
     assert hits == {
-        "services/jobs.py": 1,
+        "services/jobs_pkg/admission.py": 1,
         "services/doc_ai.py": 1,
         "services/extract_candidates.py": 1,
         "composition/service.py": 1,
@@ -818,7 +818,7 @@ def test_告警标签和后端告警码对齐():
     # 2026-11-08 `services.py` 拆成 `services/` 包后它们在 `services/jobs.py`；
     # 这里**扫整个包**而不是点某个文件——以后再挪位置，这条测试不该跟着改。
     backend = set()
-    for src_file in sorted((BACKEND / "services").glob("*.py")):
+    for src_file in sorted((BACKEND / "services").rglob("*.py")):
         backend |= set(_re.findall(
             r'\{"level": "(?:bad|warn)", "code": "([a-z_]+)"',
             src_file.read_text(encoding="utf-8")))
@@ -2178,3 +2178,29 @@ def test_业务拆包门面与可变状态保持一致(monkeypatch):
         assert not hasattr(images, "ImportUnusable")
     assert asset_studio.ImportUnusable is images.ImportUnusable is original
     assert asset_studio.parse_sections is prompts.parse_sections
+
+
+def test_作业服务拆包门面保留唯一提交与闸门替换(monkeypatch):
+    import services
+    import services.jobs as jobs
+    from services.jobs_pkg import admission
+
+    required = {
+        "submit_job", "verify_job_links", "shot_source_version", "shot_asset_ids",
+        "shot_variant_ids", "job_source_stale", "_service_engine_gate", "_cost_of",
+        "concurrency_now", "set_concurrency", "worker_status", "job_detail_view",
+        "retry_preview", "reconcile_job", "mark_job_attention", "JobMissing",
+        "JobStateConflict",
+    }
+    assert required <= set(jobs.__all__)
+    assert all(hasattr(jobs, name) for name in required)
+    assert services.submit_job is jobs.submit_job is admission.submit_job
+    assert len((BACKEND / "services/jobs.py").read_text().splitlines()) < 50
+    original = jobs._service_engine_gate
+    with monkeypatch.context() as patch:
+        gate = lambda *args: None
+        patch.setattr(jobs, "_service_engine_gate", gate)
+        assert admission._service_engine_gate is gate
+        patch.delattr(jobs, "_service_engine_gate")
+        assert not hasattr(admission, "_service_engine_gate")
+    assert jobs._service_engine_gate is admission._service_engine_gate is original
