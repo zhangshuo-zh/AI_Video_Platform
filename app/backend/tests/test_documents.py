@@ -628,3 +628,21 @@ def test_删集会把它名下的稿件从工作区一起摘掉(as_role, fresh_p
     log = gitrepo.history(doc_a["rel_path"])
     assert any("删除创作单元" in item["subject"] for item in log), \
         f"正文要能追回：历史里没有那一笔删除提交 {[i['subject'] for i in log[:2]]}"
+
+
+def test_读取缺失工作区不在事务中建目录(tmp_path, monkeypatch):
+    import workspace
+    from db import transaction
+    missing = tmp_path / "not-created" / "workspace"
+    monkeypatch.setattr(workspace, "WORKSPACE_DIR", missing)
+    with transaction():
+        assert workspace.normalize("p1/novel/draft.md") == "p1/novel/draft.md"
+        with pytest.raises(FileNotFoundError):
+            workspace.read("p1/novel/draft.md")
+        assert not missing.exists(), "读取路径不得隐式创建工作区"
+    workspace.atomic_write("p1/novel/draft.md", "正文\n")
+    assert workspace.read("p1/novel/draft.md") == "正文\n"
+    other = tmp_path / "explicit-root"
+    monkeypatch.setattr(workspace, "WORKSPACE_DIR", other)
+    assert workspace.root() == other.resolve()
+    assert other.is_dir(), "显式准备根目录保持原有创建语义"

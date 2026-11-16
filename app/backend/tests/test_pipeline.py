@@ -984,7 +984,8 @@ V2_MINI = {"nodes": [
 
 
 @pytest.mark.skipif(not _has_ffmpeg(), reason="合成节点要真跑 FFmpeg，这台机器上没有")
-def test_v2成片节点从合成到验收到审核(people, clean_queue):
+@pytest.mark.parametrize("mode", ["normal", "recover_metadata", "stale_probe", "stale_attempt", "missing_probe"])
+def test_v2成片节点从合成到验收到审核(people, clean_queue, monkeypatch, mode):
     """成片节点是普通 Job：创建时冻结时间线，worker 用 FFmpeg 真跑，
     验收按成片记录复核，审核等签字。三格各自失败都不会伪装成完成。"""
     from test_composition import _clip
@@ -1000,7 +1001,47 @@ def test_v2成片节点从合成到验收到审核(people, clean_queue):
     assert compose["status"] == "running"
     assert compose["job_id"]
 
-    run = _pump(view["id"])
+    import db
+    from composition import validators
+    from pipeline_pkg import dispatch
+
+    # Job 真成功而产线节点还未同步，旧的按依赖预取会漏掉，随后在事务内 ffprobe。
+    assert worker.run_once("w-export-boundary") == compose["job_id"]
+    assert _nodes(pipeline.run_view(view["id"]))["compose"]["status"] == "running"
+    if mode == "recover_metadata":
+        # 模拟 Job 成功后尚未回填元数据，且没有可复用回执，迫使 view 恢复走探测。
+        import jobfiles
+        with get_conn() as conn:
+            conn.execute("UPDATE composition SET output_path = '', sha256 = '', bytes = 0 WHERE job_id = ?",
+                         (compose["job_id"],))
+        receipt = jobfiles.job_dir(compose["job_id"]) / "outputs" / f"{compose['job_id']}-compose.json"
+        receipt.unlink(missing_ok=True)
+    observed = []
+    inspect = validators.inspect
+    def outside_only(path):
+        assert db._HELD.get() is None, "media probing entered database transaction"
+        observed.append(path)
+        return inspect(path)
+    monkeypatch.setattr(validators, "inspect", outside_only)
+    if mode in ("stale_probe", "stale_attempt", "missing_probe"):
+        prefetch = dispatch._prefetch_export_probes
+        def stale_once(run_id):
+            probes = prefetch(run_id)
+            if mode == "missing_probe":
+                return {}
+            for probe in probes.values():
+                if mode == "stale_probe":
+                    probe["job_status"] = "running"
+                else:
+                    probe["retry_count"] -= 1
+            return probes
+        with monkeypatch.context() as patch:
+            patch.setattr(dispatch, "_prefetch_export_probes", stale_once)
+            first = pipeline.advance_run(view["id"])
+        assert _nodes(first)["check_composition"]["status"] == "ready"
+        assert pipeline_repo.get_node(_nodes(first)["check_composition"]["id"])["status"] == "pending"
+    run = pipeline.advance_run(view["id"])
+    assert observed, "验收没有实际探测媒体"
     nodes = _nodes(run)
     assert nodes["compose"]["status"] == "completed", nodes["compose"]["error_message"]
     assert nodes["compose"]["output"]["provider"] == "ffmpeg"
@@ -1290,3 +1331,37 @@ def test_产线事件中文名随详情下发(as_role, people):
     assert types, "新起的运行一条事件都没有"
     assert all(t in got["event_labels"] for t in types), (
         "有事件码没有中文名：" + str(sorted(types - set(got["event_labels"]))))
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="需要真实成片以验证探测失败路径")
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_成片事务外探测失败仍收口并脱敏(people, clean_queue, monkeypatch, unexpected):
+    from composition import validators
+    from test_composition import _clip
+    setup = _project(people, n_shots=1)
+    clip = _clip(setup["project_id"], setup["episode_id"], setup["shot_ids"][0],
+                 people["editor"]["id"], "purple")
+    _sign_job(clip["id"], setup, people)
+    view = pipeline.create_run(setup["project_id"], setup["episode_id"],
+                               _template(V2_MINI), people["editor"]["id"])
+    assert worker.run_once("w-export-failure") == _nodes(view)["compose"]["job_id"]
+    secret = "synthetic-secret /server/private/prompt"
+    def fail(path):
+        raise (RuntimeError if unexpected else validators.MediaInvalid)(secret)
+    monkeypatch.setattr(validators, "inspect", fail)
+    result = pipeline.advance_run(view["id"])
+    checked = _nodes(result)["check_composition"]
+    assert checked["status"] == "failed"
+    assert checked["error_code"] == ("internal_error" if unexpected else "probe_failed")
+    assert secret not in json.dumps(result, ensure_ascii=False)
+
+
+def test_直接成片验收不能绕回事务内探测(monkeypatch):
+    from db import transaction
+    from composition import validators
+    def forbidden(path):
+        pytest.fail("media probing must not run inside a transaction")
+    monkeypatch.setattr(validators, "inspect", forbidden)
+    with transaction():
+        with pytest.raises(RuntimeError, match="事务外准备"):
+            pipeline._run_internal_node({}, {"id": -1, "node_type": "export_validate"}, {})

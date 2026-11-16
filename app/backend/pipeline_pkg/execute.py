@@ -367,12 +367,50 @@ def _update_node_input(node_id: int, node_input: dict) -> None:
 
 
 
+
+def _check_export_output(node: dict, by_key: dict) -> dict:
+    """在事务外恢复成片元数据并探测最终媒体；不推进节点状态。"""
+    from composition import service as composition_service
+    from composition import validators
+    from repositories.compositions import compositions
+
+    job_id = _upstream_job(node, by_key)
+    if job_id is None:
+        raise _NodeFail("upstream_job_missing", "找不到要验收的合成作业")
+    composition_row = compositions.by_job(job_id)
+    if composition_row is None:
+        raise _NodeFail("composition_missing",
+                        f"作业 #{job_id} 没有对应的成片记录")
+    view = composition_service.view(composition_row["id"])
+    if view["status"] != "succeeded":
+        raise _NodeFail("composition_not_ready",
+                        f"合成作业现在是「{view['status_label']}」，还不能验收")
+    if not view["output_path"]:
+        raise _NodeFail("output_missing", "成片记录里没有最终产物路径")
+    target = jobfiles.resolve_artifact(view["output_path"])
+    if target is None:
+        raise _NodeFail("output_missing", "最终成片文件不在了")
+    info = validators.inspect(target)
+    if info["bytes"] != view["bytes"]:
+        raise _NodeFail("output_changed", "最终成片的大小与记录不一致")
+    return {
+        "composition_id": view["id"], "job_id": job_id,
+        "version": view["version"], "sha256": view["sha256"],
+        "duration_ms": info["duration_ms"], "width": info["width"],
+        "height": info["height"], "bytes": info["bytes"]}
+
+
 def _run_internal_node(run, node: dict, by_key: dict, probes=None) -> None:
     """内部检查节点：调度器当场做完，不排队、不花钱。
 
-    读文件与读库都在事务里——这些都是**只读**，回滚不需要撤销任何东西；
-    真正不能进事务的是 Git 提交与删文件，产线这一步一个都不做。
+    普通文件读取与库内检查可在状态事务内执行；成片元数据恢复与媒体探测
+    由 advance_run 在事务外准备，本处只消费已核对上游状态的结果。
+    直接调用且未传 probes 时，调用方必须位于事务外。
     """
+    if node["node_type"] == "export_validate" and probes is None:
+        with get_conn() as conn:
+            if conn.in_transaction:
+                raise RuntimeError("成片验收必须先在事务外准备探测结果")
     if not pipeline_repo.try_begin(node["id"]):
         return
     ntype = node["node_type"]
@@ -458,43 +496,14 @@ def _run_internal_node(run, node: dict, by_key: dict, probes=None) -> None:
                 "note": ("本机音频路线还没配好；配音与音乐要到音频中心逐条提交"
                          if len(ready) < len(rows) else "")}
         elif ntype == "export_validate":
-            # 合成后验收：worker 已经用 ffprobe 复核过一遍，这里再按**成片记录**
-            # 对一次（文件还在、大小与摘要对得上、分辨率与时长与记录一致）。
-            # 两道都过才算完成；任何一道不成立，节点明确失败，不记 skipped。
-            from composition import service as composition_service
-            from composition import validators
-            from repositories.compositions import compositions
-
-            job_id = _upstream_job(node, by_key)
-            if job_id is None:
-                raise _NodeFail("upstream_job_missing", "找不到要验收的合成作业")
-            composition_row = compositions.by_job(job_id)
-            if composition_row is None:
-                raise _NodeFail("composition_missing",
-                                f"作业 #{job_id} 没有对应的成片记录")
-            view = composition_service.view(composition_row["id"])
-            if view["status"] != "succeeded":
-                raise _NodeFail("composition_not_ready",
-                                f"合成作业现在是「{view['status_label']}」，还不能验收")
-            if not view["output_path"]:
-                raise _NodeFail("output_missing", "成片记录里没有最终产物路径")
-            target = jobfiles.resolve_artifact(view["output_path"])
-            if target is None:
-                raise _NodeFail("output_missing", "最终成片文件不在了")
-            # ffprobe 由 `advance_run` 在事务外预取；没预取到（例如直接调本函数）
-            # 才退回现场探测，行为与改动前一致。
-            info = probes.get(node["id"]) if probes else None
-            if info is None:
-                info = validators.inspect(target)
-            elif isinstance(info, Exception):
-                raise _NodeFail("probe_failed", f"成片探测失败：{info}")
-            if info["bytes"] != view["bytes"]:
-                raise _NodeFail("output_changed", "最终成片的大小与记录不一致")
-            status, output = NODE_DONE, {
-                "composition_id": view["id"], "job_id": job_id,
-                "version": view["version"], "sha256": view["sha256"],
-                "duration_ms": info["duration_ms"], "width": info["width"],
-                "height": info["height"], "bytes": info["bytes"]}
+            if probes is None:
+                output = _check_export_output(node, by_key)
+            else:
+                prepared = probes[node["id"]]
+                if prepared["error"] is not None:
+                    raise prepared["error"]
+                output = prepared["output"]
+            status = NODE_DONE
         elif ntype == "export_prepare":
             # 成片中心是阶段 D。这里明确 skipped，不写 completed——
             # 没做的事不能记成做了（附件：不得把未验证能力标记为成功）。

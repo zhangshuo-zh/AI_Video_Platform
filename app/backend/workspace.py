@@ -34,10 +34,11 @@ class PathError(Exception):
     这是"你给的东西不对"，不是"平台坏了"。"""
 
 
-def root() -> Path:
-    """工作区根目录（已建好、已解析软链）。"""
+def root(*, create: bool = True) -> Path:
+    """解析工作区根目录；显式准备默认建目录，路径校验和读取不创建目录。"""
     root_dir = WORKSPACE_DIR
-    root_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        root_dir.mkdir(parents=True, exist_ok=True)
     return Path(os.path.realpath(root_dir))
 
 
@@ -88,7 +89,7 @@ def normalize(rel_path: str) -> str:
     if not segments[-1].endswith(DOC_SUFFIX):
         raise _bad(f"正文必须是 {DOC_SUFFIX} 后缀")
 
-    root_dir = root()
+    root_dir = root(create=False)
     target = (root_dir / "/".join(segments)).resolve()
     real = os.path.realpath(target)
     # startswith(root + sep) 而不是 startswith(root)：
@@ -102,7 +103,7 @@ def normalize(rel_path: str) -> str:
 
 def path_of(rel_path: str) -> Path:
     """相对路径 → 绝对路径（校验通过的才行）。"""
-    return root() / normalize(rel_path)
+    return root(create=False) / normalize(rel_path)
 
 
 def exists(rel_path: str) -> bool:

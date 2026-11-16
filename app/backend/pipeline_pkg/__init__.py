@@ -48,7 +48,7 @@ from .dispatch import (
 from .execute import (
     _execute_node, _missing_image_params, _submit_job_node, _commit_submission,
     compose_shot_jobs, _submit_composition_node, _commit_composition, _arm_review_node,
-    _update_node_input, _run_internal_node, _NodeFail, episode_asset_ids
+    _update_node_input, _run_internal_node, _check_export_output, _NodeFail, episode_asset_ids
 )
 
 from .gates import (
@@ -100,6 +100,7 @@ __all__ = [
     "STANDARD_EPISODE_V2",
     "VIDEO_ONLY",
     "_NodeFail",
+    "_check_export_output",
     "_arm_review_node",
     "_commit_composition",
     "_commit_submission",

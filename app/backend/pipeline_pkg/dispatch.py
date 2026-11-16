@@ -1,5 +1,4 @@
 import sqlite3
-import log as _log
 
 import jobfiles
 import json
@@ -9,7 +8,7 @@ from repositories.jobs import jobs as job_repo
 from repositories.pipeline import NODE_ATTENTION, NODE_CANCELLED, NODE_DONE, NODE_FAILED, NODE_FINAL, NODE_PENDING, NODE_REVIEW, NODE_RUNNING, pipeline_repo
 
 from .constants import MAX_DISPATCH_PER_TICK, MAX_LAYERS, PipelineMissing
-from .execute import _commit_composition, _commit_submission, _execute_node
+from .execute import _check_export_output, _commit_composition, _commit_submission, _execute_node, _NodeFail
 from .graph import _deps_of, _find_approval, _node_map, _upstream_job
 from .views import run_view
 
@@ -87,46 +86,40 @@ def advance_run(run_id: int) -> dict:
 
 
 
-def _prefetch_export_probes(run_id: int) -> dict[int, object]:
-    """事务外把 `export_validate` 要用的 ffprobe 先跑掉。
+def _prefetch_export_probes(run_id: int) -> dict[int, dict]:
+    """事务外准备所有待验收节点，包括本轮才会同步完成的上游作业。
 
-    `validators.inspect` 起子进程（最长 30 秒），放在 `BEGIN IMMEDIATE` 里
-    等于让所有写连接排队。这里全程只读，失败也只把异常带回去让节点明确失败；
-    没覆盖到的节点仍走事务内那条现场探测（兼容直接调 `_dispatch_ready` 的调用方）。
+    准备结果带上游 Job ID 与状态；派发时再核对，状态变化就留待下一轮重算。
+    同时隔离成片 view 的缺元数据恢复与 ffprobe，事务内没有现场探测回退。
     """
-    try:
-        nodes = pipeline_repo.nodes_for_run(run_id)
-        by_key = _node_map(nodes)
-        from composition import validators
-        from composition.service import view as composition_view, CompositionMissing
-        from repositories.compositions import compositions
-
-        probes: dict[int, object] = {}
-        for row in nodes:
-            node = dict(row)
-            if node["node_type"] != "export_validate" or node["status"] != NODE_PENDING:
-                continue
-            if not all(by_key.get(d, {}).get("status") == NODE_DONE
-                       for d in _deps_of(node)):
-                continue
-            job_id = _upstream_job(node, by_key)
-            if job_id is None:
-                continue
-            comp = compositions.by_job(job_id)
-            if comp is None:
-                continue
-            try:
-                view = composition_view(comp["id"])
-                target = jobfiles.resolve_artifact(view.get("output_path") or "")
-                if target is None:
-                    continue
-                probes[node["id"]] = validators.inspect(target)
-            except (sqlite3.Error, OSError, ValueError, validators.MediaInvalid, CompositionMissing) as exc:
-                probes[node["id"]] = exc
-        return probes
-    except (sqlite3.Error, OSError, ValueError) as exc:
-        _log.get_logger(__name__).debug("pipeline_probe_snapshot_failed error=%s", type(exc).__name__)
+    run = pipeline_repo.get_run(run_id)
+    if run is None or run["cancelled"] or run["finished_at"] or run["paused"]:
         return {}
+    nodes = pipeline_repo.nodes_for_run(run_id)
+    by_key = _node_map(nodes)
+    from composition import validators
+
+    probes: dict[int, dict] = {}
+    for row in nodes:
+        node = dict(row)
+        if node["node_type"] != "export_validate" or node["status"] != NODE_PENDING:
+            continue
+        job_id = _upstream_job(node, by_key)
+        job = job_repo.get(job_id) if job_id is not None else None
+        prepared = {"job_id": job_id, "job_status": job["status"] if job else None,
+                    "retry_count": node["retry_count"],
+                    "output": None, "error": None}
+        try:
+            prepared["output"] = _check_export_output(node, by_key)
+        except _NodeFail as exc:
+            prepared["error"] = exc
+        except (sqlite3.Error, OSError, ValueError, validators.MediaInvalid) as exc:
+            prepared["error"] = _NodeFail("probe_failed", f"成片探测失败：{type(exc).__name__}")
+        except Exception as exc:
+            # 与内部节点同一个故障收口：仅保存本请求异常，派发时落失败并脱敏记录。
+            prepared["error"] = exc
+        probes[node["id"]] = prepared
+    return probes
 
 
 
@@ -257,6 +250,14 @@ def _dispatch_ready(run, nodes, *, pending_jobs=None, pending_compose=None,
         deps = _deps_of(node)
         if not all(by_key.get(d, {}).get("status") == NODE_DONE for d in deps):
             continue                       # 前置没完成：blocked（现算，不入库）
+        if node["node_type"] == "export_validate" and probes is not None:
+            prepared = probes.get(node["id"])
+            job_id = _upstream_job(node, by_key)
+            job = job_repo.get(job_id) if job_id is not None else None
+            if (prepared is None or prepared["job_id"] != job_id
+                    or prepared["retry_count"] != node["retry_count"]
+                    or prepared["job_status"] != (job["status"] if job else None)):
+                continue  # 上游在预取后变化，下一轮在事务外重算，不能消费旧结果。
         dispatched += 1
         _execute_node(run, node, by_key, pending_jobs=pending_jobs,
                       pending_compose=pending_compose, probes=probes)
