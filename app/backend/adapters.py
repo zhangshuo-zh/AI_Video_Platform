@@ -981,8 +981,8 @@ def health(row, *, probe_service: bool = False,
         return {**base, "state": checked.state, "detail": checked.detail,
                 "engine_model": checked.values.get("model") or "",
                 "endpoint": checked.values.get("endpoint") or ""}
-    checked = runtime.probe(adapter.code, model)
-    return {**base, "state": checked.state, "detail": checked.detail}
+    runtime_status = runtime.probe(adapter.code, model)
+    return {**base, "state": runtime_status.state, "detail": runtime_status.detail}
 
 
 # 登记层的运行位置 → 清单层的轴。**这是折回判据的唯一一份。**

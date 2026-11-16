@@ -15,7 +15,7 @@ from config import DB_PATH
 # 当前正在使用的事务连接。放在 contextvar 而不是函数参数上：
 # 仓储层的签名不必为了事务改一遍，也不用把 conn 一路透传到每个方法。
 # FastAPI 每个请求一个上下文、worker 单线程顺序跑，两边都不会串线。
-_HELD = contextvars.ContextVar("fv_held_conn", default=None)
+_HELD: contextvars.ContextVar[sqlite3.Connection | None] = contextvars.ContextVar("fv_held_conn", default=None)
 
 
 # 本进程是否已确认过"库确实是 WAL 模式"。见 `_connect()` 里的说明。

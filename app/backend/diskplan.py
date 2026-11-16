@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import shutil
 from pathlib import Path
 
@@ -37,12 +39,12 @@ SAFETY_RATIO = 1.25
 MB = 1024 ** 2
 
 
-def _avg(sizes: list[int]) -> int:
+def _avg(sizes: Sequence[int]) -> int:
     return round(sum(sizes) / len(sizes)) if sizes else 0
 
 
-def estimate(*, shots_missing: int, shot_video: list[int], keyframe: list[int] = (),
-             compose: list[int] = (), free_bytes: int | None = None,
+def estimate(*, shots_missing: int, shot_video: Sequence[int], keyframe: Sequence[int] = (),
+             compose: Sequence[int] = (), free_bytes: int | None = None,
              min_free_gb: int = DISK_MIN_FREE_GB) -> dict:
     """三种典型大小 → 这一集还需要多少磁盘。`*_sizes` 都是**每条作业的总字节**。"""
     per = {"shot_video": {"samples": len(shot_video), "avg_bytes": _avg(shot_video)},
@@ -105,7 +107,7 @@ def disk_readout(project_id: int, *, shots_missing: int,
     以及统计面板）说的必须是同一句话。"成片作业不能混进每镜平均"这类口径
     收在仓储的 `recent_result_paths()` 里，这里只负责汇字节数与出那句人话。
     """
-    sizes = {"shot_video": [], "keyframe": [], "compose": []}
+    sizes: dict[str, list[int]] = {"shot_video": [], "keyframe": [], "compose": []}
     samples = (
         ("shot_video", job_repo.recent_result_paths(
             project_id, capability=capability, shot_bound=True,

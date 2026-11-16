@@ -264,6 +264,7 @@ def _resolve_input_image(raw: str, job, *, label: str = "条件图") -> Path:
     root = _job_dir_root(job["id"])
     files_root = FILES_DIR.resolve()
     jobs_root = JOBS_DIR.resolve()
+    target: Path | None
     if image_path.is_absolute():
         target = image_path.resolve()
     else:
