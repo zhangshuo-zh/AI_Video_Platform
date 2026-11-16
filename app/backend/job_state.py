@@ -15,6 +15,13 @@
 那仍在 `retry_reason()` 里；本表只给"状态这一层"的答案。
 """
 
+from typing import NotRequired, TypedDict
+
+
+_ActionSpec = TypedDict("_ActionSpec", {
+    "from": dict[str, str | None], "permission": str, "new_row": NotRequired[bool],
+})
+
 QUEUED = "queued"
 STARTING = "starting"
 RUNNING = "running"
@@ -66,7 +73,7 @@ TRANSITIONS = {
 
 # 人对一条作业能做的动作。`to` 是"落到哪个状态"，取消是分状态的：
 # 排队中的可以直接取消，已经在跑的只能先记一个取消请求，由 worker 收尾。
-ACTIONS = {
+ACTIONS: dict[str, _ActionSpec] = {
     "cancel": {
         "from": {QUEUED: CANCELLED, STARTING: CANCEL_REQUESTED,
                  RUNNING: CANCEL_REQUESTED,
@@ -91,7 +98,9 @@ ACTIONS = {
 def can(action: str, status: str) -> bool:
     """这个状态能不能做这个动作。未知动作一律 False，不抛。"""
     spec = ACTIONS.get(action)
-    return bool(spec) and status in spec["from"]
+    if not spec:
+        return False
+    return status in spec["from"]
 
 
 def target(action: str, status: str) -> str | None:
@@ -103,7 +112,8 @@ def target(action: str, status: str) -> str | None:
 
 
 def permission(action: str) -> str:
-    return (ACTIONS.get(action) or {}).get("permission", "")
+    spec = ACTIONS.get(action)
+    return spec["permission"] if spec else ""
 
 
 def assert_transition(old: str, new: str) -> None:

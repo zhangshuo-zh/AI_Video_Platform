@@ -29,7 +29,9 @@ def looks_like(content_type: str, head: bytes) -> bool:
     if content_type == "image/webp":
         return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
     magic = MAGIC.get(content_type)
-    return bool(magic) and head.startswith(magic)
+    if not magic:
+        return False
+    return head.startswith(magic)
 
 
 def sniff(head: bytes) -> str | None:

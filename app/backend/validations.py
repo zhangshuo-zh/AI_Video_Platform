@@ -19,9 +19,13 @@ import json
 
 import adapters
 import jobfiles
+from log import get_logger
+
 from models import VALIDATION_KINDS
 from repositories.jobs import jobs as job_repo
 from repositories.validation import validations as repo
+
+_logger = get_logger(__name__)
 
 KIND_LABELS = VALIDATION_KINDS
 
@@ -90,9 +94,14 @@ def from_job(job_id: int, kind: str, created_by: int | None,
     resources = {}
     try:
             resources = json.loads(job["resources_json"] or "{}")
-    except ValueError:
+    except ValueError as exc:
+        _logger.debug("validation_resources_unreadable job=%s error=%s", job["id"], type(exc).__name__)
         resources = {}
-    provider = resources.get("provider") if isinstance(resources.get("provider"), dict) else {}
+    if not isinstance(resources, dict):
+        _logger.debug("validation_resources_invalid_shape job=%s type=%s", job["id"], type(resources).__name__)
+        resources = {}
+    raw_provider = resources.get("provider")
+    provider = raw_provider if isinstance(raw_provider, dict) else {}
     adapter = adapters.find(job["capability"], job["execution_mode"], job["provider_code"])
     checks = {
         "job_id": job["id"],

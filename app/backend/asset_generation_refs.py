@@ -1,14 +1,23 @@
 """资产生成归属的兼容解析，供服务与仓储筛选共用。"""
 import json
+from typing import TypedDict
 
 
-def parse_refs(job) -> dict:
+class AssetGenerationRefs(TypedDict):
+    operation: str
+    asset_id: int | None
+    variant_id: int | None
+    mode: str
+    fields: list[str]
+
+
+def parse_refs(job) -> AssetGenerationRefs:
     """从作业里读出归属。读不出 op 就说明这不是资产生成作业。"""
     try:
         refs = json.loads(job["input_refs_json"] or "[]")
     except (TypeError, ValueError):
         refs = []
-    out = {"operation": "", "asset_id": None, "variant_id": None,
+    out: AssetGenerationRefs = {"operation": "", "asset_id": None, "variant_id": None,
            "mode": "", "fields": []}
     for item in refs if isinstance(refs, list) else []:
         if not isinstance(item, str) or ":" not in item:
@@ -22,7 +31,10 @@ def parse_refs(job) -> dict:
             out["fields"].append(value)
         elif key in ("asset", "variant"):
             try:
-                out[f"{key}_id"] = int(value)
+                if key == "asset":
+                    out["asset_id"] = int(value)
+                else:
+                    out["variant_id"] = int(value)
             except ValueError:
                 pass
     # 这里只报**行里写了什么**：图像作业本来就没有模式这一层，替它填一个

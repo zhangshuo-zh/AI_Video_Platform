@@ -91,7 +91,7 @@ def require_permission(code: str):
     """按权限点守卫。超级用户的 permissions 集合本来就是全集，天然通过。"""
 
     def dependency(request: Request, user=Depends(require_user)):
-        granted = getattr(request.state, "permissions", set())
+        granted: set[str] = getattr(request.state, "permissions", set())
         if code not in granted:
             raise HTTPException(status_code=403, detail=f"缺少权限：{code}")
         return user

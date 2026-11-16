@@ -1624,7 +1624,12 @@ def test_mypy_门禁真的在检查而不是空转():
     for required in ('"schemas"', '"db.py"', '"services"', '"repositories"',
                      '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"', '"adapters_pkg"',
                      '"runners.py"', '"runners_pkg"', '"diskplan.py"', '"precheck.py"', '"production.py"',
-                     '"asset_studio.py"', '"asset_studio_pkg"', '"production_pkg"', '"module_facade.py"', '"model_center.py"'):
+                     '"asset_studio.py"', '"asset_studio_pkg"', '"production_pkg"', '"module_facade.py"', '"model_center.py"',
+                     '"main.py"', '"deps.py"', '"access.py"', '"security.py"', '"safenet.py"',
+                     '"secret_store.py"', '"jobfiles.py"', '"workspace.py"', '"gitrepo.py"', '"backup.py"',
+                     '"migrate.py"', '"config.py"', '"errors.py"', '"error_catalog.py"', '"job_state.py"',
+                     '"imagetypes.py"', '"paths.py"', '"asset_generation_refs.py"', '"extraction.py"',
+                     '"reset_password.py"', '"validations.py"'):
         assert required in mypy_cfg, (
             f"mypy 的检查范围必须覆盖 schemas/db.py/services/repositories，缺少 {required}：{mypy_cfg[:200]}")
 

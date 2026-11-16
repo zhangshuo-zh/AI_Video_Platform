@@ -1,6 +1,6 @@
 """asset_studio generation 业务域。"""
 from __future__ import annotations
-from asset_generation_refs import parse_refs
+from asset_generation_refs import AssetGenerationRefs, parse_refs
 from models import ASSET_GEN_OPERATIONS, JOB_STATUSES, JobSubmitIn
 from repositories.content import assets as asset_repo
 from repositories.content import variants as variant_repo
@@ -61,7 +61,7 @@ def _cloud_estimate(capability: str, payload, model_code: str, provider_code: st
 
 
 
-def generation_summary(job, ref: dict | None = None) -> dict:
+def generation_summary(job, ref: AssetGenerationRefs | None = None) -> dict:
     """一条生成作业的界面摘要。列表与提交回执共用这一份，别再写第二个映射。
 
     `ref` 让调用方把已经解析过的归属传进来（`recent_generations` 要先按它筛一遍），

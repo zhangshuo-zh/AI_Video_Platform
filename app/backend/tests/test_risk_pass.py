@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 import config
 import paths
 import worker
@@ -327,3 +329,23 @@ def test_全局意外异常响应与结构化日志不回显原文(app, caplog):
     assert "完整异常提示词" not in caplog.text
     assert "/server/private/error.txt" not in caplog.text
     assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.parametrize("still_exists", [True, False])
+def test_口令重置重新确认用户仍存在(monkeypatch, capsys, still_exists):
+    import reset_password
+    secret = "synthetic-new-password"
+    states = iter([{"id": 123}, {"id": 123} if still_exists else None])
+    reset = []
+    monkeypatch.setattr(reset_password.sys, "argv", ["reset_password.py", "test-user"])
+    monkeypatch.setattr(reset_password.users, "get_by_username", lambda _: next(states))
+    monkeypatch.setattr(reset_password.getpass, "getpass", lambda _: secret)
+    monkeypatch.setattr(reset_password, "hash_password", lambda _: "hash-only")
+    monkeypatch.setattr(reset_password.users, "reset_password", lambda uid, hashed: reset.append((uid, hashed)))
+    result = reset_password.main()
+    assert result == (0 if still_exists else 1)
+    assert reset == ([(123, "hash-only")] if still_exists else [])
+    printed = capsys.readouterr()
+    assert secret not in printed.out + printed.err
+    if not still_exists:
+        assert "用户已不存在" in printed.err

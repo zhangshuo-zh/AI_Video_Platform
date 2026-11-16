@@ -35,6 +35,9 @@ def main() -> int:
         return 1
 
     user = users.get_by_username(username)
+    if user is None:
+        print(f"用户已不存在：{username}", file=sys.stderr)
+        return 1
     users.reset_password(user["id"], hash_password(password))
     print(f"已重置 {username} 的口令：现有会话全部作废，下次登录会被要求再改一次。")
     return 0

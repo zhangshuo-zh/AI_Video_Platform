@@ -92,10 +92,10 @@ def describe(path: Path | str) -> str:
     # `/var/… -> /private/var/…` 就会这样），传进来的字符串与被替掉的那一段
     # 必须长得不一样才换得掉。只备 resolve 后的那一种，这条替换会静默不生效，
     # 绝对路径照样出家门——静默不生效正是这类收口最坏的失效方式。
-    pairs = set()
+    pairs: set[tuple[str, str]] = set()
     for root, label in roots:
         for form in (str(root), str(root.resolve())):
             pairs.add((form, label))
-    for root, label in sorted(pairs, key=lambda p: -len(p[0])):
-        text = text.replace(root + os.sep, label + "/").replace(root, label)
+    for root_text, label in sorted(pairs, key=lambda p: -len(p[0])):
+        text = text.replace(root_text + os.sep, label + "/").replace(root_text, label)
     return text

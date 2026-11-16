@@ -295,3 +295,23 @@ def test_环境检查接口留痕且不带密钥值(as_role, provider_state, mon
     history = c.get("/api/providers/validations?limit=5").json()
     assert any(v["id"] == body["id"] for v in history)
     assert all(planted not in str(v) for v in history)
+
+
+@pytest.mark.parametrize("resources, expected", [
+    (None, None), ([], None), ({"provider": None}, None),
+    ({"provider": []}, None), ({"provider": {"http_status": 200}}, 200),
+])
+def test_验证元数据允许缺失或旧形状且不升级mock(fresh_project, clean_queue, resources, expected):
+    import json
+    from db import get_conn
+    pid = fresh_project("editor")
+    job = _succeeded_job(pid, provider="mock", model="mock-1")
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET resources_json = ? WHERE id = ?",
+                     (json.dumps(resources), job["id"]))
+    result = validations.from_job(job["id"], "mock", created_by=None)
+    assert result["ok"] is True
+    assert result["validation"]["http_status"] == expected
+    assert result["validation"]["kind"] == "mock"
+    with pytest.raises(validations.ValidationInvalid, match="假适配器"):
+        validations.from_job(job["id"], "real_call", created_by=None)

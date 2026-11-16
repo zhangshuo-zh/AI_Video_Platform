@@ -51,7 +51,7 @@ class UnsafeTarget(ValueError):
     """这个地址平台不替人去连。路由层转 422，worker 侧记成一条明确的失败原因。"""
 
 
-def _ip_of(host: str) -> ipaddress._BaseAddress | None:
+def _ip_of(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """把主机名解析成 IP；解析不了返回 None（交给调用的那一步自己报错）。
 
     这里**不用 `socket.getaddrinfo` 做安全判断**：DNS 可以在解析与连接之间变
@@ -143,9 +143,7 @@ class NoRedirect:
         from urllib import request as _r
         self._cls = _r.HTTPRedirectHandler
 
-        outer = self
-
-        class _Handler(outer._cls):
+        class _Handler(_r.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 raise UnsafeTarget(
                     f"上游要求重定向到 {newurl}；为避免绕过地址校验，平台不跟随重定向")

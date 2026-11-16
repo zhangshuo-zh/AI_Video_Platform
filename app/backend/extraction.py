@@ -164,11 +164,11 @@ def _clean_payload(kind: str, raw: dict) -> dict:
         if text:
             shots.append(text)
     try:
-        index = int(raw.get("index"))
+        index = int(raw.get("index", 0))
     except (TypeError, ValueError):
         index = 0
     try:
-        duration = float(raw.get("duration_hint"))
+        duration = float(raw.get("duration_hint", 5.0))
     except (TypeError, ValueError):
         duration = 5.0
     return {

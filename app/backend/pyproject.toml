@@ -63,9 +63,11 @@ filterwarnings = [
 # 打开跟随会把别处的存量错误全算到这次检查头上（实测 11 个错误、4 个文件，
 # 全在被 import 的模块里）。silent 表示"跟随但**不报**它们的错误"——
 # 仍会读那些模块的注解来做类型推断，只是不为它们记账。
+# 第三轮第一批：新增安全与基础设施及其共享解析模块，共 198 个文件。
+# 运行时和智能体仍在第二批推进；完成全部业务源码覆盖后移除 silent。
 [tool.mypy]
 python_version = "3.12"
-files = ["schemas", "db.py", "log.py", "services", "repositories", "adapters.py", "adapters_pkg", "runners.py", "runners_pkg", "diskplan.py", "composition", "pipeline_pkg", "routers", "precheck.py", "production.py", "production_pkg", "module_facade.py", "asset_studio.py", "asset_studio_pkg", "asset_import_recovery.py", "model_center.py"]
+files = ["schemas", "db.py", "log.py", "services", "repositories", "adapters.py", "adapters_pkg", "runners.py", "runners_pkg", "diskplan.py", "composition", "pipeline_pkg", "routers", "precheck.py", "production.py", "production_pkg", "module_facade.py", "asset_studio.py", "asset_studio_pkg", "asset_import_recovery.py", "model_center.py", "main.py", "deps.py", "access.py", "security.py", "safenet.py", "secret_store.py", "jobfiles.py", "workspace.py", "gitrepo.py", "backup.py", "migrate.py", "config.py", "errors.py", "error_catalog.py", "job_state.py", "imagetypes.py", "paths.py", "asset_generation_refs.py", "extraction.py", "reset_password.py", "validations.py"]
 follow_imports = "silent"
 ignore_missing_imports = true
 # 不要求"每个函数都必须有注解"：这是渐进式，先守住已有的注解别写错。
