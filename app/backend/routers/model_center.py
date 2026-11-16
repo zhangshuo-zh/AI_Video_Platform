@@ -157,7 +157,7 @@ def list_scenes(_=Depends(require_user)) -> dict:
     return model_configuration.scenes_payload()
 
 
-@router.get("/model-policies/resolve/{scene_key}", response_model=ModelResolveOut)
+@router.get("/model-policies/resolve/{scene_key}", response_model=ModelResolveOut, response_model_exclude_unset=True)
 def resolve(scene_key: str, _=Depends(require_user)) -> dict:
     return _model_call(model_operations.resolve, scene_key)
 
@@ -174,7 +174,7 @@ def _tier_problem(capability: str, provider: str, model_code: str) -> str:
 #   * 返回值里的健康只读探测缓存；现查由显式 POST 触发；
 #   * 密钥只出现在"变量名＋有没有值"这一层，值永不进响应。
 
-@router.get("/engines", response_model=EngineListOut)
+@router.get("/engines", response_model=EngineListOut, response_model_exclude_unset=True)
 def list_engines(_=Depends(require_permission("system:config"))) -> dict:
     return model_configuration.engines_payload()
 

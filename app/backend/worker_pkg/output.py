@@ -4,6 +4,8 @@ from __future__ import annotations
 import codecs
 import json
 import re
+from sqlite3 import Row
+from typing import Any
 from collections.abc import Iterable
 from typing import TextIO
 
@@ -11,11 +13,12 @@ from log import sanitize_msg
 
 # Unix 绝对路径；URL 内的 / 与相对路径不匹配。
 _ABSOLUTE_PATH = re.compile(r'''(?<![\w:/])/(?:[^\s"'<>|;,)\]]+)''')
+_FILE_URI = re.compile(r"file:/+[^\s\"\'<>]+", re.IGNORECASE)
 _BREAK = re.compile(r"[\r\n]")
 _MAX_LINE = 8192
 
 
-def private_output_values(job) -> tuple[str, ...]:
+def private_output_values(job: dict[str, Any] | Row) -> tuple[str, ...]:
     """作业正文的已知入口；不把参数整体或输入引用写进日志。"""
     row = dict(job)
     values = [row.get("prompt_snapshot")]
@@ -32,14 +35,15 @@ def private_output_values(job) -> tuple[str, ...]:
 class OutputLog:
     """跨 read 块保留完整行后脱敏；超长无分隔行隐藏，避免无界缓存。"""
 
-    def __init__(self, target: TextIO, private_values: Iterable[str]):
+    def __init__(self, target: TextIO, private_values: Iterable[str]) -> None:
         self.target = target
         self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         values: set[str] = set()
         for value in private_values:
             if value:
                 values.update(value.splitlines())
-                values.add(json.dumps(value, ensure_ascii=False)[1:-1])
+                for ascii_only in (False, True):
+                    values.add(json.dumps(value, ensure_ascii=ascii_only)[1:-1])
         self.private_values = sorted(values - {""}, key=len, reverse=True)
         self.pending = ""
         self.hidden = False
@@ -47,7 +51,8 @@ class OutputLog:
     def _record(self, line: str) -> None:
         for value in self.private_values:
             line = line.replace(value, "<正文或密钥已隐藏>")
-        self.target.write(_ABSOLUTE_PATH.sub("<path>", sanitize_msg(line, max_len=0)))
+        line = _FILE_URI.sub("<path>", sanitize_msg(line, max_len=0))
+        self.target.write(_ABSOLUTE_PATH.sub("<path>", line))
         self.target.flush()
 
     def write(self, chunk: bytes) -> None:

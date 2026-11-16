@@ -112,6 +112,7 @@ from .members import (
 )
 
 from .model_center import (
+    ModelPolicyRowOut, ModelSceneRowOut, ModelCandidateOut, EngineRowOut,
     REG_SOURCES, POLICY_PREFERENCES, ModelRegistrationIn, ModelRegistrationPatch,
     EngineInstanceIn, EngineInstancePatch, EngineInstanceOut, ModelPolicyIn, AgentRunIn,
     RuntimePathIn, RuntimePathItem, RuntimePathsOut,
@@ -170,6 +171,7 @@ from .workbench import (
 )
 
 __all__ = [
+    "ModelPolicyRowOut", "ModelSceneRowOut", "ModelCandidateOut", "EngineRowOut",
     "BillingUnit",
     "AFFIX_CATEGORIES",
     "ASSET_GEN_OPERATIONS",

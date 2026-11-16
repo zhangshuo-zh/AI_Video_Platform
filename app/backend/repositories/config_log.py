@@ -21,6 +21,7 @@ import json
 import sqlite3
 
 from db import get_conn
+from log import get_logger
 
 SUBJECTS = ("provider_slot", "model_registration", "model_policy")
 
@@ -42,10 +43,11 @@ def record(subject: str, subject_key: str, action: str, summary: str,
                 (subject, subject_key, action, summary[:500],
                  json.dumps(payload or {}, ensure_ascii=False, sort_keys=True),
                  created_by))
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
         # 表还没建（老库没跑 0044）或库暂时不可写：放行业务，痕迹这一笔认亏。
         # 不吞业务异常——那条该往上抛；吞的只有"日志自己写不进去"。
-        pass
+        get_logger(__name__).warning("config_change_record_failed subject=%s error=%s",
+                                     subject, type(exc).__name__)
 
 
 def recent(limit: int = 50) -> list[sqlite3.Row]:

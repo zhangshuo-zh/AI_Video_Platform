@@ -1,7 +1,10 @@
 """模型中心：slots 业务域。"""
 from __future__ import annotations
 import adapters
+from contextvars import ContextVar
 import engines
+
+_SLOT_MODELS: ContextVar[dict[tuple[str, str], str] | None] = ContextVar("model_slot_snapshot", default=None)
 
 
 
@@ -76,7 +79,7 @@ _find_adapter = find_adapter
 
 
 
-def _slot_current_model(adapter) -> str:
+def _slot_current_model(adapter: adapters.Adapter) -> str:
     """这一槽位（能力×后端）当前配置的 model，没配过返回空串。
 
     0043 之后它只剩一个用途：回答"这一档是不是槽位当前那一档"
@@ -86,6 +89,9 @@ def _slot_current_model(adapter) -> str:
     """
     from repositories.providers import providers
 
+    snapshot = _SLOT_MODELS.get()
+    if snapshot is not None:
+        return snapshot.get((adapter.capability, adapter.backend), "")
     slot = providers.slot(adapter.capability, adapter.backend)
     if slot is None:
         return ""

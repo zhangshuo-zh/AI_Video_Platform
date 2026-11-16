@@ -1,6 +1,9 @@
 """模型中心：catalog_view 业务域。"""
 from __future__ import annotations
 import adapters
+from typing import Any
+from repositories.providers import providers
+from .slots import _SLOT_MODELS
 import engines
 from repositories.model_center import model_center
 from .labels import _tags_of
@@ -28,7 +31,7 @@ UNINTEGRATED_ENGINES: list[dict] = [
 
 
 
-def catalog(verification: dict | None = None, *, probe: bool = False) -> list[dict]:
+def catalog(verification: dict[tuple[Any, ...], Any] | None = None, *, probe: bool = False) -> list[dict[str, Any]]:
     """清单 × 登记 的联表视图：模型仓库页与引擎页的唯一数据源。
 
     三段拼出来，顺序固定：
@@ -48,59 +51,64 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
     "要连一次才知道"。要现查请走 `POST /api/models/probe` 或那一行的
     「环境检查」——它们是显式动作，人可以等 5 秒，打开页面不该等。
     """
-    regs = [dict(r) for r in model_center.registrations()]
-    # 登记按**折回后的轴**进索引：remote 那几行要能认领清单里同 provider 同模型的档，
-    # 否则按界面正常登记的远程自建一进列表就变成"清单未登记"。
-    reg_index = {(r["capability"], _manifest_axis(r["backend"]), r["provider"],
-                  r["model_code"]): r
+    snapshot = {(row["capability"], row["backend"]): (row["model"] or "").strip()
+                for row in providers.all()}
+    token = _SLOT_MODELS.set(snapshot)
+    try:
+        regs = [dict(r) for r in model_center.registrations()]
+        # 登记按**折回后的轴**进索引：remote 那几行要能认领清单里同 provider 同模型的档，
+        # 否则按界面正常登记的远程自建一进列表就变成"清单未登记"。
+        reg_index = {(r["capability"], _manifest_axis(r["backend"]), r["provider"],
+                      r["model_code"]): r
+                     for r in regs}
+        # 只查"已登记的那几组槽位×档"验证记录：目录里没登记的档不需要它们的验证历史，
+        # 而 model_validation 只追加不改——不过滤的话窗口函数要扫全部历史再丢掉 99%。
+        # 0043 起验证矩阵按档分区，键就是四元组——不再需要"投影成三元组"
+        # 再在 `_slot_model_matches` 里比一次 model：查询结果只含这一档的记录。
+        # 0045 起**槽位的 backend 用登记行自己的值**（remote 也照常取），
+        # 不用 `reg_index` 那把折回后的键：折回只用于查清单的参数与计价，
+        # 验证记录记在登记行自己名下。两条轴混在一起就会拿本地记录替远端背书。
+        slots = {(r["capability"], r["backend"], r["provider"], r["model_code"])
                  for r in regs}
-    # 只查"已登记的那几组槽位×档"验证记录：目录里没登记的档不需要它们的验证历史，
-    # 而 model_validation 只追加不改——不过滤的话窗口函数要扫全部历史再丢掉 99%。
-    # 0043 起验证矩阵按档分区，键就是四元组——不再需要"投影成三元组"
-    # 再在 `_slot_model_matches` 里比一次 model：查询结果只含这一档的记录。
-    # 0045 起**槽位的 backend 用登记行自己的值**（remote 也照常取），
-    # 不用 `reg_index` 那把折回后的键：折回只用于查清单的参数与计价，
-    # 验证记录记在登记行自己名下。两条轴混在一起就会拿本地记录替远端背书。
-    slots = {(r["capability"], r["backend"], r["provider"], r["model_code"])
-             for r in regs}
-    index = (verification if verification is not None
-             else _verification_index(slots))
-    used: set[int] = set()
-    rows: list[dict] = []
+        index = (verification if verification is not None
+                 else _verification_index(slots))
+        used: set[int] = set()
+        rows: list[dict] = []
 
-    for adapter in adapters.ADAPTERS:
-        spec_by_code = {m.code: m.as_dict() for m in adapter.models}
-        if not spec_by_code:
-            # 只登记了名字的壳（volc/kling/…）：没有档可列，但引擎页要看得见它
-            rows.append(_engine_only_row(adapter))
-            continue
-        for code, spec in spec_by_code.items():
-            reg = reg_index.get((adapter.capability, adapter.backend,
-                                 adapter.code, code))
-            if reg is not None:
-                used.add(reg["id"])
-                rows.append(_registered_row(adapter, spec, reg, index, probe=probe))
+        for adapter in adapters.ADAPTERS:
+            spec_by_code = {m.code: m.as_dict() for m in adapter.models}
+            if not spec_by_code:
+                # 只登记了名字的壳（volc/kling/…）：没有档可列，但引擎页要看得见它
+                rows.append(_engine_only_row(adapter))
+                continue
+            for code, spec in spec_by_code.items():
+                reg = reg_index.get((adapter.capability, adapter.backend,
+                                     adapter.code, code))
+                if reg is not None:
+                    used.add(reg["id"])
+                    rows.append(_registered_row(adapter, spec, reg, index, probe=probe))
+                else:
+                    rows.append(_unregistered_row(adapter, spec))
+
+        for reg in regs:
+            if reg["id"] in used:
+                continue
+            # 没被清单那一轮认领的登记，还可能落在**已经被别的登记占走的档**上：
+            # 同一 provider／同一模型档既有本地登记又有远程自建登记时，索引只能留一个。
+            # 这种情况仍然是"清单认得这一档"，只是另开了第二条运行位置，得照常列出来；
+            # 只有清单里真的没有这一档（`_find_adapter` 空或模型码不在参数表里）才算孤儿。
+            adapter = _find_adapter(reg["capability"], reg["backend"], reg["provider"])
+            orphan_spec: dict | None = None
+            if adapter is not None:
+                orphan_spec = next((m.as_dict() for m in adapter.models
+                                    if m.code == reg["model_code"]), None)
+            if orphan_spec is not None:
+                rows.append(_registered_row(adapter, orphan_spec, reg, index, probe=probe))
             else:
-                rows.append(_unregistered_row(adapter, spec))
-
-    for reg in regs:
-        if reg["id"] in used:
-            continue
-        # 没被清单那一轮认领的登记，还可能落在**已经被别的登记占走的档**上：
-        # 同一 provider／同一模型档既有本地登记又有远程自建登记时，索引只能留一个。
-        # 这种情况仍然是"清单认得这一档"，只是另开了第二条运行位置，得照常列出来；
-        # 只有清单里真的没有这一档（`_find_adapter` 空或模型码不在参数表里）才算孤儿。
-        adapter = _find_adapter(reg["capability"], reg["backend"], reg["provider"])
-        orphan_spec: dict | None = None
-        if adapter is not None:
-            orphan_spec = next((m.as_dict() for m in adapter.models
-                                if m.code == reg["model_code"]), None)
-        if orphan_spec is not None:
-            rows.append(_registered_row(adapter, orphan_spec, reg, index, probe=probe))
-        else:
-            rows.append(_orphan_row(reg, probe=probe, verification=index))
-    return rows
-
+                rows.append(_orphan_row(reg, probe=probe, verification=index))
+        return rows
+    finally:
+        _SLOT_MODELS.reset(token)
 
 
 def item_for(reg: dict) -> dict | None:

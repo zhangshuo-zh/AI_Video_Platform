@@ -1,13 +1,13 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from typing import Self
 
 from .enums import Capability, ConnectionType, HostingSource
 
 
 # ---------- 模型中心（0035） ----------
-# 读侧一律返回 dict：目录是"清单 × 登记"的联表，字段随清单走，
-# 套一层 Pydantic 只会让加一个清单字段要改两处（manifest 端点早就这么定了）。
+# 读侧确定字段使用响应模型校验；清单扩展字段保留 extra=allow，避免静默丢字段。
 # 写侧必须有模型：校验发生在入库之前，不能让脏键名进库再靠界面挡。
 
 REG_SOURCES: dict[str, str] = {"local": "本地", "cloud": "云端", "remote": "远程自建"}
@@ -285,9 +285,26 @@ class ModelMutationOut(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ModelPolicyRowOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    scene_key: str
+    scene_label: str
+    capability: str
+    required: list[str]
+    slot_provider: str
+    slot_model: str
+    enabled: StrictBool
+    preference: str
+    fallback_provider: str
+    fallback_model: str
+    resource_limit: dict[str, Any]
+    cloud_confirm_required: StrictBool
+
+
 class ModelPoliciesOut(BaseModel):
     model_config = ConfigDict(extra="allow")
-    items: list[Any] = Field(default_factory=list)
+    items: list[ModelPolicyRowOut]
+    no_auto_fallback: Literal[True]
 
 
 class ModelPoliciesSaveOut(BaseModel):
@@ -300,18 +317,83 @@ class ConfigChangesOut(BaseModel):
     items: list[Any] = Field(default_factory=list)
 
 
+class ModelSceneRowOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    scene_key: str
+    scene_label: str
+    capability: str
+    capability_label: str
+    required: list[str]
+    impossible_required: list[str]
+    required_producible: StrictBool
+
+
 class ModelScenesOut(BaseModel):
     model_config = ConfigDict(extra="allow")
-    items: list[Any] = Field(default_factory=list)
+    items: list[ModelSceneRowOut]
+    manifest_version: str
+    note: str
+
+
+class ModelCandidateOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    registration_id: int
+    provider: str
+    model_code: str
+    backend: str
+    label: str
+    role: Literal["primary", "fallback"]
+    status: str
+    status_label: str | None
+    needs_cloud_confirm: StrictBool
 
 
 class ModelResolveOut(BaseModel):
     model_config = ConfigDict(extra="allow")
+    scene_key: str
+    found: StrictBool
+    candidates: list[ModelCandidateOut]
+    blockers: list[str]
+    auto_switch: Literal[False]
+    # found=False 的原协议不返回以下字段，路由使用 exclude_unset 保留这一形状。
+    scene_label: str | None = None
+    capability: str | None = None
+    required: list[str] | None = None
+    slot_provider: str | None = None
+    slot_model: str | None = None
+    enabled: StrictBool | None = None
+    cloud_confirm_required: StrictBool | None = None
+    preference: str | None = None
+    policy_note: str | None = None
+    required_producible: StrictBool | None = None
+    impossible_tags: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_found_fields(self) -> Self:
+        if self.found:
+            fields = ("scene_label", "capability", "required", "slot_provider", "slot_model",
+                      "enabled", "cloud_confirm_required", "preference", "policy_note",
+                      "required_producible", "impossible_tags")
+            if any(getattr(self, field) is None for field in fields):
+                raise ValueError("已知场景缺少必需响应字段")
+        return self
+
+
+class EngineRowOut(EngineInstanceOut):
+    model_config = ConfigDict(extra="allow")
+    enabled: StrictBool
+    secret_present: StrictBool = False
+    can_control: StrictBool | None = None
+    is_running: StrictBool | None = None
+    launch_ready: StrictBool | None = None
 
 
 class EngineListOut(BaseModel):
     model_config = ConfigDict(extra="allow")
-    items: list[Any] = Field(default_factory=list)
+    items: list[EngineRowOut]
+    connection_types: list[str]
+    declared_connection_types: list[str]
+    service_engines: list[str]
 
 
 class EngineMutationOut(BaseModel):

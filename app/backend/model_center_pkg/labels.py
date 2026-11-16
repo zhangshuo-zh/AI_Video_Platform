@@ -85,3 +85,19 @@ def _tags_of(capability: str, spec: dict, reg: dict | None, kinds: set[str]) -> 
         out.append({"tag": name, "source": "manual",
                     "verified": bool({"real_call", "artifact_review"} & kinds)})
     return out
+
+
+class PolicyDataInvalid(ValueError):
+    """策略必需能力损坏，不能按没有要求继续筛选。"""
+
+
+def parse_required(raw: object) -> list[str]:
+    if not isinstance(raw, str):
+        raise PolicyDataInvalid("策略必需能力不是字符串列表，请管理员修复配置")
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise PolicyDataInvalid("策略必需能力 JSON 损坏，请管理员修复配置") from exc
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise PolicyDataInvalid("策略必需能力不是字符串列表，请管理员修复配置")
+    return value

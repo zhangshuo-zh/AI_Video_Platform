@@ -2,12 +2,13 @@
 from __future__ import annotations
 from repositories.model_center import model_center
 from .catalog_view import catalog
-from .labels import _loads, producible_tags
+from .labels import parse_required, producible_tags
+from typing import Any
 from .slots import STATUS_LABEL
 
 
 
-def resolve_scene(scene_key: str) -> dict:
+def resolve_scene(scene_key: str) -> dict[str, Any]:
     """场景 → 候选与挡路原因。只读：不选路、不写库、不启动任务（MC1 裁甲）。"""
     row = None
     for p in model_center.policies():
@@ -17,12 +18,12 @@ def resolve_scene(scene_key: str) -> dict:
     if row is None:
         return {"scene_key": scene_key, "found": False, "candidates": [],
                 "blockers": [f"没有这个任务场景：{scene_key}"]}
-    required = _loads(row["required_json"], [])
+    required = parse_required(row["required_json"])
     return _resolve(row, required)
 
 
 
-def _resolve(row: dict, required: list[str]) -> dict:
+def _resolve(row: dict[str, Any], required: list[str]) -> dict[str, Any]:
     """候选＝登记且启用且健康就绪且**能力齐**；其余一律进 blockers 并说清缺哪一项。
 
     为什么状态不合格的也要点名（而不是悄悄从列表里消失）：任务书 §七 规则 7 要的是

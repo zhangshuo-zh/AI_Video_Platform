@@ -1,5 +1,6 @@
 """模型中心的目录、策略与引擎响应业务组装，不依赖 HTTP 框架。"""
-import json
+from typing import Any
+from model_center_pkg.labels import parse_required, PolicyDataInvalid
 
 import adapters
 import engine_launch
@@ -23,12 +24,11 @@ class ModelOperationError(Exception):
 class ModelPolicyInvalid(ModelOperationError):
     pass
 
-def _json_list(raw) -> list:
+def _json_list(raw: object) -> list[str]:
     try:
-        value = json.loads(raw or "[]")
-    except ValueError:
-        return []
-    return value if isinstance(value, list) else []
+        return parse_required(raw)
+    except PolicyDataInvalid as exc:
+        raise ModelOperationError(500, str(exc)) from exc
 
 
 def _item_of(reg_id: int) -> dict:
@@ -181,20 +181,11 @@ def policies_payload() -> dict:
             "items": items}
 
 
-def scenes_payload() -> dict:
-    """九个任务场景的**只读骨架**：键、界面名、能力、必需能力与"配不配得出"。
+def scenes_payload() -> dict[str, Any]:
+    """登录可读的场景骨架；建议轨和启用状态由 resolve 返回最小提交提示。
 
-    为什么要有这一条（2026-11-07）：生成中心的发起弹窗要让人按场景选模型
-    ——那是 `resolve` 接口早就回答得了的事，但**场景键本身**原来只有
-    `GET /api/model-policies` 有，而那条是 `system:config`。于是普通编辑者
-    站在提交框前面根本列不出场景，只能由管理员口头告诉他填哪个键。
-    这一条把"有哪几个场景"降到和 `resolve` 同一档（登录即可），
-    与 `/providers/available` 同一口径：只回候选与判据，**不含**建议轨、
-    备用轨、偏好、备注——那些是配置，改了要生效得走 system:config。
-
-    不含 slot_provider／fallback_provider 是刻意的：那两个字段一旦下发，
-    界面就很容易顺手把它们画成"已选中"，而裁定 MC1 是**只提示不自动切**。
-    这一页只回答"有哪些场景、各自要什么能力、这一轴产不产得出来"。
+    管理员权限保护配置写入与完整策略，普通用户可以读取预填提示。
+    前端预填不改变后端选路，云端仍须提交时显式确认计费。
     """
     # 每条能力轴上"清单有可能产出哪些标签"只算一次：它是清单的纯函数，
     # 与这一页有几行、谁配了什么无关。放在循环里算就是九遍同样的遍历。
@@ -306,7 +297,7 @@ def engines_payload() -> dict:
             "service_engines": sorted(engines.SERVICE_ENGINES)}
 
 
-def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict:
+def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict[str, Any]:
     """整批保存策略。只改配置，**不启动任何任务**（任务书 §七 规则 8）。
 
     校验一次说清所有问题，不修一条报一条：场景不认识、能力不认识、偏好不认识、
@@ -323,10 +314,17 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict:
     已存在于同一场景、同一能力轴的缺来源要求可以原样保存或显式移除；
     新增要求仍须来自可产出全集。
     """
+    payload = [item.model_copy(update={key: getattr(item, key).strip() for key in
+               ("scene_key", "slot_provider", "slot_model", "fallback_provider", "fallback_model")})
+               for item in payload]
     known = {row["scene_key"]: dict(row) for row in model_center.policies()}
     producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
     errors: list[str] = []
+    seen: set[str] = set()
     for item in payload:
+        if item.scene_key in seen:
+            errors.append(f"{item.scene_key}：同批任务场景重复")
+        seen.add(item.scene_key)
         if item.scene_key not in known:
             errors.append(f"没有这个任务场景：{item.scene_key}"
                           "（场景名定死在 0035 的种子，界面不提供自由输入）")
@@ -334,7 +332,7 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict:
             errors.append(f"{item.scene_key}：能力不认识")
         existing = known.get(item.scene_key)
         retained = (
-            set(_json_list(existing["required_json"]))
+            set(_retained_required(existing["required_json"]))
             if existing and existing["capability"] == item.capability else set()
         )
         allowed_tags = producible.get(item.capability, set()) | retained
@@ -358,26 +356,39 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict:
                                     item.fallback_model)
             if problem:
                 errors.append(f"{item.scene_key}：备用轨{problem}")
-        if item.enabled and not item.slot_provider:
-            errors.append(f"{item.scene_key}：要启用就得选一条建议轨，不能空着启用")
+        if item.enabled and not (item.slot_provider and item.slot_model):
+            errors.append(f"{item.scene_key}：要启用就得选一条建议轨，provider 和模型都不能为空")
     if errors:
         raise ModelPolicyInvalid(status_code=422, detail="；".join(errors))
 
     n = model_center.save_policies([
         {**item.model_dump(), "updated_by": user_id} for item in payload])
-    # 0044：策略是"建议轨/备用轨提示"的来源，改了什么要能回头看——
-    # 只记启用或带建议轨的行：未启用的空策略改个标签不值得一行痕。
+    # 保存成功后记录实际变化，包括停用、清空与仅调整能力要求。
     for item in payload:
-        if not (item.enabled or item.slot_provider):
+        before = known[item.scene_key]
+        after = item.model_dump()
+        if not after["scene_label"]:
+            after["scene_label"] = before["scene_label"]
+        previous = {key: before[key] for key in after
+                    if key not in {"required", "resource_limit", "enabled", "cloud_confirm_required"}}
+        previous.update(required=_retained_required(before["required_json"]),
+                        resource_limit=validations.json_loads(before["resource_limit_json"]),
+                        enabled=bool(before["enabled"]),
+                        cloud_confirm_required=bool(before["cloud_confirm_required"]))
+        if previous == after:
             continue
         config_log_record(
             "model_policy", item.scene_key, "update",
-            f"{'启用' if item.enabled else '未启用'}"
-            f"｜建议轨 {item.slot_provider or '—'}/{item.slot_model or '—'}"
-            f"｜备用轨 {item.fallback_provider or '—'}",
-            {"required": item.required, "preference": item.preference,
-             "cloud_confirm_required": item.cloud_confirm_required},
-            created_by=user_id)
+            f"{'启用' if item.enabled else '停用'}｜建议轨 {item.slot_provider or '—'}/{item.slot_model or '—'}",
+            {"before": previous, "after": after}, created_by=user_id)
     return {"saved": n,
             "note": "策略只改配置：默认轨的唯一来源仍是 provider_config.is_default，"
                     "备用轨不会自动顶上"}
+
+
+def _retained_required(raw: object) -> list[str]:
+    # 损坏的旧要求不提供保留豁免，但允许管理员用明确的新列表修复。
+    try:
+        return parse_required(raw)
+    except PolicyDataInvalid:
+        return []

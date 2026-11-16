@@ -161,9 +161,13 @@ def list_config_changes(limit: int) -> dict:
     return {"items": rows}
 
 
-def resolve(scene_key: str) -> dict:
+def resolve(scene_key: str) -> dict[str, object]:
     """场景 → 候选与挡路原因。只读，登录即可（与 /providers/available 同一档）。"""
-    out = mc.resolve_scene(scene_key)
+    from model_center_pkg.labels import PolicyDataInvalid
+    try:
+        out = mc.resolve_scene(scene_key)
+    except PolicyDataInvalid as exc:
+        raise ModelOperationError(500, str(exc)) from exc
     # 跟着清单里的策略走，而不是在这里写死一个字面量：今天没人自动切是因为
     # `no_auto_fallback` 为真，将来谁把那条策略改了，这一句必须跟着变——
     # 界面据此说"要不要替你顶上"，说错比不说更糟。
