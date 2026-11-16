@@ -664,8 +664,8 @@ def generation_view(project_id: int, job_id: int) -> dict:
 
 # ---------- 从成功作业产物导入资产图 ----------
 
-def import_generated_image(asset, payload) -> dict:
-    """把某条已成功图像作业的第 N 个产物存进资产（基础图或某个形态）。
+def _prepare_generated_image(asset, payload) -> dict:
+    """校验并复制成功图像作业的第 N 个产物，返回待登记的图片意图。
 
     入参只有 `job_id + artifact_index`，**没有任何路径字段**：文件在哪由服务端
     从作业的产物清单里查。这一步是整个接口里最要紧的边界——
@@ -714,28 +714,39 @@ def import_generated_image(asset, payload) -> dict:
     token = asset_import_recovery.begin(rel, job["id"])
 
     try:
-        # 复制失败也可能已创建部分文件，必须与数据库失败走同一清理路径。
         shutil.copyfile(source, copied)
         asset_import_recovery.sync_image(copied)
-        if variant is None:
-            row = asset_repo.add_image(asset["id"], rel)
-            if row is None:
-                raise ImportUnusable("资产不存在")
-            images = json.loads(row["ref_images"] or "[]")
-            return {"_import_marker": token, "asset_id": asset["id"], "variant_id": None, "path": rel,
-                    "ref_images": images, "image_count": len(images),
-                    "source_job_id": job["id"]}
-        row = variant_repo.add_image(variant["id"], rel, source_job_id=job["id"])
+    except Exception:
+        asset_import_recovery.discard(token)
+        raise
+    return {"_import_marker": token, "asset_id": asset["id"],
+            "variant_id": variant["id"] if variant is not None else None,
+            "source_job_id": job["id"], "path": rel}
+
+
+def _register_generated_image(prepared: dict) -> dict:
+    """只写数据库引用；调用方负责事务与文件补偿。"""
+    rel = prepared["path"]
+    if prepared["variant_id"] is None:
+        row = asset_repo.add_image(prepared["asset_id"], rel)
+        if row is None:
+            raise ImportUnusable("资产不存在")
+    else:
+        row = variant_repo.add_image(prepared["variant_id"], rel,
+                                    source_job_id=prepared["source_job_id"])
         if row is None:
             raise VariantMissing("形态不存在")
-        images = json.loads(row["ref_images"] or "[]")
-        return {"_import_marker": token, "asset_id": asset["id"], "variant_id": row["id"], "path": rel,
-                "ref_images": images, "image_count": len(images),
-                "source_job_id": row["source_job_id"]}
+    images = json.loads(row["ref_images"] or "[]")
+    return {**prepared, "ref_images": images, "image_count": len(images)}
+
+
+def import_generated_image(asset, payload) -> dict:
+    """兼容已有自行管理事务的调用方，返回未清理的恢复标记。"""
+    prepared = _prepare_generated_image(asset, payload)
+    try:
+        return _register_generated_image(prepared)
     except Exception:
-        # 库没写成，磁盘上那份就是孤儿——立刻收掉。反过来（库里有、文件没了）
-        # 会在界面上显示一张打不开的图，更难查。
-        asset_import_recovery.discard(token)
+        asset_import_recovery.discard(prepared["_import_marker"])
         raise
 
 
@@ -749,17 +760,17 @@ def remove_variant_image_tx(variant_id: int, path: str) -> tuple[object | None, 
 
 
 def import_generated_image_tx(asset, payload) -> dict:
-    """在一个事务内导入生成图；事务提交失败时触发补偿清理。"""
-    out = None
-    try:
-        with transaction():
-            out = import_generated_image(asset, payload)
-    except Exception:
-        if out is not None:
-            asset_import_recovery.discard(out["_import_marker"])
-        raise
-    asset_import_recovery.committed(out.pop("_import_marker"))
-    return out
+    """文件准备与补偿均在数据库事务外，持锁协调恢复进程。"""
+    with asset_import_recovery.import_lock():
+        prepared = _prepare_generated_image(asset, payload)
+        try:
+            with transaction():
+                out = _register_generated_image(prepared)
+        except Exception:
+            asset_import_recovery.discard(prepared["_import_marker"])
+            raise
+        asset_import_recovery.committed(out.pop("_import_marker"))
+        return out
 
 
 def remove_imported_file(rel_path: str) -> bool:

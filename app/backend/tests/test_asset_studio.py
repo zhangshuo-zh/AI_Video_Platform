@@ -1077,7 +1077,6 @@ def test_导入进程突然退出后启动恢复只清理未登记文件(as_role
     code = '''
 import json, os, sys
 import asset_studio
-from db import transaction
 from models import AssetImageImportIn
 from repositories.content import assets, variants
 payload=AssetImageImportIn(**json.loads(sys.argv[2]))
@@ -1095,8 +1094,9 @@ elif stage=='row':
         original(*args,**kwargs)
         os._exit(73)
     repo.add_image=interrupted
-with transaction():
-    asset_studio.import_generated_image(assets.get(aid),payload)
+elif stage=='committed':
+    asset_studio.asset_import_recovery.committed=lambda token: os._exit(73)
+asset_studio.import_generated_image_tx(assets.get(aid),payload)
 os._exit(73)
 '''
     child = subprocess.run([sys.executable, "-c", code, str(aid), json.dumps(payload), stage],
@@ -1251,7 +1251,7 @@ def test_恢复与正在导入的独立连接串行不误删(as_role, studio, mo
     aid = studio["aid"]
     copied, release, recovery_started = Event(), Event(), Event()
     original_copy = asset_studio.shutil.copyfile
-    original_transaction = asset_import_recovery.transaction
+    original_lock = asset_import_recovery.import_lock
 
     def pause_copy(src, dst):
         original_copy(src, dst)
@@ -1259,13 +1259,14 @@ def test_恢复与正在导入的独立连接串行不误删(as_role, studio, mo
         assert release.wait(5), "测试未释放导入"
 
     @contextmanager
-    def recovery_transaction():
-        recovery_started.set()
-        with original_transaction():
+    def recovery_lock():
+        if copied.is_set():
+            recovery_started.set()
+        with original_lock():
             yield
 
     monkeypatch.setattr(asset_studio.shutil, "copyfile", pause_copy)
-    monkeypatch.setattr(asset_import_recovery, "transaction", recovery_transaction)
+    monkeypatch.setattr(asset_import_recovery, "import_lock", recovery_lock)
     c = as_role("editor")
     with ThreadPoolExecutor(max_workers=2) as pool:
         writer = pool.submit(c.post, f"/api/assets/{aid}/generated-images",
@@ -1303,3 +1304,36 @@ def test_恢复发现已登记图片丢失时保留证据不报已恢复(as_role
     # 恢复源产物后可再次检查，保持已登记文件。
     (FILES_DIR / relative).write_bytes(PNG)
     assert asset_import_recovery.recover()["kept"] == 1
+
+
+def test_正常导入与恢复文件操作均在数据库事务外(as_role, studio, monkeypatch):
+    import asset_import_recovery
+    import db
+
+    job, _ = _image_job(studio["pid"])
+    calls = []
+
+    def watch(obj, name):
+        original = getattr(obj, name)
+        def checked(*args, **kwargs):
+            assert db._HELD.get() is None, f"{name} 持有数据库事务"
+            calls.append(name)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(obj, name, checked)
+
+    for name in ("begin", "sync_image", "committed", "discard", "_sync_directory"):
+        watch(asset_import_recovery, name)
+    watch(asset_studio.shutil, "copyfile")
+    response = as_role("editor").post(
+        f"/api/assets/{studio['aid']}/generated-images",
+        json={"job_id": job["id"], "artifact_index": 0})
+    assert response.status_code == 200, response.text
+    assert {"begin", "sync_image", "committed", "copyfile"} <= set(calls)
+    path = response.json()["path"]
+    asset_import_recovery.begin(path, job["id"])
+    assert asset_import_recovery.recover()["kept"] == 1
+    orphan = f"{studio['aid']}/{'f' * 32}.png"
+    asset_import_recovery.begin(orphan, job["id"])
+    (FILES_DIR / orphan).write_bytes(PNG)
+    assert asset_import_recovery.recover()["removed"] == 1
+    assert "discard" in calls

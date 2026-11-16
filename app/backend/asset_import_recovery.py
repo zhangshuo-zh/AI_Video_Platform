@@ -1,9 +1,12 @@
 """图片导入的持久化意图与恢复；不扫描或删除无意图记录的历史文件。
 
-导入在路由的 BEGIN IMMEDIATE 内创建意图并写文件，提交后才移除意图。
-恢复逐条取得同一写锁，避免把另一进程尚未提交的导入误当孤儿。
+文件锁协调导入与恢复，文件准备与清理位于数据库事务外。
+数据库事务仅检查或写入引用；兼容旧调用方持有的数据库事务。
 """
 from __future__ import annotations
+
+import fcntl
+from contextlib import contextmanager
 
 import json
 import os
@@ -12,13 +15,31 @@ from pathlib import Path
 
 from config import FILES_DIR
 from db import transaction
+from log import get_logger
 from repositories.content import assets
+
+logger = get_logger(__name__)
 
 _PATTERN = re.compile(r"([1-9][0-9]*)-([0-9a-f]{32})\.(png|jpg|webp)\.json")
 
 
 class ImportRecoveryPending(Exception):
     """文件补偿暂时失败，持久化意图保留，供下次启动或恢复工具重试。"""
+
+
+
+@contextmanager
+def import_lock():
+    """跨线程、进程串行化导入意图的准备、提交与恢复。"""
+    FILES_DIR.mkdir(parents=True, exist_ok=True)
+    path = FILES_DIR / ".asset-import.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _directory() -> Path:
@@ -88,7 +109,7 @@ def committed(token: str) -> None:
         (_directory() / token).unlink(missing_ok=True)
         _sync_directory(_directory())
     except (OSError, ValueError):
-        print("[资产导入] 图片已登记，恢复记录稍后清理")
+        logger.warning("图片已登记，恢复记录稍后清理")
 
 
 def recover(*, apply: bool = True) -> dict:
@@ -96,38 +117,43 @@ def recover(*, apply: bool = True) -> dict:
     directory = _directory()
     if not directory.exists():
         return result
+    with import_lock():
+        return _recover_locked(directory, apply=apply, result=result)
+
+
+def _recover_locked(directory: Path, *, apply: bool, result: dict) -> dict:
     for marker in sorted(directory.glob("*.json")):
         try:
-            # 与所有正常导入串行化；拿锁后重读，提交了的图片一定能查到。
+            # 文件锁已排除正常导入；数据库短事务兼容旧版导入持有的写锁。
+            if marker.is_symlink():
+                result["invalid"] += 1
+                continue
+            if not marker.exists():
+                continue
+            target = _target(marker.name)
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            relative = str(target.relative_to(FILES_DIR.resolve()))
+            if (not isinstance(record, dict) or record.get("version") != 1
+                    or record.get("path") != relative):
+                result["invalid"] += 1
+                continue
             with transaction():
-                if marker.is_symlink():
-                    result["invalid"] += 1
-                    continue
-                if not marker.exists():
-                    continue
-                target = _target(marker.name)
-                record = json.loads(marker.read_text(encoding="utf-8"))
-                relative = str(target.relative_to(FILES_DIR.resolve()))
-                if (not isinstance(record, dict) or record.get("version") != 1
-                        or record.get("path") != relative):
-                    result["invalid"] += 1
-                    continue
                 referenced = assets.image_reference_state(relative)
-                if referenced is None:
+            if referenced is None:
+                result["pending"] += 1
+                continue
+            if referenced:
+                if not target.is_file():
                     result["pending"] += 1
                     continue
-                if referenced:
-                    if not target.is_file():
-                        result["pending"] += 1
-                        continue
-                    if apply:
-                        marker.unlink()
-                        _sync_directory(directory)
-                    result["kept"] += 1
-                else:
-                    if apply:
-                        discard(marker.name)
-                    result["removed"] += 1
+                if apply:
+                    marker.unlink()
+                    _sync_directory(directory)
+                result["kept"] += 1
+            else:
+                if apply:
+                    discard(marker.name)
+                result["removed"] += 1
         except FileNotFoundError:
             continue
         except (OSError, ImportRecoveryPending):
