@@ -469,3 +469,112 @@ def test_资产影响按批量读_回库次数不随引用镜头数增长(as_rol
     assert seen["batch_shots"] == 1 and seen["batch_signs"] == 1, seen
     assert seen["per_get"] == 0 and seen["per_signs"] == 0, (
         f"循环里又逐条回库了：{seen}")
+
+
+def _measure_selects(monkeypatch, operation):
+    """计真实调用链的 SQL，不替换仓储结果。"""
+    import db
+    original = db._connect
+    statements = []
+    def connect():
+        conn = original()
+        conn.set_trace_callback(lambda sql: statements.append(sql)
+                                if sql.lstrip().upper().startswith(("SELECT", "WITH")) else None)
+        return conn
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "_connect", connect)
+        result = operation()
+    return result, len(statements)
+
+
+def test_项目概览批量汇总保留口径且查询不随集数增长(as_role, fresh_project, clean_queue, monkeypatch):
+    from db import get_conn
+    from repositories.compositions import compositions
+    from repositories.production import production as repo
+    from repositories.content import episodes
+    client = as_role("editor")
+    pid = fresh_project("editor")
+    eid = _episode(client, pid)
+    s1, s2 = _shot(client, eid)["id"], _shot(client, eid)["id"]
+    def history(episode_id, sid, status, capability="video"):
+        # 已存在的历史行：这里测只读聚合，不测 worker 状态机。
+        row = job_repo.create({"project_id": pid, "episode_id": episode_id, "shot_id": sid,
+                               "capability": capability, "kind": "video_local" if capability == "video" else capability, "execution_mode": "local",
+                               "provider_code": "mock", "model_code": "mock-1"})
+        with get_conn() as conn:
+            conn.execute("UPDATE job SET status = ? WHERE id = ?", (status, row["id"]))
+        return row["id"]
+    history(eid, s1, "succeeded")
+    history(eid, s1, "succeeded")
+    history(eid, s1, "failed")  # 新失败不能抹掉已有的成功镜头计数。
+    history(eid, s2, "succeeded", "image")
+    old = history(eid, None, "succeeded")
+    latest = history(eid, None, "failed")
+    for version, jid in ((1, old), (2, latest)):
+        compositions.create(project_id=pid, episode_id=eid, pipeline_run_id=None,
+                            version=version, timeline={}, params={}, job_id=jid, created_by=None)
+    me = client.get("/api/auth/me").json()["user"]["id"]
+    reviews.upsert_sign(project_id=pid, target_kind="job", target_id=old, gate_id=None,
+                        base_version="", anchor="old", decision="approved", note="", user_id=me)
+    first, small = _measure_selects(monkeypatch, lambda: production.project_overview(pid))
+    assert first["per_episode"][0]["videos_succeeded"] == 1
+    assert first["per_episode"][0]["composition_versions"] == 2
+    assert first["per_episode"][0]["delivered"] is False
+    more = [episodes.create(pid, f"第 {i + 2} 集")["id"] for i in range(8)]
+    jid = history(more[0], None, "succeeded")
+    compositions.create(project_id=pid, episode_id=more[0], pipeline_run_id=None,
+                        version=1, timeline={}, params={}, job_id=jid, created_by=None)
+    reviews.upsert_sign(project_id=pid, target_kind="job", target_id=jid, gate_id=None,
+                        base_version="", anchor="new", decision="approved", note="", user_id=me)
+    second, large = _measure_selects(monkeypatch, lambda: production.project_overview(
+        pid, current_episode_id=more[0]))
+    assert second["episodes"] == 9 and second["delivered_episodes"] == 1
+    assert second["current"]["episode_id"] == more[0]
+    for item in second["per_episode"]:
+        e = item["episode_id"]
+        old_comp = repo.composition_delivery(e)
+        assert item["shots"] == repo.shot_gaps(e)["total"]
+        assert item["videos_succeeded"] == repo.job_status_by_shot(e).get(
+            "video", {}).get("succeeded", {}).get("shots", 0)
+        assert item["composition_versions"] == old_comp["versions"]
+        assert item["delivered"] == (old_comp["latest_status"] == "succeeded" and old_comp["signed"] > 0)
+    assert small == large and large <= 6, (small, large)
+
+
+def test_跨集资产影响批量加载源依赖且不缓存变更(fresh_project, clean_queue, monkeypatch):
+    from db import get_conn
+    from repositories.content import assets, variants, episodes
+    pid = fresh_project("editor")
+    asset = assets.create(pid, "character", "批量角色", "", "衣着", [], [])
+    variant = variants.create(asset_id=asset["id"], variant_type="outfit", name="常服")
+    expected = {}
+    def add_episode(index):
+        eid = episodes.create(pid, f"第 {index} 集")["id"]
+        for i in range(2):
+            shot = shots.create(eid, "一镜", "提示词", 5, [asset["id"]], [variant["id"]])
+            version = services.shot_source_version(shot)
+            job = job_repo.create({"project_id": pid, "episode_id": eid, "shot_id": shot["id"],
+                                   "capability": "video", "kind": "video_local", "execution_mode": "local",
+                                   "provider_code": "mock", "model_code": "mock-1", "source_version": version})
+            with get_conn() as conn:
+                conn.execute("UPDATE job SET status = 'succeeded' WHERE id = ?", (job["id"],))
+                if i:
+                    conn.execute("UPDATE shot SET summary = '改过内容' WHERE id = ?", (shot["id"],))
+            expected[shot["id"]] = bool(i)
+    for i in range(3):
+        add_episode(i)
+    first, small = _measure_selects(monkeypatch, lambda: production.asset_impact(asset["id"]))
+    assert first["counts"]["stale"] == 3
+    for i in range(3, 6):
+        add_episode(i)
+    second, large = _measure_selects(monkeypatch, lambda: production.asset_impact(asset["id"]))
+    assert second["counts"]["referencing"] == 12
+    assert {s["shot_id"]: s["stale"] for s in second["shots"]} == expected
+    assert small == large and large <= 8, (small, large)
+    # 下一次请求必须看到形态变化；请求内批量数据不能变成持久缓存。
+    with get_conn() as conn:
+        conn.execute("UPDATE asset_variant SET prompt = '新的服装' WHERE id = ?", (variant["id"],))
+    after = production.asset_impact(asset["id"])
+    assert after["counts"]["stale"] == 12
+    subset = production.asset_impact(asset["id"], only_shot_ids={next(iter(expected))})
+    assert subset["counts"]["referencing"] == 1

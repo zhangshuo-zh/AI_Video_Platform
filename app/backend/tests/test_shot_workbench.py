@@ -252,3 +252,26 @@ def test_工作台与影响分析都不越权(as_role, people, fresh_project, cl
     outsider = as_role("outsider")
     assert outsider.get(f"/api/shots/{sid}/workbench").status_code == 404
     assert outsider.get(f"/api/assets/{aid}/impact").status_code == 404
+
+
+def test_镜头列表和正式预览复用同一次产物扫描(as_role, clean_queue, monkeypatch):
+    import jobfiles
+    import precheck
+    from collections import Counter
+    c = as_role("editor")
+    pid, eid, (sid,) = _setup(c)
+    job = _video_job(pid, eid, sid, c)
+    _sign(pid, job["id"], c)
+    monkeypatch.setattr(precheck, "shot_precheck", lambda *_: {"status": precheck.PASS, "items": [],
+                        "total": 0, "blocking": 0, "warnings": 0, "passed": 0})
+    observed = Counter()
+    original = jobfiles.artifacts
+    def scan(raw):
+        observed[raw] += 1
+        return original(raw)
+    monkeypatch.setattr(jobfiles, "artifacts", scan)
+    out = c.get(f"/api/shots/{sid}/workbench")
+    assert out.status_code == 200, out.text
+    body = out.json()
+    assert body["preview"]["formal_video"] == body["videos"]["jobs"][0]
+    assert observed[job["result_paths_json"]] == 1, observed

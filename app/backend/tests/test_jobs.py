@@ -639,3 +639,20 @@ def test_幂等键并发撞到其他项目仍拒绝泄露(clean_queue, seeded, f
     monkeypatch.setattr(jobs, "create", collided)
     with pytest.raises(services.JobInvalid, match="占用"):
         services.submit_job(payload, None, prepared=prepared)
+
+
+def test_普通建单只查一次幂等键但重放仍复用(clean_queue, seeded, monkeypatch):
+    from schemas.jobs import JobSubmitIn
+    payload = JobSubmitIn(project_id=seeded["project_id"], capability="video", prompt="once",
+                          provider_code="mock", model_code="mock-1", execution_mode="local",
+                          idempotency_key="one-lookup-per-submit")
+    calls = []
+    original = jobs.by_key
+    def lookup(key):
+        calls.append(key)
+        return original(key)
+    monkeypatch.setattr(jobs, "by_key", lookup)
+    first = services.submit_job(payload, None)
+    assert len(calls) == 1
+    second = services.submit_job(payload, None)
+    assert first["id"] == second["id"] and len(calls) == 2

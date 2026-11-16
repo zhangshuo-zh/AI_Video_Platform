@@ -252,14 +252,14 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
 
 def submit_job(payload, created_by: int | None, *, prepared: PreparedJob | None = None) -> sqlite3.Row:
     """唯一通用建单入口；预校验结果可在调用方的原子写事务内使用。"""
-    if payload.idempotency_key:
+    if prepared is None:
+        prepared = prepare_job(payload, created_by)
+    elif payload.idempotency_key:
         existing = job_repo.by_key(payload.idempotency_key)
         if existing is not None:
             if existing["project_id"] != payload.project_id:
                 raise JobInvalid("这个幂等键已被别的作业占用")
             return existing
-    if prepared is None:
-        prepared = prepare_job(payload, created_by)
     if prepared.created_by != created_by or prepared.intent != _intent_of(payload):
         raise JobInvalid("作业内容在预校验后发生变化，请重新校验")
     if prepared.existing is not None:

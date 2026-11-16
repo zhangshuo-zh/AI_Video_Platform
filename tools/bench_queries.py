@@ -318,6 +318,19 @@ def build_world(episodes: int, shots_per_ep: int, jobs_per_shot: int,
                  f"sv-q-{job_id}"))
         sample.setdefault("queued_job_ids", []).append(job_id)
 
+    # 覆盖工作台「正式预览」分支；只有未签字作业时，重复扫描预览的成本会被漏测。
+    # 这是只读性能样本，不是实际审核／模型验收证据。
+    if sample["shot_ids"]:
+        formal = conn.execute(
+            "SELECT id, project_id FROM job WHERE shot_id = ? AND capability = 'video' "
+            "AND status = 'succeeded' ORDER BY id DESC LIMIT 1",
+            (sample["shot_ids"][0],)).fetchone()
+        if formal is not None:
+            conn.execute(
+                """INSERT INTO review_item
+                   (project_id, target_kind, target_id, base_version, anchor, decision, note, signed_by)
+                   VALUES (?, 'job', ?, '', 'bench-formal-preview', 'approved',
+                           '仅性能样本，不作验收凭据', ?)""", (formal[1], formal[0], uid))
     conn.commit()
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("project", "episode", "shot", "job", "composition",

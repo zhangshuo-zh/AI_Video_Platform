@@ -195,18 +195,13 @@ def project_overview(project_id: int, *, current_episode_id: int | None = None) 
     项目层只给"每集走到哪一步"的一个粗粒度结论，点开某一集才算细的。
     """
     rows = episodes.list_by_project(project_id)
-    per_episode = []
-    for ep in rows:
-        counts = production.shot_gaps(int(ep["id"]))
-        succeeded = production.job_status_by_shot(int(ep["id"])).get(
-            "video", {}).get("succeeded", {}).get("shots", 0)
-        comp = production.composition_delivery(int(ep["id"]))
-        per_episode.append({
-            "episode_id": int(ep["id"]), "seq": int(ep["seq"]),
-            "title": ep["title"] or "", "status": ep["status"],
-            "shots": counts["total"], "videos_succeeded": succeeded,
-            "composition_versions": comp["versions"],
-            "delivered": comp["latest_status"] == "succeeded" and comp["signed"] > 0})
+    progress = production.episode_progress(project_id)
+    per_episode = [{
+        "episode_id": int(ep["id"]), "seq": int(ep["seq"]),
+        "title": ep["title"] or "", "status": ep["status"],
+        **progress.get(int(ep["id"]), {"shots": 0, "videos_succeeded": 0,
+                                      "composition_versions": 0, "delivered": False})}
+        for ep in rows]
     total_eps = len(per_episode)
     delivered = sum(1 for e in per_episode if e["delivered"])
     current = next((e for e in per_episode

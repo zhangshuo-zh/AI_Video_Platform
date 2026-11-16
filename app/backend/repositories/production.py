@@ -316,6 +316,55 @@ class ProductionRepository:
                 "latest_output": (latest["output_path"] or "") if latest else "",
                 "signed": signed}
 
+    def episode_progress(self, project_id: int) -> dict[int, dict]:
+        """项目内全部分集的粗进度，固定三次聚合；口径同单集原查询。
+
+        成功视频按镜头去重，保留任意一次成功；交付仍看最新成片版本的
+        Job 状态与该 Job 的 approved 签字数，不把历史版本的签字算给新版。
+        """
+        with get_conn() as conn:
+            shots = conn.execute(
+                """SELECT e.id AS episode_id, COUNT(s.id) AS shots
+                     FROM episode e LEFT JOIN shot s ON s.episode_id = e.id
+                    WHERE e.project_id = ? GROUP BY e.id""", (project_id,)).fetchall()
+            videos = conn.execute(
+                """SELECT s.episode_id, COUNT(DISTINCT j.shot_id) AS succeeded
+                     FROM job j JOIN shot s ON s.id = j.shot_id
+                     JOIN episode e ON e.id = s.episode_id
+                    WHERE e.project_id = ? AND j.capability = 'video'
+                      AND j.status = 'succeeded' GROUP BY s.episode_id""",
+                (project_id,)).fetchall()
+            compositions = conn.execute(
+                """WITH versions AS (
+                       SELECT c.episode_id, COUNT(*) AS versions, MAX(c.version) AS latest
+                         FROM composition c JOIN episode e ON e.id = c.episode_id
+                        WHERE e.project_id = ? GROUP BY c.episode_id
+                     ), latest AS (
+                       SELECT v.episode_id, v.versions, c.job_id FROM versions v
+                         JOIN composition c ON c.episode_id = v.episode_id
+                                           AND c.version = v.latest
+                     )
+                     SELECT l.episode_id, l.versions, j.status, COUNT(r.id) AS signed
+                       FROM latest l LEFT JOIN job j ON j.id = l.job_id
+                       LEFT JOIN review_item r ON r.target_kind = 'job'
+                                             AND r.target_id = l.job_id
+                                             AND r.decision = 'approved'
+                      GROUP BY l.episode_id, l.versions, j.status""",
+                (project_id,)).fetchall()
+        out = {int(r["episode_id"]): {"shots": int(r["shots"]),
+               "videos_succeeded": 0, "composition_versions": 0, "delivered": False}
+               for r in shots}
+        for row in videos:
+            entry = out.get(int(row["episode_id"]))
+            if entry is not None:
+                entry["videos_succeeded"] = int(row["succeeded"])
+        for row in compositions:
+            entry = out.get(int(row["episode_id"]))
+            if entry is not None:
+                entry.update({"composition_versions": int(row["versions"]),
+                              "delivered": row["status"] == "succeeded" and int(row["signed"]) > 0})
+        return out
+
     def composition_count(self, project_id: int) -> int:
         with get_conn() as conn:
             row = conn.execute(

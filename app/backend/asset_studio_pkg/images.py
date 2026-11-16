@@ -49,7 +49,8 @@ def _prepare_generated_image(asset, payload) -> dict:
             raise ImportUnusable("这个形态不属于这条资产")
 
     source = jobfiles.artifact_at(job["result_paths_json"], payload.artifact_index)
-    if source is None or not source.is_file():
+    # artifact_at 已经确认是边界内的现存文件；后面只取一次大小，不重复 is_file。
+    if source is None:
         raise ImportArtifactBad("这个序号在作业产物清单里不存在，或文件已经被清理")
 
     size = source.stat().st_size

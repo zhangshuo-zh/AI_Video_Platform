@@ -41,7 +41,7 @@ class JobsQueryMixin:
                 conn.create_function("asset_generation_matches", 1, None)
 
 
-    def _latest_by_shot(self, episode_id: int, capability: str,
+    def _latest_by_shot(self, episode_id: int | list[int], capability: str,
                         statuses: tuple[str, ...] | None = None
                         ) -> dict[int, sqlite3.Row]:
         """每镜 id 最大的那条作业；`statuses` 给了就只在这些状态里取。
@@ -49,12 +49,16 @@ class JobsQueryMixin:
         「这一镜用哪条」与「这一镜卡在哪」只差一个状态过滤，SQL 形状必须
         一模一样——各写一份，迟早一处按 `MAX(id)`、另一处按 `finished_at`。
         """
-        sql = """SELECT j.* FROM job j
+        episode_ids = sorted(set(episode_id)) if isinstance(episode_id, list) else [int(episode_id)]
+        if not episode_ids:
+            return {}
+        episodes = ",".join("?" for _ in episode_ids)
+        sql = f"""SELECT j.* FROM job j
                    JOIN (SELECT shot_id, MAX(id) AS mid FROM job
-                          WHERE episode_id = ? AND capability = ?
-                            AND shot_id IS NOT NULL{extra}
+                          WHERE episode_id IN ({episodes}) AND capability = ?
+                            AND shot_id IS NOT NULL{{extra}}
                           GROUP BY shot_id) t ON t.mid = j.id"""
-        args: list = [int(episode_id), capability]
+        args: list = [*episode_ids, capability]
         if statuses:
             marks = ",".join("?" for _ in statuses)
             sql = sql.format(extra=f" AND status IN ({marks})")
@@ -79,6 +83,11 @@ class JobsQueryMixin:
         失败的尝试不进来看——它本来就没有产物可用。
         """
         return self._latest_by_shot(episode_id, "video", ("succeeded",))
+
+
+    def latest_succeeded_videos_by_episodes(self, episode_ids: list[int]) -> dict[int, sqlite3.Row]:
+        """跨集批量读，复用同一个 MAX(id) 选择器，不按集循环回库。"""
+        return self._latest_by_shot(episode_ids, "video", ("succeeded",))
 
 
     def submission_counts(self, project_ids: list[int] | None) -> list[dict]:

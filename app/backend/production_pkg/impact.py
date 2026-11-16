@@ -24,7 +24,7 @@ def asset_impact(asset_id: int, *, only_shot_ids: set[int] | None = None) -> dic
     import services
     from repositories.jobs import jobs as job_repo
     from repositories.reviews import reviews
-    from repositories.content import assets as asset_repo
+    from repositories.content import assets as asset_repo, variants as variant_repo
 
     row = asset_repo.get(asset_id)
     if row is None:
@@ -38,24 +38,30 @@ def asset_impact(asset_id: int, *, only_shot_ids: set[int] | None = None) -> dic
     if only_shot_ids is not None:
         hits = {k: v for k, v in hits.items() if k in only_shot_ids}
 
-    # 每集一次"最新成功视频"批量读，而不是逐镜回库——一集 13 镜时那是 13 趟。
-    latest: dict[int, dict] = {}
-    for eid in {h["episode_id"] for h in hits.values()}:
-        for sid, latest_job in job_repo.latest_succeeded_videos_by_shot(eid).items():
-            latest[int(sid)] = dict(latest_job)
+    latest_rows = job_repo.latest_succeeded_videos_by_episodes(
+        sorted({h["episode_id"] for h in hits.values()}))
+    latest = {int(sid): dict(job) for sid, job in latest_rows.items() if sid in hits}
 
     # 循环外两次批量读完：镜头行一次 IN、签字一次 IN。
     # 原来这两句在循环里逐条 `shots.get()`／`reviews.signs()`——600 资产／1 500 镜头
     # 那一档量到的是**回库次数随引用镜头数增长**（18→54），正是规模基准要抓的那种。
     shot_rows = shots.get_many(list(hits))
     sign_rows = reviews.signs_by_targets("job", [int(j["id"]) for j in latest.values()])
+    fingerprinted = [shot for sid, shot in shot_rows.items()
+                     if sid in latest and latest[sid]["source_version"]]
+    asset_ids = set().union(*(services.shot_asset_ids(s) for s in fingerprinted))
+    variant_ids = set().union(*(services.shot_variant_ids(s) for s in fingerprinted))
+    loaded_assets = asset_repo.get_many(sorted(asset_ids)) if asset_ids else {}
+    loaded_variants = variant_repo.get_many(sorted(variant_ids)) if variant_ids else {}
     items = []
     for hit in sorted(hits.values(), key=lambda h: (h["episode_id"], h["seq"])):
         job = latest.get(hit["shot_id"])
         stale = False
         signed = False
         if job is not None:
-            stale = services.job_source_stale(job, shot=shot_rows.get(hit["shot_id"]))
+            shot = shot_rows.get(hit["shot_id"])
+            stale = bool(shot is not None and services.job_source_stale(
+                job, shot=shot, loaded_assets=loaded_assets, loaded_variants=loaded_variants))
             signed = any(s["decision"] == "approved"
                          for s in sign_rows.get(int(job["id"]), []))
         items.append({**hit, "job_id": int(job["id"]) if job is not None else None,

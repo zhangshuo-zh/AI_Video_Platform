@@ -103,13 +103,13 @@ def shot_workbench(shot_id: int) -> dict:
     latest_video = video_by_shot.get(int(shot_id))
     signed_video = bool(latest_video is not None and (
         signs.get(int(latest_video["id"])) or {}).get("decision") == "approved")
-    stale_video = bool(latest_video and services.job_source_stale(
-        latest_video, shot=shot))
 
     asset_ids = sorted(services.shot_asset_ids(shot))
     variant_ids = sorted(services.shot_variant_ids(shot))
     loaded_assets = asset_repo.get_many(asset_ids) if asset_ids else {}
     loaded_variants = variant_repo.get_many(variant_ids) if variant_ids else {}
+    stale_video = bool(latest_video and services.job_source_stale(
+        latest_video, shot=shot, loaded_assets=loaded_assets, loaded_variants=loaded_variants))
     import json as _json
     refs = [{
         "id": int(row["id"]), "name": row["name"], "kind": row["kind"],
@@ -153,6 +153,8 @@ def shot_workbench(shot_id: int) -> dict:
     }
 
     next_shot = shots.next_in_episode(int(shot["episode_id"]), int(shot["seq"]))
+    image_items, video_items = _job_rows(image_jobs, signs), _job_rows(video_jobs, signs)
+    items_by_id = {item["job_id"]: item for item in image_items + video_items}
     return {
         "shot_id": shot_id, "project_id": project_id,
         "episode_id": int(shot["episode_id"]),
@@ -177,9 +179,9 @@ def shot_workbench(shot_id: int) -> dict:
         "refs": {"assets": refs, "variants": ref_variants,
                  "missing_assets": [a for a in asset_ids if a not in loaded_assets],
                  "missing_variants": [v for v in variant_ids if v not in loaded_variants]},
-        "keyframes": {"jobs": _job_rows(image_jobs, signs),
+        "keyframes": {"jobs": image_items,
                       "formal_job_id": (int(formal_image["id"]) if formal_image else None)},
-        "videos": {"jobs": _job_rows(video_jobs, signs),
+        "videos": {"jobs": video_items,
                    "formal_job_id": (int(formal_video["id"]) if formal_video else None),
                    "source_stale": stale_video},
         "audio": {"clips": [{"id": int(c["id"]), "kind": c["kind"],
@@ -189,8 +191,8 @@ def shot_workbench(shot_id: int) -> dict:
                             for c in clips],
                   "engines": audio_wired},
         "preview": {
-            "formal_video": _job_rows([formal_video], signs)[0] if formal_video else None,
-            "formal_keyframe": _job_rows([formal_image], signs)[0] if formal_image else None},
+            "formal_video": items_by_id[int(formal_video["id"])] if formal_video else None,
+            "formal_keyframe": items_by_id[int(formal_image["id"])] if formal_image else None},
         "review": {"signs": [{"job_id": int(r["target_id"]), "decision": r["decision"],
                               "note": r["note"], "signed_at": r["signed_at"],
                               "signed_by": r["signed_by_name"] or ""}
