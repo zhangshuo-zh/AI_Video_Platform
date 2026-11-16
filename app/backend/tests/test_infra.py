@@ -1623,7 +1623,7 @@ def test_mypy_门禁真的在检查而不是空转():
     mypy_cfg = conf[conf.index("[tool.mypy]"):]
     for required in ('"schemas"', '"db.py"', '"services"', '"repositories"',
                      '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"', '"adapters_pkg"',
-                     '"runners.py"', '"diskplan.py"', '"precheck.py"', '"production.py"',
+                     '"runners.py"', '"runners_pkg"', '"diskplan.py"', '"precheck.py"', '"production.py"',
                      '"asset_studio.py"', '"model_center.py"'):
         assert required in mypy_cfg, (
             f"mypy 的检查范围必须覆盖 schemas/db.py/services/repositories，缺少 {required}：{mypy_cfg[:200]}")
@@ -2117,3 +2117,30 @@ def test_适配器拆包门面完整且保持属性替换(monkeypatch):
     monkeypatch.setattr(adapters, "find", lambda *args: calls.append(args))
     adapters.effective_key_env("missing")
     assert len(calls) == 1
+
+
+def test_执行器拆包门面与路径替换恢复(monkeypatch):
+    import runners
+    from runners_pkg import core, inputs
+
+    required = {
+        "RunnerUnavailable", "RunSpec", "build", "has_branch", "verify",
+        "provider_receipt", "metrics_summary", "cleanup_partial",
+        "_job_project_of", "_asset_project_of", "_resolve_input_image",
+        "_comfyui_workflow_payload", "_fastmetal", "_mflux", "_cloud",
+        "CLOUD_RUNNER", "ENGINE_HTTP_RUNNER", "LLM_RUNNER",
+    }
+    assert required <= set(runners.__all__)
+    assert all(hasattr(runners, name) for name in required)
+    assert runners is core
+    assert len((BACKEND / "runners.py").read_text().splitlines()) < 60
+    assert runners.CLOUD_RUNNER == BACKEND / "cloud_run.py"
+    original = runners._job_project_of
+    with monkeypatch.context() as patch:
+        patch.setattr(runners, "_job_project_of", lambda job_id: 123)
+        path = runners.JOBS_DIR.resolve() / "98765" / "outputs" / "image.png"
+        assert runners._is_platform_artifact(path, {"id": 1, "project_id": 123})
+        assert not runners._is_platform_artifact(path, {"id": 1, "project_id": 124})
+        patch.delattr(runners, "_job_project_of")
+        assert not hasattr(inputs, "_job_project_of")
+    assert runners._job_project_of is inputs._job_project_of is original
