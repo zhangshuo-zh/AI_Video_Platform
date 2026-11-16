@@ -7,7 +7,7 @@
 import { api } from '../../api.js';
 import { store } from '../../store.js';
 import {
-  agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
+  agoText, alertInfo, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
 import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.js';
@@ -85,18 +85,6 @@ export function pagePolicies() {
       <td><div class="mc-req-group">${requiredPicker(p)}</div></td>
       <td class="policy-slot-col"><select class="ctl sm policy-slot-pick" data-f="slot">
           <option value="">— 不指定 —</option>${candidatesOf(p.capability)}</select></td>
-      <td class="policy-pref-col"><select class="ctl sm policy-pref-pick" data-f="pref">
-          ${Object.entries(cache.policies.preference_labels)
-            .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}
-        </select></td>
-      <td class="policy-fallback-col"><select class="ctl sm policy-fallback-pick" data-f="fallback">
-          <option value="">— 无 —</option>${candidatesOf(p.capability)}</select></td>
-      <td class="c">
-        <label class="switch-ui" title="${p.cloud_confirm_required ? '已开启云端确认计费' : '未开启云端确认计费'}">
-          <input type="checkbox" data-f="cloud" ${p.cloud_confirm_required ? 'checked' : ''}>
-          <span class="switch-slider"></span>
-        </label>
-      </td>
       <td class="c">
         <label class="switch-ui switch-green" title="${p.enabled ? '已启用该策略' : '未启用该策略'}">
           <input type="checkbox" data-f="on" ${p.enabled ? 'checked' : ''}>
@@ -127,11 +115,12 @@ export function pagePolicies() {
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
             <span class="tip-title">任务调用策略运行规范</span>
-            <div class="tip-desc">九个任务场景的建议轨、偏好与备用轨推荐映射规则。</div>
+            <div class="tip-desc">九个任务场景的能力门槛与提交弹窗默认预选规则。</div>
             <ul class="tip-list">
-              <li><b>保存只改配置</b>：保存仅更新业务策略推荐配置，绝不会启动推理任务。</li>
-              <li><b>不改写默认轨</b>：策略推荐绝不会覆盖默认轨，默认轨的唯一来源始终是「引擎管理」能力轨打勾项。</li>
-              <li><b>备用轨不自动顶上</b>：<code>no_auto_fallback = ${String(cache.policies.no_auto_fallback)}</code>。默认轨不可用时，绝不悄悄转路线扣费，须通过「看候选」人工改选。</li>
+              <li><b>保存只改配置</b>：保存仅更新场景能力要求与默认预选，绝不会启动推理任务。</li>
+              <li><b>建议轨用于弹窗默认预选</b>：设好默认预选（建议轨）并开启「启用」后，在生成中心选择对应场景时，提交弹窗将自动预填该模型；若为云端模型，仍须人工勾选计费确认。</li>
+              <li><b>不改写默认轨</b>：策略配置绝不会覆盖「引擎管理」能力轨默认打勾项。</li>
+              <li><b>备用轨不会自动顶上</b>：<code>no_auto_fallback = ${String(cache.policies.no_auto_fallback)}</code>。默认轨不可用时，绝不悄悄转路线扣费，须通过「看候选」人工改选。</li>
               <li><b>候选范围限定</b>：候选仅从「模型仓库」已登记的档位中筛选，未登记的不是可选项。</li>
             </ul>
           </span>
@@ -142,18 +131,15 @@ export function pagePolicies() {
     <div class="table-wrap">
       <table class="policy-table">
         <colgroup>
-          <col style="width:170px">
-          <col style="width:68px">
-          <col style="width:210px">
-          <col style="width:180px">
-          <col style="width:96px">
-          <col style="width:180px">
-          <col style="width:80px">
-          <col style="width:60px">
-          <col style="width:160px">
+          <col style="width:15%">
+          <col style="width:9%">
+          <col style="width:24%">
+          <col style="width:25%">
+          <col style="width:10%">
+          <col style="width:17%">
         </colgroup>
-        <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th class="policy-slot-col">建议轨</th>
-          <th class="policy-pref-col">偏好</th><th class="policy-fallback-col">备用轨</th><th class="c">要确认计费</th><th class="c">启用</th><th class="policy-act-col">状态</th></tr></thead>
+        <thead><tr><th>任务场景</th><th>能力</th><th>必需能力</th><th class="policy-slot-col">默认预选（建议轨）</th>
+          <th class="c">启用</th><th class="policy-act-col">状态</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -168,8 +154,6 @@ export function mountPolicies(root) {
     const p = cache.policies.items.find((x) => x.scene_key === key);
     if (!p) return;
     tr.querySelector('[data-f="slot"]').value = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
-    tr.querySelector('[data-f="fallback"]').value = p.fallback_provider ? `${p.fallback_provider}|${p.fallback_model}` : '';
-    tr.querySelector('[data-f="pref"]').value = p.preference;
   });
 
   const updateDimming = (sel) => {
@@ -182,24 +166,45 @@ export function mountPolicies(root) {
   };
   root.querySelectorAll('.policy select.ctl').forEach((sel) => {
     updateDimming(sel);
-    sel.addEventListener('change', () => updateDimming(sel));
+    sel.addEventListener('change', () => {
+      updateDimming(sel);
+      if (!sel.value) {
+        const onChk = sel.closest('tr.policy')?.querySelector('[data-f="on"]');
+        if (onChk && onChk.checked) onChk.checked = false;
+      }
+    });
+  });
+
+  root.querySelectorAll('tr.policy [data-f="on"]').forEach((chk) => {
+    chk.addEventListener('change', async () => {
+      if (!chk.checked) return;
+      const tr = chk.closest('tr.policy');
+      const slotVal = tr?.querySelector('[data-f="slot"]')?.value || '';
+      if (!slotVal) {
+        chk.checked = false;
+        const sceneName = tr?.querySelector('.policy-scene-cell b')?.textContent || tr?.dataset.key || '该场景';
+        await alertInfo({
+          title: '启用前需要预选模型',
+          body: `场景「${escapeHtml(sceneName)}」尚未选择「默认预选（建议轨）」，启用前请先在下拉框中预选一个模型。`,
+        });
+      }
+    });
   });
 
   root.querySelector('#save-policies').addEventListener('click', async () => {
     const rows = [...root.querySelectorAll('tr.policy')].map((tr) => {
       const p = cache.policies.items.find((x) => x.scene_key === tr.dataset.key);
       const slot = tr.querySelector('[data-f="slot"]').value.split('|');
-      const fb = tr.querySelector('[data-f="fallback"]').value.split('|');
       return {
         scene_key: tr.dataset.key, scene_label: p.scene_label, capability: p.capability,
         // 必需能力读勾选框：那一格从只读 chip 放开成可编辑（§5.4 一直教人
         // "从「必需」降下来"，服务端也早会写 required_json，缺的只是入口）。
         required: [...tr.querySelectorAll('[data-req]:checked')].map((c) => c.dataset.req),
         slot_provider: slot[0] || '', slot_model: slot[1] || '',
-        preference: tr.querySelector('[data-f="pref"]').value,
-        fallback_provider: fb[0] || '', fallback_model: fb[1] || '',
+        preference: p.preference || 'any',
+        fallback_provider: p.fallback_provider || '', fallback_model: p.fallback_model || '',
         resource_limit: p.resource_limit || {},
-        cloud_confirm_required: tr.querySelector('[data-f="cloud"]').checked,
+        cloud_confirm_required: Boolean(p.cloud_confirm_required),
         enabled: tr.querySelector('[data-f="on"]').checked,
       };
     });

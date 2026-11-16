@@ -98,6 +98,12 @@ def prepare_env():
     os.environ["FASTVIDEO_JOBS"] = str(TMP / "jobs")
     os.environ["FASTVIDEO_WORKSPACE"] = str(TMP / "workspace")
     H.prepare_backend_db(TMP / "platform.db")
+    import sqlite3
+    with sqlite3.connect(TMP / "platform.db") as conn:
+        conn.execute("UPDATE model_policy SET required_json=? WHERE scene_key='character_variant'",
+                     (json.dumps(["图生图", "参考图", "局部重绘"], ensure_ascii=False),))
+        conn.execute("UPDATE model_policy SET slot_provider='', slot_model='' WHERE scene_key='scene_prompt'")
+        conn.commit()
 
 def mint_admin_session() -> str:
     from datetime import datetime, timedelta
@@ -353,8 +359,52 @@ def main():
         time.sleep(1.2)
         vpanel = P.eval_js(cdp, "(() => document.querySelector('#jm-scene-panel').innerText)()")
         check("清单缺能力的场景有明确警示（不是含糊的待配置）",
-              "没有任何来源" in str(vpanel) or "图生图" in str(vpanel),
+              "没有任何来源" in str(vpanel) or "局部重绘" in str(vpanel),
               str(vpanel)[:140].replace("\n", " "))
+
+        # ⑤a 方案 B：若在策略页为多候选场景设了「建议轨」，选择场景时自动预填该档且绝不代勾计费
+        cdp.eval("""fetch('/api/model-policies').then(r=>r.json()).then(d=>{
+          const items = d.items.map(x => x.scene_key === 'scene_prompt'
+            ? {...x, slot_provider: 'deepseek', slot_model: 'deepseek-flash', enabled: true}
+            : x);
+          return fetch('/api/model-policies', {
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(items),
+          });
+        })""")
+        go(cdp, f"{BASE}/#generate")
+        P.click(cdp, "#gen-new")
+        time.sleep(0.5)
+        P.eval_js(cdp, """(() => {
+          const c = document.querySelector('#jm-capability');
+          c.value = 'text'; c.dispatchEvent(new Event('change',{bubbles:true}));
+          const s = document.querySelector('#jm-scene');
+          s.value = 'scene_prompt'; s.dispatchEvent(new Event('change',{bubbles:true}));
+        })()""")
+        time.sleep(1.2)
+        plan_b = json.loads(P.eval_js(cdp, """(() => {
+          const m = document.querySelector('#jm-mode');
+          const r = document.querySelector('#jm-route');
+          const cf = document.querySelector('#jm-confirm');
+          const tr = document.querySelector('#jm-scene-prefill');
+          return JSON.stringify({
+            mode: m ? m.value : '',
+            routeText: r && r.selectedOptions[0] ? r.selectedOptions[0].textContent.trim() : '',
+            confirm: cf ? cf.checked : 'ABSENT',
+            trace: tr && !tr.hidden ? tr.innerText : 'HIDDEN',
+          });
+        })()"""))
+        check("方案 B：配了建议轨后多候选自动预填建议轨且不代勾云端计费",
+              plan_b["mode"] == "cloud" and "deepseek" in plan_b["routeText"]
+              and plan_b["confirm"] in (False, "ABSENT") and "已按场景" in plan_b["trace"],
+              f"{plan_b}")
+        P.eval_js(cdp, """(() => {
+          const c = document.querySelector('#jm-capability');
+          c.value = 'image'; c.dispatchEvent(new Event('change',{bubbles:true}));
+          const s = document.querySelector('#jm-scene');
+          s.value = 'character_variant'; s.dispatchEvent(new Event('change',{bubbles:true}));
+        })()""")
+        time.sleep(0.8)
 
         # ⑤b 自绘下拉必须跟着程序化设值走（2026-11-07 捞到的真缺陷）
         #     这条量的是"按钮上那行字"与真 <select> 的值是否一致。

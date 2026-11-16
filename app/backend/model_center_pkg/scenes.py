@@ -34,6 +34,9 @@ def _resolve(row: dict, required: list[str]) -> dict:
         "scene_key": row["scene_key"], "scene_label": row["scene_label"],
         "capability": row["capability"], "required": required, "found": True,
         "preference": row["preference"],
+        "slot_provider": str(row.get("slot_provider") or ""),
+        "slot_model": str(row.get("slot_model") or ""),
+        "enabled": bool(row["enabled"]),
         "cloud_confirm_required": bool(row["cloud_confirm_required"]),
         "candidates": [], "blockers": [],
         "policy_note": "本接口只回答「谁可能行」；选路仍由 resolve_provider() 按 "

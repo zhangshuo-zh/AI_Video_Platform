@@ -1598,8 +1598,13 @@ export default {
       }
       if (wanted !== sceneSeq) return;
       sceneCandidates = out.candidates || [];
-      const cand = sceneCandidates.map((c, i) => `<tr>
-        <td><b>${escapeHtml(c.label)}</b>
+      const recProv = out.slot_provider || scene?.slot_provider || '';
+      const recModel = out.slot_model || scene?.slot_model || '';
+      const policyEnabled = out.enabled ?? Boolean(scene?.enabled);
+      const cand = sceneCandidates.map((c, i) => {
+        const isRec = Boolean(recProv && c.provider === recProv && c.model_code === recModel);
+        return `<tr>
+        <td><b>${escapeHtml(c.label)}</b>${isRec ? ' <span class="chip blue">建议轨</span>' : ''}
           <div class="hint mono">${escapeHtml(c.provider)}/${escapeHtml(c.model_code)}</div></td>
         <td><span class="chip ${c.status === 'available' ? 'green' : 'amber'}">${
           escapeHtml(c.status_label || c.status)}</span></td>
@@ -1607,7 +1612,8 @@ export default {
           ? '<span class="chip amber">要逐次确认计费</span>'
           : '<span class="hint">本地</span>'}</td>
         <td><button type="button" class="btn ghost sm" data-scene-use="${i}">用它</button></td>
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
       const blockers = (out.blockers || [])
         .map((b) => `<li>${escapeHtml(b)}</li>`).join('');
       const impossible = (out.impossible_tags || []);
@@ -1615,8 +1621,8 @@ export default {
         <p class="hint gen-scene-lede">
           场景「${escapeHtml(scene?.scene_label || key)}」要的能力：
           ${(out.required || []).map(escapeHtml).join('、') || '（没写）'}。
-          只有一档候选时会自动预填到「执行路线／槽位」并留痕可撤销；
-          好几档时点那一行的「用它」——平台不替你挑。
+          已在调用策略配置「默认预选」且开启「启用」并满足能力要求（或仅有一档候选）时会自动预填到「执行路线／槽位」并留痕可撤销；
+          多档且未指定建议轨时点那一行的「用它」——云端仍须人工勾计费确认。
         </p>
         ${impossible.length
           ? `<p class="t-bad gen-scene-warn">这几项必需能力在清单里没有任何来源：
@@ -1633,10 +1639,13 @@ export default {
           ? `<details class="gen-scene-more"><summary>为什么别的不行（${
               (out.blockers || []).length}）</summary><ul class="hint">${blockers}</ul></details>`
           : ''}`;
-      // 自动预填只在"恰好一档"时发生：好几档时替你挑第一档就是平台在选路，
-      // 那不是预填，是越权。template 预填优先（调用方给得更具体）。
-      if (allowAuto && sceneCandidates.length === 1) {
-        scenePrefillTo(sceneCandidates[0], scene?.scene_label || key);
+      // 方案 B：仅当策略已「启用」且设好「建议轨」并在合格候选里时，优先自动预填（仍保留撤销与云端手动勾计费）；
+      // 若未启用或未指定建议轨，则仅在恰好一档候选时自动预填，多档时不替人瞎挑。
+      const preferred = (policyEnabled && recProv && recModel)
+        ? sceneCandidates.find((c) => c.provider === recProv && c.model_code === recModel)
+        : null;
+      if (allowAuto && (preferred || sceneCandidates.length === 1)) {
+        scenePrefillTo(preferred || sceneCandidates[0], scene?.scene_label || key);
       }
     }
 

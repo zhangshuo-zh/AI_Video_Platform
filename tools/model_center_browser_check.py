@@ -1109,12 +1109,16 @@ def main():
         })()""")
         P.click(cdp, "#save-policies")
         time.sleep(1.2)
-        # 故意"启用但没选建议轨"：后端一次说清，界面必须把原话摊开
+        # 故意"启用但没选建议轨"：立即弹窗提醒并自动取消勾选
         P.eval_js(cdp, "document.querySelector('tr[data-key=\"character_variant\"] [data-f=\"on\"]').click()")
-        P.click(cdp, "#save-policies")
-        time.sleep(1.0)
-        check("非法策略被拒且错误原话可见",
-              P.eval_js(cdp, "document.body.innerText.includes('要启用就得选一条建议轨')"))
+        time.sleep(0.5)
+        check("未选建议轨点启用立即弹窗提醒并自动取消勾选",
+              P.eval_js(cdp, "document.body.innerText.includes('启用前需要预选模型')")
+              and not P.eval_js(cdp, "document.querySelector('tr[data-key=\"character_variant\"] [data-f=\"on\"]').checked"))
+        P.eval_js(cdp, "document.querySelector('[data-a-ok]')?.click()")
+        time.sleep(0.3)
+        check("调用策略页已移除「要确认计费」列",
+              not P.eval_js(cdp, "Boolean(document.querySelector('tr[data-key=\"character_variant\"] [data-f=\"cloud\"]'))"))
 
         # 恢复合法状态，明确取消「局部重绘」与「图生图」要求后保存，再次保存仍应保留「参考图」。
         P.eval_js(cdp, """(() => {

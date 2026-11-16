@@ -188,6 +188,51 @@ function hideDanger() {
   dangerResolve = null;
 }
 
+let alertHost = null;
+let alertResolve = null;
+
+/**
+ * 轻提示确认弹窗：全站一套自绘样式，替代原生 `alert()`，只有一个确认按钮。
+ */
+export function alertInfo({ title = '提示', body = '', okText = '我知道了' } = {}) {
+  if (alertHost && !alertHost.hidden) return Promise.resolve();
+  return new Promise((resolve) => {
+    if (!alertHost) {
+      alertHost = document.createElement('div');
+      alertHost.className = 'modal';
+      alertHost.innerHTML = `
+        <div class="modal-box">
+          <div class="modal-head neutral" data-a-title></div>
+          <div class="modal-body"><p data-a-body></p></div>
+          <div class="modal-actions">
+            <button class="btn primary" data-a-ok></button>
+          </div>
+        </div>`;
+      document.body.appendChild(alertHost);
+      const done = () => {
+        const r = alertResolve;
+        alertHost.hidden = true;
+        alertResolve = null;
+        if (r) r();
+      };
+      alertHost.addEventListener('click', (e) => {
+        if (e.target === alertHost || e.target.closest('[data-a-ok]')) done();
+      });
+      alertHost.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') done();
+      });
+      bindModalDismiss(alertHost, done);
+    }
+    alertResolve = resolve;
+    alertHost.querySelector('[data-a-title]').textContent = title;
+    alertHost.querySelector('[data-a-body]').innerHTML = body;
+    const okBtn = alertHost.querySelector('[data-a-ok]');
+    okBtn.textContent = okText;
+    alertHost.hidden = false;
+    okBtn.focus();
+  });
+}
+
 /**
  * 二级页的页内切换器。窄屏（≤860px）侧栏的二级标签会收起，
  * 那时页内没有第二个入口就等于把功能藏了（指令 §3.2-1「不得隐藏关键入口」）。
