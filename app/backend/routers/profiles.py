@@ -102,6 +102,7 @@ def list_profiles(project_id: int | None = None, capability: str | None = None,
                   user=Depends(require_permission("job:read"))) -> list[GenerationProfileOut]:
     """列表里始终包含全局模板。带 project_id 时只看这个项目 + 全局；
     不带时按可见项目汇总（管理员看全部）。"""
+    ids: list[int] | None
     if project_id is not None:
         access.ensure(user, project_id, "read")
         ids = [project_id]

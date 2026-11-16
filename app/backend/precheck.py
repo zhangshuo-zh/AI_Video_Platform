@@ -155,7 +155,7 @@ def _free_gb() -> float | None:
     return round(usage.free / 1024 ** 3, 1) if usage else None
 
 
-def _disk_item(disk: dict, locate: str) -> dict:
+def _disk_item(disk: dict, locate: dict) -> dict:
     """磁盘这一项：**空间不够就是阻塞，不只是提醒**（2026-11-08，P1）。
 
     原来这里是 `WARN if disk_low else PASS`，而 `disk_low` 在

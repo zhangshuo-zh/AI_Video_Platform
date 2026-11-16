@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+from typing import Literal
+
 import hashlib
 import json
 
@@ -105,8 +107,8 @@ VARIANT_TYPES_BY_KIND: dict[str, tuple[str, ...]] = {
     "prop": ("prop_form", "other"),
 }
 
-TEXT_CAPABILITY = "text"
-IMAGE_CAPABILITY = "image"
+TEXT_CAPABILITY: Literal["text"] = "text"
+IMAGE_CAPABILITY: Literal["image"] = "image"
 # 图像那一支的操作名：文字设定有三种（人物／场景／道具），图像只有这一种。
 # 它同时是"这条作业没有分段回稿"的判据——见 generation_view 里那一支。
 IMAGE_OPERATION = "asset_image"
@@ -477,7 +479,7 @@ def submit_generation(project_id: int, payload, created_by: int | None) -> dict:
         prompt = (payload.image_prompt or "").strip()
         if not prompt:
             raise AssetGenInvalid("图像提示词是空的；一致性提示词可以先同步过来再改")
-        capability = IMAGE_CAPABILITY
+        capability: Literal["image", "text"] = IMAGE_CAPABILITY
         mode = ""                      # 图像作业没有"任务模式"这一层
         sections: list[tuple[str, str]] = []
     else:

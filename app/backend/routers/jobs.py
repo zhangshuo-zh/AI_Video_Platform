@@ -4,6 +4,7 @@ POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `
 这条边界是规格 02 §7.2 的原话：请求接口不得等待模型跑完。
 """
 import mimetypes
+from typing import TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status as http_status
 from fastapi.responses import FileResponse
@@ -27,6 +28,15 @@ from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
 from repositories.content import episodes
 from repositories.jobs import clamp_limit, jobs, retry_reason
 from repositories.projects import projects as project_repo
+
+class JobFilters(TypedDict):
+    capability: str | None
+    statuses: list[str] | None
+    execution_mode: str | None
+    keyword: str | None
+    episode_id: int | None
+    shot_id: int | None
+
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
@@ -133,7 +143,7 @@ def list_jobs(response: Response,
         scope = row["id"]
     wanted = _statuses(status)
     ids = _visible_ids(user, scope)
-    kw = dict(capability=capability, statuses=wanted,
+    kw: JobFilters = dict(capability=capability, statuses=wanted,
               execution_mode=execution_mode,
               keyword=(q or "").strip()[:200] or None,
               episode_id=episode_id, shot_id=shot_id)

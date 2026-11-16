@@ -837,3 +837,16 @@ def test_只读步骤不带云端确认(as_role, clean_queue, plan_server, ag_sc
     assert captured, "只读步骤没有执行"
     assert captured.get("cloud_confirmed") is False, (
         "没签过字的只读步骤也带了云端确认：闸门成了摆设")
+
+
+def test_运行列表批量回显关联作业(as_role, clean_queue, plan_server, ag_scene):
+    c = as_role("admin")
+    run = _start(c, ag_scene)
+    step = _add_step(run["id"], "episode_preflight",
+                     {"episode_id": ag_scene["episode_id"]})
+    agent_runs.update_step(step["id"], {"job_id": run["plan_job_id"]})
+    response = c.get("/api/agent/runs", params={"project_id": ag_scene["project_id"]})
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json()["items"] if row["id"] == run["id"])
+    assert item["steps"][0]["job_id"] == run["plan_job_id"]
+    assert item["steps"][0]["job_status"] == "queued"

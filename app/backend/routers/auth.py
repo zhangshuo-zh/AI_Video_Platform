@@ -74,6 +74,7 @@ def login(payload: LoginIn, response: Response, request: Request):
     if not ok:
         login_throttle.record_failure(username, client)
         raise HTTPException(status_code=401, detail="用户名或密码不对")
+    assert user is not None
     login_throttle.reset(username, client)
 
     token, token_hash = new_session_token()

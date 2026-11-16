@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+from sqlite3 import Row
 
 import adapters
 import engines
@@ -38,7 +39,7 @@ IMAGE_TAG = {"image": "图生图", "video": "图生视频"}
 # 未接入引擎：本机装了应用、平台里一行适配代码都没有。
 # 写死在这里而不是编进 ADAPTERS，是为了不让它意外走进 health()/runners.build()——
 # 一个假的 adapter 会让"选了就能跑"变成谎言。
-UNINTEGRATED_ENGINES = [
+UNINTEGRATED_ENGINES: list[dict] = [
     # ComfyUI 于 2026-11-13 从这张名单里摘出去了（清单 `comfyui`）：
     # 它现在有适配器壳与自述端点，引擎页能看见它通不通。
     # **但"未接入"这个词对它仍然半真**——接的是探测，不是执行。
@@ -168,7 +169,7 @@ def verified_kinds(capability: str, backend: str, provider: str,
     return {kind for kind, row in latest.items() if row["state"] == "ok"}
 
 
-def _verification_index(slots: set | None = None) -> dict[tuple, dict[str, dict]]:
+def _verification_index(slots: set | None = None) -> dict[tuple, dict[str, Row]]:
     """一次查询拿"这些槽位×档各自的每类最新验证"，供 `catalog()` 复用。
 
     与 `verified_kinds()` 同一份数据，区别只是调用次数：一次目录构建里有几十行，
@@ -254,12 +255,12 @@ def catalog(verification: dict | None = None, *, probe: bool = False) -> list[di
         # 这种情况仍然是"清单认得这一档"，只是另开了第二条运行位置，得照常列出来；
         # 只有清单里真的没有这一档（`_find_adapter` 空或模型码不在参数表里）才算孤儿。
         adapter = _find_adapter(reg["capability"], reg["backend"], reg["provider"])
-        spec = None
+        orphan_spec: dict | None = None
         if adapter is not None:
-            spec = next((m.as_dict() for m in adapter.models
-                         if m.code == reg["model_code"]), None)
-        if spec is not None:
-            rows.append(_registered_row(adapter, spec, reg, index, probe=probe))
+            orphan_spec = next((m.as_dict() for m in adapter.models
+                                if m.code == reg["model_code"]), None)
+        if orphan_spec is not None:
+            rows.append(_registered_row(adapter, orphan_spec, reg, index, probe=probe))
         else:
             rows.append(_orphan_row(reg, probe=probe, verification=index))
     return rows
@@ -441,7 +442,7 @@ def _orphan_row(reg, *, probe: bool = False, verification: dict | None = None) -
     else:
         kinds = _kinds_of(verification, reg["capability"], reg["backend"],
                           reg["provider"], reg["model_code"])
-    spec = {"image_inputs": [], "params": [], "prices": []}
+    spec: dict = {"image_inputs": [], "params": [], "prices": []}
     return {
         "kind": "orphan", "capability": reg["capability"], "backend": reg["backend"],
         "provider": reg["provider"], "provider_label": "",

@@ -51,7 +51,7 @@ PUBLIC_STATUSES = [PENDING, DOING, NEEDS, DONE, FAILED]
 
 # 展示顺序＝推荐顺序，不是强制顺序。entry 是"点这一阶段去哪个页面"，
 # 由 modules.js 的模块 id ＋二级页下标组成，前端直接用它拼 #module/sub。
-STAGES = [
+STAGES: list[dict] = [
     {"key": "script", "label": "剧本创作", "entry": {"module": "writing", "sub": 0}},
     {"key": "parse", "label": "内容解析", "entry": {"module": "writing", "sub": 0}},
     {"key": "assets", "label": "资产准备", "entry": {"module": "assets", "sub": 0}},
@@ -440,7 +440,7 @@ def _machine_total_gb() -> float:
     return _MACHINE_TOTAL_GB
 
 
-_MACHINE_TOTAL_GB = None
+_MACHINE_TOTAL_GB: float | None = None
 
 
 def _memory_readout(peak_rows: list[dict]) -> dict:
@@ -681,7 +681,7 @@ def shot_workbench(shot_id: int) -> dict:
 
     image_jobs, video_jobs = _jobs("image"), _jobs("video")
     job_ids = [int(j["id"]) for j in list(image_jobs) + list(video_jobs)]
-    sign_rows = reviews.signs_for_jobs(project_id, job_ids) if job_ids else []
+    sign_rows = reviews.signs_for_jobs(project_id, job_ids) if job_ids and project_id is not None else []
     # 同一作业可能有多条改判记录：`upsert_sign` 保证同锚点只有一行，
     # 但历史锚点（换过产物）会留下多行——界面要的是最新那一次的结论。
     signs: dict[int, dict] = {}
@@ -854,8 +854,8 @@ def asset_impact(asset_id: int, *, only_shot_ids: set[int] | None = None) -> dic
     # 每集一次"最新成功视频"批量读，而不是逐镜回库——一集 13 镜时那是 13 趟。
     latest: dict[int, dict] = {}
     for eid in {h["episode_id"] for h in hits.values()}:
-        for sid, job in job_repo.latest_succeeded_videos_by_shot(eid).items():
-            latest[int(sid)] = job
+        for sid, latest_job in job_repo.latest_succeeded_videos_by_shot(eid).items():
+            latest[int(sid)] = dict(latest_job)
 
     # 循环外两次批量读完：镜头行一次 IN、签字一次 IN。
     # 原来这两句在循环里逐条 `shots.get()`／`reviews.signs()`——600 资产／1 500 镜头

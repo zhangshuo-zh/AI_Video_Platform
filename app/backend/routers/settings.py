@@ -154,12 +154,12 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
         matrix2 = validation_repo.latest_matrix({e["key"] for e in extra}, by_model=True)
         for e in extra:
             reg, adapter = e["reg"], e["adapter"]
-            row = {"capability": reg["capability"], "backend": reg["backend"],
+            option_row = {"capability": reg["capability"], "backend": reg["backend"],
                    "provider": reg["provider"], "model": reg["model_code"]}
-            health = adapters.health(row, probe_service=False,
+            health = adapters.health(option_row, probe_service=False,
                              probe_timeout=engines.LIST_TIMEOUT_SECONDS)
             badge, at = validations.badge(validations.summary_for(
-                row, matrix2.get(e["key"], {})))
+                option_row, matrix2.get(e["key"], {})))
             out.append(ProviderOptionOut(
                 capability=reg["capability"],
                 capability_label=CAPABILITIES.get(reg["capability"], reg["capability"]),

@@ -93,10 +93,10 @@ def project_production(project_id: int, episode_id: int | None = None,
     # 空板时 `episode_board` 只给 `{"stages": [], "next_tasks": []}`，
     # 而模型会给 episode_id/shots/counts 等补上默认值（None/0）。这**不是丢数据**，
     # 是补默认值：前端本来就写着 `board.shots || 0`、`board.stages || []`。
-    return ProjectProductionOut(
-        overview=overview, board=board,
-        stats=production.project_stats(project_id, overview),
-        stages=production.STAGES, statuses=production.PUBLIC_STATUSES)
+    return ProjectProductionOut.model_validate({
+        "overview": overview, "board": board,
+        "stats": production.project_stats(project_id, overview),
+        "stages": production.STAGES, "statuses": production.PUBLIC_STATUSES})
 
 
 # ---------------------------------------------------------------- 统一预检

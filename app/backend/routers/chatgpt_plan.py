@@ -51,7 +51,7 @@ def connection(user=Depends(require_permission('job:submit'))):
 def authorize(payload: LoginIn, request: Request,
               user=Depends(require_permission('job:submit'))):
     # 浏览器必须与后端在同一台电脑，授权回调才可到达 loopback listener。
-    if request.client.host not in ('127.0.0.1', '::1', 'testclient'):
+    if request.client is None or request.client.host not in ('127.0.0.1', '::1', 'testclient'):
         raise HTTPException(422, '请在部署平台的电脑上打开本地地址连接 ChatGPT')
     return chatgpt.start_login(user['id'], payload.new_account)
 
@@ -97,12 +97,12 @@ def generate(payload: DraftIn, user=Depends(require_permission('job:submit'))):
         draft = {**fields, 'fingerprint': fingerprint, 'state': 'generating', 'created_at': time.time()}
         chatgpt._write(name, draft)
     started = time.monotonic()
-    metrics = {}
+    metrics: dict = {}
     try:
         if payload.model not in {row['id'] for row in chatgpt.models(user['id'])}:
             raise chatgpt.ChatGPTError('所选模型当前不可用，请刷新模型列表')
         prompt = agents.plan_prompt(payload.goal, episode,
-            {'shots': len(shots.list_by_episode(payload.episode_id)) if episode else 0})
+            {'shots': len(shots.list_by_episode(episode["id"])) if episode else 0})
         text = chatgpt.infer(user['id'], payload.model, prompt, metrics=metrics)
         draft.update(state='ready', steps=agents.parse_plan(text))
     except (chatgpt.ChatGPTError, agents.AgentInvalid) as exc:
@@ -153,7 +153,7 @@ def usage(days: int = Query(7, ge=1, le=30), project_id: int | None = None,
         raise HTTPException(422, '统计范围支持最近 7 天或 30 天')
     if project_id is not None:
         access.ensure(user, project_id, 'read')
-        project_ids = {project_id}
+        project_ids: set[int] | None = {project_id}
     else:
         project_ids = access.visible_project_ids(user)
     return chatgpt_usage.summarize(user['id'], days, project_ids)

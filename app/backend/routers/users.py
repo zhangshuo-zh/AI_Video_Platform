@@ -170,7 +170,7 @@ def delete_user(user_id: int, payload: UserDeleteIn,
         # 回滚不会把它们带回去，"看起来原子"比不原子更危险。
         # 所以这里做的是另一件事——把已经做到的部分如实报出来，
         # 而不是让人对着一个 500 猜删到第几个了。
-        gone = []
+        gone: list[int] = []
         for row in owned:
             try:
                 delete_project_cascade(row["id"], actor=actor_name(user))

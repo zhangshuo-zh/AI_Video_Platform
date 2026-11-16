@@ -252,7 +252,7 @@ def create_shot(episode_id: int, payload: ShotIn,
                        payload.duration, asset_ids, variant_ids,
                        **_shot_form_fields(payload))
     # 回显带形态名字：新建那一行马上就会出现在分镜表里，界面不该先闪一下 #12
-    return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
+    return ShotOut.from_row(row, variant_labels=_variant_labels([dict(row)]).get(int(row["id"]), {}))
 
 
 @router.put("/shots/{shot_id}", response_model=ShotOut)
@@ -275,7 +275,7 @@ def update_shot(shot_id: int, payload: ShotIn,
                        **_shot_form_fields(payload))
     if row is None:
         raise HTTPException(status_code=404, detail="镜头不存在")
-    return ShotOut.from_row(row, variant_labels=_variant_labels([row]).get(int(row["id"]), {}))
+    return ShotOut.from_row(row, variant_labels=_variant_labels([dict(row)]).get(int(row["id"]), {}))
 
 
 

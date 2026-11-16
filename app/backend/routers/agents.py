@@ -22,6 +22,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 
 import access
+from repositories.jobs import jobs as job_repo
+
 import agents
 import agent_tools
 from deps import require_permission
@@ -126,7 +128,7 @@ def create_run(payload: AgentRunIn,
         out = agents.create_run(
             project_id=payload.project_id, episode_id=payload.episode_id,
             goal=payload.goal, scene_key=payload.scene_key, user=user,
-            idempotency_key=payload.idempotency_key,
+            idempotency_key=payload.idempotency_key or "",
             confirmed_cloud=payload.user_confirmed_cloud,
             approval_valid_seconds=payload.approval_valid_seconds)
     except agents.AgentInvalid as exc:
@@ -149,7 +151,7 @@ def list_runs(project_id: int, limit: int = Query(50, ge=1),
     steps_by_run = agents.agent_runs.steps_for_runs([r["id"] for r in rows])
     job_ids = [s["job_id"] for steps in steps_by_run.values()
                for s in steps if s["job_id"]]
-    jobs_by_id = agents.job_repo.get_many(job_ids, with_derived=False) if job_ids else {}
+    jobs_by_id = job_repo.get_many(job_ids, with_derived=False) if job_ids else {}
     return {"items": [agents.run_row_view(r, steps_by_run.get(r["id"], []), jobs_by_id)
                       for r in rows],
             "status_labels": agents.RUN_STATUS_LABEL,

@@ -238,6 +238,8 @@ def delete_project(project_id: int, confirm: str = "",
 def _members_payload(project_id: int, user) -> ProjectMembersOut:
     """组返回体。不含权限判断：调用方先 ensure，这里只负责把数据摆齐。"""
     project = project_repo.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     members = [ProjectMemberOut(user_id=r["user_id"], username=r["username"],
                                 display_name=r["display_name"], created_at=r["created_at"])
                for r in project_repo.members(project_id)]
