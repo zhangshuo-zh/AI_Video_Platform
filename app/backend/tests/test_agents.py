@@ -767,9 +767,9 @@ def test_付费步骤批准之后才带得动云端确认(as_role, clean_queue, 
     real_submit = services.submit_job
     armed = {"on": False}
 
-    def spy(payload, created_by):
+    def spy(payload, created_by, **kwargs):
         if not armed["on"]:
-            return real_submit(payload, created_by)
+            return real_submit(payload, created_by, **kwargs)
         seen.append({"confirmed": bool(payload.user_confirmed_cloud)})
         raise services.JobInvalid("测试里不真排作业：只记这一次调用的确认位")
 
@@ -850,3 +850,44 @@ def test_运行列表批量回显关联作业(as_role, clean_queue, plan_server,
     item = next(row for row in response.json()["items"] if row["id"] == run["id"])
     assert item["steps"][0]["job_id"] == run["plan_job_id"]
     assert item["steps"][0]["job_status"] == "queued"
+
+
+def test_计划建单预校验在事务外且发布与运行绑定同事务(
+        as_role, clean_queue, plan_server, ag_scene, monkeypatch):
+    import db
+    from services.jobs_pkg import admission
+
+    seen = []
+    original_gate = admission._service_engine_gate
+    original_create = job_repo.create
+    def gate(*args):
+        assert db._HELD.get() is None
+        seen.append("preflight")
+        return original_gate(*args)
+    def create(row):
+        assert db._HELD.get() is not None
+        seen.append("publish")
+        return original_create(row)
+    monkeypatch.setattr(admission, "_service_engine_gate", gate)
+    monkeypatch.setattr(job_repo, "create", create)
+    run = _start(as_role("admin"), ag_scene)
+    assert seen == ["preflight", "publish"]
+    assert agent_runs.get(run["id"])["plan_job_id"] == run["plan_job_id"]
+
+
+def test_计划绑定失败回滚运行和作业(
+        as_role, clean_queue, plan_server, ag_scene, monkeypatch):
+    import db
+
+    with get_conn() as conn:
+        before_runs = conn.execute("SELECT COUNT(*) FROM agent_run").fetchone()[0]
+        before_jobs = conn.execute("SELECT COUNT(*) FROM job").fetchone()[0]
+    def fail_binding(*args):
+        assert db._HELD.get() is not None
+        raise RuntimeError("injected binding failure")
+    monkeypatch.setattr(agent_runs, "set_plan_job", fail_binding)
+    with pytest.raises(RuntimeError, match="injected binding failure"):
+        _start(as_role("admin"), ag_scene)
+    with get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM agent_run").fetchone()[0] == before_runs
+        assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == before_jobs

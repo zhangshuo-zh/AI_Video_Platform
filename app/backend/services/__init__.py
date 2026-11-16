@@ -92,7 +92,7 @@ from .extract_candidates import (
 
 from .jobs import (
     job_kind, shot_source_version, shots_view, shot_asset_ids, shot_variant_ids,
-    job_source_stale, _service_engine_gate, verify_job_links, submit_job, _cost_of, JobMissing,
+    job_source_stale, _service_engine_gate, verify_job_links, submit_job, prepare_job, PreparedJob, _cost_of, JobMissing,
     JobStateConflict, _seconds_since, worker_status, job_detail_view, retry_preview,
     json_loads_dict, reconcile_job, mark_job_attention,
     set_concurrency, concurrency_now
@@ -132,6 +132,7 @@ from .model_configuration import (
 )
 
 __all__ = [
+    "prepare_job", "PreparedJob",
     "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
     "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",
     "scenes_payload", "engines_payload", "save_policies",

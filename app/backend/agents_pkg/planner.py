@@ -200,6 +200,19 @@ def create_run(*, project_id: int, episode_id: int | None, goal: str,
         "route_source": "provider_config.is_default",
         "needs_cloud_confirm": route["needs_cloud_confirm"],
     }
+    payload = JobSubmitIn(
+        project_id=int(project_id),
+        episode_id=int(episode["id"]) if episode else None,
+        shot_id=None,
+        capability="text",
+        prompt=plan_prompt(goal, episode, numbers),
+        params={},
+        input_refs=[],
+        idempotency_key=None,
+        estimate=plan_estimate(route),
+        user_confirmed_cloud=bool(confirmed_cloud),
+    )
+    prepared = services.prepare_job(payload, user["id"])
     with transaction() as conn:
         run = agent_runs.create({
             "project_id": project_id,
@@ -211,19 +224,8 @@ def create_run(*, project_id: int, episode_id: int | None, goal: str,
             "idempotency_key": key or None,
             "created_by": user["id"],
         })
-        payload = JobSubmitIn(
-            project_id=int(project_id),
-            episode_id=int(episode["id"]) if episode else None,
-            shot_id=None,
-            capability="text",
-            prompt=plan_prompt(goal, episode, numbers),
-            params={},
-            input_refs=[],
-            idempotency_key=f"ag-{run['id']}-plan",
-            estimate=plan_estimate(route),
-            user_confirmed_cloud=bool(confirmed_cloud),
-        )
-        job = services.submit_job(payload, user["id"])
+        payload.idempotency_key = f"ag-{run['id']}-plan"
+        job = services.submit_job(payload, user["id"], prepared=prepared)
         agent_runs.set_plan_job(run["id"], job["id"])
         agent_runs.add_event(
             "run_created",

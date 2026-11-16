@@ -12,6 +12,30 @@ import sqlite3
 from .billing import _cost_of
 from .source import shot_source_version
 
+from copy import deepcopy
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PreparedJob:
+    """单次请求的预校验快照；不缓存、不对外暴露，不负责执行作业。"""
+
+    intent: dict
+    row: dict
+    created_by: int | None
+    existing: sqlite3.Row | None = None
+
+
+def _intent_of(payload) -> dict:
+    # 幂等键在分配 agent_run id 后填入，其余提交内容必须与预校验一致。
+    fields = (
+        "project_id", "episode_id", "shot_id", "capability", "execution_mode",
+        "provider_code", "model_code", "prompt", "params", "input_refs", "priority",
+        "estimate", "user_confirmed_cloud",
+    )
+    return deepcopy({name: getattr(payload, name, None) for name in fields})
+
+
 
 
 def job_kind(capability: str, execution_mode: str) -> str:
@@ -92,30 +116,15 @@ def verify_job_links(project_id: int, episode_id: int | None, shot_id: int | Non
 
 
 
-def submit_job(payload, created_by: int | None) -> sqlite3.Row:
-    """校验并写入 Job 行，返回 sqlite3.Row。**不触发执行**——执行是 worker 的事。
+def prepare_job(payload, created_by: int | None) -> PreparedJob:
+    """解析路线、校验参数与成本，返回本次提交快照，不写入 Job。
 
-    三条闸门在这里一次性过完：路线（默认轨或显式槽位）、参数白名单、
-    云端视频的人工确认。任何一条不过就抛 JobInvalid，绝不落一条"看起来能跑"的空作业。
+    引擎握手、分镜源指纹等外部读取在这里完成。需要同时写入业务关联的
+    调用方在事务外准备，再把结果交给事务内的 submit_job；不缓存或跨请求复用。
+    幂等查键保留原有项目归属校验，发布阶段再次查键并处理唯一约束竞态。
 
-    第四条是**幂等复用**，收在这一层而不是只收在 `POST /api/jobs` 里：
-    那条路由查过键（还要查权限、要把 202 改成 200），但资产中心这些
-    经由本函数建单的路径如果各自再查一遍，就是第四、第五份判断。现在只有一个
-    出处，代价是任何调用方都白拿同一条语义。
-
-    走本函数的四条业务提交路：生成中心（`routers/jobs.py`）、资产中心
-    （`asset_studio._submit_job`）、单集产线的节点（`pipeline._dispatch_ready`）、
-    音频中心（本文件 `audio_submit`）。
-
-    **另有三条旁路直接 `job_repo.create`，别把它们也说成"唯一入口"**（上一版这一句
-    写的是"资产中心、文档 AI 这些经由本函数建单"，文档 AI 其实不走，读代码的人会被
-    带偏）：文档 AI（本文件 `submit_doc_ai_job`）、抽取（`extraction_submit`）、
-    合成（`composition/service.py`）。三条各有自己的闸门，但都不是全套：
-    抽取带 25 小时同文复用、合成带幂等键与事务、**文档 AI 两样都没有**——
-    这是已知开口，记在 `tests/test_guards.py::test_建单路径只有这一份清单` 的注释里。
-    为什么不一并收进本函数：这三条要冻的东西不一样（选区与 base_version、
-    抽取 run 行、时间线快照），且 route 走的是 `text_ai_route()` 而不是默认轨，
-    硬塞进来会让"唯一入口"变成"什么都塞"。守卫测试钉的是**旁路数量不许再长**。
+    通用提交仍统一经过 submit_job；文档 AI、抽取、合成的专用建单路径
+    由 test_guards 的独立清单约束，不在此新增建单旁路。
     """
     if payload.idempotency_key:
         existing = job_repo.by_key(payload.idempotency_key)
@@ -124,7 +133,7 @@ def submit_job(payload, created_by: int | None) -> sqlite3.Row:
             # 连 id 都不能回——那等于通过幂等键泄露了别的项目的作业号。
             if existing["project_id"] != payload.project_id:
                 raise JobInvalid("这个幂等键已被别的作业占用")
-            return existing
+            return PreparedJob(_intent_of(payload), {}, created_by, existing)
 
     capability = payload.capability
     mode = payload.execution_mode
@@ -238,6 +247,27 @@ def submit_job(payload, created_by: int | None) -> sqlite3.Row:
         "created_by": created_by,
         **cost,
     }
+    return PreparedJob(_intent_of(payload), deepcopy(row), created_by)
+
+
+def submit_job(payload, created_by: int | None, *, prepared: PreparedJob | None = None) -> sqlite3.Row:
+    """唯一通用建单入口；预校验结果可在调用方的原子写事务内使用。"""
+    if payload.idempotency_key:
+        existing = job_repo.by_key(payload.idempotency_key)
+        if existing is not None:
+            if existing["project_id"] != payload.project_id:
+                raise JobInvalid("这个幂等键已被别的作业占用")
+            return existing
+    if prepared is None:
+        prepared = prepare_job(payload, created_by)
+    if prepared.created_by != created_by or prepared.intent != _intent_of(payload):
+        raise JobInvalid("作业内容在预校验后发生变化，请重新校验")
+    if prepared.existing is not None:
+        if prepared.existing["idempotency_key"] != payload.idempotency_key:
+            raise JobInvalid("幂等键在预校验后发生变化，请重新校验")
+        return prepared.existing
+    row = deepcopy(prepared.row)
+    row["idempotency_key"] = payload.idempotency_key
     try:
         return job_repo.create(row)
     except sqlite3.IntegrityError as exc:
@@ -249,4 +279,6 @@ def submit_job(payload, created_by: int | None) -> sqlite3.Row:
         existing = job_repo.by_key(payload.idempotency_key) if payload.idempotency_key else None
         if existing is None:
             raise exc
+        if existing["project_id"] != payload.project_id:
+            raise JobInvalid("这个幂等键已被别的作业占用") from exc
         return existing

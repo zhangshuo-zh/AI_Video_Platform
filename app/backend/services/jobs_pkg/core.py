@@ -28,6 +28,7 @@ from .admission import job_kind as job_kind
 from .admission import _service_engine_gate as _service_engine_gate
 from .admission import verify_job_links as verify_job_links
 from .admission import submit_job as submit_job
+from .admission import prepare_job as prepare_job, PreparedJob as PreparedJob, _intent_of as _intent_of
 from .billing import _cost_of as _cost_of
 from .billing import reconcile_job as reconcile_job
 from .billing import mark_job_attention as mark_job_attention
@@ -40,6 +41,7 @@ from .views import retry_preview as retry_preview
 from .views import json_loads_dict as json_loads_dict
 
 __all__ = [
+    "PreparedJob", "prepare_job", "_intent_of",
     'adapters',
     'engines',
     'hashlib',

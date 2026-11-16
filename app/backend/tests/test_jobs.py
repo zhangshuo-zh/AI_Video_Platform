@@ -587,3 +587,55 @@ def test_日志路径越界读不到():
     assert jobfiles.read_log("/etc/passwd") == ""
     assert jobfiles.read_log("../platform.db") == ""
     assert jobfiles.read_log(f"{JOBS_DIR}/../../x") == ""
+
+
+@pytest.mark.parametrize("change", ["params", "actor", "project"])
+def test_预校验后内容或操作者变化拒绝发布(clean_queue, seeded, monkeypatch, change):
+    from schemas.jobs import JobSubmitIn
+    payload = JobSubmitIn(project_id=seeded["project_id"], capability="video", prompt="snapshot",
+                          provider_code="mock", model_code="mock-1", execution_mode="local",
+                          params={"sleep": 0.05})
+    prepared = services.prepare_job(payload, None)
+    actor = None
+    if change == "params":
+        payload.params["sleep"] = 0.1
+    elif change == "actor":
+        actor = 999999
+    else:
+        payload.project_id += 999999
+    def forbidden_create(row):
+        pytest.fail("changed submission must not be published")
+    monkeypatch.setattr(jobs, "create", forbidden_create)
+    with pytest.raises(services.JobInvalid, match="预校验后发生变化"):
+        services.submit_job(payload, actor, prepared=prepared)
+
+
+def test_预校验允许分配幂等键并复用已发布作业(clean_queue, seeded, monkeypatch):
+    from schemas.jobs import JobSubmitIn
+    payload = JobSubmitIn(project_id=seeded["project_id"], capability="video", prompt="snapshot",
+                          provider_code="mock", model_code="mock-1", execution_mode="local")
+    prepared = services.prepare_job(payload, None)
+    payload.idempotency_key = "prepared-key-after-validate"
+    def forbidden_gate(*args):
+        pytest.fail("publishing prepared submission must not probe again")
+    monkeypatch.setattr("services.jobs_pkg.admission._service_engine_gate", forbidden_gate)
+    first = services.submit_job(payload, None, prepared=prepared)
+    second = services.submit_job(payload, None, prepared=prepared)
+    assert first["id"] == second["id"]
+    assert first["idempotency_key"] == payload.idempotency_key
+
+
+def test_幂等键并发撞到其他项目仍拒绝泄露(clean_queue, seeded, fresh_project, monkeypatch):
+    import sqlite3
+    from schemas.jobs import JobSubmitIn
+    payload = JobSubmitIn(project_id=seeded["project_id"], capability="video", prompt="snapshot",
+                          provider_code="mock", model_code="mock-1", execution_mode="local")
+    prepared = services.prepare_job(payload, None)
+    payload.idempotency_key = "prepared-cross-project-race"
+    lookup = iter([None, {"project_id": fresh_project("outsider"), "id": 123456}])
+    monkeypatch.setattr(jobs, "by_key", lambda key: next(lookup))
+    def collided(row):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: job.idempotency_key")
+    monkeypatch.setattr(jobs, "create", collided)
+    with pytest.raises(services.JobInvalid, match="占用"):
+        services.submit_job(payload, None, prepared=prepared)
