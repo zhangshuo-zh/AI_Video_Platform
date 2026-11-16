@@ -122,7 +122,19 @@ from .workbench import (
     workbench
 )
 
+from .content_operations import (
+    ContentOperationError, MAX_ALIASES, MAX_ALIAS_LEN, MAX_SHOT_ASSETS,
+    extract_shot_frame,
+)
+from .model_configuration import (
+    ModelPolicyInvalid, catalog_payload, policies_payload, scenes_payload,
+    engines_payload, save_policies,
+)
+
 __all__ = [
+    "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
+    "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",
+    "scenes_payload", "engines_payload", "save_policies",
     "ARTIFACT_ANCHOR",
     "AUDIO_KINDS",
     "AUDIO_STATUS",

@@ -790,7 +790,7 @@ def test_枚举的说法只有一份出处(as_admin):
     assert policies["no_auto_fallback"] is adapters.POLICY["no_auto_fallback"]
     # 权威在 adapters 那一份，不是路由里写死的 True：谁改了清单策略，
     # 这一句必须跟着动，否则界面会替平台说一句已经不成立的话。
-    src = (Path(__file__).resolve().parents[1] / "routers" / "model_center.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "services" / "model_configuration.py").read_text()
     assert 'no_auto_fallback": adapters.POLICY["no_auto_fallback"]' in src
     assert '"no_auto_fallback": True' not in src, "路由里又出现了一份字面量 True"
     # 运行位置的白名单也不许在这里再数一遍

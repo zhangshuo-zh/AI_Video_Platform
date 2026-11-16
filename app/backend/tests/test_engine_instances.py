@@ -94,10 +94,12 @@ def test_清单外的引擎被拒(as_role):
     assert "改规格" in response.json()["detail"]
 
 
-def test_建实例_列表带现查健康_且探测不建Job(monkeypatch, as_role):
+def test_建实例_列表带最近检查结果_且探测不建Job(monkeypatch, as_role):
     monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "ok", "服务在线，当前模型 x.ckpt",
         {"endpoint": endpoint or SLOT, "model": "x.ckpt", "keys": 87}))
+    monkeypatch.setattr(engines, "peek", lambda code, endpoint="": (
+        engines.EngineStatus("ok", "服务在线", {"model": "x.ckpt"}), 0.0))
     c = as_role("admin")
     total_before = len(c.get("/api/jobs", params={"limit": 1}).json())
     created = c.post("/api/engines", json={"engine_code": "draw_things",

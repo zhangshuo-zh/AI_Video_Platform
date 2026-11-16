@@ -173,3 +173,43 @@ def test_每个_health_调用点都自己写明要不要出网():
     assert not offenders, (
         "这些调用点没写明要不要出网（读路径请显式 probe_service=False，"
         f"人触发的现查请显式 True）：{offenders}")
+
+
+def test_引擎实例列表缓存缺失或过期均不发起探测(as_role, monkeypatch):
+    import time
+    import engines
+    from repositories.engine_instances import engine_instances
+
+    calls = []
+    def probe(*args, **kwargs):
+        calls.append(args)
+        return engines.EngineStatus("ok", "模拟服务在线", {"model": "demo"})
+    monkeypatch.setattr(engines, "probe", probe)
+    c = as_role("admin")
+    endpoint = "http://127.0.0.1:19763"
+    created = c.post("/api/engines", json={
+        "engine_code": "draw_things", "endpoint": endpoint,
+        "display_name": "读路径回归"})
+    assert created.status_code == 201, created.text
+    iid = created.json()["id"]
+    try:
+        calls.clear()
+        engines.forget_probes()
+        def row():
+            response = c.get("/api/engines")
+            assert response.status_code == 200, response.text
+            return next(r for r in response.json()["items"] if r["id"] == iid)
+        assert row()["health_state"] == "unknown"
+        assert calls == []
+        status = engines.EngineStatus("ok", "模拟在线", {"model": "demo"})
+        key = ("draw_things", endpoint)
+        monkeypatch.setitem(engines._PROBE_CACHE, key, (time.monotonic(), status))
+        assert row()["health_state"] == "ok"
+        monkeypatch.setitem(engines._PROBE_CACHE, key,
+                            (time.monotonic() - engines.PROBE_TTL_SECONDS - 1, status))
+        assert row()["health_state"] == "unknown"
+        assert "重新检查" in row()["health_detail"]
+        assert calls == []
+    finally:
+        engine_instances.delete(iid)
+        engines.forget_probes()
