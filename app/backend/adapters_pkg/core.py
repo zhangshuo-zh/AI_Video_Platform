@@ -21,6 +21,10 @@
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+import sqlite3
+
+
 from .types import Param as Param, Price as Price, ModelSpec as ModelSpec, Adapter as Adapter
 from .video import _FASTMETAL as _FASTMETAL, _MLX_VIDEO as _MLX_VIDEO, _WAN as _WAN, _VIDEO_CLOUD as _VIDEO_CLOUD
 from .image import _MFLUX as _MFLUX, _DRAW_THINGS as _DRAW_THINGS, _COMFYUI as _COMFYUI
@@ -33,6 +37,8 @@ import re
 from dataclasses import dataclass
 import engines
 import runtime
+
+_audit_log = _get_logger(__name__)
 
 ADAPTERS: tuple[Adapter, ...] = (
     _FASTMETAL, _MLX_VIDEO, _MFLUX, _DRAW_THINGS, _COMFYUI, _OLLAMA, _VOXCPM,
@@ -142,7 +148,8 @@ def key_present(env_name: str) -> bool:
     try:
         import secret_store
         return secret_store.present(env_name)
-    except Exception:
+    except (ImportError, sqlite3.Error) as exc:
+        _audit_log.debug("key_present_fallback error=%s", type(exc).__name__)
         return False
 
 

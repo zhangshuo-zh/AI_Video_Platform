@@ -283,6 +283,7 @@ def test_关闭接口成功关闭流程(as_role, monkeypatch):
 
             class _R:
                 returncode = 0
+                stdout = ""
             return _R()
 
         monkeypatch.setattr(engine_launch.subprocess, "run", fake_run)

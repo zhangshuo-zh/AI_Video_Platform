@@ -1,11 +1,16 @@
 """production stats 业务域。"""
 from __future__ import annotations
+
+from log import get_logger as _get_logger
+
 from pathlib import Path
 from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
 import diskplan
 import error_catalog
 import subprocess
+
+_audit_log = _get_logger(__name__)
 
 
 
@@ -24,7 +29,8 @@ def _machine_total_gb() -> float:
                              capture_output=True, text=True, timeout=2).stdout.strip()
         if out.isdigit():
             total = int(out) / 1024 ** 3
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        _audit_log.debug("_machine_total_gb_fallback error=%s", type(exc).__name__)
         total = 0.0
     if not total:
         try:
@@ -32,7 +38,8 @@ def _machine_total_gb() -> float:
                 if line.startswith("MemTotal:"):
                     total = int(line.split()[1]) * 1024 / 1024 ** 3
                     break
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            _audit_log.debug("_machine_total_gb_fallback error=%s", type(exc).__name__)
             total = 0.0
     _MACHINE_TOTAL_GB = round(total, 1)
     return _MACHINE_TOTAL_GB

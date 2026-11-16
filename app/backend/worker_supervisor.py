@@ -28,6 +28,10 @@
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+import sqlite3
+
+
 import os
 import signal
 import subprocess
@@ -36,6 +40,8 @@ import time
 from pathlib import Path
 
 from config import BASE_DIR
+
+_audit_log = _get_logger(__name__)
 
 # 与 `run.sh:18-22` 同一套路径。改这里必须同步改那边，否则两个入口各管各的
 # PID **目录**（0049，原来是单个 worker.pid）：一个 worker 一个文件。
@@ -488,7 +494,8 @@ def _heartbeat_written_since(pid: int, *, since: str) -> bool:
                 (pid, since)
             ).fetchone()
         return row is not None
-    except Exception:
+    except sqlite3.Error as exc:
+        _audit_log.debug("_heartbeat_written_since_fallback error=%s", type(exc).__name__)
         return False
 
 

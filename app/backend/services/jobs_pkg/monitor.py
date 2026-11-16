@@ -1,4 +1,7 @@
 """作业服务 monitor 域。"""
+
+from log import get_logger as _get_logger
+
 from ..errors import JobInvalid
 from config import LOG_SILENCE_SECONDS, QUEUE_STALL_SECONDS, WORKER_MAX_RUNTIME_SECONDS, WORKER_ONLINE_SECONDS
 from datetime import datetime
@@ -6,6 +9,8 @@ from db import get_conn
 from repositories.jobs import jobs as job_repo
 import config
 import sqlite3
+
+_audit_log = _get_logger(__name__)
 
 
 
@@ -154,7 +159,8 @@ def set_concurrency(payload, user=None) -> dict:
                 payload={"global": saved.get("global"), "per": saved.get("per"),
                          "verdict": assessment["verdict"]},
                 created_by=(user or {}).get("id") if isinstance(user, dict) else None)
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        _audit_log.debug("set_concurrency_fallback error=%s", type(exc).__name__)
         pass
     return concurrency_now()
 
@@ -242,7 +248,8 @@ def worker_status(user=None) -> dict:
     # 顶栏小圆点不该因为"这行配置读不出来"而整个 500。
     try:
         concurrency = concurrency_now()
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        _audit_log.debug("worker_status_fallback error=%s", type(exc).__name__)
         concurrency = {}
 
     # **越界就进 alerts**，而不是只在设置卡里显示一句。

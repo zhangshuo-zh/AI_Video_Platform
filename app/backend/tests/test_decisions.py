@@ -73,13 +73,15 @@ def test_转移账号中途失败时不留半套状态(as_role, monkeypatch):
     def flaky(project_id, target_id):
         calls["n"] += 1
         if calls["n"] == 3:
-            raise RuntimeError("假装第 3 次写不下去")
+            raise RuntimeError("sk-only-error-secret-123456 /server/private/account.txt 完整错误提示词")
         return real(project_id, target_id)
 
     monkeypatch.setattr(project_repo, "set_owner", flaky)
     r = admin.request("DELETE", f"/api/users/{victim}",
                       json={"transfer_to": heir, "delete_projects": False})
     assert r.status_code == 500, r.text
+    for sensitive in ("sk-only-error-secret-123456", "/server/private/account.txt", "完整错误提示词"):
+        assert sensitive not in r.text
     assert calls["n"] == 3, "第三次没炸，这条测试就是空跑"
     assert _owners(ids) == before, "回滚不彻底：部分项目已经换了东家"
     assert user_repo.get_by_id(victim) is not None, "整段失败时账号不该被带走"

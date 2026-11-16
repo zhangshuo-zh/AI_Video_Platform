@@ -27,6 +27,10 @@ from repositories.agents import STEP_FINAL, agent_runs, loads
 from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
 
+from log import get_logger
+
+_logger = get_logger(__name__)
+
 
 def tick() -> dict:
     """worker 的推进节拍：把所有还没结束的运行往前推一格。"""
@@ -414,8 +418,8 @@ def _record_error(run, exc: Exception) -> None:
             run_id=run["id"],
             payload={"code": "tick_error", "message": f"{type(exc).__name__}"[:200]},
         )
-    except Exception:                          # noqa: BLE001
-        pass
+    except Exception as record_exc:             # 最后一道错误记录边界
+        _logger.error("agent_error_record_failed error=%s", type(record_exc).__name__)
 
 
 def _parse_time(text: str) -> datetime:

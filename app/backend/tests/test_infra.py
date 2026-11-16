@@ -2204,3 +2204,44 @@ def test_作业服务拆包门面保留唯一提交与闸门替换(monkeypatch):
         patch.delattr(jobs, "_service_engine_gate")
         assert not hasattr(admission, "_service_engine_gate")
     assert jobs._service_engine_gate is admission._service_engine_gate is original
+
+
+def test_宽泛异常只用于已审计的恢复边界():
+    from collections import Counter
+
+    allowed = {
+        ("worker.py", "process"): 3,
+        ("worker.py", "main"): 7,
+        ("db.py", "get_conn"): 1,
+        ("db.py", "transaction"): 1,
+        ("migrate.py", "migrate"): 1,
+        ("worker_daemon.py", "_loop"): 1,
+        ("routers/users.py", "delete_user"): 2,
+        ("agents_pkg/executor.py", "_execute"): 1,
+        ("agents_pkg/executor.py", "_record_error"): 1,
+        ("agents_pkg/executor.py", "tick"): 1,
+        ("asset_studio_pkg/images.py", "_prepare_generated_image"): 1,
+        ("asset_studio_pkg/images.py", "import_generated_image"): 1,
+        ("asset_studio_pkg/images.py", "import_generated_image_tx"): 1,
+        ("pipeline_pkg/execute.py", "_run_internal_node"): 1,
+        ("worker_pkg/helpers.py", "_child_env"): 1,
+        ("services/documents.py", "create_document"): 1,
+    }
+    found = Counter()
+    for file in BACKEND.rglob("*.py"):
+        if set(file.relative_to(BACKEND).parts) & {".venv", "tests", "data", "migrations", "__pycache__"}:
+            continue
+        tree = ast.parse(file.read_text())
+        functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            broad = node.type is None or any(
+                isinstance(item, ast.Name) and item.id in {"Exception", "BaseException"}
+                for item in ast.walk(node.type))
+            if not broad:
+                continue
+            parents = [f for f in functions if f.lineno <= node.lineno <= f.end_lineno]
+            name = min(parents, key=lambda f: f.end_lineno - f.lineno).name if parents else "<module>"
+            found[(file.relative_to(BACKEND).as_posix(), name)] += 1
+    assert found == allowed, f"宽泛捕获的恢复边界发生变化，请逐处审计其补偿或隔离职责：{found}"

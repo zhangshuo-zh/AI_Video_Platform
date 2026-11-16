@@ -1,3 +1,6 @@
+import sqlite3
+import log as _log
+
 import jobfiles
 import json
 
@@ -12,6 +15,7 @@ from .views import run_view
 
 
 # ---------- 推进（唯一的调度入口） ----------
+
 def tick(limit: int = 20) -> dict:
     """worker 每轮调一次：把所有还没结束的运行各推进一轮。
 
@@ -94,7 +98,7 @@ def _prefetch_export_probes(run_id: int) -> dict[int, object]:
         nodes = pipeline_repo.nodes_for_run(run_id)
         by_key = _node_map(nodes)
         from composition import validators
-        from composition.service import view as composition_view
+        from composition.service import view as composition_view, CompositionMissing
         from repositories.compositions import compositions
 
         probes: dict[int, object] = {}
@@ -117,10 +121,11 @@ def _prefetch_export_probes(run_id: int) -> dict[int, object]:
                 if target is None:
                     continue
                 probes[node["id"]] = validators.inspect(target)
-            except Exception as exc:
+            except (sqlite3.Error, OSError, ValueError, validators.MediaInvalid, CompositionMissing) as exc:
                 probes[node["id"]] = exc
         return probes
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        _log.get_logger(__name__).debug("pipeline_probe_snapshot_failed error=%s", type(exc).__name__)
         return {}
 
 

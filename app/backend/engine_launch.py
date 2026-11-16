@@ -21,6 +21,9 @@
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+
+
 import os
 import shutil
 import signal
@@ -31,6 +34,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import engines
+
+_audit_log = _get_logger(__name__)
 
 # 启动配方。键是 engines.SERVICE_ENGINES 里的 engine_code，值是固定命令。
 #
@@ -214,10 +219,12 @@ def _find_pid_by_port(port: int, keywords: list[str] | str) -> list[int]:
                 target_str = f"{comm} {args}"
                 if any(k in target_str for k in kw_list):
                     matched.append(pid)
-            except Exception:
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                _audit_log.debug("_find_pid_by_port_fallback error=%s", type(exc).__name__)
                 pass
         return matched
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        _audit_log.debug("_find_pid_by_port_fallback error=%s", type(exc).__name__)
         return []
 
 
@@ -239,14 +246,16 @@ def stop(engine_code: str, endpoint: str) -> StopResult:
         try:
             subprocess.run(["osascript", "-e", f'quit app "{app_name}"'],
                            capture_output=True, text=True, timeout=5)
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            _audit_log.debug("stop_fallback error=%s", type(exc).__name__)
             pass
 
     # 解析端口，针对服务型进程（如 ollama）或未能通过 quit 释放的进程进行精准 SIGTERM
     try:
         parsed = urllib.parse.urlparse(endpoint)
         port = parsed.port
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        _audit_log.debug("stop_fallback error=%s", type(exc).__name__)
         port = None
 
     keywords = recipe.get("process_keywords") or [recipe.get("process_keyword", engine_code)]

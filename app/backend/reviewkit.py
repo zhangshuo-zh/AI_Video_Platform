@@ -104,8 +104,11 @@ def _auto_items(job, shot, clips, stale: bool, checked_exists: list[dict]) -> li
     info: dict = {}
     if first is not None:
         try:
-            info = validators.inspect(jobfiles.resolve_artifact(first["path"]))
-        except Exception as exc:                      # 读不出来就是不合格，别猜
+            target = jobfiles.resolve_artifact(first["path"])
+            if target is None:
+                raise validators.MediaInvalid("产物文件已不在磁盘上")
+            info = validators.inspect(target)
+        except (validators.MediaInvalid, OSError, ValueError) as exc:                      # 读不出来就是不合格，别猜
             items.append({"code": "media.readable", "level": "block",
                           "label": "媒体读得出来",
                           "detail": f"ffprobe 读不出：{type(exc).__name__}"})

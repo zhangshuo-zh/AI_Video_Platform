@@ -1,3 +1,7 @@
+
+from log import get_logger as _get_logger
+from workspace import PathError
+
 import access
 import adapters
 import extraction
@@ -16,6 +20,8 @@ from .doc_ai import text_ai_route
 from .documents import read_content
 from .errors import ExtractConflict, ExtractMissing
 from .jobs import _cost_of
+
+_audit_log = _get_logger(__name__)
 
 
 def _extract_run_materialize(run) -> None:
@@ -175,14 +181,16 @@ def extraction_view(run, doc=None) -> dict:
     if doc is not None:
         try:
             current = read_content(doc)["version"]
-        except Exception:
+        except (OSError, UnicodeError, PathError) as exc:
+            _audit_log.debug("extraction_view_fallback error=%s", type(exc).__name__)
             current = ""
     elif run["doc_id"] is not None:
         d = docs.get(run["doc_id"])
         if d is not None:
             try:
                 current = read_content(d)["version"]
-            except Exception:
+            except (OSError, UnicodeError, PathError) as exc:
+                _audit_log.debug("extraction_view_fallback error=%s", type(exc).__name__)
                 current = ""
     return {
         "id": run["id"], "project_id": run["project_id"], "doc_id": run["doc_id"],

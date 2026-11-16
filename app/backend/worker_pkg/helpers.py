@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from log import get_logger
+
 import adapters
 import jobfiles
 from composition import ffmpeg_runner, interpolate
@@ -18,11 +20,12 @@ from composition.validators import MediaInvalid
 import runners
 from config import (ALLOW_MOCK, FFMPEG_BIN, RESOURCE_CLASSES,
                     WORKER_LEASE_SECONDS, WORKER_MAX_GLOBAL)
-from paths import describe as describe_path
 
 # 云端调用结果未知的那批错误码：供应商任务可能已经建立、甚至已经计费。
 # 这些不能落 failed——failed 的默认建议是"重试"，而对一笔可能已扣钱的调用，
 # 最坏的建议就是替人按下重试。
+_logger = get_logger(__name__)
+
 CLOUD_UNCERTAIN_CODES = {
     "adapter_failed", "empty_output", "run_timeout", "worker_stopped",
     "provider_timeout", "provider_network", "provider_empty_response",
@@ -117,14 +120,10 @@ def _child_env(spec) -> dict:
             value, _source = secret_store.resolve(extra)
             if value:
                 env[extra] = value
-        except Exception:
-            # 解不开（KEK 换了/库被改）：**这里不加变量，也不打印原因**。
-            # 为什么不打日志：本函数没有 log 句柄，而为了打一行字去改它的
-            # 签名会把 12 个调用点全牵动；更关键的是**解密失败的证据在别处
-            # 更准确**——`runners._cloud` 的 `key_present` 已能认出"库里有"，
-            # 于是作业会带着"缺密钥"的信息失败，`secret_store.resolve`
-            # 在 API 侧的探测会报 `InvalidTag`。两处都能查，不必在这里留第三份。
-            # 静默的只是"本函数没补这个变量"，不是"把故障吞掉"。
+        except Exception as exc:
+            # 密钥注入是失败关闭边界，任何解密或读取错误都不传递密钥。
+            # 只记录类型，避免异常文本包含密钥或存储路径。
+            _logger.debug("worker_secret_env_skipped error=%s", type(exc).__name__)
             continue
     return env
 
@@ -366,20 +365,8 @@ def _cloud_uncertain(job, code: str, request_id: str | None,
 
 
 def _internal_error_message(exc: BaseException) -> str:
-    """worker 自己崩了时对外那一句：异常类型 + 一行消息，不带堆栈。
-
-    为什么不再把 `traceback.format_exc()` 存进 `error_message`：这一列会随
-    每一条作业列表接口一起回传（队列页一次拉几十行），也会进素材导出与成本
-    CSV。多行堆栈铺在列表里既撑大响应、又让界面变成一坨，而它该待的地方
-    本来就是日志文件——`/api/jobs/{id}/logs` 与作业详情是同一道 `job:read`，
-    少写这一份并没有少给谁信息。
-    异常消息本身可能含着绝对路径（`FileNotFoundError` 会把路径写进 `str(exc)`），
-    所以再过一道 `describe_path`：部署机的家目录与安装路径不该跟着列表出门。
-    """
-    first = " ".join(str(exc).strip().split("\n")[:1])[:200]
-    brief = describe_path(first)
-    return (f"worker 内部错误：{type(exc).__name__}: {brief}" if brief
-            else f"worker 内部错误：{type(exc).__name__}")
+    """意外内部错误只回报异常类型，避免原文携带提示词、密钥或绝对路径。"""
+    return f"worker 内部错误：{type(exc).__name__}"
 
 
 def _limits_from_args(args) -> tuple[dict, dict]:

@@ -1,7 +1,12 @@
 """production workbench 业务域。"""
 from __future__ import annotations
+
+from log import get_logger as _get_logger
+
 from repositories.content import episodes, shots
 from .audio import _audio_wired
+
+_audit_log = _get_logger(__name__)
 
 
 
@@ -18,7 +23,8 @@ def _job_rows(job_rows, signs: dict[int, dict]) -> list[dict]:
     for job in job_rows:
         try:
             artifacts = jobfiles.artifacts(job["result_paths_json"])
-        except Exception:
+        except (OSError, TypeError, ValueError) as exc:
+            _audit_log.debug("_job_rows_fallback error=%s", type(exc).__name__)
             artifacts = []          # 脏 JSON 不该把整个工作台打挂，产物读不到就说读不到
         out.append({
             "job_id": int(job["id"]), "status": job["status"],

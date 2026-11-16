@@ -44,6 +44,10 @@
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+from http.client import HTTPException as HTTPProtocolError
+
+
 import json
 import os
 import time
@@ -54,6 +58,8 @@ import adapters
 import cloud_run
 import engines
 import safenet
+
+_audit_log = _get_logger(__name__)
 
 # 与本机服务同一把尺：显式动作等得起 5 秒；半死的网关卡在这一档，
 # 人看到的是"连不上"加一句原因，而不是页面转圈。共用 engines 的常量而不是
@@ -209,7 +215,8 @@ def _probe_now(url: str, secret: str, base: dict) -> dict:
 def _safe_read(exc: HTTPError) -> bytes:
     try:
         return exc.read(4096)
-    except Exception:
+    except (OSError, ValueError, HTTPProtocolError) as exc:
+        _audit_log.debug("_safe_read_fallback error=%s", type(exc).__name__)
         return b""
 
 

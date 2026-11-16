@@ -24,7 +24,7 @@ import threading
 import time
 
 from config import BASE_DIR
-from log import get_logger, sanitize_msg
+from log import get_logger
 
 logger = get_logger("fastvideo.worker_daemon")
 
@@ -97,7 +97,7 @@ def _record(action: str, detail: str, *, level: str = "warn") -> None:
             audience="config_admins",
         )
     except (sqlite3.Error, ValueError, RuntimeError) as exc:
-        logger.debug("daemon_notify_skip err=%s", sanitize_msg(exc))
+        logger.debug("daemon_notify_skip err=%s", type(exc).__name__)
 
 
 def _notify_state(online: int) -> None:
@@ -120,8 +120,8 @@ def _notify_state(online: int) -> None:
         if sent:
             _record("通知掉线", f"队列有 {queued} 条在等，已通知 {len(sent)} 个项目")
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
-        _STATE["last_error"] = f"通知失败：{type(exc).__name__}: {sanitize_msg(exc)}"
-        logger.warning("daemon_notify_state_failed err=%s", sanitize_msg(exc))
+        _STATE["last_error"] = f"通知失败：{type(exc).__name__}"
+        logger.warning("daemon_notify_state_failed err=%s", type(exc).__name__)
 
 
 def _tick() -> None:
@@ -158,7 +158,7 @@ def _tick() -> None:
         import notifications
         notifications.prune()
     except (sqlite3.Error, OSError, ValueError) as exc:
-        logger.debug("daemon_prune_skip err=%s", sanitize_msg(exc))
+        logger.debug("daemon_prune_skip err=%s", type(exc).__name__)
 
     if not cfg["enabled"]:
         return                       # 守护关着：到此为止，不自动拉起
@@ -226,7 +226,7 @@ def _loop() -> None:
             # 实际每 15 秒重试一次同一个失败、无界地造野进程。
             # `last_error` 虽然在 API 响应里，但 `frontend/js` 全仓
             # 没有一处渲染它，所以这个失败对操作者完全不可见。
-            _STATE["last_error"] = f"{type(exc).__name__}: {sanitize_msg(exc)}"
+            _STATE["last_error"] = f"守护轮次失败：{type(exc).__name__}"
             _STATE["failures"] += 1
             logger.warning("daemon_tick_failed failures=%d err=%s",
                            _STATE["failures"], _STATE["last_error"])

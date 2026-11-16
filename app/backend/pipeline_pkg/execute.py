@@ -1,9 +1,10 @@
+import log as _log
+
 import jobfiles
 import json
 import services
 
 from db import get_conn
-from paths import describe as describe_path
 from repositories.audio import clips
 from repositories.content import episodes, shots
 from repositories.jobs import jobs as job_repo
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 from .constants import JOB_NODES, REVIEW_NODES
 from .graph import _idempotency_key, _shot_of_key, _snapshot_of, _upstream_image, _upstream_job, _upstream_video
 from .run_create import _pick_document, _ref_image_state
+
 
 
 
@@ -507,7 +509,8 @@ def _run_internal_node(run, node: dict, by_key: dict, probes=None) -> None:
                                 {"reason": exc.code, "detail": exc.message[:200]})
         return
     except Exception as exc:               # 内部检查炸了也要落成失败，不能让节点卡在 running
-        message = describe_path(" ".join(str(exc).split())[:200])
+        message = "内部检查失败，请核对节点输入与运行环境"
+        _log.get_logger(__name__).error("pipeline_node_failed node=%s error=%s", node["id"], type(exc).__name__)
         pipeline_repo.finish_node(node["id"], NODE_FAILED, error_code="internal_error",
                                   error_message=f"{type(exc).__name__}: {message}")
         pipeline_repo.add_event(run["id"], node["id"], "node_failed",

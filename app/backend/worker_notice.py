@@ -22,7 +22,13 @@ worker 回来之后，那条"掉线"通知就过时了。不结清的话：
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+import sqlite3
+
+
 from db import get_conn
+
+_audit_log = _get_logger(__name__)
 
 # 与 `worker_supervisor` 的判活同一套口径，但这里只看"有没有人在跑"，
 # 不重复探 pid——调用方已经探过了。
@@ -44,7 +50,8 @@ def queued_by_project() -> dict[int, int]:
                     WHERE status = 'queued' AND project_id IS NOT NULL
                     GROUP BY project_id""").fetchall()
         return {int(r["project_id"]): int(r["n"]) for r in rows}
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        _audit_log.debug("queued_by_project_fallback error=%s", type(exc).__name__)
         return {}
 
 
@@ -99,7 +106,8 @@ def resolve_offline() -> int:
             ).fetchone()
         if not row or not row["n"]:
             return 0
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        _audit_log.debug("resolve_offline_fallback error=%s", type(exc).__name__)
         return 0
 
     cleared = 0
@@ -115,6 +123,7 @@ def resolve_offline() -> int:
             cur = conn.execute(
                 "DELETE FROM notification WHERE kind = 'worker_offline'")
             cleared = max(cleared, cur.rowcount)
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        _audit_log.debug("resolve_offline_fallback error=%s", type(exc).__name__)
         pass
     return cleared

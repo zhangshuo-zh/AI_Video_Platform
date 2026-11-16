@@ -28,6 +28,10 @@
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+from workspace import PathError
+
+
 import hashlib
 import json
 
@@ -39,6 +43,8 @@ from fastapi import HTTPException
 from repositories.content import assets, episodes as episodes_repo
 from repositories.documents import documents
 from repositories.users import users
+
+_audit_log = _get_logger(__name__)
 
 # 作业行状态里"已经跑完且成功"的那一个。不抄 JOB_STATUSES 的键名列表，
 # 只在需要判成的这一处比对——多了就把 Job 的状态机抄进智能体第二遍
@@ -324,7 +330,8 @@ def _document_outline(args: dict, ctx: dict) -> dict:
     read_error = ""
     try:
         body = workspace.read(row["rel_path"])
-    except Exception as exc:                      # PathError / FileNotFoundError / OSError
+    except (OSError, UnicodeError, PathError) as exc:                      # PathError / FileNotFoundError / OSError
+        _audit_log.debug("_document_outline_fallback error=%s", type(exc).__name__)
         read_error = f"正文读不到：{type(exc).__name__}"
     paragraphs = [p for p in body.split("\n\n") if p.strip()] if body else []
     return {

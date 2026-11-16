@@ -19,7 +19,7 @@ from bootstrap import ensure_admin
 from config import (CORS_ORIGINS, DOCS_ENABLED, FILES_DIR, FRONTEND_DIR,
                     HOST, PORT)
 from gitrepo import GitError
-from log import get_logger, sanitize_msg
+from log import get_logger
 from migrate import migrate
 from routers import (agents as agents_api, chatgpt_plan as chatgpt_plan_api, audio, auth, compositions, content,
                      dashboard, documents, extraction, files, jobs, knowledge,
@@ -47,10 +47,10 @@ def create_app() -> FastAPI:
     except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         # 一条路径没应用不该让整个平台起不来：探测会如实回 unknown/missing，
         # 人点开设置页看得见，比启动失败好排查。
-        logger.warning("startup_runtime_paths_failed err=%s:%s",
-                       type(exc).__name__, sanitize_msg(exc))
+        logger.warning("startup_runtime_paths_failed err=%s",
+                       type(exc).__name__)
     ensure_admin(verbose=False)     # 一个人都没有时建超级用户
-    # 只恢复有持久化意图的导入，不扫描删除历史文件；与其他进程的导入共用写锁。
+    # 只恢复有持久化意图的导入，不扫描删除历史文件；与其他进程的导入共用文件锁。
     try:
         import asset_import_recovery
         recovered = asset_import_recovery.recover()
@@ -68,7 +68,7 @@ def create_app() -> FastAPI:
     try:
         ensure_workspace()
     except GitError as err:
-        logger.warning("startup_workspace_not_ready err=%s", sanitize_msg(err))
+        logger.warning("startup_workspace_not_ready err=%s", type(err).__name__)
     # 接口文档默认**不开**（2026-11-08，P1）：`/api/docs` 与 `/api/openapi.json`
     # 不用登录就能拿到全部接口清单、参数模型与权限点名称——对"局域网里谁都能
     # 打开"的部署，这是白送的侦察材料。本机调试时设 FASTVIDEO_DOCS=1 打开。
@@ -110,8 +110,8 @@ def create_app() -> FastAPI:
     async def _on_unhandled_error(request: Request, exc: Exception):
         if isinstance(exc, HTTPException):
             raise exc
-        logger.error("unhandled_error path=%s err=%s",
-                     request.url.path, sanitize_msg(repr(exc)))
+        logger.error("unhandled_error path=%s error=%s",
+                     request.url.path, type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={"detail": "内部服务异常，请查看运行日志"},
@@ -196,7 +196,7 @@ def create_app() -> FastAPI:
         worker_daemon.start_thread()
     except (OSError, RuntimeError) as exc:
         # 一句守护起不来不该让整个 API 起不来——它是增强项，不是必需项。
-        logger.warning("worker_daemon_start_failed err=%s", sanitize_msg(exc))
+        logger.warning("worker_daemon_start_failed err=%s", type(exc).__name__)
     return app
 
 

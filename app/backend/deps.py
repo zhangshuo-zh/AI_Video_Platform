@@ -10,10 +10,15 @@
 集中映射表会在"新加端点忘了登记"时静默放过。
 前端另有一层 store.can() 只负责别让人白点，真正的拦截在这里。
 """
+
+from log import get_logger as _get_logger
+
 from fastapi import Depends, HTTPException, Request
 
 from repositories.users import users, sessions
 from security import hash_session_token
+
+_audit_log = _get_logger(__name__)
 
 COOKIE_NAME = "fv_session"
 
@@ -60,7 +65,8 @@ def _normalized_path(request: Request) -> str:
     try:
         from urllib.parse import unquote
         decoded = unquote(raw)
-    except Exception:
+    except (UnicodeError, ValueError) as exc:
+        _audit_log.debug("_normalized_path_fallback error=%s", type(exc).__name__)
         decoded = raw
     # 折叠多余斜杠、去掉尾斜杠（根路径除外），避免 `//api/auth/me` / `/api/auth/me/`
     # 这类写法在两侧产生不同字符串。

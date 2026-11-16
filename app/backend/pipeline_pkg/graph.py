@@ -1,3 +1,7 @@
+
+import log as _log
+from workspace import PathError
+
 import jobfiles
 import json
 import services
@@ -5,6 +9,7 @@ import services
 from repositories.documents import documents as docs
 from repositories.jobs import jobs as job_repo
 from repositories.reviews import reviews
+
 
 
 
@@ -25,7 +30,8 @@ def _find_approval(node: dict, node_input: dict):
             return None
         try:
             current = services.read_content(doc)["version"]
-        except Exception:
+        except (OSError, UnicodeError, PathError) as exc:
+            _log.get_logger(__name__).debug("_find_approval_fallback error=%s", type(exc).__name__)
             return None
         signs = reviews.signs(reviews.DOCUMENT, doc_id, current)
     else:

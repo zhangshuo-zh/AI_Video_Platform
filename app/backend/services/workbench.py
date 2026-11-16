@@ -1,3 +1,7 @@
+
+from log import get_logger as _get_logger
+from workspace import PathError
+
 import access
 import jobfiles
 
@@ -10,6 +14,8 @@ from repositories.workbench import workbench as workbench_repo
 from .artifact_review import artifact_version_of_manifest
 from .documents import read_content
 from .errors import ARTIFACT_ANCHOR, WHOLE_DOC_ANCHOR
+
+_audit_log = _get_logger(__name__)
 
 
 # ---------- 首页工作台：跨模块待办聚合 ----------
@@ -38,7 +44,8 @@ def _pending_documents_for(project_ids: list[int]) -> dict[int, int]:
     for doc in rows:
         try:
             version = read_content(doc)["version"]
-        except Exception:
+        except (OSError, UnicodeError, PathError) as exc:
+            _audit_log.debug("_pending_documents_for_fallback error=%s", type(exc).__name__)
             continue
         signed = any(s["anchor"] == WHOLE_DOC_ANCHOR and s["base_version"] == version
                      for s in signs_by_doc.get(int(doc["id"]), []))

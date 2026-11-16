@@ -181,7 +181,7 @@ def _recover_if_needed(row, job):
         return row, job
     try:
         record_success(job)
-    except Exception:
+    except (sqlite3.Error, OSError, ValueError, validators.MediaInvalid):
         return row, job          # 补不上就照原样显示，不拿猜的值覆盖真相
     return compositions.get(row["id"]) or row, job
 

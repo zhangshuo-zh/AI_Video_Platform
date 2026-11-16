@@ -260,3 +260,70 @@ def test_两处的金额口径引用同一个常量():
     sql = Path(__file__).resolve().parents[1] / "repositories" / "dashboard.py"
     assert "AND {BILLABLE_WHERE}" in sql.read_text(encoding="utf-8"), \
         "看板又自己写了一遍金额口径"
+
+
+def test_worker内部异常的日志与错误字段不含敏感原文(
+        app, fresh_project, people, clean_queue, monkeypatch, caplog):
+    import jobfiles
+
+    pid = fresh_project("editor")
+    prompt = "只能存在于作业正文快照中的完整原创提示词"
+    secret = "sk-regression-only-private-error-123456"
+    private_path = "/server/private/error-only-file.txt"
+    jid = _make_job(pid, people["editor"]["id"], prompt)
+    claimed = job_repo.claim_next("error-hygiene", 60)
+    assert claimed is not None and claimed["id"] == jid
+    monkeypatch.setattr(worker, "_validate", lambda *args: ({}, None))
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"{secret} {prompt} {private_path}")
+    monkeypatch.setattr(worker, "_run_mock", broken)
+    worker.process(claimed, "error-hygiene")
+    row = job_repo.get(jid)
+    assert row["status"] == "failed" and row["error_code"] == "internal_error"
+    log = jobfiles.read_log(row["log_path"])
+    exported = row["error_message"] + log + caplog.text
+    for value in (prompt, secret, private_path):
+        assert value not in exported
+    assert "RuntimeError" in exported
+
+
+def test_运行时路径读取保留数据库降级但不吞编程错误(monkeypatch):
+    import sqlite3
+    import runtime
+    from repositories import runtime_path
+
+    name = "FASTVIDEO_MFLUX_HOME"
+    monkeypatch.delenv(name, raising=False)
+    def unavailable(*args):
+        raise sqlite3.OperationalError("database unavailable")
+    monkeypatch.setattr(runtime_path, "get_one", unavailable)
+    assert runtime._env(name) == ""
+    def broken(*args):
+        raise RuntimeError("unexpected implementation bug")
+    monkeypatch.setattr(runtime_path, "get_one", broken)
+    import pytest
+    with pytest.raises(RuntimeError, match="implementation bug"):
+        runtime._env(name)
+
+
+def test_全局意外异常响应与结构化日志不回显原文(app, caplog):
+    from fastapi.testclient import TestClient
+    from main import create_app
+
+    isolated = create_app()
+    private = "sk-private-unexpected-123456 完整异常提示词 /server/private/error.txt"
+    @isolated.get("/_regression_unexpected")
+    def broken():
+        raise RuntimeError(private)
+    isolated.router.routes.insert(0, isolated.router.routes.pop())
+    client = TestClient(isolated, raise_server_exceptions=False)
+    try:
+        response = client.get("/_regression_unexpected")
+    finally:
+        client.close()
+    assert response.status_code == 500
+    assert response.json()["detail"] == "内部服务异常，请查看运行日志"
+    assert private not in response.text and private not in caplog.text
+    assert "完整异常提示词" not in caplog.text
+    assert "/server/private/error.txt" not in caplog.text
+    assert "RuntimeError" in caplog.text

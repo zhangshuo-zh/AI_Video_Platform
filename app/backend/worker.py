@@ -36,7 +36,7 @@ from composition.validators import MediaInvalid
 from config import (RESOURCE_CLASSES, WORKER_LEASE_SECONDS,
                     WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE,
                     WORKER_MAX_RUNTIME_SECONDS, WORKER_POLL)
-from log import get_logger, sanitize_msg
+from log import get_logger
 from migrate import migrate
 from repositories.jobs import JobOwnershipLost, jobs
 from worker_pkg.helpers import (
@@ -322,14 +322,14 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                     record_composition(job)
                     _write(log, "成片记录：最终产物与 sha256 已回填")
                 except Exception as exc:
-                    _write(log, f"成片回填未写入：{exc}")
+                    _write(log, f"成片回填未写入：{type(exc).__name__}")
             if job["execution_mode"] != "mock" and job["provider_code"] != "mock":
                 try:
                     validations.from_job(job["id"], "real_call", job["created_by"],
                                          f"作业 #{job['id']} 跑通，产物校验通过。")
                     _write(log, "验证记录：真实调用已登记")
                 except Exception as exc:
-                    _write(log, f"验证记录未写入：{exc}")
+                    _write(log, f"验证记录未写入：{type(exc).__name__}")
         except JobOwnershipLost as exc:
             _write(log, f"状态：本次结果作废，不写库（{exc}）")
             _write(log, "产物仍在 outputs/；请按库里的终态处理，不要自动重试")
@@ -409,8 +409,10 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                           provider_request_id=exc.provider_request_id)
         except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
-            detail = traceback.format_exc(limit=6)
-            _write(log, "状态：failed（internal_error）\n" + detail)
+            detail = " → ".join(f"{frame.name}:{frame.lineno}"
+                                  for frame in traceback.extract_tb(exc.__traceback__, limit=6))
+            _write(log, f"状态：failed（internal_error）{type(exc).__name__}\n" + detail)
+            logger.error("worker_internal_error job=%s error=%s", job["id"], type(exc).__name__)
             jobs.fail(job["id"], wid, "internal_error",
                       _internal_error_message(exc),
                       jobfiles.relative(log_path), None, elapsed,
@@ -470,40 +472,40 @@ def main(argv: list[str] | None = None) -> int:
         try:
             jobs.recover_stale()
         except Exception as exc:
-            logger.warning("worker_recover_stale_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_recover_stale_failed err=%s",
+                           type(exc).__name__)
         try:
             seasons.tick()
         except Exception as exc:
-            logger.warning("worker_seasons_tick_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_seasons_tick_failed err=%s",
+                           type(exc).__name__)
         try:
             pipeline.tick()
         except Exception as exc:
-            logger.warning("worker_pipeline_tick_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_pipeline_tick_failed err=%s",
+                           type(exc).__name__)
         try:
             agents.tick()
         except Exception as exc:
-            logger.warning("worker_agents_tick_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_agents_tick_failed err=%s",
+                           type(exc).__name__)
         try:
             limits = _limits_for_round(cli_limits, cli_explicit)
         except Exception as exc:
-            logger.warning("worker_limits_read_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_limits_read_failed err=%s",
+                           type(exc).__name__)
         did = None
         try:
             did = run_once(wid, limits=limits)
         except Exception as exc:
-            logger.warning("[作业] 这一轮跑砸了 worker_run_once_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("[作业] 这一轮跑砸了 worker_run_once_failed err=%s",
+                           type(exc).__name__)
         try:
             jobs.heartbeat(wid, os.getpid(), None, adapters.MANIFEST_VERSION,
                            limits=limits, resources=_node_resources())
         except Exception as exc:
-            logger.warning("worker_heartbeat_failed err=%s:%s",
-                           type(exc).__name__, sanitize_msg(exc))
+            logger.warning("worker_heartbeat_failed err=%s",
+                           type(exc).__name__)
         if args.once:
             break
         if did is None:

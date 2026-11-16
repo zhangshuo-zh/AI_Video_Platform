@@ -1,3 +1,8 @@
+
+import log as _log
+import sqlite3
+from workspace import PathError
+
 import diskplan
 import json
 import services
@@ -6,7 +11,7 @@ import shutil
 from config import COMPOSE_MAX_SHOTS, FFMPEG_BIN, FILES_DIR
 from datetime import datetime
 from db import transaction
-from paths import describe as describe_path, resolve_within
+from paths import resolve_within
 from repositories.content import assets, episodes, shots
 from repositories.documents import documents as docs
 from repositories.pipeline import pipeline_repo
@@ -15,6 +20,7 @@ from repositories.projects import projects as project_repo
 from .constants import JOB_NODES, NODE_TYPE_LABELS, PipelineConflict, PipelineInvalid, PipelineMissing
 from .templates import _definition_of, validate_definition
 from .views import run_view
+
 
 
 # ---------- 创建运行 ----------
@@ -78,10 +84,11 @@ def build_input_snapshot(project_id: int, episode_id: int) -> dict:
             doc_part = {"id": doc["id"], "title": doc["title"], "kind": doc["kind"],
                         "base_version": data["version"],
                         "git_commit": doc["git_commit"] or ""}
-        except Exception as exc:            # 正文读不出来不该挡住建运行，节点会再说一次
+        except (OSError, UnicodeError, PathError) as exc:            # 正文读不出来不该挡住建运行，节点会再说一次
+            _log.get_logger(__name__).debug("build_input_snapshot_fallback error=%s", type(exc).__name__)
             doc_part = {"id": doc["id"], "title": doc["title"], "kind": doc["kind"],
                         "base_version": "", "git_commit": "",
-                        "read_error": describe_path(str(exc))[:200]}
+                        "read_error": f"正文读取失败：{type(exc).__name__}"}
     asset_ids: list[int] = []
     for row in shot_rows:
         try:
@@ -208,7 +215,8 @@ def preflight(project_id: int, episode_id: int,
         info["worker_online"] = bool(worker.get("online"))
         if not worker.get("online"):
             warnings.append("生成 worker 不在线；运行建好了也不会自己往前走")
-    except Exception:                      # 读不到状态不该拖垮预检
+    except (sqlite3.Error, OSError, ValueError) as exc:                      # 读不到状态不该拖垮预检
+        _log.get_logger(__name__).debug("preflight_fallback error=%s", type(exc).__name__)
         warnings.append("读不到 worker 状态")
 
     # 磁盘余量问的是同一个出处（jobfiles.volume_usage）：作业目录可能还没建，

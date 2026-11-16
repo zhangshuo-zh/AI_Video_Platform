@@ -1,3 +1,7 @@
+
+from log import get_logger as _get_logger
+from workspace import PathError
+
 import json
 import reviewgate
 
@@ -6,6 +10,8 @@ from repositories.reviews import reviews
 
 from .documents import read_content
 from .errors import ReviewMissing, ReviewStale, WHOLE_DOC_ANCHOR
+
+_audit_log = _get_logger(__name__)
 
 
 _REVIEW_STATUS = {"passed": "通过", "failed": "未通过"}
@@ -116,7 +122,8 @@ def review_queue(project_id: int) -> list[dict]:
     for doc in docs.list_by_project(project_id):
         try:
             data = read_content(doc)
-        except Exception:
+        except (OSError, UnicodeError, PathError) as exc:
+            _audit_log.debug("review_queue_fallback error=%s", type(exc).__name__)
             continue
         gate = reviews.latest_gate(doc["id"])
         counts = reviews.counts(reviews.DOCUMENT, doc["id"], data["version"])

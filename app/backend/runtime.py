@@ -16,12 +16,18 @@ W09 要真起子进程，就必须再往前走一步：**解释器、入口脚�
 """
 from __future__ import annotations
 
+from log import get_logger as _get_logger
+import sqlite3
+
+
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import config  # 只读 RIFE_MODEL_VERSION：版本号只能有一个出处
+
+_audit_log = _get_logger(__name__)
 
 
 def _env(name: str) -> str:
@@ -48,7 +54,8 @@ def _env(name: str) -> str:
     try:
         from repositories import runtime_path
         return (runtime_path.get_one(name) or "").strip()
-    except Exception:
+    except sqlite3.Error as exc:
+        _audit_log.debug("_env_fallback error=%s", type(exc).__name__)
         return ""
 
 

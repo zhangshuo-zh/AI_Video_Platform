@@ -9,6 +9,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status as http_status
 
+from log import get_logger
 from deps import actor_name, require_permission
 from models import (PasswordResetIn, PermissionOut, RoleOut, RolePermIn,
                     UserCreateIn, UserDeleteIn, UserOut, UserRolesIn, UserUpdateIn)
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api", tags=["users"])
 # admin 角色是急救通道：超级用户靠 is_superuser 绕过判定，
 # 而这个角色是留给"人"的最后一把钥匙，改坏了没有第二个用户能救
 PROTECTED_ROLE = "admin"
+_logger = get_logger(__name__)
 
 
 def _need(request: Request, code: str) -> None:
@@ -161,24 +163,26 @@ def delete_user(user_id: int, payload: UserDeleteIn,
         try:
             users.transfer_and_delete(user_id, payload.transfer_to, [row["id"] for row in owned])
         except Exception as exc:
+            _logger.error("user_transfer_failed error=%s", type(exc).__name__)
             raise HTTPException(
                 status_code=500,
                 detail=f"转移与删账号已整体回滚：{len(owned)} 个项目的东家都没变、"
-                       f"账号也还在，修好原因后可以直接重来。卡住的那一步说：{exc}") from exc
+                       f"账号也还在，修好原因后可以直接重来。错误类型：{type(exc).__name__}") from exc
     elif owned:
         # 连带删项目**不能**包进事务：那一步要动工作区文件与 Git 提交，
         # 回滚不会把它们带回去，"看起来原子"比不原子更危险。
         # 所以这里做的是另一件事——把已经做到的部分如实报出来，
         # 而不是让人对着一个 500 猜删到第几个了。
-        gone: list[int] = []
+        gone: list[str] = []
         for row in owned:
             try:
                 delete_project_cascade(row["id"], actor=actor_name(user))
             except Exception as exc:
+                _logger.error("user_cascade_failed error=%s", type(exc).__name__)
                 raise HTTPException(
                     status_code=500,
                     detail=f"名下 {len(owned)} 个项目已删掉 {len(gone)} 个，"
-                           f"卡在《{row['name']}》：{exc}。账号还在，"
+                           f"卡在《{row['name']}》，错误类型为 {type(exc).__name__}。账号还在，"
                            f"剩下的项目修好后可以再来一次；"
                            f"已经删掉的那些不会回来。") from exc
             gone.append(row["name"])
