@@ -1624,7 +1624,7 @@ def test_mypy_门禁真的在检查而不是空转():
     for required in ('"schemas"', '"db.py"', '"services"', '"repositories"',
                      '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"', '"adapters_pkg"',
                      '"runners.py"', '"runners_pkg"', '"diskplan.py"', '"precheck.py"', '"production.py"',
-                     '"asset_studio.py"', '"model_center.py"'):
+                     '"asset_studio.py"', '"asset_studio_pkg"', '"production_pkg"', '"module_facade.py"', '"model_center.py"'):
         assert required in mypy_cfg, (
             f"mypy 的检查范围必须覆盖 schemas/db.py/services/repositories，缺少 {required}：{mypy_cfg[:200]}")
 
@@ -2144,3 +2144,37 @@ def test_执行器拆包门面与路径替换恢复(monkeypatch):
         patch.delattr(runners, "_job_project_of")
         assert not hasattr(inputs, "_job_project_of")
     assert runners._job_project_of is inputs._job_project_of is original
+
+
+def test_业务拆包门面与可变状态保持一致(monkeypatch):
+    import asset_studio
+    import production
+    from asset_studio_pkg import images, prompts
+    from production_pkg import stats
+
+    for module, name, required in (
+        (production, "production", {
+            "project_overview", "project_stats", "episode_board", "next_tasks",
+            "shot_workbench", "referencing_shots", "asset_impact", "STAGES",
+            "_audio_wired", "_MACHINE_TOTAL_GB"}),
+        (asset_studio, "asset_studio", {
+            "submit_generation", "generation_view", "generation_summary",
+            "build_text_prompt", "parse_sections", "create_variant", "update_variant",
+            "import_generated_image", "import_generated_image_tx", "ImportUnusable"}),
+    ):
+        assert required <= set(module.__all__)
+        assert all(hasattr(module, key) for key in required)
+        assert len((BACKEND / f"{name}.py").read_text().splitlines()) < 70
+    with monkeypatch.context() as patch:
+        patch.setattr(production, "_MACHINE_TOTAL_GB", None)
+        stats._MACHINE_TOTAL_GB = 17.5
+        assert production._MACHINE_TOTAL_GB == 17.5
+        production._MACHINE_TOTAL_GB = None
+        assert stats._MACHINE_TOTAL_GB is None
+        original = asset_studio.ImportUnusable
+        patch.setattr(asset_studio, "ImportUnusable", ValueError)
+        assert images.ImportUnusable is ValueError
+        patch.delattr(asset_studio, "ImportUnusable")
+        assert not hasattr(images, "ImportUnusable")
+    assert asset_studio.ImportUnusable is images.ImportUnusable is original
+    assert asset_studio.parse_sections is prompts.parse_sections
