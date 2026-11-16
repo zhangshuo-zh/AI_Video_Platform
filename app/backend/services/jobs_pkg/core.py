@@ -29,6 +29,7 @@ from .admission import _service_engine_gate as _service_engine_gate
 from .admission import verify_job_links as verify_job_links
 from .admission import submit_job as submit_job
 from .admission import prepare_job as prepare_job, PreparedJob as PreparedJob, _intent_of as _intent_of
+from .billing import job_cost_summary as job_cost_summary
 from .billing import _cost_of as _cost_of
 from .billing import reconcile_job as reconcile_job
 from .billing import mark_job_attention as mark_job_attention
@@ -36,11 +37,13 @@ from .monitor import _seconds_since as _seconds_since
 from .monitor import concurrency_now as concurrency_now
 from .monitor import set_concurrency as set_concurrency
 from .monitor import worker_status as worker_status
+from .views import job_page as job_page, JobFilters as JobFilters
 from .views import job_detail_view as job_detail_view
 from .views import retry_preview as retry_preview
 from .views import json_loads_dict as json_loads_dict
 
 __all__ = [
+    "job_cost_summary", "job_page", "JobFilters",
     "PreparedJob", "prepare_job", "_intent_of",
     'adapters',
     'engines',

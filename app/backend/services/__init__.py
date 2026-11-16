@@ -101,7 +101,7 @@ from .jobs import (
     job_source_stale, _service_engine_gate, verify_job_links, submit_job, prepare_job, PreparedJob, _cost_of, JobMissing,
     JobStateConflict, _seconds_since, worker_status, job_detail_view, retry_preview,
     json_loads_dict, reconcile_job, mark_job_attention,
-    set_concurrency, concurrency_now
+    set_concurrency, concurrency_now, job_cost_summary, job_page, JobFilters
 )
 
 from .knowledge import (
@@ -291,6 +291,7 @@ __all__ = [
     "job_checklist",
     "job_checklist_save",
     "job_detail_view",
+    "job_cost_summary", "job_page", "JobFilters",
     "job_kind",
     "job_retry_batch",
     "job_review_batch",

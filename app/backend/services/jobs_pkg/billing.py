@@ -1,5 +1,6 @@
 """作业服务 billing 域。"""
 from ..errors import JobInvalid
+from models import CAPABILITIES, CostBucket, CostCurrencyOut, CostSummaryOut, LocalCostOut
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from repositories.jobs import jobs as job_repo
@@ -116,3 +117,45 @@ def mark_job_attention(job_id: int, reason: str, user) -> dict:
     except _RepoStateConflict as exc:
         raise JobStateConflict(str(exc)) from exc
     return {"job": job_repo.get(job_id), "message": "已标记为待核对。"}
+
+
+def job_cost_summary(project_ids: list[int] | None) -> CostSummaryOut:
+    """按已鉴权项目范围聚合成本；币种分桶，保留本地资源统计。"""
+    summary = job_repo.cost_summary(project_ids)
+    by_currency: dict[str, dict] = {}
+    for row in summary["rows"]:
+        bucket = by_currency.setdefault(row["currency"], {
+            "currency": row["currency"], "total_micros": 0, "jobs": 0,
+            "known": 0, "pending": 0, "capabilities": {},
+        })
+        total = int(row["total"] or 0)
+        n = int(row["n"] or 0)
+        bucket["total_micros"] += total
+        bucket["jobs"] += n
+        bucket["known" if row["billable_status"] == "known" else "pending"] += n
+        cap = bucket["capabilities"].setdefault(row["capability"], {"total": 0, "jobs": 0})
+        cap["total"] += total
+        cap["jobs"] += n
+
+    currencies = []
+    for code in sorted(by_currency):
+        bucket = by_currency[code]
+        currencies.append(CostCurrencyOut(
+            currency=code, total_micros=bucket["total_micros"], jobs=bucket["jobs"],
+            known=bucket["known"], pending=bucket["pending"],
+            by_capability=[
+                CostBucket(capability=cap, capability_label=CAPABILITIES.get(cap, cap),
+                           total_micros=val["total"], jobs=val["jobs"])
+                for cap, val in bucket["capabilities"].items()
+            ],
+        ))
+
+    # 三个数已经由仓储层在 SQL 里聚合好（2026-11-08）：原来是把全部本地作业的
+    # `resources_json` 整表拉进来再在 Python 里累加，全库 5503 行。
+    agg = summary["local_agg"]
+    return CostSummaryOut(
+        currencies=currencies, unpriced_jobs=summary["unpriced"],
+        local=LocalCostOut(jobs=agg["jobs"], elapsed_ms=agg["elapsed_ms"],
+                           cpu_ms=agg["cpu_ms"], max_rss_kb=agg["max_rss_kb"]),
+        total_jobs=summary["total_jobs"],
+    )

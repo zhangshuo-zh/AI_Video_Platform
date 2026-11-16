@@ -2263,3 +2263,54 @@ def test_宽泛异常只用于已审计的恢复边界():
             name = min(parents, key=lambda f: f.end_lineno - f.lineno).name if parents else "<module>"
             found[(file.relative_to(BACKEND).as_posix(), name)] += 1
     assert found == allowed, f"宽泛捕获的恢复边界发生变化，请逐处审计其补偿或隔离职责：{found}"
+
+
+def test_模型中心拆包保留符号与替换恢复(monkeypatch):
+    import model_center
+    from model_center_pkg import labels, scenes, probe
+    required = {
+        "BASE_TAG", "IMAGE_TAG", "UNINTEGRATED_ENGINES", "STATUS_LABEL",
+        "_loads", "derived_tags", "producible_tags", "health_row", "_health_of",
+        "verified_kinds", "_verification_index", "_kinds_of", "catalog", "item_for",
+        "_tags_of", "_engine_only_row", "_base_spec_fields", "_registered_row",
+        "_unregistered_row", "_manifest_axis", "find_adapter", "_find_adapter",
+        "_orphan_row", "_slot_current_model", "_status_of", "_status_detail_of",
+        "stats", "resolve_scene", "_resolve", "probe_all",
+        "adapters", "engines", "model_center", "json", "Row",
+    }
+    assert required == set(model_center.__all__)
+    assert all(hasattr(model_center, name) for name in required)
+    assert len((BACKEND / "model_center.py").read_text().splitlines()) < 70
+    original = model_center._loads
+    with monkeypatch.context() as patch:
+        patch.setattr(model_center, "_loads", lambda *_: ["回归标签"])
+        assert model_center._tags_of("", {}, {}, set()) == [
+            {"tag": "回归标签", "source": "manual", "verified": False}]
+        patch.delattr(model_center, "_loads")
+        assert not hasattr(labels, "_loads")
+    assert model_center._loads is labels._loads is original
+    original_catalog = model_center.catalog
+    with monkeypatch.context() as patch:
+        fake = lambda **_: []
+        patch.setattr(model_center, "catalog", fake)
+        assert scenes.catalog is probe.catalog is fake
+    assert scenes.catalog is probe.catalog is model_center.catalog is original_catalog
+
+
+def test_模型中心分域依赖无环且可独立导入():
+    import graphlib
+    import subprocess
+    import sys
+    package = BACKEND / "model_center_pkg"
+    domains = {p.stem for p in package.glob("*.py")} - {"__init__", "core"}
+    edges = {}
+    for name in domains:
+        tree = ast.parse((package / f"{name}.py").read_text())
+        edges[name] = {n.module for n in ast.walk(tree)
+                       if isinstance(n, ast.ImportFrom) and n.level == 1 and n.module in domains}
+        assert not any(isinstance(n, ast.Import) and any(a.name == "model_center" for a in n.names)
+                       for n in ast.walk(tree)), "子域不能反向依赖兼容门面"
+        result = subprocess.run([sys.executable, "-c", f"import model_center_pkg.{name}"],
+                                cwd=BACKEND, capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stderr
+    assert set(graphlib.TopologicalSorter(edges).static_order()) == domains

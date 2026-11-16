@@ -1,5 +1,8 @@
 """作业服务 views 域。"""
 from datetime import datetime
+from typing import TypedDict
+from sqlite3 import Row
+from repositories.jobs import clamp_limit
 from models import JOB_STATUSES
 from repositories.jobs import jobs as job_repo
 import jobfiles
@@ -87,3 +90,30 @@ def json_loads_dict(text: str) -> dict:
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+class JobFilters(TypedDict):
+    capability: str | None
+    statuses: list[str] | None
+    execution_mode: str | None
+    keyword: str | None
+    episode_id: int | None
+    shot_id: int | None
+
+def job_page(project_ids: list[int] | None, filters: JobFilters,
+             limit: int, before_id: int | None) -> tuple[list[Row], int]:
+    """列表和总数共享夹取后的页长与同一份过滤条件。"""
+    # **先把 limit 夹到仓储真正会用到的那个值**（2026-11-09 外部审查第 4 条）。
+    #
+    # `jobs.list()` 内部把 limit 夹在 200 以内，但下面判定"这页取满了没有"
+    # 用的是**原始** limit。于是 `?limit=500` 时：仓储返回 200 行，
+    # `200 >= 500` 为假 → 判定没取满 → 不查总数 → `X-Total-Count` 直接
+    # 报成 200。而库里其实有 300 条，界面上的"共 N 条"就少报了。
+    # 夹一次之后，两个地方用的是同一个数，分母才和列表同一口径。
+    limit = clamp_limit(limit)
+    rows = job_repo.list(project_ids, limit=limit, before_id=before_id, **filters)
+    # 分母与列表走同一套筛选参数（kw 是同一份），不给「共 N」留第二种口径。
+    # 只在这一页取满时才真算：没取满说明本来就到底了，多一次 COUNT 没有意义。
+    full = len(rows) >= limit
+    total = job_repo.count_listed(project_ids, **filters) if (full or before_id) else len(rows)
+    return rows, total

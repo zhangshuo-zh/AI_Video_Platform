@@ -4,7 +4,6 @@ POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `
 这条边界是规格 02 §7.2 的原话：请求接口不得等待模型跑完。
 """
 import mimetypes
-from typing import TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status as http_status
 from fastapi.responses import FileResponse
@@ -15,27 +14,21 @@ import job_state
 import jobfiles
 import services
 from deps import require_permission, require_user
-from models import (CAPABILITIES, JOB_STATUSES, CostBucket,
+from models import (CAPABILITIES, JOB_STATUSES,
                     JobDiagnosisOut,
                     JobRetryBatchIn, JobRetryBatchOut,
-                    CostCurrencyOut, CostSummaryOut, JobArtifactOut, JobAttentionIn,
+                    CostSummaryOut, JobArtifactOut, JobAttentionIn,
                     JobDetailOut, JobLogOut, JobOut, JobReconcileIn, JobRetryPreviewOut,
-                    JobSubmitIn, LocalCostOut, WorkerStatusOut,
+                    JobSubmitIn, WorkerStatusOut,
                     WorkerLimitIn, WorkerLimitOut,
                     WorkerProcessOut, WorkerStartIn, WorkerStopIn,
                     WorkerDaemonIn, WorkerDaemonOut,
                     NotificationInboxOut, NotificationReadIn, NotificationReadOut)
 from repositories.content import episodes
-from repositories.jobs import clamp_limit, jobs, retry_reason
+from repositories.jobs import jobs, retry_reason
 from repositories.projects import projects as project_repo
 
-class JobFilters(TypedDict):
-    capability: str | None
-    statuses: list[str] | None
-    execution_mode: str | None
-    keyword: str | None
-    episode_id: int | None
-    shot_id: int | None
+from services.jobs_pkg.views import JobFilters as JobFilters
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -147,19 +140,7 @@ def list_jobs(response: Response,
               execution_mode=execution_mode,
               keyword=(q or "").strip()[:200] or None,
               episode_id=episode_id, shot_id=shot_id)
-    # **先把 limit 夹到仓储真正会用到的那个值**（2026-11-09 外部审查第 4 条）。
-    #
-    # `jobs.list()` 内部把 limit 夹在 200 以内，但下面判定"这页取满了没有"
-    # 用的是**原始** limit。于是 `?limit=500` 时：仓储返回 200 行，
-    # `200 >= 500` 为假 → 判定没取满 → 不查总数 → `X-Total-Count` 直接
-    # 报成 200。而库里其实有 300 条，界面上的"共 N 条"就少报了。
-    # 夹一次之后，两个地方用的是同一个数，分母才和列表同一口径。
-    limit = clamp_limit(limit)
-    rows = jobs.list(ids, limit=limit, before_id=before_id, **kw)
-    # 分母与列表走同一套筛选参数（kw 是同一份），不给「共 N」留第二种口径。
-    # 只在这一页取满时才真算：没取满说明本来就到底了，多一次 COUNT 没有意义。
-    full = len(rows) >= limit
-    total = jobs.count_listed(ids, **kw) if (full or before_id) else len(rows)
+    rows, total = services.job_page(ids, kw, limit, before_id)
     response.headers["X-Total-Count"] = str(total)
     # 跨端口取不到这个头，除非显式放行；前端同源部署时不受影响，
     # 但本地 5173 调 8000 的开发形态要靠它才能读到分母。
@@ -175,44 +156,7 @@ def job_costs(project_id: int | None = None,
     只汇总 known / pending_reconciliation；not_billable 是本地作业与
     "排队中取消、一次都没调用供应商"的作业。本地机时另算一块。
     """
-    summary = jobs.cost_summary(_visible_ids(user, project_id))
-    by_currency: dict[str, dict] = {}
-    for row in summary["rows"]:
-        bucket = by_currency.setdefault(row["currency"], {
-            "currency": row["currency"], "total_micros": 0, "jobs": 0,
-            "known": 0, "pending": 0, "capabilities": {},
-        })
-        total = int(row["total"] or 0)
-        n = int(row["n"] or 0)
-        bucket["total_micros"] += total
-        bucket["jobs"] += n
-        bucket["known" if row["billable_status"] == "known" else "pending"] += n
-        cap = bucket["capabilities"].setdefault(row["capability"], {"total": 0, "jobs": 0})
-        cap["total"] += total
-        cap["jobs"] += n
-
-    currencies = []
-    for code in sorted(by_currency):
-        bucket = by_currency[code]
-        currencies.append(CostCurrencyOut(
-            currency=code, total_micros=bucket["total_micros"], jobs=bucket["jobs"],
-            known=bucket["known"], pending=bucket["pending"],
-            by_capability=[
-                CostBucket(capability=cap, capability_label=CAPABILITIES.get(cap, cap),
-                           total_micros=val["total"], jobs=val["jobs"])
-                for cap, val in bucket["capabilities"].items()
-            ],
-        ))
-
-    # 三个数已经由仓储层在 SQL 里聚合好（2026-11-08）：原来是把全部本地作业的
-    # `resources_json` 整表拉进来再在 Python 里累加，全库 5503 行。
-    agg = summary["local_agg"]
-    return CostSummaryOut(
-        currencies=currencies, unpriced_jobs=summary["unpriced"],
-        local=LocalCostOut(jobs=agg["jobs"], elapsed_ms=agg["elapsed_ms"],
-                           cpu_ms=agg["cpu_ms"], max_rss_kb=agg["max_rss_kb"]),
-        total_jobs=summary["total_jobs"],
-    )
+    return services.job_cost_summary(_visible_ids(user, project_id))
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailOut)
