@@ -1622,7 +1622,7 @@ def test_mypy_门禁真的在检查而不是空转():
     assert "[tool.mypy]" in conf, "pyproject.toml 里没有 [tool.mypy] 段"
     mypy_cfg = conf[conf.index("[tool.mypy]"):]
     for required in ('"schemas"', '"db.py"', '"services"', '"repositories"',
-                     '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"',
+                     '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"', '"adapters_pkg"',
                      '"runners.py"', '"diskplan.py"', '"precheck.py"', '"production.py"',
                      '"asset_studio.py"', '"model_center.py"'):
         assert required in mypy_cfg, (
@@ -2092,3 +2092,28 @@ def test_数据标准核心代码集与Pydantic强类型落标():
     assert val_annotations["kind"] is models.ValidationKind, "ValidationIn.kind 未使用 ValidationKind 强类型"
 
 
+
+
+def test_适配器拆包门面完整且保持属性替换(monkeypatch):
+    import adapters
+    from adapters_pkg import core
+
+    required = {
+        "Param", "Price", "ModelSpec", "Adapter", "ADAPTERS", "MOCK_PARAMS",
+        "MOCK_MODEL", "MANIFEST_VERSION", "MANIFEST_AXIS", "POLICY",
+        "_INDEX", "_FASTMETAL", "_MLX_VIDEO", "_MFLUX", "_DRAW_THINGS",
+        "_COMFYUI", "_OLLAMA", "_VOXCPM", "_ACE_STEP", "_DEEPSEEK",
+        "_TEXT_CLOUD", "_WAN", "_VIDEO_CLOUD", "_CLOUD_OTHER", "_KEY_PREFIX_RE",
+        "find", "effective_key_env", "resolved_key_env", "key_present",
+        "key_fingerprint", "_preview_for_db", "_type_ok", "_check_one",
+        "validate_params", "validate_mock_params", "health", "manifest_axis",
+        "manifest_payload",
+    }
+    assert required <= set(adapters.__all__)
+    assert all(hasattr(adapters, name) for name in required)
+    assert adapters is core
+    assert len((BACKEND / "adapters.py").read_text().splitlines()) < 20
+    calls = []
+    monkeypatch.setattr(adapters, "find", lambda *args: calls.append(args))
+    adapters.effective_key_env("missing")
+    assert len(calls) == 1
