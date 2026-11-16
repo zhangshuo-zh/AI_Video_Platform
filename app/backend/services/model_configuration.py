@@ -13,11 +13,15 @@ from repositories.engine_instances import (
 from repositories.config_log import record as config_log_record
 
 
-class ModelPolicyInvalid(Exception):
+class ModelOperationError(Exception):
     def __init__(self, status_code: int, detail: str):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+class ModelPolicyInvalid(ModelOperationError):
+    pass
 
 def _json_list(raw) -> list:
     try:

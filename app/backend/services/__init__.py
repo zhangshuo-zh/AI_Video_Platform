@@ -9,7 +9,7 @@
 每个函数、类的**正文逐字未动**（连注释一起搬），只换了文件与 import。
 已用 `inspect.getsource` 逐函数比对过，确认函数体一字未变。
 
-## 模块划分
+## 主要模块（后续新增域继续在这里显式导出）
 
     errors          异常类、共享常量（ARTIFACT_ANCHOR 等）、MAX_TAGS
     cascade         删项目／删集的级联清理（动文件与 Git，不进事务）
@@ -22,7 +22,13 @@
     audio           音频中心
     dashboard       项目看板与导出
     providers       Provider 路由（resolve_provider）
-    jobs            Job 提交、队列健康、成本估算、人工核对
+    jobs            Job 提交兼容门面，实体按来源／准入／计费／监控迁至 jobs_pkg
+    model_configuration 模型目录、场景、策略与引擎列表组装
+    model_operations 登记写入、引擎控制与探测历史
+    model_environment 运行时路径、密钥指纹与密文配置
+    content_operations 分镜引用校验、表单字段与视频截帧
+    content_units   创作单元、分镜与资产元数据、档案保存
+    asset_media     图片上传、摘除与文件清理
 
 ## 分层（依赖方向，无环）
 
@@ -131,7 +137,77 @@ from .model_configuration import (
     engines_payload, save_policies,
 )
 
+from .model_operations import (
+    create_model, patch_model, remove_model, check_model,
+    list_config_changes, resolve, create_engine, patch_engine,
+    remove_engine, list_engine_probes, probe_engine, launch_engine,
+    stop_engine,
+)
+from .model_environment import (
+    list_runtime_paths, save_runtime_path, list_secrets, test_secret,
+    list_secret_values, save_secret_value, delete_secret_value,
+)
+from .model_configuration import ModelOperationError
+
+from .content_units import (
+    list_episodes, create_episode, set_episode_status, delete_episode,
+    list_shots, create_shot, update_shot, delete_shot,
+    list_assets, create_asset, get_asset, update_asset,
+    set_asset_cover, asset_shots, get_character_profile, put_character_profile,
+    list_variants, asset_row, asset_reference_rows,
+)
+from .asset_media import (
+    delete_asset, upload_asset_image, delete_asset_image, delete_variant,
+    upload_variant_image, delete_variant_image,
+)
+
 __all__ = [
+    'create_model',
+    'patch_model',
+    'remove_model',
+    'check_model',
+    'list_config_changes',
+    'resolve',
+    'create_engine',
+    'patch_engine',
+    'remove_engine',
+    'list_engine_probes',
+    'probe_engine',
+    'launch_engine',
+    'stop_engine',
+    'list_runtime_paths',
+    'save_runtime_path',
+    'list_secrets',
+    'test_secret',
+    'list_secret_values',
+    'save_secret_value',
+    'delete_secret_value',
+    'ModelOperationError',
+    'list_episodes',
+    'create_episode',
+    'set_episode_status',
+    'delete_episode',
+    'list_shots',
+    'create_shot',
+    'update_shot',
+    'delete_shot',
+    'list_assets',
+    'create_asset',
+    'get_asset',
+    'update_asset',
+    'set_asset_cover',
+    'asset_shots',
+    'get_character_profile',
+    'put_character_profile',
+    'list_variants',
+    'asset_row',
+    'asset_reference_rows',
+    'delete_asset',
+    'upload_asset_image',
+    'delete_asset_image',
+    'delete_variant',
+    'upload_variant_image',
+    'delete_variant_image',
     "prepare_job", "PreparedJob",
     "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
     "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",
