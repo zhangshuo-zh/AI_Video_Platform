@@ -1,6 +1,7 @@
 """适配器规格。修改规格时在对应能力模块维护。"""
 from __future__ import annotations
 from dataclasses import dataclass
+from schemas.enums import BillingUnit
 
 
 
@@ -46,7 +47,7 @@ class Price:
     """
 
     label: str
-    unit: str
+    unit: BillingUnit
     currency: str
     amount_micros: int
     source: str

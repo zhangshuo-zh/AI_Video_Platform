@@ -3,18 +3,31 @@ import json
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import Literal, TypedDict
 
 import chatgpt_plan
 
 ZONE = ZoneInfo('Asia/Shanghai')
-STATES = ('succeeded', 'failed', 'unconfirmed', 'generating')
+_UsageState = Literal['succeeded', 'failed', 'unconfirmed', 'generating']
+STATES: tuple[_UsageState, ...] = ('succeeded', 'failed', 'unconfirmed', 'generating')
 
 
-def _number(value):
-    return value if type(value) in (int, float) and value >= 0 else None
+class _DailyUsage(TypedDict):
+    date: str
+    total: int
+    succeeded: int
+    failed: int
+    unconfirmed: int
+    generating: int
 
 
-def _state(draft, now):
+def _number(value: object) -> int | float | None:
+    if (type(value) is int or type(value) is float) and value >= 0:
+        return value
+    return None
+
+
+def _state(draft, now) -> _UsageState:
     if draft.get('state') == 'ready':
         return 'succeeded'
     if draft.get('metrics', {}).get('response_state') == 'unconfirmed':
@@ -28,12 +41,15 @@ def summarize(user_id, days, project_ids, *, now=None):
     now = time.time() if now is None else now
     today = datetime.fromtimestamp(now, ZONE).date()
     first = today - timedelta(days=days - 1)
-    daily = {str(first + timedelta(days=i)): {'date': str(first + timedelta(days=i)),
-             'total': 0, **dict.fromkeys(STATES, 0)} for i in range(days)}
+    daily: dict[str, _DailyUsage] = {
+        str(first + timedelta(days=i)): {'date': str(first + timedelta(days=i)),
+        'total': 0, 'succeeded': 0, 'failed': 0, 'unconfirmed': 0, 'generating': 0}
+        for i in range(days)}
     counts = dict.fromkeys(STATES, 0)
-    models = {}
-    durations = []
-    inputs, outputs = [], []
+    models: dict[str, int] = {}
+    durations: list[int | float] = []
+    inputs: list[int] = []
+    outputs: list[int] = []
     skipped = 0
     total = 0
     # 文件由草案入口原子替换；本目录不读取账号凭据、不逐条查询项目权限。

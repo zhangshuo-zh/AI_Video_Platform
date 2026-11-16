@@ -80,7 +80,7 @@ from .enums import (
     ASSET_KINDS, AssetKind, VARIANT_KINDS, VariantType, ASSET_GEN_OPERATIONS,
     AssetGenOperation, DOC_KINDS, DocKind, DocStatus, DocAiOperation, ExtractItemKind,
     AudioKind, SHOT_TRANSITIONS, ShotTransition, CAMERA_MOVES,
-    Capability, DispatchMode, HostingSource, PolicyPreference, ConnectionType,
+    BillingUnit, Capability, DispatchMode, HostingSource, PolicyPreference, ConnectionType,
     SupportedConnectionType, ValidationKind, ValidationState, ProbeState
 )
 
@@ -170,6 +170,7 @@ from .workbench import (
 )
 
 __all__ = [
+    "BillingUnit",
     "AFFIX_CATEGORIES",
     "ASSET_GEN_OPERATIONS",
     "ASSET_KINDS",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import adapters
 import agent_tools
@@ -143,7 +144,7 @@ def plan_estimate(route: dict):
             "要么先在模型中心把价格核进清单，要么把文本的默认轨改回本地")
     price = spec.prices[0]
     return JobEstimateIn(
-        quantity=price.default_quantity,
+        quantity=Decimal(str(price.default_quantity)),
         unit=price.unit,
         unit_price_micros=price.amount_micros,
         currency=price.currency,

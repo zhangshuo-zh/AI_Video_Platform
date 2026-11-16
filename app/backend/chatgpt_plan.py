@@ -10,6 +10,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import TypedDict, NotRequired
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -114,14 +115,31 @@ def _verify(tokens, client_id, nonce):
         raise ChatGPTError('无法验证 ChatGPT 身份，请重新连接') from None
 
 
+
+class _LoginPending(TypedDict):
+    state: str
+    nonce: str
+    verifier: str
+    expires: float
+    redirect: str
+    client_id: NotRequired[str]
+    subject: NotRequired[str]
+
+
+class _CallbackServer(HTTPServer):
+    user_id: int
+    pending_state: str
+    complete: bool
+
+
 def start_login(user_id, new_account=False):
     name = _account(user_id)
     with _lock('host'):
         host = _read('host') or {'id': 'urn:uuid:' + str(uuid.uuid4())}
         _write('host', host)
-    server = HTTPServer(('127.0.0.1', 0), _Callback)
+    server = _CallbackServer(('127.0.0.1', 0), _Callback)
     server.timeout = 1
-    pending = {'state': secrets.token_urlsafe(32), 'nonce': secrets.token_urlsafe(32),
+    pending: _LoginPending = {'state': secrets.token_urlsafe(32), 'nonce': secrets.token_urlsafe(32),
                'verifier': secrets.token_urlsafe(48), 'expires': time.time() + 300,
                'redirect': f'http://127.0.0.1:{server.server_port}/auth/callback'}
     with _lock(name):
@@ -155,6 +173,8 @@ def start_login(user_id, new_account=False):
 
 
 class _Callback(BaseHTTPRequestHandler):
+    server: _CallbackServer
+
     def log_message(self, *args):
         pass  # 回调中有授权码，禁止记录 query string。
 

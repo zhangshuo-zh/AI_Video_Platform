@@ -123,7 +123,7 @@ logger = get_logger("fastvideo.worker")
 STOP = False
 
 
-def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
+def _pump(proc: subprocess.Popen[bytes], log, job, wid: str, deadline: float | None = None) -> None:
     """把子进程输出边跑边写进日志；每 0.2 秒续租并看一次取消。
 
     用 os.read + select 而不是 readline：模型输出里有 tqdm 的 \r 进度条，
@@ -132,7 +132,10 @@ def _pump(proc, log, job, wid: str, deadline: float | None = None) -> None:
     `deadline` 是这条作业的存活上限。**租约只证明 worker 还活着，不证明模型还在前进**；
     没有这一位，子进程挂住时会每 0.2 秒成功续一次租，恢复逻辑永远不碰它。
     """
-    fd = proc.stdout.fileno()
+    stdout = proc.stdout
+    if stdout is None:
+        raise JobFailure("adapter_start_failed", "执行器没有提供标准输出流")
+    fd = stdout.fileno()
     last_beat = 0.0
     db = _db_guard(log)
     while True:
@@ -213,7 +216,8 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
         except (OSError, ValueError):
             child_rss_kb = 0
         try:
-            proc.stdout.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
         except OSError:
             pass
 
@@ -341,7 +345,7 @@ def process(job, wid: str, limits: dict | None = None) -> None:
                 extra["provider"] = receipt
             cancel_request_id = receipt.get("request_id")
             supplier_cancel: dict = {}
-            if cancel_request_id:
+            if cancel_request_id and spec is not None:
                 _key_envs = [e for e in (spec.pass_env or ())
                              if e.endswith(("_API_KEY", "_KEY", "_TOKEN"))]
                 supplier_cancel = cloud_run.cancel_task(

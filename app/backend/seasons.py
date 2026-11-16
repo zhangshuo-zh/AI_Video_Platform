@@ -85,7 +85,7 @@ def create(project_id: int, template_id: int, created_by: int | None, *,
     errors = pipeline.validate_definition(definition)
     if errors:
         raise SeasonInvalid(f"模板定义不成立：{'；'.join(errors)}")
-    cloud_nodes = [n.get("key") for n in definition.get("nodes") or []
+    cloud_nodes = [str(n.get("key") or "") for n in definition.get("nodes") or []
                    if isinstance(n, dict) and n.get("execution_mode") == "cloud"]
     if cloud_nodes:
         raise SeasonInvalid(

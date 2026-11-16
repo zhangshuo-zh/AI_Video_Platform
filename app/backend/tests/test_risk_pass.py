@@ -349,3 +349,11 @@ def test_口令重置重新确认用户仍存在(monkeypatch, capsys, still_exis
     assert secret not in printed.out + printed.err
     if not still_exists:
         assert "用户已不存在" in printed.err
+
+
+def test_worker缺少输出管道返回受控错误():
+    from types import SimpleNamespace
+    from io import StringIO
+    with pytest.raises(worker.JobFailure, match="标准输出流") as failure:
+        worker._pump(SimpleNamespace(stdout=None), StringIO(), {}, "test-worker")
+    assert failure.value.code == "adapter_start_failed"

@@ -534,6 +534,10 @@ def test_前端枚举表和后端枚举对齐():
     同一张价格卡在两屏上是两种单位说法，而单位恰恰是给人对账用的。
     """
     import models
+    import adapters
+    from typing import get_args, get_type_hints
+    assert set(get_args(models.BillingUnit)) == set(models.UNITS)
+    assert get_type_hints(adapters.Price)["unit"] == models.JobEstimateIn.model_fields["unit"].annotation
     js = (FRONTEND / "js" / "enums.js").read_text()
     for name, source in (("CAPS =", models.CAPABILITIES),
                          ("MODES =", models.BACKENDS),
@@ -1601,7 +1605,7 @@ def test_资产类型中文名只有一份且与后端一致():
 
 
 def test_mypy_门禁真的在检查而不是空转():
-    """mypy 是渐进式的，范围只有 `schemas/` 与 `db.py`——但必须**真的在查**。
+    """全业务源码和未标注函数体必须被实际检查，跨模块错误不能静默。
 
     2026-11-10 加这一层时踩过的同类风险的现实版本：本仓 `ruff` 那条
     `test_测试里不再引用未定义的变量名` 在 venv 没有 ruff 时一直
@@ -1609,9 +1613,8 @@ def test_mypy_门禁真的在检查而不是空转():
     静态检查最容易变成"配好了、看着绿、其实什么都没查"。
 
     所以这条做两件事，缺一条都可能是空转：
-      A **配置范围是写死的**：`files` 必须正好覆盖 schemas 与 db.py，
-        不能被人悄悄改成 `files = []` 或挪到别的目录（挪走＝不查）；
-      B **拿一个真错误去试**：临时写一个类型错误进 schemas/，mypy 必须报出来。
+      A 对比实际源码与 mypy 源发现结果，不允许遗漏业务文件或使用 silent/ignore_errors；
+      B 临时在 schemas 和根目录未标注函数体中各放一个错误，两者都必须报出。
         这才是"它在检查"的证据，而不是"它退出了 0"。
     """
     import subprocess
@@ -1620,25 +1623,33 @@ def test_mypy_门禁真的在检查而不是空转():
     root = BACKEND          # app/backend：pyproject.toml 与 schemas/ 都在这
     conf = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "[tool.mypy]" in conf, "pyproject.toml 里没有 [tool.mypy] 段"
-    mypy_cfg = conf[conf.index("[tool.mypy]"):]
-    for required in ('"schemas"', '"db.py"', '"services"', '"repositories"',
-                     '"routers"', '"composition"', '"pipeline_pkg"', '"adapters.py"', '"adapters_pkg"',
-                     '"runners.py"', '"runners_pkg"', '"diskplan.py"', '"precheck.py"', '"production.py"',
-                     '"asset_studio.py"', '"asset_studio_pkg"', '"production_pkg"', '"module_facade.py"', '"model_center.py"',
-                     '"main.py"', '"deps.py"', '"access.py"', '"security.py"', '"safenet.py"',
-                     '"secret_store.py"', '"jobfiles.py"', '"workspace.py"', '"gitrepo.py"', '"backup.py"',
-                     '"migrate.py"', '"config.py"', '"errors.py"', '"error_catalog.py"', '"job_state.py"',
-                     '"imagetypes.py"', '"paths.py"', '"asset_generation_refs.py"', '"extraction.py"',
-                     '"reset_password.py"', '"validations.py"'):
-        assert required in mypy_cfg, (
-            f"mypy 的检查范围必须覆盖 schemas/db.py/services/repositories，缺少 {required}：{mypy_cfg[:200]}")
-
-    assert "check_untyped_defs = true" in mypy_cfg
+    import tomllib
+    from mypy.find_sources import create_source_list
+    from mypy.options import Options
+    cfg = tomllib.loads(conf)["tool"]["mypy"]
+    assert cfg["files"] == ["."], "全仓类型门禁必须递归覆盖业务目录"
+    assert cfg.get("follow_imports", "normal") == "normal", "不允许静默或跳过跨模块错误"
+    assert not cfg.get("ignore_errors", False)
+    assert cfg["check_untyped_defs"] is True
+    for override in cfg.get("overrides", []):
+        assert not override.get("ignore_errors", False)
+        assert override.get("follow_imports", "normal") == "normal"
+    options = Options()
+    options.exclude = cfg.get("exclude", [])
+    discovered = {Path(item.path).resolve() for item in create_source_list(
+        [str(root / entry) for entry in cfg["files"]], options)}
+    ignored = {"tests", "data", "migrations", ".venv", "__pycache__"}
+    expected = {p.resolve() for p in root.rglob("*.py")
+                if not set(p.relative_to(root).parts) & ignored}
+    assert expected <= discovered, f"这些业务文件未被检查：{expected - discovered}"
+    assert not any("tests" in p.relative_to(root).parts for p in discovered)
 
     # B：探针。写进 schemas/ 再删掉——用 try/finally 保证不留下文件
     probe = root / "schemas" / "_mypy_probe_tmp.py"
+    runtime_probe = root / "_mypy_runtime_probe_tmp.py"
     try:
         probe.write_text('x: int = "这明明是字符串"\n', encoding="utf-8")
+        runtime_probe.write_text('def untyped():\n    value: int = "wrong"\n    return value\n', encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-m", "mypy"],
             cwd=root, capture_output=True, text=True, timeout=300)
@@ -1649,8 +1660,11 @@ def test_mypy_门禁真的在检查而不是空转():
             "这层门禁在空转（要么没扫到，要么配置把错误吞了）")
         assert "_mypy_probe_tmp.py" in (proc.stdout + proc.stderr), (
             f"mypy 报了错但不是探针文件，说明它没在查 schemas/：{proc.stdout[:300]}")
+        assert "_mypy_runtime_probe_tmp.py" in (proc.stdout + proc.stderr), (
+            "根目录未标注函数体的类型错误没有被检出")
     finally:
         probe.unlink(missing_ok=True)
+        runtime_probe.unlink(missing_ok=True)
 
 
 def test_二级菜单标签统一四字():

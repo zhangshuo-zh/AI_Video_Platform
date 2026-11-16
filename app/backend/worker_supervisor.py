@@ -69,7 +69,7 @@ START_TIMEOUT_SECONDS = 15.0
 
 # 本进程起过、还没 poll() 回收的 Popen。**不是缓存状态**，是回收句柄：
 # 只有握住它才能在判活时用 poll() 顺带 waitpid——见 `_pid_alive` 的注释。
-_LAUNCHED: dict[int, subprocess.Popen] = {}
+_LAUNCHED: dict[int, subprocess.Popen[bytes]] = {}
 
 # 起停串行化。**这是修一个真竞态**（2026-11-10 复核）：
 #
@@ -334,7 +334,7 @@ def _fork_workers(*, count: int, max_global: int | None,
     for name, value in (per or {}).items():
         argv += [f"--max-{name}", str(int(value))]
 
-    procs: list[tuple[int, int, object]] = []
+    procs: list[tuple[int, int, subprocess.Popen[bytes] | None]] = []
     failed: list[str] = []
     # **本轮的绝对基线**，取在第一个 fork 之前。锁外的确认阶段用它筛掉
     # `worker_node` 里属于上一任的死记录（见 `_heartbeat_written_since`）。
@@ -396,7 +396,7 @@ def _fork_workers(*, count: int, max_global: int | None,
     return {"procs": procs, "failed": failed, "since": since}
 
 
-def _await_heartbeats(procs: list[tuple[int, int, object]], failed: list[str],
+def _await_heartbeats(procs: list[tuple[int, int, subprocess.Popen[bytes] | None]], failed: list[str],
                       *, count: int, since: str) -> dict:
     """锁外部分：逐个等 worker 写第一份心跳。
 

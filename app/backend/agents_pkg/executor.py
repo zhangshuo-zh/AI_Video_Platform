@@ -340,7 +340,7 @@ def _verify_and_succeed(run, step, job) -> None:
     result = loads(step["result_json"], {})
     result.update({
         "verified": True,
-        "artifact": jobfiles.relative(str(path)),
+        "artifact": jobfiles.relative(path),
         "bytes": path.stat().st_size,
     })
     agent_runs.update_step(step["id"], {

@@ -5,7 +5,7 @@ from typing import Literal
 import job_state
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .enums import BACKENDS, BILLABLE_LABELS, CAPABILITIES, ERROR_LABELS, JOB_STATUSES
+from .enums import BACKENDS, BILLABLE_LABELS, CAPABILITIES, ERROR_LABELS, JOB_STATUSES, BillingUnit
 
 
 class JobEstimateIn(BaseModel):
@@ -17,8 +17,7 @@ class JobEstimateIn(BaseModel):
     能回答"这个价是哪来的"——没有出处的数字不算数。
     """
     quantity: Decimal = Field(gt=0, le=Decimal("1000000"), max_digits=12, decimal_places=3)
-    unit: Literal["second", "minute", "request", "token", "million_token",
-                  "image", "character"]
+    unit: BillingUnit
     unit_price_micros: int = Field(ge=0, le=1_000_000_000_000)
     currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     source: str = Field(min_length=1, max_length=200)

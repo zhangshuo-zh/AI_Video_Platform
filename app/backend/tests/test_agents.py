@@ -891,3 +891,27 @@ def test_计划绑定失败回滚运行和作业(
     with get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM agent_run").fetchone()[0] == before_runs
         assert conn.execute("SELECT COUNT(*) FROM job").fetchone()[0] == before_jobs
+
+
+def test_智能体成功产物核验保留路径类型(clean_queue, ag_scene):
+    from agents_pkg.executor import _verify_and_succeed
+    import jobfiles
+    run = agent_runs.create({"project_id": ag_scene["project_id"], "episode_id": ag_scene["episode_id"],
+                             "goal": "核验产物", "model_snapshot": {}})
+    step = _add_step(run["id"], "episode_preflight", {"episode_id": ag_scene["episode_id"]})
+    job = job_repo.create({"project_id": ag_scene["project_id"], "capability": "text", "kind": "text",
+                           "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1"})
+    _, outputs = jobfiles.ensure_dirs(job["id"])
+    artifact = outputs / "result.txt"
+    artifact.write_text("核验用真实字节", encoding="utf-8")
+    from db import get_conn
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET status = 'succeeded', result_paths_json = ? WHERE id = ?",
+                     (json.dumps([jobfiles.relative(artifact)]), job["id"]))
+    _verify_and_succeed(run, step, job_repo.get(job["id"]))
+    verified = agent_runs.step(step["id"])
+    assert verified["status"] == "succeeded"
+    result = json.loads(verified["result_json"])
+    assert result["verified"] is True
+    assert result["artifact"] == jobfiles.relative(artifact)
+    assert result["bytes"] == artifact.stat().st_size

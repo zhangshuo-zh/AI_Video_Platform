@@ -143,7 +143,7 @@ def assess(*, limits: dict | None, rows: list[dict] | None = None,
     # 没给某一类的显式上限时，按"全局上限条都落在最贵那一类"来估最坏情况——
     # 这是保守方向：真实情况多半分散在不同类。反过来按最便宜估，就会在
     # "8 条全是视频"时给出"安全"的错误结论。
-    worst_class = max(per_class_mb, key=per_class_mb.get) if per_class_mb else ""
+    worst_class = max(per_class_mb, key=lambda key: per_class_mb[key]) if per_class_mb else ""
     worst_mb = per_class_mb.get(worst_class, 0) if per_class_mb else 0
 
     # 每类各自的峰值占用（同一类内部取最大值而不是平均：并发时同时跑的两条

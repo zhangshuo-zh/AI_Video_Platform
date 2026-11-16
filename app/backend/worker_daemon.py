@@ -22,6 +22,7 @@ import json
 import sqlite3
 import threading
 import time
+from typing import TypedDict
 
 from config import BASE_DIR
 from log import get_logger
@@ -46,7 +47,16 @@ MAX_FAILURES = 3
 
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
-_STATE = {"started_at": None, "last_check": None, "last_error": "",
+class _DaemonState(TypedDict):
+    started_at: str | None
+    last_check: str | None
+    last_error: str
+    failures: int
+    recovered: int
+    actions: list[dict[str, str]]
+
+
+_STATE: _DaemonState = {"started_at": None, "last_check": None, "last_error": "",
           "failures": 0, "recovered": 0, "actions": []}
 
 

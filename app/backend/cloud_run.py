@@ -282,7 +282,7 @@ def _wan_usage(data: dict, params: dict) -> dict:
     raw = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(raw, dict) and isinstance(output, dict):
         raw = output.get("usage")
-    usage = {}
+    usage: dict[str, int | float | str | None] = {}
     if isinstance(raw, dict):
         for key in ("duration", "video_duration", "video_ratio", "video_count",
                     "SR", "size"):
@@ -344,7 +344,7 @@ def _wan(request: dict, result: dict) -> int:
     poll_url = base + f"/api/v1/tasks/{task_id}"
     deadline = time.monotonic() + float(request.get("poll_timeout") or 1800)
     interval = float(request.get("poll_interval") or 5)
-    final = {}
+    final: dict = {}
     while True:
         if time.monotonic() > deadline:
             raise _ProviderError("timeout", "轮询超过上限，任务仍未结束")

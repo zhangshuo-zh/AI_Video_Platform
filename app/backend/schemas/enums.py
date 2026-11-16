@@ -5,6 +5,7 @@ import job_state
 
 # ---------- 数据标准核心代码集（CodeSet Type Aliases） ----------
 # 对应《数据字典.md》§4.0.1 核心数据元码值标准目录，应用层 Pydantic 强类型防守基线
+BillingUnit = Literal["second", "minute", "request", "token", "million_token", "image", "character"]
 Capability = Literal["text", "image", "video", "tts", "music"]
 DispatchMode = Literal["local", "cloud"]
 HostingSource = Literal["local", "cloud", "remote"]
