@@ -22,7 +22,10 @@ import json
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import TypedDict
+import os
+import tempfile
 
 from config import BASE_DIR
 from log import get_logger
@@ -44,6 +47,9 @@ CHECK_INTERVAL = 15.0
 # 时守护会每 15 秒起一个又崩一个，日志瞬间被刷满，而且掩盖了真正的原因。
 # 停下来并把原因记进通知，比无限重试诚实。
 MAX_FAILURES = 3
+
+_CONFIG_LOCK = threading.RLock()
+_THREAD_LOCK = threading.Lock()
 
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
@@ -69,17 +75,28 @@ def load_config() -> dict:
         return {"enabled": False, "desired": 1}
     if not isinstance(data, dict):
         return {"enabled": False, "desired": 1}
-    return {
-        "enabled": bool(data.get("enabled")),
-        # 期望在线几个。0 是合法值（"守着但不许有"），所以不能 `or 1`。
-        "desired": max(0, int(data.get("desired", 1) or 0)),
-    }
+    desired = data.get("desired", 1)
+    enabled = data.get("enabled", False)
+    if type(desired) is not int or not 0 <= desired <= 8 or type(enabled) is not bool:
+        return {"enabled": False, "desired": 1}
+    return {"enabled": enabled, "desired": desired}
 
 
 def save_config(*, enabled: bool, desired: int) -> dict:
-    DAEMON_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    cfg = {"enabled": bool(enabled), "desired": max(0, min(int(desired), 8))}
-    DAEMON_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    if type(enabled) is not bool or type(desired) is not int or not 0 <= desired <= 8:
+        raise ValueError("守护配置应为开关与 0—8 的整数")
+    cfg = {"enabled": enabled, "desired": desired}
+    with _CONFIG_LOCK:
+        DAEMON_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".daemon-", dir=DAEMON_CONFIG.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(name, DAEMON_CONFIG)
+        finally:
+            Path(name).unlink(missing_ok=True)
     return cfg
 
 
@@ -88,6 +105,8 @@ def _record(action: str, detail: str, *, level: str = "warn") -> None:
 
     写通知失败不能影响守护本身——一句日志写不进去不该让自动拉起停摆。
     """
+    import worker_supervisor as sup
+    detail = sup.public_message(detail)
     _STATE["actions"] = ([{"at": time.strftime("%Y-%m-%d %H:%M:%S"),
                            "action": action, "detail": detail}]
                          + _STATE["actions"])[:30]
@@ -255,13 +274,14 @@ def _loop() -> None:
 def start_thread() -> bool:
     """起守护线程（幂等：已在跑就返回 False）。API 启动时调一次。"""
     global _THREAD
-    if _THREAD is not None and _THREAD.is_alive():
-        return False
-    _STOP.clear()
-    _THREAD = threading.Thread(target=_loop, name="worker-daemon", daemon=True)
-    _THREAD.start()
-    _STATE["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    return True
+    with _THREAD_LOCK:
+        if _THREAD is not None and _THREAD.is_alive():
+            return False
+        _STOP.clear()
+        _THREAD = threading.Thread(target=_loop, name="worker-daemon", daemon=True)
+        _THREAD.start()
+        _STATE["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        return True
 
 
 def stop_thread() -> None:
@@ -288,9 +308,9 @@ def check() -> dict:
         "failures": _STATE["failures"],
         "recovered": _STATE["recovered"],
         "last_check": _STATE["last_check"],
-        "last_error": _STATE["last_error"],
+        "last_error": sup.public_message(_STATE["last_error"]),
         "started_at": _STATE["started_at"],
-        "actions": _STATE["actions"],
+        "actions": [{**item, "detail": sup.public_message(item["detail"])} for item in _STATE["actions"]],
         # 关键判定：真的在守吗
         "exposed": (not cfg["enabled"]) or (not running)
                    or (_STATE["failures"] >= MAX_FAILURES),

@@ -995,7 +995,7 @@ class TestForkFailureLeavesNoOrphan:
 
         assert out["ok"] is False
         assert "日志打不开" in out["message"], out["message"]
-        assert str(sup.WORKER_LOG) in out["message"], (
+        assert sup.public_log_path() in out["message"] and str(sup.WORKER_LOG) not in out["message"], (
             f"报错没说是哪个文件打不开，人还得自己猜：{out['message']}")
         assert not called, "日志都没有就不该 fork（否则 worker 输出无处可去）"
 

@@ -246,9 +246,13 @@ export const api = {
   // 验证历史：一页 + 总量。`before_id` 拿上一页最后一条的 id 往前翻——
   // 表只追加不改，所以"比某条更早"是稳定边界（用 offset 会因为新写入而错位）。
   // 总量在响应头 `X-Total-Count` 里，调用方据此说"共 N 条"而不是拿"少于 limit"猜。
-  providerValidations: async (limit = 50, beforeId = null) => {
+  providerValidations: async (limit = 50, beforeId = null,
+    { kind = '', state = '', onlyBad = false } = {}) => {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (beforeId) qs.set('before_id', String(beforeId));
+    if (kind) qs.set('kind', String(kind));
+    if (state) qs.set('state', String(state));
+    if (onlyBad) qs.set('only_bad', 'true');
     // 这一条**不能走 get()**：它要读完响应头再走 toJson，
     // 而 get() 已经把 body 解析成对象返回了（headers 拿不到）。
     const res = await request(`/api/providers/validations?${qs}`);

@@ -1138,8 +1138,22 @@ def main():
         # 工作区 3：运行监控
         go(cdp, f"{BASE}/#models/3")
         check("运行监控如实标出不支持的三项",
-              P.eval_js(cdp, "[...document.querySelectorAll('.chip.amber')]"
-                             ".filter(c => c.textContent.includes('不支持')).length"))
+              P.eval_js(cdp, """(() => {
+                const txt = document.body.textContent || '';
+                return txt.includes('不支持') && txt.includes('聚合成本') && txt.includes('分档执行耗时');
+              })()"""))
+        check("验证留痕提供结果与出处筛选控件",
+              P.has(cdp, "#mc-val-filter-state") and P.has(cdp, "#mc-val-filter-kind"))
+        P.eval_js(cdp, """(() => {
+          const s = document.querySelector('#mc-val-filter-state');
+          s.value = 'bad'; s.dispatchEvent(new Event('change', {bubbles: true}));
+        })()""")
+        time.sleep(0.8)
+        check("验证留痕切换「仅异常」触发服务端筛选且不混入「通过」行",
+              P.eval_js(cdp, """(() => {
+                const rows = [...document.querySelectorAll('#mc-val-rows tr')];
+                return rows.length > 0 && rows.every(r => !r.innerText.includes('通过'));
+              })()"""))
         online = cdp.eval("fetch('/api/worker/status').then(r=>r.json()).then(j=>j.online)")
         # 只断言"页面给出了明确状态"，不拿它跟这一秒的接口值硬比：
         # 页面上的状态是加载那一刻读的，心跳 20 秒一过接口就翻成离线，
@@ -1149,6 +1163,13 @@ def main():
                                " : (t.includes('worker 未接入') ? '未接入' : 'NONE'); })()")
         check("运行监控给出明确的 worker 状态（值以接口为准）",
               shown in ("在线", "未接入"), f"页面 {shown}｜接口 online={online}")
+        check("运行监控操作区独立于轮询区且不暴露宿主机绝对日志路径",
+              P.eval_js(cdp, """(() => {
+                const ops = !document.querySelector('#mc-live #mc-wp-start')
+                  && !!document.querySelector('#mc-ops #mc-wp-start');
+                const logText = (document.querySelector('.wp-log code')?.textContent || '').trim();
+                return ops && !!logText && !logText.startsWith('/');
+              })()"""))
 
         # ---------- 运行监控：worker 表默认只列在线，历史收起来 ----------
         go(cdp, f"{BASE}/#models/3")

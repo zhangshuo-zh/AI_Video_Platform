@@ -5,7 +5,7 @@ from log import get_logger as _get_logger
 from ..errors import JobInvalid
 from config import LOG_SILENCE_SECONDS, QUEUE_STALL_SECONDS, WORKER_MAX_RUNTIME_SECONDS, WORKER_ONLINE_SECONDS
 from datetime import datetime
-from db import get_conn
+from db import get_conn, transaction
 from repositories.jobs import jobs as job_repo
 import config
 import sqlite3
@@ -28,6 +28,18 @@ def _seconds_since(text: str | None) -> int | None:
 
 
 
+
+
+def process_observation(managed: dict) -> dict:
+    """补充本机新鲜心跳的观测，不把心跳 PID 自动纳入启停权限。"""
+    import socket
+    pids = set(managed.get("pids") or [])
+    hostname = socket.gethostname()
+    online = {int(row["pid"]) for row in job_repo.workers(WORKER_ONLINE_SECONDS)
+              if row["online"] and row.get("host") == hostname and int(row["pid"] or 0) > 0}
+    external = sorted(online - pids)
+    return {"external_online_pids": external, "external_online_count": len(external),
+            "heartbeat_online_count": len(online), "total_observed_count": len(pids | online)}
 
 def concurrency_now() -> dict:
     """并发设置的现值 + 这台机器扛不扛得住。给 `/api/worker/status` 与设置接口共用。
@@ -99,6 +111,12 @@ def concurrency_now() -> dict:
 
 
 def set_concurrency(payload, user=None) -> dict:
+    # 合并局部配置、风险评估与保存共享事务，两个管理员的局部修改不会互相重置。
+    with transaction():
+        return _set_concurrency(payload, user)
+
+
+def _set_concurrency(payload, user=None) -> dict:
     """保存网页上设的并发上限。危险档不勾 `acknowledge_risk` 直接拒。
 
     拒绝用 400 而不是静默存下：`claim_next` 只认数字，存进去下一轮真的会去领
@@ -107,7 +125,12 @@ def set_concurrency(payload, user=None) -> dict:
     from repositories import worker_limit
     import concurrency_plan
 
-    per_in = payload.per if payload.per is not None else None
+    existing = worker_limit.get() or {}
+    fields = payload.model_fields_set
+    global_max = payload.global_max if "global_max" in fields else existing.get("global")
+    per_in = (payload.per or {}) if "per" in fields else existing.get("per", {})
+    note = payload.note if "note" in fields else existing.get("note", "")
+    user_id = user["id"] if user is not None else None
     if per_in is not None:
         unknown = sorted(set(per_in) - set(config.RESOURCE_CLASSES))
         if unknown:
@@ -117,11 +140,11 @@ def set_concurrency(payload, user=None) -> dict:
         for name, value in per_in.items():
             if int(value) < 0:
                 raise JobInvalid(f"{name} 的上限不能是负数")
-    if payload.global_max is not None and int(payload.global_max) < 0:
+    if global_max is not None and int(global_max) < 0:
         raise JobInvalid("全局上限不能是负数")
 
     # 先算"如果照这个存下去会怎样"，再决定要不要放行。
-    trial = {"global": (int(payload.global_max) if payload.global_max is not None
+    trial = {"global": (int(global_max) if global_max is not None
                         else config.WORKER_MAX_GLOBAL),
              "per": {k: int(v) for k, v in (per_in or {}).items()}}
     rows: list[dict] = []
@@ -145,10 +168,10 @@ def set_concurrency(payload, user=None) -> dict:
             f"请勾选「我知道有内存溢出风险」再保存")
 
     saved = worker_limit.save(
-        global_max=(int(payload.global_max) if payload.global_max is not None else None),
+        global_max=(int(global_max) if global_max is not None else None),
         per=({k: int(v) for k, v in per_in.items()} if per_in is not None else {}),
-        updated_by=(user or {}).get("id") if isinstance(user, dict) else None,
-        note=payload.note or "")
+        updated_by=user_id,
+        note=note or "")
 
     # 变更痕：与选路配置同一张表、同一套纪律（0044）。失败不炸主流程。
     try:
@@ -158,7 +181,7 @@ def set_concurrency(payload, user=None) -> dict:
                 f"每类={saved.get('per') or '默认'}（{assessment['verdict']}）",
                 payload={"global": saved.get("global"), "per": saved.get("per"),
                          "verdict": assessment["verdict"]},
-                created_by=(user or {}).get("id") if isinstance(user, dict) else None)
+                created_by=user_id)
     except (sqlite3.Error, OSError, ValueError) as exc:
         _audit_log.debug("set_concurrency_fallback error=%s", type(exc).__name__)
         pass

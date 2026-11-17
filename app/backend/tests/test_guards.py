@@ -220,6 +220,7 @@ ROUTES = [
     # 通知是"我的收件箱"，任何登录者 200。
     ("POST", "/api/worker/process/start-many", {"count": 1}, 403),
     ("POST", "/api/worker/process/stop-one", {"pid": 1}, 403),
+    ("POST", "/api/worker/process/clean-stale", None, 403),
     ("GET", "/api/worker/daemon", None, 403),
     ("PUT", "/api/worker/daemon", {"enabled": False, "desired": 1}, 403),
     ("GET", "/api/notifications", None, 200),

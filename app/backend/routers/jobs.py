@@ -334,6 +334,13 @@ def put_worker_concurrency(payload: WorkerLimitIn,
 # **这不是守护进程**：没有自动拉起、没有崩溃重启。按钮存在只为省掉"开终端敲命令"，
 # 界面必须把这句话写出来——详见 `worker_supervisor` 模块头。
 
+def _process_out(state: dict, *, last_action: str = "") -> WorkerProcessOut:
+    import worker_supervisor as sup
+    from services.jobs_pkg.monitor import process_observation
+    return WorkerProcessOut(**state, **process_observation(state),
+                            log_path=sup.public_log_path(), last_action=last_action)
+
+
 @router.get("/worker/process", response_model=WorkerProcessOut)
 def get_worker_process(user=Depends(require_permission("system:config"))
                        ) -> WorkerProcessOut:
@@ -345,7 +352,7 @@ def get_worker_process(user=Depends(require_permission("system:config"))
     """
     import worker_supervisor as sup
     state = sup.current()
-    return WorkerProcessOut(**state, log_path=str(sup.WORKER_LOG))
+    return _process_out(state)
 
 
 @router.post("/worker/process/start", response_model=WorkerProcessOut)
@@ -361,14 +368,13 @@ def start_worker_process(payload: WorkerStartIn | None = None,
     payload = payload or WorkerStartIn()
     result = sup.start(max_global=payload.max_global, per=payload.per)
     state = sup.current()
-    out = WorkerProcessOut(**state, last_action=result["message"],
-                           log_path=str(sup.WORKER_LOG))
+    out = _process_out(state, last_action=sup.public_message(result["message"]))
     if result["ok"]:
         return out
     # 400 而不是 409：0049 起"已经有一个在跑"不再是错误——多开是正常需求，
     # 所以真正的失败只剩"起不来"（环境问题）。原来那条 409 分支随
     # "已在跑就拒绝"的规矩一起删掉了，留着会让界面以为还有状态冲突要处理。
-    raise HTTPException(status_code=400, detail=result["message"])
+    raise HTTPException(status_code=400, detail=sup.public_message(result["message"]))
 
 
 @router.post("/worker/process/stop", response_model=WorkerProcessOut)
@@ -382,9 +388,7 @@ def stop_worker_process(user=Depends(require_permission("system:config"))
     import worker_supervisor as sup
     result = sup.stop()
     state = sup.current()
-    return WorkerProcessOut(**state,
-                            last_action="；".join(result["messages"]),
-                            log_path=str(sup.WORKER_LOG))
+    return _process_out(state, last_action=sup.public_message("；".join(result["messages"])))
 
 
 # ---------- 多开、守护与通知（0049） ----------
@@ -406,9 +410,8 @@ def start_many_workers(payload: WorkerStartIn | None = None,
                        count=int(payload.count or 1))
     state = sup.current()
     if result["ok"]:
-        return WorkerProcessOut(**state, last_action=result["message"],
-                                log_path=str(sup.WORKER_LOG))
-    raise HTTPException(status_code=400, detail=result["message"])
+        return _process_out(state, last_action=sup.public_message(result["message"]))
+    raise HTTPException(status_code=400, detail=sup.public_message(result["message"]))
 
 
 @router.post("/worker/process/stop-one", response_model=WorkerProcessOut)
@@ -423,9 +426,14 @@ def stop_one_worker(payload: WorkerStopIn,
     import worker_supervisor as sup
     result = sup.stop(pid=int(payload.pid) if payload.pid else None)
     state = sup.current()
-    return WorkerProcessOut(**state,
-                            last_action="；".join(result["messages"]),
-                            log_path=str(sup.WORKER_LOG))
+    return _process_out(state, last_action=sup.public_message("；".join(result["messages"])))
+
+
+@router.post("/worker/process/clean-stale", response_model=WorkerProcessOut)
+def clean_stale_worker_process(user=Depends(require_permission("system:config"))) -> WorkerProcessOut:
+    import worker_supervisor as sup
+    removed = sup.clean_stale()
+    return _process_out(sup.current(), last_action=f"已清理 {len(removed)} 条残留 PID 登记")
 
 
 @router.get("/worker/daemon", response_model=WorkerDaemonOut)
@@ -446,8 +454,13 @@ def put_worker_daemon(payload: WorkerDaemonIn,
     否则界面上点了开关却没反应，人会以为坏了。
     """
     import worker_daemon
-    saved = worker_daemon.save_config(enabled=payload.enabled,
-                                      desired=payload.desired)
+    try:
+        saved = worker_daemon.save_config(enabled=payload.enabled, desired=payload.desired)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="守护配置保存失败，请检查运行目录权限") from exc
+    from repositories.config_log import record
+    record("worker_daemon", "singleton", "update", "守护配置已更新",
+           payload=saved, created_by=user["id"])
     if saved["enabled"]:
         worker_daemon.start_thread()
     return WorkerDaemonOut(**worker_daemon.check())

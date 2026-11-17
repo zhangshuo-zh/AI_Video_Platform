@@ -1,11 +1,21 @@
 import json
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 import job_state
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .enums import BACKENDS, BILLABLE_LABELS, CAPABILITIES, ERROR_LABELS, JOB_STATUSES, BillingUnit
+
+
+_ResourceLimit = Annotated[int, Field(ge=0, le=64)]
+
+
+def _validate_resource_keys(value: dict[str, int] | None) -> dict[str, int] | None:
+    from config import RESOURCE_CLASSES
+    if value is not None and set(value) - set(RESOURCE_CLASSES):
+        raise ValueError("不认识的资源类：" + "、".join(sorted(set(value) - set(RESOURCE_CLASSES))))
+    return value
 
 
 class JobEstimateIn(BaseModel):
@@ -279,6 +289,11 @@ class WorkerProcessOut(BaseModel):
     count: int = 0
     pids: list[int] = []
     stale_pids: list[int] = []
+    # 新鲜心跳观测，不等于受管进程；原 count/pids/running 契约保留。
+    external_online_pids: list[int] = []
+    external_online_count: int = 0
+    heartbeat_online_count: int = 0
+    total_observed_count: int = 0
     # PID 文件里有号但进程已不在（上次强杀/断电）：如实区分"残留"与"从未启动"
     stale_pid: int | None = None
     is_supervisor: bool = False
@@ -294,10 +309,12 @@ class WorkerStartIn(BaseModel):
     单例配置同源。这里再给一遍只是方便"起的时候顺便定"，不给就是不加参数。
     """
     max_global: int | None = Field(default=None, ge=0, le=64)
-    per: dict[str, int] | None = None
+    per: dict[str, _ResourceLimit] | None = None
     # 一次起几个（0049 多开）。上限由 worker_supervisor.MAX_WORKERS 兜，
     # 这里不重复写死那个数——两处各写一份迟早不一致。
     count: int = Field(default=1, ge=1, le=8)
+
+    _resource_keys = field_validator("per")(_validate_resource_keys)
 
 
 class WorkerStopIn(BaseModel):
@@ -367,9 +384,11 @@ class WorkerLimitIn(BaseModel):
     一旦存进去下一轮就真的会去领那么多条，OOM 起来是整台机器的事。
     """
     global_max: int | None = Field(default=None, ge=0, le=64)
-    per: dict[str, int] | None = None
+    per: dict[str, _ResourceLimit] | None = None
     acknowledge_risk: bool = False
     note: str = ""
+
+    _resource_keys = field_validator("per")(_validate_resource_keys)
 
 
 class WorkerLimitOut(BaseModel):

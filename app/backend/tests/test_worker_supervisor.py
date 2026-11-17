@@ -314,3 +314,127 @@ def test_外部进程探测缺少ps时保守判活(sup, monkeypatch, state):
         return SimpleNamespace(stdout="Z" if state == "zombie" else "S")
     monkeypatch.setattr(sup.subprocess, "run", probe)
     assert sup._pid_alive(123456789) is (state != "zombie")
+
+
+def test_权限不足的PID探测不能清理登记(sup, monkeypatch):
+    sup.PID_DIR.mkdir(parents=True)
+    marker = sup.PID_DIR / "987654.pid"
+    marker.write_text("987654")
+    def denied(*args):
+        raise PermissionError("probe denied")
+    monkeypatch.setattr(sup.os, "kill", denied)
+    assert sup.current()["pids"] == [987654]
+    assert sup.clean_stale() == []
+    assert marker.exists()
+
+
+def test_启动失败与日志尾部不泄露路径或密钥(sup, monkeypatch, tmp_path):
+    secret = "synthetic-sensitive-value-123"
+    monkeypatch.setenv("SAMPLE_API_KEY", secret)
+    monkeypatch.setenv("FV_KEY_VOLC", "volc-sensitive-test-value")
+    blocker = tmp_path / "blocked"
+    blocker.write_text("file")
+    monkeypatch.setattr(sup, "RUN_DIR", blocker / "run")
+    result = sup.start()
+    assert result["ok"] is False
+    assert str(tmp_path) not in result["message"]
+    sup.LOG_DIR.mkdir(parents=True)
+    sup.WORKER_LOG.write_text(f"error /Users/private-owner/unrelated/model.bin key={secret} other=volc-sensitive-test-value")
+    tail = sup._log_tail()
+    assert "private-owner" not in tail and secret not in tail
+    assert "volc-sensitive-test-value" not in tail
+    assert "[本机路径]" in tail
+
+
+def test_守护配置损坏与写入中断保持关闭或旧配置(monkeypatch, tmp_path):
+    import worker_daemon as daemon
+    import os
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    daemon.DAEMON_CONFIG.write_text('{"enabled":true,"desired":"broken"}')
+    assert daemon.load_config() == {"enabled": False, "desired": 1}
+    daemon.save_config(enabled=False, desired=2)
+    with monkeypatch.context() as patch:
+        def fail_replace(*args):
+            raise OSError("injected replace failure")
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError):
+            daemon.save_config(enabled=True, desired=3)
+    assert daemon.load_config() == {"enabled": False, "desired": 2}
+    assert len(list(tmp_path.iterdir())) == 1
+
+
+def test_显式清理只删已确认死亡且删除成功的登记(sup, monkeypatch, as_role):
+    sup.PID_DIR.mkdir(parents=True)
+    for pid in (987650, 987651):
+        (sup.PID_DIR / f"{pid}.pid").write_text(str(pid))
+    monkeypatch.setattr(sup, "_pid_alive", lambda pid: pid == 987651)
+    before = as_role("admin").get("/api/worker/process")
+    assert 987650 in before.json()["stale_pids"]
+    assert (sup.PID_DIR / "987650.pid").exists(), "GET 不得悄悄删除登记"
+    with monkeypatch.context() as patch:
+        original_unlink = sup.Path.unlink
+        def denied(path, *args, **kwargs):
+            if path.name == "987650.pid":
+                raise PermissionError("cleanup denied")
+            return original_unlink(path, *args, **kwargs)
+        patch.setattr(sup.Path, "unlink", denied)
+        assert sup.clean_stale() == []
+        assert (sup.PID_DIR / "987650.pid").exists()
+    response = as_role("admin").post("/api/worker/process/clean-stale")
+    assert response.status_code == 200, response.text
+    assert not (sup.PID_DIR / "987650.pid").exists()
+    assert (sup.PID_DIR / "987651.pid").exists()
+    assert response.json()["pids"] == [987651]
+
+
+def test_进程状态补充外部心跳但不授予停止权限(sup, monkeypatch, as_role):
+    import socket
+    from services.jobs_pkg import monitor
+    hostname = socket.gethostname()
+    monkeypatch.setattr(monitor.job_repo, "workers", lambda seconds: [
+        {"pid": 987650, "host": hostname, "online": True},
+        {"pid": 987650, "host": hostname, "online": True},
+        {"pid": 987651, "host": hostname, "online": False},
+        {"pid": 987652, "host": "other-host", "online": True},
+    ])
+    response = as_role("admin").get("/api/worker/process")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["count"] == 0 and data["pids"] == [] and data["running"] is False
+    assert data["external_online_pids"] == [987650]
+    assert data["total_observed_count"] == 1
+    assert sup.stop_one(987650)["ok"] is False
+
+
+def test_并发启动守护只创建一个线程(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+    from types import SimpleNamespace
+    import worker_daemon as daemon
+
+    entered, release = Event(), Event()
+    created = []
+    class FakeThread:
+        alive = False
+        def __init__(self, **kwargs):
+            created.append(self)
+        def is_alive(self):
+            return self.alive
+        def start(self):
+            entered.set()
+            assert release.wait(5)
+            self.alive = True
+    monkeypatch.setattr(daemon, "_THREAD", None)
+    monkeypatch.setattr(daemon, "threading", SimpleNamespace(Thread=FakeThread))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(daemon.start_thread)
+        try:
+            assert entered.wait(5)
+            second = pool.submit(daemon.start_thread)
+            with pytest.raises(TimeoutError):
+                second.result(timeout=0.1)
+        finally:
+            release.set()
+        results = [first.result(timeout=5), second.result(timeout=5)]
+    assert results == [True, False]
+    assert len(created) == 1

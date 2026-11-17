@@ -10,7 +10,8 @@ import {
   agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
-import { HEALTH, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.js';
+import { gotoEntry } from '../../goto.js';
+import { HEALTH, JOB_STATUS, VAL_BADGE, VAL_KIND_LABEL, alertLabel } from '../../validation.js';
 import { REG_SOURCES, unitLabel } from '../../enums.js';
 import {
   SUBS, cache, stateChip, healthChip, manifestAxis, adapterOf, manifestProviders,
@@ -37,6 +38,28 @@ let pollTimer = null;
 let visHandler = null;
 const POLL_MS = 5000;
 
+/** 资源类的界面名。队列分桶的键是后端的英文类名，界面一律念中文
+ *  （并发设置那张表早就用中文，这里原来直接印 text/image，同页两套叫法）。 */
+const RES_LABEL = { text: '文本', image: '图像', video: '视频', audio: '音频', compose: '成片' };
+
+/** 验证留痕的筛选条件：切出再进重置；切换时向服务端请求匹配的全库记录。 */
+let valFilterState = '';
+let valFilterKind = '';
+let valSeq = 0;
+
+function valFilterParams() {
+  return {
+    kind: valFilterKind || '',
+    onlyBad: valFilterState === 'bad',
+  };
+}
+
+function jobJumpHtml(jobId) {
+  if (!jobId) return '—';
+  const id = Number(jobId);
+  return `<button type="button" class="btn-link mono" data-goto-job="${id}" title="前往生成中心查看作业 #${id}">#${id}</button>`;
+}
+
 /** 验证历史的一条行。首屏渲染与「更早」追加共用这一份——原来两处各抄了一遍
  *  同一段行 HTML，改一处忘另一处，翻到第二页列就错位。 */
 function valRow(v) {
@@ -44,29 +67,18 @@ function valRow(v) {
     <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
     <td>${stateChip(v.state)}</td>
     <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
-    <td>${v.job_id ? '#' + v.job_id : '—'}</td>
+    <td>${v.job_id ? jobJumpHtml(v.job_id) : '—'}</td>
     <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
     <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
   </tr>`;
 }
 
-/**
- * 验证历史的翻页条。
- *
- * 为什么要它：接口从 0035 起就支持 `limit`，而仓储层把上限夹在 200——
- * 于是"第 201 条之后读不到"这件事在界面上完全不可见，翻到底的人会以为
- * 历史只有这么多条。这一版后端补了 `before_id` 与 `X-Total-Count`，
- * 界面必须把两件事都说出来，否则补了接口也等于没补：
- *   ① 一共多少条（来自响应头），② 还有没有更早的（有就给「更早」按钮）。
- */
 export function validationPager() {
   const total = cache.validations?.total || 0;
-  const shown = (cache.validations?.items || []).length;
+  const loaded = (cache.validations?.items || []).length;
   const page = cache.validationPage || { before: null, pages: 0 };
-  // "还有没有更早的"＝已经搬上来的条数还不到总数。不要用 `page.before` 判：
-  // 第一页的游标是空的，那样写会让"一共有 500 条、这一页 50 条"的时候不出现翻页按钮。
-  const older = shown > 0 && shown < total;
-  return `<span class="hint">共 ${total} 条 · 这一页 ${shown} 条`
+  const older = loaded > 0 && loaded < total;
+  return `<span class="hint">共 ${total} 条 · 这一页 ${loaded} 条`
     + `${page.pages ? ` · 已翻 ${page.pages} 页` : ''}</span> `
     + `${older ? '<button class="btn xs" id="mc-val-older">更早的</button>' : ''}`;
 }
@@ -93,7 +105,7 @@ function liveCards() {
   const nodeRow = (n) => `<tr>
       <td class="mono">${escapeHtml(n.worker_id || '—')}</td>
       <td>${n.online ? '<span class="chip green">在线</span>' : '<span class="chip gray">离线</span>'}</td>
-      <td>${n.current_job_id ? '#' + n.current_job_id : '<span class="hint">空闲</span>'}</td>
+      <td>${n.current_job_id ? jobJumpHtml(n.current_job_id) : '<span class="hint">空闲</span>'}</td>
       <td class="hint">${escapeHtml(String(n.heartbeat_at || '').slice(0, 16))}
         ${agoText(n.age_seconds)}</td>
       <td class="hint">${escapeHtml(resChips(n))}</td>
@@ -111,24 +123,57 @@ function liveCards() {
       <button class="btn xs" id="mc-worker-history">
         ${showWorkerHistory ? '收起离线进程'
           : `另有 ${historyCount} 个进程在 7 天内登记过 · 现已离线（点开看）`}</button>
-      <span class="t-desc">离线行不领活、不影响队列；保留 7 天后自动清。
+      <span class="t-desc mc-wrap-note">离线行不领活、不影响队列；保留 7 天后自动清。
         一行代表一个进程：它的并发上限与"正在跑哪条作业"都记在自己这行上，
         两个进程共用一行会把租约算到别人头上，所以这里不合并、只折叠。</span>
     </div>` : '';
 
   const queueChips = Object.entries(byRes).map(([k, v]) =>
     `<span class="chip ${v.running ? 'blue' : (v.queued ? 'amber' : 'gray')}">
-      ${escapeHtml(k)} 等 ${v.queued} · 跑 ${v.running}</span>`).join('')
+      ${escapeHtml(RES_LABEL[k] || k)} 等 ${v.queued} · 跑 ${v.running}</span>`).join('')
     || '<span class="t-dim">队列里没有任何活</span>';
 
+  // by_status 是各状态作业的**累计数**（库里全部作业按状态分组），不是"此刻在跑"。
+  // 它挂在「执行中」那个大数字下面，原来又印着 failed／succeeded 的英文键，
+  // 一眼看过去像是"执行中 0，但有 2 个 failed 正在跑"。念成中文并点明是累计。
   const statusChips = Object.entries(w.by_status || {}).map(([k, v]) =>
-    `<span class="chip plain">${escapeHtml(k)} ${v}</span>`).join('') || '<span class="t-dim">—</span>';
+    `<span class="chip plain">${escapeHtml((JOB_STATUS[k] || [])[1] || k)} ${v}</span>`).join('')
+    || '<span class="t-dim">—</span>';
 
-  const alerts = (w.alerts || []).map((a) => `<li>
+  const alertList = w.alerts || [];
+  const alerts = alertList.map((a) => `<li class="mc-alert-item">
       <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(alertLabel(a.code))}</span>
-      ${escapeHtml(a.text)}</li>`).join('');
+      <span>${escapeHtml(a.text)}</span>
+      <button type="button" class="btn xs" data-goto-gen>去生成中心处理</button>
+    </li>`).join('');
 
-  return `
+  const alertCard = alertList.length ? `
+  <div class="card mb-card mc-alert-card">
+    <div class="card-head">
+      <div style="display:flex;align-items:center">
+        <h2>告警（${alertList.length}）</h2>
+        <span class="help-tip">
+          <span class="help-icon">?</span>
+          <span class="tip-pop tip-right">
+            <span class="tip-title">告警观测与处置原则</span>
+            <div class="tip-desc">判定与处置严格分离：这里只展示异动告警，取消与重试仍回生成中心做。</div>
+            <ul class="tip-list">
+              <li><b>判定与处置分离</b>：模型中心仅陈述异常指标（队列积压、探活失败、并发冲突）。</li>
+              <li><b>处置主权</b>：任务重试、作业撤销等业务操作请前往生成中心发起。</li>
+            </ul>
+          </span>
+        </span>
+      </div>
+      <span class="right">
+        <button type="button" class="btn xs" data-goto-gen>前往生成中心</button>
+      </span>
+    </div>
+    <div class="card-body">
+      <ul class="hint flush">${alerts}</ul>
+    </div>
+  </div>` : '';
+
+  return `${alertCard}
   <div class="card mb-card" >
     <div class="card-head">
       <div style="display:flex;align-items:center">
@@ -146,88 +191,43 @@ function liveCards() {
         </span>
       </div>
       <span class="right">
+        <span class="chip ${alertList.length ? 'red' : 'green'}">${alertList.length ? `${alertList.length} 条告警` : '无异常告警'}</span>
         <span class="chip ${w.online ? 'green' : 'gray'}">${w.online ? 'worker 在线' : 'worker 未接入'}</span>
       </span>
     </div>
-    <div class="card-body dash-grid">
+    <div class="card-body dash-grid mc-dash-grid">
       <div><span class="grp">排队</span><b>${q.queued ?? 0}</b>
         <div class="dash-chips">${queueChips}</div></div>
       <div><span class="grp">执行中</span><b>${q.running ?? 0}</b>
-        <div class="dash-chips">${statusChips}</div></div>
+        <div class="dash-chips" title="各状态作业的累计数（库里全部作业），不是此刻在跑的数量">
+          <span class="t-dim mc-chip-lead">累计</span>${statusChips}</div></div>
       <div><span class="grp">需要人看一眼</span><b>${w.needs_attention ?? 0}</b>
         <div class="dash-chips"><span class="chip plain">租约过期 ${w.expired_leases ?? 0}</span>
           <span class="chip plain">最长排队 ${w.oldest_queued_seconds ?? 0}s</span></div></div>
     </div>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="mc-worker-table">
       <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th></tr></thead>
       <tbody>${workers || `<tr><td colspan="5" class="hint">${
         allNodes.length ? '现在没有在线的 worker——队列不会前进。启动：./run.sh worker'
                          : '还没有 worker 登记过心跳'}</td></tr>`}</tbody>
     </table></div>
     ${historyLine}
-  </div>
+  </div>`;
+}
 
-  <div class="card mb-card" >
-    <div class="card-head">
-      <div style="display:flex;align-items:center">
-        <h2>告警</h2>
-        <span class="help-tip">
-          <span class="help-icon">?</span>
-          <span class="tip-pop tip-right">
-            <span class="tip-title">告警观测与处置原则</span>
-            <div class="tip-desc">判定与处置严格分离：这里只展示异动告警，取消与重试仍回生成中心做。</div>
-            <ul class="tip-list">
-              <li><b>判定与处置分离</b>：模型中心仅陈述异常指标（队列积压、探活失败、并发冲突）。</li>
-              <li><b>处置主权</b>：任务重试、作业撤销等业务操作请前往生成中心发起。</li>
-            </ul>
-          </span>
-        </span>
-      </div>
-    </div>
-    <div class="card-body">
-      ${alerts ? `<ul class="hint flush" >${alerts}</ul>`
-              : '<p class="note flush" >现在没有告警。</p>'}
-    </div>
-  </div>
-
-  ${workerProcessCard()}${concurrencyCard()}`;
+function opsCards() {
+  return `${workerProcessCard()}${concurrencyCard()}`;
 }
 
 export function pageMonitor() {
   const s = cache.stats;
+  valFilterState = '';
+  valFilterKind = '';
+  const kindOptions = Object.entries(VAL_KIND_LABEL).map(([k, label]) =>
+    `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
   return `
   <div id="mc-live">${liveCards()}</div>
-
-  <div class="card mb-card" >
-    <div class="card-head">
-      <div style="display:flex;align-items:center">
-        <h2>模型维度</h2>
-        <span class="help-tip">
-          <span class="help-icon">?</span>
-          <span class="tip-pop tip-right">
-            <span class="tip-title">模型维度监控边界</span>
-            <div class="tip-desc">登记 ${s.registered_total} · 可用 ${s.available_total} · 需要看一眼 ${s.needs_attention}。</div>
-            <ul class="tip-list">
-              <li><b>按 provider/model 聚合成本</b>：暂不支持（cost_summary 当前按币种×能力×状态聚合）。</li>
-              <li><b>按时间范围筛选</b>：暂不支持（列表接口仅支持 limit，全仓暂无 since/date_from 参数）。</li>
-              <li><b>分档执行耗时</b>：暂不支持（仅记录单条作业耗时，无分位数统计）。</li>
-              <li><b>成本唯一出口</b>：云端调用次数与金额权威出口在生成中心成本账，本页不另行核算。</li>
-            </ul>
-          </span>
-        </span>
-      </div>
-    </div>
-    <div class="card-body">
-      <p class="note" style="margin:0 0 8px"><b>下面三件事本轮做不到，如实标出来，不拿估算填</b>：</p>
-      <div class="param-chips">
-        <span class="chip amber">按 provider/model 聚合成本：不支持</span>
-        <span class="chip amber">按时间范围筛选：不支持</span>
-        <span class="chip amber">分档执行耗时：不支持</span>
-      </div>
-      <p class="hint" style="margin-top:10px">
-        三项都要改后端，属 P1。云端次数与金额只看生成中心的成本账，这一页不另算。</p>
-    </div>
-  </div>
+  <div id="mc-ops" class="mc-ops-grid">${opsCards()}</div>
 
   <div class="card">
     <div class="card-head">
@@ -236,19 +236,30 @@ export function pageMonitor() {
         <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
-            <span class="tip-title">验证记录留痕规范</span>
-            <div class="tip-desc">仅支持真实调用或产物验收记录追加，只增不改，确保审计凭据真实。</div>
+            <span class="tip-title">验证记录与模型统计边界</span>
+            <div class="tip-desc">登记 ${s.registered_total} · 可用 ${s.available_total} · 需要看一眼 ${s.needs_attention}。仅支持真实调用或产物验收记录追加，只增不改。</div>
             <ul class="tip-list">
-              <li><b>只增不改</b>：验证记录属于防篡改证据链，不能修改或跳号。</li>
-              <li><b>安全合规</b>：真实密钥与密码绝不进入验证记录，仅记录出处类型与校验结论。</li>
-              <li><b>游标翻页</b>：每次最多返回 ${HISTORY_PAGE} 条，翻旧账通过「更早」按钮基于游标推进。</li>
+              <li><b>只增不改</b>：验证记录属于防篡改证据链，密钥不进记录，每页最多 ${HISTORY_PAGE} 条。</li>
+              <li><b>按 provider/model 聚合成本：不支持</b>（cost_summary 按币种×能力×状态聚合）。</li>
+              <li><b>按时间范围筛选：不支持</b>（暂无 since/date_from 参数）。</li>
+              <li><b>分档执行耗时：不支持</b>（仅记录单条作业耗时，无分位数统计）。</li>
             </ul>
           </span>
         </span>
       </div>
-      <span class="right">${validationPager()}</span>
+      <div class="right mc-val-tools">
+        <select class="ctl sm" id="mc-val-filter-state" aria-label="按结果筛选">
+          <option value="">全部结果</option>
+          <option value="bad">仅异常 / 未通过</option>
+        </select>
+        <select class="ctl sm" id="mc-val-filter-kind" aria-label="按出处筛选">
+          <option value="">全部出处</option>
+          ${kindOptions}
+        </select>
+        <span class="mc-val-pager">${validationPager()}</span>
+      </div>
     </div>
-    <div class="table-wrap"><table>
+    <div class="table-wrap mc-val-scroll"><table>
       <thead><tr><th>出处</th><th>结果</th><th>槽位</th><th>作业</th><th>说明</th><th>时间</th></tr></thead>
       <tbody id="mc-val-rows">${(cache.validations?.items || []).map(valRow).join('')
         || '<tr><td colspan="6" class="hint">还没有验证记录</td></tr>'}</tbody>
@@ -281,20 +292,33 @@ function bindWorkerHistory(root) {
  * 不在前端记"我刚起过"——API 重启后内存没了而 worker 还活着，
  * 记内存状态会让按钮显示"未启动"，人一按就起了第二个去抢显存。
  */
+function workerProcessStatusHtml() {
+  const p = cache.workerProcess || {};
+  const pids = p.pids || [];
+  const count = p.count != null ? Number(p.count) : (pids.length || (p.running ? 1 : 0));
+  const stale = p.stale_pids || [];
+  if (count) {
+    return `<span class="chip green">运行中 ${count} 个</span>
+       <span class="hint mono">PID ${escapeHtml(pids.join('、'))}</span>`;
+  }
+  if (stale.length) {
+    return `<span class="chip amber">未运行（残留 ${escapeHtml(stale.join('、'))}）</span>`;
+  }
+  const liveCount = ((cache.worker || {}).workers || []).filter((n) => n.online).length;
+  if (liveCount > 0) {
+    return `<span class="chip blue" title="检测到在线 worker 心跳，但并非由本页按钮拉起（如终端手动启动）">外部运行中 ${liveCount} 个</span>`;
+  }
+  return '<span class="chip gray">未运行</span>';
+}
+
 function workerProcessCard() {
   const p = cache.workerProcess || {};
   const d = cache.workerDaemon || {};
   const pids = p.pids || [];
   const count = p.count != null ? Number(p.count) : (pids.length || (p.running ? 1 : 0));
-  const stale = p.stale_pids || [];
   const msg = p.last_action || '';
 
-  const status = count
-    ? `<span class="chip green">运行中 ${count} 个</span>
-       <span class="hint mono">PID ${escapeHtml(pids.join('、'))}</span>`
-    : (stale.length
-      ? `<span class="chip amber">未运行（残留 ${escapeHtml(stale.join('、'))}）</span>`
-      : '<span class="chip gray">未运行</span>');
+  const status = workerProcessStatusHtml();
 
   // 守护那块：**exposed 为真就要红着说**。守护配置里 enabled=true 但线程没在跑，
   // 或连续失败已放弃——这三种情况下"有守护"这件事都不成立，
@@ -337,7 +361,7 @@ function workerProcessCard() {
           </span>
         </span>
       </div>
-      <span class="right">${status}</span>
+      <span class="right" id="mc-wp-status">${status}</span>
     </div>
     <div class="card-body">
       <p class="note flush">
@@ -382,10 +406,11 @@ function workerProcessCard() {
         <div class="form-grid wp-grid">
           <label>开启</label>
           <div class="wp-inline">
-            <label class="wp-check">
+            <label class="switch-ui switch-green" title="worker 掉了自动补起">
               <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}>
-              <span>worker 掉了自动补起</span>
+              <span class="switch-slider"></span>
             </label>
+            <span class="hint">worker 掉了自动补起</span>
           </div>
           <label>期望在线</label>
           <div class="wp-inline">
@@ -407,7 +432,7 @@ function workerProcessCard() {
       </section>
 
       <p class="hint wp-log">
-        日志：<code>${escapeHtml(p.log_path || 'data/logs/worker.log')}</code>
+        日志：<code>${escapeHtml(String(p.log_path || 'data/logs/worker.log').replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log')}</code>
         （追加写，重启不丢上一次的输出）。
       </p>
     </div>
@@ -453,14 +478,19 @@ async function saveDaemon(root) {
   }
 }
 
-/** 重画 live 两张卡（进程、并发、守护都在这两张里），保留验证留痕不动。 */
+/** 重画实时区与运维操作区，保留验证留痕不动。 */
 function repaintLive(root) {
   const live = root.querySelector('#mc-live');
-  if (!live) return;
-  live.innerHTML = liveCards();
-  bindWorkerHistory(root);
-  bindWorkerProcess(root);
-  bindConcurrency(root);
+  if (live) {
+    live.innerHTML = liveCards();
+    bindWorkerHistory(root);
+  }
+  const ops = root.querySelector('#mc-ops');
+  if (ops) {
+    ops.innerHTML = opsCards();
+    bindWorkerProcess(root);
+    bindConcurrency(root);
+  }
 }
 
 function bindWorkerProcess(root) {
@@ -518,7 +548,7 @@ function concurrencyCard() {
 
   const num = (id, value) => `<input class="inp" type="number" min="0" max="64"
       id="${id}" value="${value == null ? '' : escapeHtml(String(value))}"
-      style="width:74px" ${value == null ? 'placeholder="默认"' : ''}>`;
+      ${value == null ? 'placeholder="默认"' : ''}>`;
 
   const rows = classes.map((cls) => {
     const peak = (a.peak_by_class_mb || {})[cls];
@@ -574,7 +604,7 @@ function concurrencyCard() {
     </div>
     <div class="card-body">
       <p class="note flush">${sourceText}</p>
-      <div class="table-wrap" style="margin-top:8px"><table>
+      <div class="table-wrap mc-conc-wrap"><table class="mc-conc-table">
         <thead><tr><th>资源类</th><th>本机实测占用</th><th>上限</th></tr></thead>
         <tbody>
           <tr><td>全局</td><td class="hint">这条作业总数上限</td>
@@ -647,6 +677,8 @@ async function saveConcurrency(root, payload, acknowledgeRisk) {
   try {
     const body = { ...payload, acknowledge_risk: !!acknowledgeRisk };
     const out = await api.setWorkerConcurrency(body);
+    if (out && cache.worker) cache.worker.concurrency = out;
+    repaintLive(root);
     // await 之后必须重新查（见 setMsg 的注释）
     setMsg(root, 'mc-conc-msg', out?.assessment?.verdict === 'safe'
       ? '已保存；worker 下一轮按新值领活。'
@@ -700,10 +732,62 @@ function bindConcurrency(root) {
   });
 }
 
+function renderValidationTable(root) {
+  const tbody = root.querySelector('#mc-val-rows');
+  if (tbody) {
+    const rows = cache.validations?.items || [];
+    tbody.innerHTML = rows.map(valRow).join('')
+      || `<tr><td colspan="6" class="hint">${(valFilterState || valFilterKind)
+        ? '当前筛选条件下没有验证记录' : '还没有验证记录'}</td></tr>`;
+  }
+  const pager = root.querySelector('.mc-val-pager');
+  if (pager) pager.innerHTML = validationPager();
+}
+
+async function reloadValidations(root) {
+  const wanted = ++valSeq;
+  const tbody = root.querySelector('#mc-val-rows');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="hint">正在筛选……</td></tr>';
+  try {
+    const out = await api.providerValidations(HISTORY_PAGE, null, valFilterParams());
+    if (wanted !== valSeq) return;
+    cache.validations = out;
+    cache.validationPage = { before: null, pages: 0 };
+    renderValidationTable(root);
+  } catch (err) {
+    if (wanted !== valSeq) return;
+    alertNotify(`验证记录筛选失败：${err.message}`, 'err');
+    renderValidationTable(root);
+  }
+}
+
 export function mountMonitor(root) {
   bindWorkerHistory(root);
   bindWorkerProcess(root);
   bindConcurrency(root);
+
+  root.querySelector('#mc-val-filter-state')?.addEventListener('change', (e) => {
+    valFilterState = e.target.value || '';
+    reloadValidations(root);
+  });
+  root.querySelector('#mc-val-filter-kind')?.addEventListener('change', (e) => {
+    valFilterKind = e.target.value || '';
+    reloadValidations(root);
+  });
+
+  if (!root.__monitorNavDelegated) {
+    root.__monitorNavDelegated = true;
+    root.addEventListener('click', (e) => {
+      const jobBtn = e.target.closest('[data-goto-job]');
+      if (jobBtn) {
+        gotoEntry({ module: 'generate', job_id: Number(jobBtn.dataset.gotoJob) });
+        return;
+      }
+      if (e.target.closest('[data-goto-gen]')) {
+        gotoEntry({ module: 'generate' });
+      }
+    });
+  }
 
   // 验证历史翻页：再取一页**追加**到后面，而不是重载整页。
   // 重载整页会把上面 worker 表、告警、模型维度一起重画，而人想看的就是这一张表；
@@ -746,7 +830,12 @@ export function mountMonitor(root) {
     try {
       cache.worker = await api.workerStatus();
       const live = root.querySelector('#mc-live');
-      if (live && alive()) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
+      if (live && alive()) {
+        live.innerHTML = liveCards();
+        bindWorkerHistory(root);
+        const wpStatus = root.querySelector('#mc-wp-status');
+        if (wpStatus) wpStatus.innerHTML = workerProcessStatusHtml();
+      }
     } catch { /* 轮询读不到就保持上一帧，下一拍再试；不打断人 */ }
   };
   pollTimer = setInterval(() => {
@@ -778,21 +867,17 @@ async function loadOlderValidations(root, btn) {
   const last = items[items.length - 1];
   if (!last) return;
   btn.disabled = true;
+  const wanted = valSeq;
   try {
-    const page = await api.providerValidations(HISTORY_PAGE, last.id);
+    const page = await api.providerValidations(HISTORY_PAGE, last.id, valFilterParams());
+    if (wanted !== valSeq) return;
     const fresh = page.items.filter((v) => !items.some((old) => old.id === v.id));
     cache.validations = { items: items.concat(fresh),
                           total: page.total || cache.validations.total };
     cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1 };
     const tbody = root.querySelector('#mc-val-rows');
     if (!tbody) { window.dispatchEvent(new CustomEvent('app:refresh')); return; }
-    const empty = tbody.querySelector('td.hint')?.closest('tr');
-    if (empty) empty.remove();
-    tbody.insertAdjacentHTML('beforeend', fresh.map(valRow).join(''));
-    const pager = btn.closest('.right');
-    if (pager) {   // 换掉整条翻页条后，按钮是新节点——委托仍在 root 上，所以还能点
-      pager.outerHTML = `<span class="right">${validationPager()}</span>`;
-    }
+    renderValidationTable(root);
   } catch (err) {
     btn.disabled = false;
     alertNotify(`更早的验证记录读不到：${err.message}`, 'err');

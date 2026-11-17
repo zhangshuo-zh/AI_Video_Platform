@@ -1000,6 +1000,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .mc-adapter-table tbody td,
 .mc-engine-inst-table tbody td,
 #repo-rows td,
+.mc-worker-table tbody td,
+#mc-val-rows td,
 .policy td{
   transition:background var(--fast) var(--ease);
 }
@@ -1009,6 +1011,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .mc-adapter-table tbody td:first-child,
 .mc-engine-inst-table tbody td:first-child,
 #repo-rows td:first-child,
+.mc-worker-table tbody td:first-child,
+#mc-val-rows td:first-child,
 .policy td:first-child{
   position:relative;
 }
@@ -1018,6 +1022,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .mc-adapter-table tbody tr:hover td,
 .mc-engine-inst-table tbody tr:hover td,
 #repo-rows tr:hover td,
+.mc-worker-table tbody tr:hover td,
+#mc-val-rows tr:hover td,
 .policy:hover td{
   background:rgba(245,158,11,.035);
 }
@@ -1027,6 +1033,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .mc-adapter-table tbody tr:hover td:first-child::before,
 .mc-engine-inst-table tbody tr:hover td:first-child::before,
 #repo-rows tr:hover td:first-child::before,
+.mc-worker-table tbody tr:hover td:first-child::before,
+#mc-val-rows tr:hover td:first-child::before,
 .policy:hover td:first-child::before{
   content:'';position:absolute;left:0;top:8px;bottom:8px;width:3.5px;
   border-radius:0 3px 3px 0;background:var(--accent);
@@ -1039,6 +1047,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 [data-theme="day"] .mc-adapter-table tbody tr:hover td,
 [data-theme="day"] .mc-engine-inst-table tbody tr:hover td,
 [data-theme="day"] #repo-rows tr:hover td,
+[data-theme="day"] .mc-worker-table tbody tr:hover td,
+[data-theme="day"] #mc-val-rows tr:hover td,
 [data-theme="day"] .policy:hover td{
   background:rgba(2,132,199,.03);
 }
@@ -1048,6 +1058,8 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 [data-theme="day"] .mc-adapter-table tbody tr:hover td:first-child::before,
 [data-theme="day"] .mc-engine-inst-table tbody tr:hover td:first-child::before,
 [data-theme="day"] #repo-rows tr:hover td:first-child::before,
+[data-theme="day"] .mc-worker-table tbody tr:hover td:first-child::before,
+[data-theme="day"] #mc-val-rows tr:hover td:first-child::before,
 [data-theme="day"] .policy:hover td:first-child::before{
   background:var(--accent);
   box-shadow:0 0 8px rgba(2,132,199,.4);
@@ -2763,6 +2775,60 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
 
 .wp-boundary{margin-top:10px;line-height:1.7}
 .wp-actions{margin:8px 0 0;padding-left:18px}
+
+/* ---------- 运行监控（模型中心 · 3） ----------
+   卡片间距由容器统一给。原来靠 .mb-card 与 `.card + .card{margin-bottom:0}` 两条外边距
+   互相打架：live 区最后一张卡（并发设置）被后一条清成 0，下面的「模型维度」就贴了上来。 */
+#mc-live{display:flex;flex-direction:column;gap:14px;margin-bottom:14px}
+#mc-live .card{margin:0}
+/* 进程启停与并发设置都是低频配置卡：宽屏等高并排对齐，窄屏仍单列；独立于轮询区避免失灵 */
+.mc-ops-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:stretch;margin-bottom:20px}
+.mc-ops-grid .card{margin:0;display:flex;flex-direction:column;height:100%}
+.mc-ops-grid .card-body{flex:1;display:flex;flex-direction:column}
+.mc-ops-grid .wp-log,
+.mc-ops-grid .row-actions{margin-top:auto !important;padding-top:14px}
+@media (min-width:1180px){.mc-ops-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+/* 队列与 worker 顶部三指标分块呈现，视觉更均衡 */
+.mc-dash-grid{grid-template-columns:minmax(280px,1.5fr) minmax(0,1fr) minmax(0,1fr);gap:12px;padding:14px 18px}
+.mc-dash-grid > div{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:10px 14px;
+}
+@media (max-width:1080px){.mc-dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.mc-dash-grid{grid-template-columns:minmax(0,1fr)}}
+/* .t-desc 默认单行省略（给表格摘要用）；这里是一段要读完的说明 */
+.mc-wrap-note{white-space:normal;max-width:none;overflow:visible;text-overflow:clip;margin-top:6px}
+.mc-chip-lead{font-size:11px;align-self:center;margin-right:2px}
+/* 告警仅在有异常时出现在顶部；可跳转按钮 */
+.mc-alert-card{border-color:rgba(245,158,11,.45)}
+.mc-alert-item{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:3px 0}
+.mc-val-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.mc-val-tools .ctl.sm{
+  width:auto;min-width:108px;height:28px;min-height:28px;padding:0 24px 0 10px;
+  font-size:12px;line-height:26px;border:1px solid var(--line-strong);
+  border-radius:var(--r-ctl);background:var(--field);color:var(--ink);
+}
+.btn-link{
+  background:none;border:0;padding:0;font:inherit;color:var(--accent);cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px;
+}
+.btn-link:hover{opacity:.85}
+/* 验证留痕一页 50 行，不限高会把整页撑到 4000+px，上面的队列与配置被甩得很远 */
+.mc-val-scroll{max-height:560px;overflow:auto}
+.mc-val-scroll thead th{
+  position:sticky;top:0;z-index:2;
+  background:linear-gradient(var(--panel-2),var(--panel-2)),var(--field);
+}
+/* 并发上限输入框：.inp 没有全局样式，原来裸奔成浏览器默认的黑边小框 */
+.mc-conc-wrap{margin-top:8px}
+.mc-conc-table .inp{
+  width:84px;font:inherit;font-size:12.5px;padding:6px 10px;
+  border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  background:var(--field);color:var(--ink);
+  transition:border-color var(--fast),box-shadow var(--fast);
+}
+.mc-conc-table .inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.mc-conc-table .inp::placeholder{color:var(--ink-3)}
 .wp-log{margin-top:14px}
 
 /* ================= 表格里的长文本（2026-11-11 布局审计） =================

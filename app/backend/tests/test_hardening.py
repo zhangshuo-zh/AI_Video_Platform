@@ -194,3 +194,129 @@ def test_worker_一轮撞库锁不关掉整条队列(monkeypatch, seeded):
     src = (Path(__file__).resolve().parents[1] / "worker.py").read_text()
     assert "did = run_once(wid, limits=limits)" in src
     assert '[作业] 这一轮跑砸了' in src, "退出路径又变回没有兜底的那一版了"
+
+
+@pytest.mark.parametrize("method,path,payload", [
+    ("GET", "/api/worker/process", None),
+    ("POST", "/api/worker/process/start", {}),
+    ("POST", "/api/worker/process/start-many", {"count": 2}),
+    ("POST", "/api/worker/process/stop", None),
+    ("POST", "/api/worker/process/stop-one", {"pid": 0}),
+])
+def test_worker进程接口不泄露宿主日志路径(as_role, monkeypatch, tmp_path, method, path, payload):
+    import worker_supervisor as sup
+    monkeypatch.setattr(sup, "WORKER_LOG", tmp_path / "private-host" / "worker.log")
+    monkeypatch.setattr(sup, "current", lambda: {"running": False, "count": 0, "pids": [], "stale_pids": []})
+    monkeypatch.setattr(sup, "start", lambda **kwargs: {"ok": True, "message": "started"})
+    monkeypatch.setattr(sup, "stop", lambda **kwargs: {"ok": True, "messages": ["stopped"]})
+    response = as_role("admin").request(method, path, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["log_path"] == "data/logs/worker.log"
+    assert str(tmp_path) not in response.text
+
+
+def test_并发配置局部修改与审计记录真实操作人(as_role):
+    from repositories import worker_limit, config_log
+    saved = worker_limit.get()
+    try:
+        client = as_role("admin")
+        first = client.put("/api/worker/concurrency", json={"global_max": 2, "per": {"text": 1}, "acknowledge_risk": True})
+        assert first.status_code == 200, first.text
+        second = client.put("/api/worker/concurrency", json={"note": "只改备注", "acknowledge_risk": True})
+        assert second.status_code == 200, second.text
+        assert second.json()["global_max"] == 2 and second.json()["per"] == {"text": 1}
+        records = config_log.of_subject("worker_limit", "singleton")
+        assert len(records) >= 2
+        assert records[0]["created_by"] == as_role.id("admin")
+        assert second.json()["updated_by"] == as_role.id("admin")
+    finally:
+        if saved is None:
+            worker_limit.forget()
+        else:
+            worker_limit.save(global_max=saved["global"], per=saved["per"],
+                              updated_by=saved["updated_by"], note=saved["note"])
+
+
+def test_守护配置写入留痕且不启动真实线程(as_role, monkeypatch, tmp_path):
+    import worker_daemon as daemon
+    from repositories import config_log
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    monkeypatch.setattr(daemon, "start_thread", lambda: True)
+    response = as_role("admin").put("/api/worker/daemon", json={"enabled": True, "desired": 2})
+    assert response.status_code == 200, response.text
+    records = config_log.of_subject("worker_daemon", "singleton")
+    assert records and records[0]["created_by"] == as_role.id("admin")
+
+
+@pytest.mark.parametrize("per", [{"text": -1}, {"text": 65}, {"not-a-class": 1}])
+def test_进程启动拒绝非法资源类与上限(as_role, monkeypatch, per):
+    import worker_supervisor as sup
+    monkeypatch.setattr(sup, "start", lambda **kwargs: {"ok": True, "message": "stub"})
+    response = as_role("admin").post("/api/worker/process/start-many", json={"per": per})
+    assert response.status_code == 422, response.text
+
+
+def test_并发局部配置修改不丢另一位管理员的字段(as_role, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from repositories import worker_limit
+    import services
+    from models import WorkerLimitIn
+    from threading import Barrier, local
+    import db
+    barrier, seen = Barrier(2), local()
+    original_get = worker_limit.get
+    saved = original_get()
+    def synchronized_get():
+        row = original_get()
+        if db._HELD.get() is None and not getattr(seen, "waited", False):
+            seen.waited = True
+            barrier.wait(timeout=5)
+        return row
+    try:
+        worker_limit.save(global_max=2, per={"text": 1})
+        payloads = [WorkerLimitIn(global_max=3, acknowledge_risk=True),
+                    WorkerLimitIn(per={"image": 1}, acknowledge_risk=True)]
+        with monkeypatch.context() as patch:
+            patch.setattr(worker_limit, "get", synchronized_get)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(services.set_concurrency, payloads))
+        assert len(results) == 2
+        current = worker_limit.get()
+        assert current["global"] == 3 and current["per"] == {"image": 1}
+    finally:
+        if saved is None:
+            worker_limit.forget()
+        else:
+            worker_limit.save(global_max=saved["global"], per=saved["per"],
+                              updated_by=saved["updated_by"], note=saved["note"])
+
+
+def test_配置审计迁移保留旧记录与自增序号(tmp_path):
+    import os
+    import subprocess
+    import sys
+    code = '''
+import sqlite3, migrate
+from config import DB_PATH
+original=migrate._discover
+migrate._discover=lambda:[(v,p) for v,p in original() if v<=56]
+migrate.migrate(verbose=False)
+with sqlite3.connect(DB_PATH) as conn:
+    conn.execute("INSERT INTO config_change_log(id,subject,subject_key,action,summary) VALUES(10,'model_policy','old','update','old record')")
+    conn.execute("INSERT INTO config_change_log(id,subject,subject_key,action) VALUES(20,'model_policy','deleted','update')")
+    conn.execute('DELETE FROM config_change_log WHERE id=20')
+    before=conn.execute('SELECT * FROM config_change_log').fetchall()
+migrate._discover=original
+assert migrate.migrate(verbose=False)==1
+assert migrate.migrate(verbose=False)==0
+with sqlite3.connect(DB_PATH) as conn:
+    assert conn.execute('SELECT * FROM config_change_log').fetchall()==before
+    conn.execute("INSERT INTO config_change_log(subject,subject_key,action) VALUES('worker_daemon','singleton','update')")
+    assert conn.execute("SELECT id FROM config_change_log WHERE subject='worker_daemon'").fetchone()[0]>20
+    assert conn.execute('PRAGMA foreign_key_check').fetchall()==[]
+'''
+    env = {**os.environ, "FASTVIDEO_DB": str(tmp_path / "old.db")}
+    result = subprocess.run([sys.executable, "-c", code], env=env,
+                            cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -315,3 +315,43 @@ def test_验证元数据允许缺失或旧形状且不升级mock(fresh_project, 
     assert result["validation"]["kind"] == "mock"
     with pytest.raises(validations.ValidationInvalid, match="假适配器"):
         validations.from_job(job["id"], "real_call", created_by=None)
+
+
+def test_验证历史服务端筛选计数与游标协同(as_role):
+    from db import get_conn
+    with get_conn() as conn:
+        baseline = conn.execute("SELECT COUNT(*) FROM model_validation WHERE kind='target_machine' AND state='unregistered'").fetchone()[0]
+    ids = []
+    for kind, state in [("target_machine", "unregistered"), ("real_call", "failed"),
+                        ("target_machine", "unregistered"), ("target_machine", "ok")]:
+        ids.append(val_repo.record({"capability": "text", "backend": "local",
+                                    "provider": "filter-test", "model": "m",
+                                    "kind": kind, "state": state})["id"])
+    for _ in range(205):
+        ids.append(val_repo.record({"capability": "text", "backend": "local",
+                                    "provider": "filter-test", "model": "m",
+                                    "kind": "env_check", "state": "ok"})["id"])
+    client = as_role("admin")
+    params = {"kind": "target_machine", "state": "unregistered", "limit": 1}
+    first = client.get("/api/providers/validations", params=params)
+    assert first.status_code == 200, first.text
+    assert isinstance(first.json(), list)
+    assert [r["id"] for r in first.json()] == [ids[2]]
+    assert int(first.headers["X-Total-Count"]) == baseline + 2
+    second = client.get("/api/providers/validations", params={**params, "before_id": ids[2]})
+    assert [r["id"] for r in second.json()] == [ids[0]]
+    assert second.headers["X-Total-Count"] == first.headers["X-Total-Count"]
+    only_bad = client.get("/api/providers/validations", params={"only_bad": True, "limit": 200})
+    assert all(r["state"] != "ok" for r in only_bad.json())
+    none = client.get("/api/providers/validations", params={"state": "ok", "only_bad": True})
+    assert none.json() == [] and none.headers["X-Total-Count"] == "0"
+    default = client.get("/api/providers/validations", params={"limit": 2})
+    assert isinstance(default.json(), list)
+    assert [r["id"] for r in default.json()] == list(reversed(ids[-2:]))
+    assert int(default.headers["X-Total-Count"]) == val_repo.count()
+
+
+@pytest.mark.parametrize("query", [{"kind": "sql-invalid"}, {"state": "not-a-state"}])
+def test_验证历史拒绝非法筛选值(as_role, query):
+    response = as_role("admin").get("/api/providers/validations", params=query)
+    assert response.status_code == 422, response.text

@@ -1,4 +1,4 @@
-"""选路配置的最小变更痕（0044）。
+"""选路与 Worker 配置的最小变更痕（0044／0057）。
 
 只回答一个问题：**"默认轨/登记/策略是被谁、在什么时候、从什么改成什么"**。
 不是通用审计（那件事 v0.87 裁定不做，设计 §16 第 14 条）——业务表大部分
@@ -10,7 +10,7 @@
 
 1. **只追加**。改错了也是历史的一部分；最新结论由现在的表给出，
    这张表只回答"怎么走到现在的"。
-2. **三个写点各记一行**，收在路由层（`routers/model_center.py` 与
+2. **配置写点各记一行**，收在路由层（`routers/model_center.py` 与
    `routers/settings.py`）——服务层与仓储层不知道"人是谁"，
    路由层有 `user`，写点放那里才不会变成猜。
 3. **不外键**。撤登记之后主体没了，这一行还要 standalone 地站着。
@@ -23,7 +23,7 @@ import sqlite3
 from db import get_conn
 from log import get_logger
 
-SUBJECTS = ("provider_slot", "model_registration", "model_policy")
+SUBJECTS = ("provider_slot", "model_registration", "model_policy", "worker_limit", "worker_daemon")
 
 
 def record(subject: str, subject_key: str, action: str, summary: str,

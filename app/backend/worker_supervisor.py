@@ -30,6 +30,10 @@ from __future__ import annotations
 
 from log import get_logger as _get_logger
 import sqlite3
+import re
+
+from log import sanitize_msg
+from paths import describe
 
 
 import os
@@ -90,6 +94,32 @@ _LAUNCHED: dict[int, subprocess.Popen[bytes]] = {}
 _LOCK = threading.Lock()
 
 
+
+def public_log_path() -> str:
+    """对外只给稳定标签；WORKER_LOG 仍是进程内部使用的真实路径。"""
+    return "data/logs/worker.log"
+
+
+def public_message(message: object, *, max_len: int = 800) -> str:
+    text = sanitize_msg(message, max_len=0)
+    for key, value in os.environ.items():
+        if len(value) >= 6 and set(key.upper().split("_")) & {"KEY", "TOKEN", "SECRET", "PASSWORD", "KEK"}:
+            text = text.replace(value, "***")
+    for path, label in ((WORKER_LOG, public_log_path()), (LOG_DIR, "data/logs"),
+                        (RUN_DIR, "data/run"), (BASE_DIR, "backend")):
+        for form in (str(path), str(path.resolve())):
+            text = text.replace(form, label)
+    text = describe(text)
+    # 未登记在配置里的 traceback 路径也不能出现在接口、通知或配置日志中。
+    text = re.sub(r"https?://[^\s]+|(?<![\w:])(?:[A-Za-z]:[\\/]|/(?!/))[^\s'\"<>，；）)]+",
+                  lambda m: m[0] if m[0].startswith(("http://", "https://")) else "[本机路径]", text)
+    return text[:max_len]
+
+
+def _public_start_result(result: dict) -> dict:
+    return {**result, "message": public_message(result.get("message", "")),
+            "failed": [public_message(value) for value in result.get("failed", [])]}
+
 def _reap(pid: int) -> None:
     """把本进程起的那一条收掉（非阻塞）。不是我起的就不动——别人家的孩子
     由它自己的父进程管，替它 wait 反而会出错。"""
@@ -121,8 +151,10 @@ def _pid_alive(pid: int) -> bool:
         return proc.poll() is None
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:
+        return True  # EPERM 或未知探测失败不能当成死亡，更不能据此清理登记。
     # **`kill -0` 成功不等于活着**：等父进程 `wait()` 之前它是僵尸（`ps stat=Z`），
     # 照样返回成功。本进程起的用上面的 `poll()` 就能回收；但 `stop_one` 面对的是
     # **别处起的** worker（`./run.sh worker`，或 API 重启前那一个），那些没有 Popen
@@ -225,10 +257,25 @@ def clean_stale() -> list[int]:
     自动清会让"上次崩过"这件事不可见，而它正是排查的起点。
     """
     removed = []
-    for item in list_workers():
-        if item["stale"]:
-            _remove_pid_file(item["pid"])
-            removed.append(item["pid"])
+    for path in _pid_files():
+        if not path.stem.isdigit():
+            continue
+        pid = int(path.stem)
+        try:
+            before = path.stat()
+            _reap(pid)
+            if _pid_alive(pid):
+                continue  # 可能调用 ps 的常规探测放在启动锁外。
+            with _LOCK:
+                after = path.stat()
+                if (before.st_ino, before.st_mtime_ns) != (after.st_ino, after.st_mtime_ns):
+                    continue
+                if _pid_alive(pid):
+                    continue  # 删除前再次确认，防止探测后 PID 被重用。
+                path.unlink()
+                removed.append(pid)
+        except OSError:
+            continue  # 未删成功不报已清理；权限不足也不能据此认定进程死亡。
     return removed
 
 
@@ -290,9 +337,9 @@ def start(*, max_global: int | None = None, per: dict | None = None,
     with _LOCK:
         begun = _fork_workers(count=count, max_global=max_global, per=per)
     if "message" in begun:                  # 被上限拒绝，一个都没起
-        return begun
-    return _await_heartbeats(begun["procs"], begun["failed"],
-                             count=count, since=begun["since"])
+        return _public_start_result(begun)
+    return _public_start_result(_await_heartbeats(begun["procs"], begun["failed"],
+                                                count=count, since=begun["since"]))
 
 
 def _fork_workers(*, count: int, max_global: int | None,
@@ -510,7 +557,7 @@ def _log_tail(lines: int = 6) -> str:
     except OSError:
         return ""
     tail = [ln for ln in chunk.splitlines() if ln.strip()][-lines:]
-    return " / ".join(tail)[:400]
+    return public_message(" / ".join(tail), max_len=400)
 
 
 def _cleanup_pid_if(pid: int) -> None:
@@ -585,8 +632,9 @@ def stop(*, timeout: float = 8.0, pid: int | None = None) -> dict:
                 "stopped": [pid] if result["ok"] else [],
                 "messages": [result["message"]]}
 
-    workers = [w for w in list_workers() if w["alive"]]
-    stale = [w["pid"] for w in list_workers() if w["stale"]]
+    snapshot = list_workers()
+    workers = [w for w in snapshot if w["alive"]]
+    stale = [w["pid"] for w in snapshot if w["stale"]]
     stopped: list[int] = []
     messages: list[str] = []
     for item in workers:

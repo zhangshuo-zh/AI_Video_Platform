@@ -14,6 +14,8 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from schemas.enums import ValidationKind, ValidationState
+
 import adapters
 import engines
 import validations
@@ -232,7 +234,10 @@ def current_providers(_=Depends(require_user)) -> list[CurrentProviderOut]:
 
 @router.get("/providers/validations", response_model=list[ValidationOut])
 def list_validations(response: Response, limit: int = Query(50, ge=1),
-                     before_id: int | None = None,
+                     before_id: int | None = Query(None, ge=1),
+                     kind: ValidationKind | None = None,
+                     state: ValidationState | None = None,
+                     only_bad: bool = False,
                      _=Depends(require_permission("system:config"))) -> list[ValidationOut]:
     """验证历史（一页）。只有管理员能看整份——detail 里会有本机路径与缺失项。
 
@@ -245,8 +250,9 @@ def list_validations(response: Response, limit: int = Query(50, ge=1),
     "数组"引用，为了分页改成包一层对象会连带改掉一批读法。
     """
     rows = [ValidationOut.from_row(r)
-            for r in validation_repo.list_recent(limit, before_id)]
-    response.headers["X-Total-Count"] = str(validation_repo.count())
+            for r in validation_repo.list_recent(limit, before_id, kind=kind,
+                                                 state=state, only_bad=only_bad)]
+    response.headers["X-Total-Count"] = str(validation_repo.count(kind=kind, state=state, only_bad=only_bad))
     return rows
 
 
