@@ -237,6 +237,41 @@ def test_并发配置局部修改与审计记录真实操作人(as_role):
                               updated_by=saved["updated_by"], note=saved["note"])
 
 
+def test_worker进程卡片的日志尾巴脱敏且不倒序错乱(as_role, monkeypatch, tmp_path):
+    """0049：卡片下半区显示 worker.log 尾巴，这块最容易把宿主路径漏出去。
+
+    日志里天然有 traceback，traceback 里天然有 `File "/Users/某人/项目/..."`。
+    这个接口以前只回一个固定的相对标签（`data/logs/worker.log`），所以安全；
+    现在真的把日志文本往外给了，脱敏就从"顺手"变成"必须"——这条测试
+    就是钉住它：写一条带绝对路径的假日志，接口回来的每行都不许含它。
+
+    同时钉住顺序：接口与页面都按时间正序，保留多行堆栈上下文。
+    """
+    import worker_supervisor as sup
+    host_path = str(tmp_path / "secret-host" / "worker.log")
+    monkeypatch.setattr(sup, "WORKER_LOG", tmp_path / "secret-host" / "worker.log")
+    monkeypatch.setattr(sup, "current", lambda: {"running": False, "count": 0,
+                                                "pids": [], "stale_pids": []})
+    log = tmp_path / "secret-host" / "worker.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "第一行：启动\n"
+        f'  File "{host_path}", line 12, in main\n'
+        f"Traceback 里还有 {tmp_path}/models/weights.safetensors\n"
+        "最后一行：退出\n", encoding="utf-8")
+
+    body = as_role("admin").get("/api/worker/process").json()
+    tail = body["log_tail"]
+    assert tail, "日志存在时应该读到尾巴"
+    assert tail[-1] == "最后一行：退出", "接口保留正序"
+    assert body["log_size"] > 0 and body["log_mtime"]
+    blob = "\n".join(tail)
+    for leak in (str(tmp_path), "secret-host", "models/weights"):
+        assert leak not in blob, f"日志尾巴泄露了本机路径片段：{leak}"
+    # 内容不能因为脱敏被整段删掉——那样卡片就成空白了
+    assert any("启动" in ln for ln in tail)
+
+
 def test_守护配置写入留痕且不启动真实线程(as_role, monkeypatch, tmp_path):
     import worker_daemon as daemon
     from repositories import config_log
@@ -306,7 +341,7 @@ with sqlite3.connect(DB_PATH) as conn:
     conn.execute("INSERT INTO config_change_log(id,subject,subject_key,action) VALUES(20,'model_policy','deleted','update')")
     conn.execute('DELETE FROM config_change_log WHERE id=20')
     before=conn.execute('SELECT * FROM config_change_log').fetchall()
-migrate._discover=original
+migrate._discover=lambda:[(v,p) for v,p in original() if v<=57]
 assert migrate.migrate(verbose=False)==1
 assert migrate.migrate(verbose=False)==0
 with sqlite3.connect(DB_PATH) as conn:
@@ -320,3 +355,80 @@ with sqlite3.connect(DB_PATH) as conn:
                             cwd=Path(__file__).resolve().parents[1],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("path,payload", [
+    ("/api/worker/process/stop", {}),
+    ("/api/worker/process/stop-one", {"pid": 123}),
+])
+def test_停止可先暂停守护且保留旧契约(as_role, monkeypatch, tmp_path, path, payload):
+    import worker_daemon as daemon
+    import worker_supervisor as sup
+    from repositories import config_log
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    monkeypatch.setattr(sup, "current", lambda: {"running": False, "count": 0, "pids": [], "stale_pids": []})
+    observed = []
+    monkeypatch.setattr(sup, "stop", lambda **kwargs: observed.append(daemon.load_config()["enabled"]) or {"ok": True, "messages": ["stopped"]})
+    client = as_role("admin")
+    daemon.save_config(enabled=True, desired=2)
+    assert client.post(path, json=payload).status_code == 200
+    assert observed == [True], "默认兼容旧调用，不改变守护"
+    response = client.post(path + "?pause_daemon=true", json=payload)
+    assert response.status_code == 200, response.text
+    assert observed == [True, False]
+    assert daemon.load_config() == {"enabled": False, "desired": 2}
+    assert "守护已暂停" in response.json()["last_action"]
+    assert any(row["summary"] == "停止前暂停守护" for row in config_log.of_subject("worker_daemon", "singleton"))
+
+
+def test_暂停守护失败不得继续停止(as_role, monkeypatch):
+    import worker_supervisor as sup
+    def fail():
+        raise OSError("private path")
+    monkeypatch.setattr(sup, "pause_daemon_recovery", fail)
+    monkeypatch.setattr(sup, "stop", lambda **kwargs: pytest.fail("暂停失败不能停止"))
+    response = as_role("admin").post("/api/worker/process/stop?pause_daemon=true")
+    assert response.status_code == 400
+    assert "未执行停止" in response.text
+    assert "private path" not in response.text
+
+
+@pytest.mark.parametrize("mode,expected", [("missing", "missing"), ("empty", "empty"),
+                                           ("content", "ok"), ("unreadable", "unreadable")])
+def test_worker日志读取状态不猜启动历史(as_role, monkeypatch, tmp_path, mode, expected):
+    import builtins
+    import worker_supervisor as sup
+    path = tmp_path / "worker.log"
+    monkeypatch.setattr(sup, "WORKER_LOG", path)
+    monkeypatch.setattr(sup, "current", lambda: {"count": 0})
+    if mode != "missing":
+        path.write_text("Traceback\n  source line\nRuntimeError: failed\n" if mode == "content" else "")
+    if mode == "content":
+        import io
+        original = builtins.open
+        content = path.read_bytes()
+        class GrowingLog(io.BytesIO):
+            def read(self, size=-1):
+                assert 0 < size <= 16384, "日志可能在 stat 后持续增长，读取必须有字节上限"
+                return super().read(size)
+        def bounded(file, *args, **kwargs):
+            if str(file) == str(path):
+                return GrowingLog(content)
+            return original(file, *args, **kwargs)
+        monkeypatch.setattr(builtins, "open", bounded)
+    if mode == "unreadable":
+        original = builtins.open
+        def denied(file, *args, **kwargs):
+            if str(file) == str(path):
+                raise PermissionError("private host directory")
+            return original(file, *args, **kwargs)
+        monkeypatch.setattr(builtins, "open", denied)
+    response = as_role("admin").get("/api/worker/process")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["log_status"] == expected
+    assert "private host directory" not in response.text
+    if mode == "content":
+        assert body["log_tail"] == ["Traceback", "  source line", "RuntimeError: failed"]
+    else:
+        assert body["log_tail"] == []

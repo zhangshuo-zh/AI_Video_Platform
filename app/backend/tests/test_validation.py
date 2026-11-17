@@ -355,3 +355,58 @@ def test_验证历史服务端筛选计数与游标协同(as_role):
 def test_验证历史拒绝非法筛选值(as_role, query):
     response = as_role("admin").get("/api/providers/validations", params=query)
     assert response.status_code == 422, response.text
+
+
+def test_验证历史模型供应商日期筛选及翻页总数(as_role):
+    from db import get_conn
+    samples = [
+        ("monitor-provider", "model-a", "2040-01-01 23:59:59", "failed"),
+        ("monitor-provider", "model-a", "2040-01-02 00:00:00", "failed"),
+        ("monitor-provider", "model-a", "2040-01-02 23:59:59", "failed"),
+        ("monitor-provider", "model-a", "2040-01-03 00:00:00", "failed"),
+        ("monitor-provider", "model-b", "2040-01-02 12:00:00", "failed"),
+        ("other-provider", "model-a", "2040-01-02 12:00:00", "failed"),
+        ("monitor-provider", "model-a", "2040-01-02 12:00:00", "ok"),
+    ]
+    ids = []
+    for provider, model, at, state in samples:
+        row = val_repo.record({"capability": "text", "backend": "local", "provider": provider,
+                               "model": model, "kind": "target_machine", "state": state})
+        with get_conn() as conn:
+            conn.execute("UPDATE model_validation SET created_at=? WHERE id=?", (at, row["id"]))
+        ids.append(row["id"])
+    client = as_role("admin")
+    query = {"provider": "monitor-provider", "model": "model-a", "kind": "target_machine",
+             "only_bad": True, "date_from": "2040-01-02", "date_to": "2040-01-02", "limit": 1}
+    first = client.get("/api/providers/validations", params=query)
+    assert first.status_code == 200, first.text
+    assert isinstance(first.json(), list)
+    assert [r["id"] for r in first.json()] == [ids[2]]
+    assert first.headers["X-Total-Count"] == "2"
+    second = client.get("/api/providers/validations", params={**query, "before_id": ids[2]})
+    assert [r["id"] for r in second.json()] == [ids[1]]
+    assert second.headers["X-Total-Count"] == "2"
+    # 供应商和模型各自都能独立过滤，不能只在组合参数时有效。
+    assert client.get("/api/providers/validations", params={"model": "model-b"}).headers["X-Total-Count"] == "1"
+    assert client.get("/api/providers/validations", params={"provider": "other-provider"}).headers["X-Total-Count"] == "1"
+    assert client.get("/api/providers/validations", params={"model": "model-a' OR 1=1 --"}).json() == []
+    # 单边窗口也要生效，日期上界包含当天最后一秒。
+    assert client.get("/api/providers/validations", params={"provider": "monitor-provider", "model": "model-a", "date_to": "2040-01-01"}).headers["X-Total-Count"] == "1"
+    assert client.get("/api/providers/validations", params={"provider": "monitor-provider", "model": "model-a", "date_from": "2040-01-03"}).headers["X-Total-Count"] == "1"
+
+
+@pytest.mark.parametrize("query", [
+    {"date_from": "2026-02-30"}, {"date_to": "not-a-date"},
+    {"date_from": "2040-01-03", "date_to": "2040-01-02"},
+    {"provider": ""}, {"model": "x" * 201},
+])
+def test_验证历史拒绝非法日期及过长过滤(as_role, query):
+    assert as_role("admin").get("/api/providers/validations", params=query).status_code == 422
+
+
+def test_验证历史筛选使用窄索引():
+    from db import get_conn
+    with get_conn() as conn:
+        for column, index in [("provider", "provider"), ("model", "model"), ("created_at", "time")]:
+            plan = conn.execute(f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM model_validation WHERE {column} >= ?", ("x",)).fetchall()
+            assert f"idx_validation_history_{index}" in " ".join(str(row[3]) for row in plan)

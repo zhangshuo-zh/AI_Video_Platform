@@ -300,6 +300,21 @@ class WorkerProcessOut(BaseModel):
     # 最近一次操作的回执（启动/停止的结果，含失败原因）
     last_action: str = ""
     log_path: str = ""
+    # 日志尾巴（0049 补）：卡片下半个空着的区域填这个。
+    #
+    # 为什么放在这个接口里而不是另开一条：worker 日志只有这一处读得到，
+    # 而这张卡本来就每进一次页面取一次——再加一条接口等于让"看进程在不在"
+    # 变成两次往返，人点一下要等两拍。
+    #
+    # **必须脱敏**：日志里有 traceback、绝对路径、启动参数。走
+    # `worker_supervisor.public_message()` 同一套（换掉 BASE_DIR、
+    # data/logs、任意本机绝对路径、环境里的密钥值），不是在这里另写。
+    log_tail: list[str] = []
+    # 日志的字节数与最后写入时间，给"是慢还是卡住"用；读不到就是 0/None，
+    # 不假装成空文件。
+    log_size: int = 0
+    log_mtime: str | None = None
+    log_status: Literal["ok", "missing", "empty", "unreadable"] = "missing"
 
 
 class WorkerStartIn(BaseModel):

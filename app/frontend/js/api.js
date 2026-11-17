@@ -171,12 +171,13 @@ export const api = {
   // worker 进程启停（0048）。这是**手动启停不是守护**——崩了不会自动拉起，
   // 界面文案必须说出来（详见 worker_supervisor 模块头）。
   workerProcess: () => get('/api/worker/process'),
+  cleanStaleWorkers: () => send('POST', '/api/worker/process/clean-stale', {}),
   startWorker: (body) => send('POST', '/api/worker/process/start', body || {}),
-  stopWorker: () => send('POST', '/api/worker/process/stop', {}),
+  stopWorker: (pauseDaemon = false) => send('POST', `/api/worker/process/stop?pause_daemon=${pauseDaemon}`, {}),
 
   // 0049 多开与守护。startWorkers 的 count 体是「一次起几个」。
   startWorkers: (body) => send('POST', '/api/worker/process/start-many', body || {}),
-  stopOneWorker: (pid) => send('POST', '/api/worker/process/stop-one', { pid: pid || 0 }),
+  stopOneWorker: (pid, pauseDaemon = false) => send('POST', `/api/worker/process/stop-one?pause_daemon=${pauseDaemon}`, { pid: pid || 0 }),
   workerDaemon: () => get('/api/worker/daemon'),
   setWorkerDaemon: (body) => send('PUT', '/api/worker/daemon', body),
 
@@ -247,12 +248,15 @@ export const api = {
   // 表只追加不改，所以"比某条更早"是稳定边界（用 offset 会因为新写入而错位）。
   // 总量在响应头 `X-Total-Count` 里，调用方据此说"共 N 条"而不是拿"少于 limit"猜。
   providerValidations: async (limit = 50, beforeId = null,
-    { kind = '', state = '', onlyBad = false } = {}) => {
+    { kind = '', state = '', onlyBad = false, provider = '', model = '', dateFrom = '', dateTo = '' } = {}) => {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (beforeId) qs.set('before_id', String(beforeId));
     if (kind) qs.set('kind', String(kind));
     if (state) qs.set('state', String(state));
     if (onlyBad) qs.set('only_bad', 'true');
+    for (const [key, value] of Object.entries({ provider, model, date_from: dateFrom, date_to: dateTo })) {
+      if (value) qs.set(key, value);
+    }
     // 这一条**不能走 get()**：它要读完响应头再走 toJson，
     // 而 get() 已经把 body 解析成对象返回了（headers 拿不到）。
     const res = await request(`/api/providers/validations?${qs}`);

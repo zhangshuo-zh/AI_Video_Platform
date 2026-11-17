@@ -200,7 +200,9 @@ def _tick() -> None:
         return                       # 已经放弃，等人处理（见 check() 的 exposed）
 
     need = desired - online
-    result = sup.start(count=need)
+    result = sup.start(count=need, guard_daemon=True)
+    if result.get("skipped"):
+        return                       # 已暂停的旧轮次，不伪造补起或失败留痕
     if result["ok"]:
         _STATE["failures"] = 0
         _STATE["recovered"] += len(result.get("pids") or [])

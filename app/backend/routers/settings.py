@@ -11,6 +11,7 @@ P0 又加了一件事：**把"环境齐"和"真跑过"分开显示**。健康状
 `model_validation` 表里——它不能跟着配置一起被整批覆盖掉。
 """
 import re
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
@@ -238,6 +239,9 @@ def list_validations(response: Response, limit: int = Query(50, ge=1),
                      kind: ValidationKind | None = None,
                      state: ValidationState | None = None,
                      only_bad: bool = False,
+                     provider: str | None = Query(None, min_length=1, max_length=200),
+                     model: str | None = Query(None, min_length=1, max_length=200),
+                     date_from: date | None = None, date_to: date | None = None,
                      _=Depends(require_permission("system:config"))) -> list[ValidationOut]:
     """验证历史（一页）。只有管理员能看整份——detail 里会有本机路径与缺失项。
 
@@ -249,10 +253,17 @@ def list_validations(response: Response, limit: int = Query(50, ge=1),
     响应体形状不变（仍是数组）——它已被浏览器验收与《模型中心使用说明书》按
     "数组"引用，为了分页改成包一层对象会连带改掉一批读法。
     """
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
+    start = date_from.isoformat() if date_from else None
+    end = date_to.isoformat() if date_to else None
     rows = [ValidationOut.from_row(r)
-            for r in validation_repo.list_recent(limit, before_id, kind=kind,
-                                                 state=state, only_bad=only_bad)]
-    response.headers["X-Total-Count"] = str(validation_repo.count(kind=kind, state=state, only_bad=only_bad))
+            for r in validation_repo.list_recent(limit, before_id, kind=kind, state=state,
+                                                 only_bad=only_bad, provider=provider, model=model,
+                                                 date_from=start, date_to=end)]
+    response.headers["X-Total-Count"] = str(validation_repo.count(kind=kind, state=state, only_bad=only_bad,
+                                                               provider=provider, model=model,
+                                                               date_from=start, date_to=end))
     return rows
 
 

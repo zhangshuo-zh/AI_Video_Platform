@@ -21,8 +21,8 @@ import {
 
 /* ================= 工作区 3 · 运行监控 ================= */
 /**
- * 这一页只读三样现成的东西：`/api/worker/status`、`/api/models/stats`、
- * `/api/providers/validations`。为什么不去新建一套"模型运行记录"表：
+ * 这一页复用队列、进程、守护、模型统计与验证记录接口。
+ * 为什么不去新建一套"模型运行记录"表：
  * Job 才是执行事实的唯一出口（系统设计 §1 不变量 2），
  * 这里再攒一份就必然长出两套状态。
  */
@@ -37,6 +37,41 @@ let pollTimer = null;
 // 挂上去就不随 #mc-live 回收，所以必须记住引用、和计时器一起收。
 let visHandler = null;
 const POLL_MS = 5000;
+let pollGeneration = 0;
+let operationBusy = false;
+let mutationVersion = 0;
+let monitorFreshness = { at: '', error: '' };
+const drafts = new WeakMap();
+
+function freshnessHtml() {
+  return `<p id="mc-freshness" class="hint" role="status">${escapeHtml(
+    monitorFreshness.error
+      ? `连接异常：${monitorFreshness.error}；保留上次数据（${monitorFreshness.at || '尚未成功刷新'}）`
+      : `最后完整更新：${monitorFreshness.at || '等待刷新'} · 每 5 秒刷新`)}
+    <button class="btn xs" id="mc-monitor-refresh">立即刷新</button></p>`;
+}
+
+function restoreDrafts(root) {
+  for (const [id, draft] of Object.entries(drafts.get(root) || {})) {
+    const el = root.querySelector(`#${id}`);
+    if (el) {
+      if (el.type === 'checkbox') el.checked = draft.value;
+      else el.value = draft.value;
+    }
+  }
+}
+
+function clearSubmittedDrafts(root, submitted) {
+  const current = drafts.get(root) || {};
+  for (const [id, draft] of Object.entries(submitted)) {
+    if (current[id] === draft) delete current[id];
+  }
+}
+
+function syncOperationButtons(root) {
+  root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid], #mc-daemon-save, #mc-conc-save, #mc-conc-force, #mc-wp-clean')
+    .forEach((b) => { b.disabled = operationBusy; });
+}
 
 /** 资源类的界面名。队列分桶的键是后端的英文类名，界面一律念中文
  *  （并发设置那张表早就用中文，这里原来直接印 text/image，同页两套叫法）。 */
@@ -46,11 +81,17 @@ const RES_LABEL = { text: '文本', image: '图像', video: '视频', audio: '�
 let valFilterState = '';
 let valFilterKind = '';
 let valSeq = 0;
+let valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
+let appliedFilters = {};
+let logFollowing = true;
+let logSnapshot = null;
+let logLimit = 12;
 
 function valFilterParams() {
   return {
     kind: valFilterKind || '',
     onlyBad: valFilterState === 'bad',
+    ...valExtra,
   };
 }
 
@@ -66,9 +107,13 @@ function valRow(v) {
   return `<tr>
     <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
     <td>${stateChip(v.state)}</td>
-    <td class="hint">${escapeHtml(v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}</td>
+    <td class="hint">${escapeHtml(v.capability_label || v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}<br><code>${escapeHtml(v.model || '未记录模型')}</code></td>
     <td>${v.job_id ? jobJumpHtml(v.job_id) : '—'}</td>
-    <td><span class="t-desc">${escapeHtml(v.detail || '')}</span></td>
+    <td><span class="t-desc">${escapeHtml(v.detail || '')}</span>
+      <details data-validation-detail="${Number(v.id)}"><summary class="btn-link">查看完整说明</summary>
+        <p class="hint">记录 #${Number(v.id)} · ${escapeHtml(v.provider || '—')} / ${escapeHtml(v.model || '未记录模型')} · ${escapeHtml(v.created_at || '')}</p>
+        <pre class="mc-validation-detail">${escapeHtml(v.detail || '未记录说明')}</pre>
+      </details></td>
     <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
   </tr>`;
 }
@@ -77,15 +122,15 @@ export function validationPager() {
   const total = cache.validations?.total || 0;
   const loaded = (cache.validations?.items || []).length;
   const page = cache.validationPage || { before: null, pages: 0 };
-  const older = loaded > 0 && loaded < total;
-  return `<span class="hint">共 ${total} 条 · 这一页 ${loaded} 条`
+  const older = loaded > 0 && loaded < total && !page.exhausted;
+  return `<span class="hint">共 ${total} 条 · 已加载 ${loaded} 条`
     + `${page.pages ? ` · 已翻 ${page.pages} 页` : ''}</span> `
     + `${older ? '<button class="btn xs" id="mc-val-older">更早的</button>' : ''}`;
 }
 
 /**
- * 队列与 worker ＋ 告警两张卡。轮询只重画这两张（数据来自 worker/status，
- * 是真会随时间变的那部分）；模型维度与验证留痕不跟着每 5 秒重画——
+ * 队列与 worker ＋ 告警两张卡，数据来自 worker/status。
+ * 验证留痕不跟着每 5 秒重画——
  * 前者只在登记/验证时才变，后者一重画就把人刚翻到的页码 reset 回第一页。
  * 每次调用都现读 cache.worker，所以轮询更新缓存后重画即是新数。
  */
@@ -221,11 +266,16 @@ function opsCards() {
 
 export function pageMonitor() {
   const s = cache.stats;
+  monitorFreshness = { at: '', error: '' };
   valFilterState = '';
   valFilterKind = '';
+  valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
+  appliedFilters = { ...valFilterParams() };
+  valSeq += 1;
   const kindOptions = Object.entries(VAL_KIND_LABEL).map(([k, label]) =>
     `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
   return `
+  ${freshnessHtml()}
   <div id="mc-live">${liveCards()}</div>
   <div id="mc-ops" class="mc-ops-grid">${opsCards()}</div>
 
@@ -241,7 +291,7 @@ export function pageMonitor() {
             <ul class="tip-list">
               <li><b>只增不改</b>：验证记录属于防篡改证据链，密钥不进记录，每页最多 ${HISTORY_PAGE} 条。</li>
               <li><b>按 provider/model 聚合成本：不支持</b>（cost_summary 按币种×能力×状态聚合）。</li>
-              <li><b>按时间范围筛选：不支持</b>（暂无 since/date_from 参数）。</li>
+              <li><b>验证历史</b>支持按模型、供应商和日期筛选；成本与耗时统计尚无时间窗口。</li>
               <li><b>分档执行耗时：不支持</b>（仅记录单条作业耗时，无分位数统计）。</li>
             </ul>
           </span>
@@ -256,6 +306,13 @@ export function pageMonitor() {
           <option value="">全部出处</option>
           ${kindOptions}
         </select>
+        <input class="inp" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
+        <input class="inp" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
+        <span class="hint">日期（含起止日）</span>
+        <input class="inp" type="date" id="mc-val-from" aria-label="开始日期">
+        <input class="inp" type="date" id="mc-val-to" aria-label="结束日期">
+        <button class="btn xs" id="mc-val-apply">应用筛选</button>
+        <button class="btn xs" id="mc-val-reset">重置</button>
         <span class="mc-val-pager">${validationPager()}</span>
       </div>
     </div>
@@ -293,22 +350,13 @@ function bindWorkerHistory(root) {
  * 记内存状态会让按钮显示"未启动"，人一按就起了第二个去抢显存。
  */
 function workerProcessStatusHtml() {
-  const p = cache.workerProcess || {};
-  const pids = p.pids || [];
-  const count = p.count != null ? Number(p.count) : (pids.length || (p.running ? 1 : 0));
-  const stale = p.stale_pids || [];
-  if (count) {
-    return `<span class="chip green">运行中 ${count} 个</span>
-       <span class="hint mono">PID ${escapeHtml(pids.join('、'))}</span>`;
-  }
-  if (stale.length) {
-    return `<span class="chip amber">未运行（残留 ${escapeHtml(stale.join('、'))}）</span>`;
-  }
-  const liveCount = ((cache.worker || {}).workers || []).filter((n) => n.online).length;
-  if (liveCount > 0) {
-    return `<span class="chip blue" title="检测到在线 worker 心跳，但并非由本页按钮拉起（如终端手动启动）">外部运行中 ${liveCount} 个</span>`;
-  }
-  return '<span class="chip gray">未运行</span>';
+  const p = cache.workerProcess;
+  if (!p || p.count == null) return '<span class="chip gray">进程状态未取得</span>';
+  const parts = [];
+  if (p.count) parts.push(`<span class="chip green">受管运行中 ${Number(p.count)} 个</span><span class="hint mono">PID ${escapeHtml((p.pids || []).join('、'))}</span>`);
+  if (p.external_online_count) parts.push(`<span class="chip blue" title="本机外部在线心跳，不授予停止权限">外部运行中 ${Number(p.external_online_count)} 个</span><span class="hint mono">PID ${escapeHtml((p.external_online_pids || []).join('、'))}</span>`);
+  if (p.stale_pids?.length) parts.push(`<span class="chip amber">残留登记 ${p.stale_pids.length} 条 · ${escapeHtml(p.stale_pids.join('、'))}</span>`);
+  return parts.join(' ') || '<span class="chip gray">未运行</span>';
 }
 
 function workerProcessCard() {
@@ -325,13 +373,14 @@ function workerProcessCard() {
   // 界面若只显示 enabled 就是在骗人。
   const daemonOn = !!d.enabled;
   const exposed = d.exposed !== false;
-  const daemonChip = !daemonOn
+  const daemonKnown = typeof d.enabled === 'boolean';
+  const daemonChip = !daemonKnown ? '<span class="chip gray">守护状态未取得</span>' : !daemonOn
     ? '<span class="chip gray">守护未开</span>'
     : (exposed
       ? '<span class="chip red">守护失效</span>'
       : `<span class="chip green">守护中 · 期望 ${d.desired} 个</span>`);
 
-  const daemonLine = !daemonOn
+  const daemonLine = !daemonKnown ? '未取得守护状态，请刷新确认。' : !daemonOn
     ? '守护没开：worker 掉了要人手动点启动。'
     : (exposed
       ? `<b>守护配着但没在守</b>${d.thread_alive ? '' : '（看门狗线程没在跑）'}`
@@ -343,6 +392,19 @@ function workerProcessCard() {
   const actions = (d.actions || []).slice(0, 4).map((a) =>
     `<li class="hint"><code>${escapeHtml(a.at)}</code> ${escapeHtml(a.action)}：${escapeHtml(a.detail)}</li>`
   ).join('');
+
+  // 接口和页面均按时间正序，保留 traceback 的上下文。
+  if (logFollowing || !logSnapshot) logSnapshot = { ...p, log_tail: [...(p.log_tail || [])] };
+  const log = logFollowing ? p : logSnapshot;
+  const logLines = (log.log_tail || []).slice(-logLimit);
+  const logSize = Number(log.log_size || 0);
+  const logMeta = `${logSize < 1024 ? `${logSize} 字节` : `${(logSize / 1024).toFixed(1)} KB`}`
+    + `${log.log_mtime ? ` · 最后写入 ${escapeHtml(log.log_mtime)}` : ''}`;
+  const logEmptyReason = {
+    missing: '日志文件尚不存在；不能据此判断 Worker 是否曾经启动。',
+    empty: '日志文件可读，当前没有非空日志行。',
+    unreadable: '日志读取失败，请检查运行目录权限；保留进程状态供排查。',
+  }[log.log_status] || '本次没有取得日志内容。';
 
   return `
   <div class="card mb-card">
@@ -366,7 +428,7 @@ function workerProcessCard() {
     <div class="card-body">
       <p class="note flush">
         <b>API 重启不会带走它们</b>（每个都是独立会话）。但 worker 自己崩了
-        <strong>只有开了守护</strong>才会自动拉起。
+        <strong>只有开了守护</strong>才会自动拉起。停止可能中断当前作业，需要人工检查后重试；不会自动续跑。
       </p>
 
       <!-- 启停：标签在左、控件在右，用全站同一套 form-grid。
@@ -384,7 +446,12 @@ function workerProcessCard() {
         <label>操作</label>
         <div class="wp-inline">
           <button class="btn primary" id="mc-wp-start">启动</button>
+          <select class="ctl sm" id="mc-stop-mode" aria-label="停止时的守护行为">
+            <option value="pause">暂停全局守护后停止</option>
+            <option value="once">仅本次停止，守护可能补起</option>
+          </select>
           <button class="btn danger" id="mc-wp-stop">全部停止</button>
+          ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
           <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
         </div>
         ${count ? `<label>逐个停止</label>
@@ -431,51 +498,115 @@ function workerProcessCard() {
         ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
       </section>
 
-      <p class="hint wp-log">
-        日志：<code>${escapeHtml(String(p.log_path || 'data/logs/worker.log').replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log')}</code>
-        （追加写，重启不丢上一次的输出）。
-      </p>
+      <!-- 日志尾巴（0049）：这块原来只有一句"日志在哪"的路径说明，卡片被
+           右边「并发设置」拉高之后，下面那一百多像素全是空的（实测 1440 宽
+           下 175px）。空着不是罪，空着又没信息才可惜——worker.log 里本来就
+           有启动/退出/崩溃栈，只是从来没在界面上露过面。
+           行高定死、超出滚：日志不能反过来把卡片撑高，否则又跟并发设置卡
+           打架（这次是它变高）。 -->
+      <section class="wp-logbox">
+        <div class="wp-sub-head">
+          <h3>最近输出</h3>
+          <button class="btn xs" id="mc-log-follow">${logFollowing ? '暂停跟随' : '继续跟随'}</button>
+          <button class="btn xs" id="mc-log-more">${logLimit === 12 ? '显示更多' : '收起'}</button>
+          <button class="btn xs" id="mc-log-copy" ${logLines.length ? '' : 'disabled'}>复制当前日志</button>
+          <span class="right hint">
+            ${logFollowing ? '' : '已暂停跟随 · '}${logMeta}
+          </span>
+        </div>
+        ${logLines.length
+          ? `<ol class="wp-loglist">${logLines.map((line) =>
+              `<li class="mono">${escapeHtml(line)}</li>`).join('')}</ol>`
+          : `<p class="hint wp-logempty">${escapeHtml(logEmptyReason)}</p>`}
+        <p class="hint wp-log">
+          完整日志：<code>${escapeHtml(String(p.log_path || 'data/logs/worker.log').replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log')}</code>
+          （追加写，重启不丢上一次的输出）。
+        </p>
+      </section>
     </div>
   </div>`;
 }
 
 async function refreshWorkerProcess(root, action, payload) {
-  setMsg(root, 'mc-wp-msg', action === 'start'
-    ? '正在启动（逐个等它写第一份心跳）…'
-    : '正在停止（先 SIGTERM 让它收尾）…');
-  root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid]')
-    .forEach((b) => { b.disabled = true; });
+  if (operationBusy) return;
+  operationBusy = true;
+  mutationVersion += 1;
+  syncOperationButtons(root);
+  const pauseDaemon = root.querySelector('#mc-stop-mode')?.value !== 'once';
   try {
+    if (action !== 'start' && action !== 'clean') {
+      // 确认前读取最新作业，读取失败则取消，避免用旧快照承诺没有影响。
+      const status = await api.workerStatus();
+      const jobs = status.running_jobs || [];
+      const affected = jobs.length
+        ? `当前运行作业（可能受影响）：${jobs.map((j) => `#${Number(j.id || j.job_id)}`).join('、')}。`
+        : '当前未观测到运行作业，但确认期间仍可能有新作业被领取。';
+      if (!(await confirmDanger({ title: action === 'stopOne' ? `停止 Worker ${payload.pid}` : '停止全部受管 Worker',
+        body: `${escapeHtml(affected)}<br>停止可能中断作业，需要检查后人工重试，不会自动续跑。<br>${pauseDaemon
+          ? '将先暂停全局守护；其他 Worker 也暂时失去自动补起保护。'
+          : '保留守护设置；若在线数量不足，守护会再次补起 Worker。'}`,
+        okText: pauseDaemon ? '暂停守护并停止' : '仅停止本次' }))) return;
+    }
+    setMsg(root, 'mc-wp-msg', action === 'start'
+      ? '正在启动（逐个等它写第一份心跳）…' : action === 'clean' ? '正在复查并清理残留登记…' : '正在停止（可能中断当前作业）…');
     let out;
     if (action === 'start') {
       const raw = root.querySelector('#mc-wp-count')?.value;
       const count = Math.max(1, Math.min(8, Number(raw) || 1));
       out = await api.startWorkers({ count });
+    } else if (action === 'clean') {
+      out = await api.cleanStaleWorkers();
     } else if (action === 'stopOne') {
-      out = await api.stopOneWorker(payload.pid);
+      out = await api.stopOneWorker(payload.pid, pauseDaemon);
     } else {
-      out = await api.stopWorker();
+      out = await api.stopWorker(pauseDaemon);
     }
     cache.workerProcess = out;
+    setMsg(root, 'mc-wp-msg', escapeHtml(out.last_action || (action === 'start' ? '启动请求已完成。' : action === 'clean' ? '残留登记清理已完成。' : '停止请求已完成。')));
+    if (action !== 'start' && action !== 'clean') {
+      try { cache.workerDaemon = await api.workerDaemon(); }
+      catch { monitorFreshness.error = '守护状态读取失败，请刷新确认'; }
+    }
     repaintLive(root);
   } catch (err) {
-    // 409 = 已经在跑；400 = 起不来（带原因）。都如实显示，
-    // 不把失败伪装成成功——界面说"成功"而队列不动是最坏的情况。
     setMsg(root, 'mc-wp-msg', escapeHtml(String(err?.message || err || '操作没成功。')));
+    // 部分启动也可能报错；后续完整刷新重新确认实际进程，不猜测回滚。
+    monitorFreshness.error = '操作未确认，请刷新查看实际状态';
+  } finally {
+    operationBusy = false;
+    mutationVersion += 1;
+    syncOperationButtons(root);
+    paintFreshness(root);
   }
 }
 
 async function saveDaemon(root) {
+  if (operationBusy) return;
+  operationBusy = true;
+  mutationVersion += 1;
+  syncOperationButtons(root);
+  const submitted = { ...(drafts.get(root) || {}) };
   const enabled = !!root.querySelector('#mc-daemon-on')?.checked;
   const desired = Math.max(0, Math.min(8, Number(
     root.querySelector('#mc-daemon-desired')?.value) || 0));
   setMsg(root, 'mc-daemon-msg', '正在保存…');
   try {
     cache.workerDaemon = await api.setWorkerDaemon({ enabled, desired });
+    clearSubmittedDrafts(root, Object.fromEntries(Object.entries(submitted).filter(([id]) => id.startsWith('mc-daemon-'))));
+    setMsg(root, 'mc-daemon-msg', '守护设置已保存。');
     repaintLive(root);
   } catch (err) {
     setMsg(root, 'mc-daemon-msg', escapeHtml(String(err?.message || err || '保存失败。')));
+  } finally {
+    operationBusy = false;
+    mutationVersion += 1;
+    syncOperationButtons(root);
   }
+}
+
+function paintFreshness(root) {
+  const el = root.querySelector('#mc-freshness');
+  if (el) el.outerHTML = freshnessHtml();
 }
 
 /** 重画实时区与运维操作区，保留验证留痕不动。 */
@@ -487,22 +618,39 @@ function repaintLive(root) {
   }
   const ops = root.querySelector('#mc-ops');
   if (ops) {
+    const logScroll = root.querySelector('.wp-loglist')?.scrollTop || 0;
+    const focusedId = ops.contains(document.activeElement) ? document.activeElement.id : null;
     ops.innerHTML = opsCards();
     bindWorkerProcess(root);
     bindConcurrency(root);
+    restoreDrafts(root);
+    syncOperationButtons(root);
+    const logList = root.querySelector('.wp-loglist');
+    if (logList) logList.scrollTop = logFollowing ? logList.scrollHeight : logScroll;
+    if (focusedId) root.querySelector(`#${focusedId}`)?.focus({ preventScroll: true });
   }
 }
 
 function bindWorkerProcess(root) {
+  root.querySelector('#mc-wp-clean')?.addEventListener('click', () => refreshWorkerProcess(root, 'clean'));
+  root.querySelector('#mc-log-follow')?.addEventListener('click', () => {
+    logFollowing = !logFollowing;
+    repaintLive(root);
+  });
+  root.querySelector('#mc-log-more')?.addEventListener('click', () => {
+    logLimit = logLimit === 12 ? 100 : 12;
+    repaintLive(root);
+  });
+  root.querySelector('#mc-log-copy')?.addEventListener('click', async () => {
+    const lines = [...root.querySelectorAll('.wp-loglist li')].map((el) => el.textContent);
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      alertNotify('当前显示日志已复制。', 'ok');
+    } catch { alertNotify('复制失败，请在日志框中选择文本复制。', 'err'); }
+  });
   root.querySelector('#mc-wp-start')?.addEventListener('click', () => {
     refreshWorkerProcess(root, 'start');
   });
-  // **不弹确认框**（2026-11-10 自查改的）。两条理由：
-  //  1. 全仓 `window.confirm` 用量是 0——项目自己的确认一律走自绘 `.modal`
-  //     （projects.js / asset-detail.js 那几处）。孤零零一个原生弹窗风格完全不搭。
-  //  2. 停止 worker 不是"不可撤销"的破坏性操作：正在跑的作业靠租约回收、
-  //     重启 worker 就能继续。项目里"取消作业""退出登录"也都不确认。
-  // 危险感交给按钮本身（`btn danger`）与回执那句话，不靠一个多余的弹窗。
   root.querySelector('#mc-wp-stop')?.addEventListener('click', () => {
     refreshWorkerProcess(root, 'stop');
   });
@@ -672,12 +820,18 @@ function setMsg(root, id, html) {
 }
 
 async function saveConcurrency(root, payload, acknowledgeRisk) {
+  if (operationBusy) return;
+  operationBusy = true;
+  mutationVersion += 1;
+  syncOperationButtons(root);
+  const submitted = { ...(drafts.get(root) || {}) };
   const btn = root.querySelector('#mc-conc-save');
   if (btn) btn.disabled = true;
   try {
     const body = { ...payload, acknowledge_risk: !!acknowledgeRisk };
     const out = await api.setWorkerConcurrency(body);
     if (out && cache.worker) cache.worker.concurrency = out;
+    clearSubmittedDrafts(root, Object.fromEntries(Object.entries(submitted).filter(([id]) => id.startsWith('mc-conc-'))));
     repaintLive(root);
     // await 之后必须重新查（见 setMsg 的注释）
     setMsg(root, 'mc-conc-msg', out?.assessment?.verdict === 'safe'
@@ -709,6 +863,9 @@ async function saveConcurrency(root, payload, acknowledgeRisk) {
     // 重新查一次，否则失败后按钮会一直停用（除非正好又重绘过）。
     const live = root.querySelector('#mc-conc-save');
     if (live) live.disabled = false;
+    operationBusy = false;
+    mutationVersion += 1;
+    syncOperationButtons(root);
   }
 }
 
@@ -744,34 +901,84 @@ function renderValidationTable(root) {
   if (pager) pager.innerHTML = validationPager();
 }
 
+function restoreFilterControls(root, filters) {
+  root.querySelector('#mc-val-filter-kind').value = filters.kind || '';
+  root.querySelector('#mc-val-filter-state').value = filters.onlyBad ? 'bad' : '';
+  for (const [key, id] of Object.entries({ provider: 'provider', model: 'model', dateFrom: 'from', dateTo: 'to' })) {
+    root.querySelector(`#mc-val-${id}`).value = filters[key] || '';
+  }
+}
+
 async function reloadValidations(root) {
   const wanted = ++valSeq;
+  const requested = { ...valFilterParams() };
   const tbody = root.querySelector('#mc-val-rows');
+  const alive = () => tbody?.isConnected && wanted === valSeq && getSub('models') === 3;
   if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="hint">正在筛选……</td></tr>';
   try {
-    const out = await api.providerValidations(HISTORY_PAGE, null, valFilterParams());
-    if (wanted !== valSeq) return;
+    const out = await api.providerValidations(HISTORY_PAGE, null, requested);
+    if (!alive()) return;
+    appliedFilters = requested;
     cache.validations = out;
-    cache.validationPage = { before: null, pages: 0 };
+    cache.validationPage = { before: null, pages: 0, exhausted: !out.items.length };
     renderValidationTable(root);
   } catch (err) {
-    if (wanted !== valSeq) return;
+    if (!alive()) return;
+    valFilterKind = appliedFilters.kind || '';
+    valFilterState = appliedFilters.onlyBad ? 'bad' : '';
+    valExtra = { provider: appliedFilters.provider || '', model: appliedFilters.model || '',
+      dateFrom: appliedFilters.dateFrom || '', dateTo: appliedFilters.dateTo || '' };
+    restoreFilterControls(root, appliedFilters);
     alertNotify(`验证记录筛选失败：${err.message}`, 'err');
     renderValidationTable(root);
   }
 }
 
 export function mountMonitor(root) {
+  if (!root.__monitorDraftBound) {
+    root.__monitorDraftBound = true;
+    const remember = (e) => {
+      const el = e.target;
+      if (!el.closest('#mc-ops') || !el.matches('input[id], select[id]')) return;
+      const current = drafts.get(root) || {};
+      current[el.id] = { value: el.type === 'checkbox' ? el.checked : el.value };
+      drafts.set(root, current);
+    };
+    root.addEventListener('input', remember);
+    root.addEventListener('change', remember);
+  }
+  restoreDrafts(root);
+  syncOperationButtons(root);
   bindWorkerHistory(root);
   bindWorkerProcess(root);
   bindConcurrency(root);
 
   root.querySelector('#mc-val-filter-state')?.addEventListener('change', (e) => {
     valFilterState = e.target.value || '';
-    reloadValidations(root);
+    applyFilters();
   });
   root.querySelector('#mc-val-filter-kind')?.addEventListener('change', (e) => {
     valFilterKind = e.target.value || '';
+    applyFilters();
+  });
+
+  const applyFilters = () => {
+    valExtra = { provider: root.querySelector('#mc-val-provider').value.trim(),
+      model: root.querySelector('#mc-val-model').value.trim(),
+      dateFrom: root.querySelector('#mc-val-from').value,
+      dateTo: root.querySelector('#mc-val-to').value };
+    reloadValidations(root);
+  };
+  root.querySelector('#mc-val-apply')?.addEventListener('click', applyFilters);
+  for (const id of ['provider', 'model', 'from', 'to']) {
+    root.querySelector(`#mc-val-${id}`)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') applyFilters();
+    });
+  }
+  root.querySelector('#mc-val-reset')?.addEventListener('click', () => {
+    valFilterKind = ''; valFilterState = '';
+    valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
+    restoreFilterControls(root, valFilterParams());
     reloadValidations(root);
   });
 
@@ -817,7 +1024,7 @@ export function mountMonitor(root) {
     });
   }
 
-  // 作用域轮询：只刷队列与告警（liveCards），不碰验证留痕的页码。
+  // 作用域轮询：完整刷新运行快照，保留操作草稿与验证留痕页码。
   // 锚点取 #mc-live：切走子页时路由替换 #view-root，它 isConnected 变 false，
   // 下一拍自己清掉。mount 先清旧计时器，避免同屏重 mount 叠出多条。
   stopPoll();
@@ -825,19 +1032,39 @@ export function mountMonitor(root) {
   const alive = () => anchor.isConnected && (getSub('models') === 3);
   // 一拍做的事抽成函数：计时器与"回前台补一拍"共用同一份判活/写法，
   // 免得两条路径慢慢长歪（2026-11-11 审计 F-04）。
+  const generation = pollGeneration;
+  let inFlight = false;
   const tick = async () => {
-    if (!alive()) { stopPoll(); return; }
+    if (!alive()) { if (generation === pollGeneration) stopPoll(); return; }
+    if (inFlight || operationBusy || generation !== pollGeneration) return;
+    inFlight = true;
+    const version = mutationVersion;
     try {
-      cache.worker = await api.workerStatus();
-      const live = root.querySelector('#mc-live');
-      if (live && alive()) {
-        live.innerHTML = liveCards();
-        bindWorkerHistory(root);
-        const wpStatus = root.querySelector('#mc-wp-status');
-        if (wpStatus) wpStatus.innerHTML = workerProcessStatusHtml();
-      }
-    } catch { /* 轮询读不到就保持上一帧，下一拍再试；不打断人 */ }
+      const results = await Promise.allSettled([
+        api.workerStatus(), api.workerProcess(), api.workerDaemon(),
+      ]);
+      if (!alive() || generation !== pollGeneration || version !== mutationVersion) return;
+      const keys = ['worker', 'workerProcess', 'workerDaemon'];
+      const failed = [];
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled') cache[keys[i]] = result.value;
+        else failed.push(['队列 / 心跳', '进程 / 日志', '守护'][i]);
+      });
+      monitorFreshness.error = failed.length ? `${failed.join('、')}读取失败` : '';
+      if (!failed.length) monitorFreshness.at = new Date().toLocaleTimeString();
+      repaintLive(root);
+      paintFreshness(root);
+    } finally { inFlight = false; }
   };
+  // 委托绑定不会因状态提示节点更新而丢失。
+  root.__monitorTick = tick;
+  if (!root.__monitorRefreshBound) {
+    root.__monitorRefreshBound = true;
+    root.addEventListener('click', (e) => {
+      if (e.target.closest('#mc-monitor-refresh')) root.__monitorTick?.();
+    });
+  }
+  tick();
   pollTimer = setInterval(() => {
     if (!alive()) { stopPoll(); return; }
     // 页面不可见时不发：后台标签页没有"让人知道"的对象（与全站轮询同一纪律）。
@@ -857,6 +1084,7 @@ export function mountMonitor(root) {
 
 /** 计时器与 document 监听一起收。只清计时器会留下一个拿着旧 alive 闭包的监听。 */
 function stopPoll() {
+  pollGeneration += 1;
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (visHandler) { document.removeEventListener('visibilitychange', visHandler); visHandler = null; }
 }
@@ -868,13 +1096,14 @@ async function loadOlderValidations(root, btn) {
   if (!last) return;
   btn.disabled = true;
   const wanted = valSeq;
+  const tbodyAnchor = root.querySelector('#mc-val-rows');
   try {
-    const page = await api.providerValidations(HISTORY_PAGE, last.id, valFilterParams());
-    if (wanted !== valSeq) return;
+    const page = await api.providerValidations(HISTORY_PAGE, last.id, appliedFilters);
+    if (wanted !== valSeq || !tbodyAnchor?.isConnected || getSub('models') !== 3) return;
     const fresh = page.items.filter((v) => !items.some((old) => old.id === v.id));
     cache.validations = { items: items.concat(fresh),
-                          total: page.total || cache.validations.total };
-    cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1 };
+                          total: page.total ?? cache.validations.total };
+    cache.validationPage = { before: last.id, pages: (cache.validationPage?.pages || 0) + 1, exhausted: !page.items.length };
     const tbody = root.querySelector('#mc-val-rows');
     if (!tbody) { window.dispatchEvent(new CustomEvent('app:refresh')); return; }
     renderValidationTable(root);

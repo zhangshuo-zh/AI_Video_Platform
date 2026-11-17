@@ -128,6 +128,10 @@ jobs:
         working-directory: .
         run: python tools/agents_browser_check.py
 
+      - name: 运行监控交互回归
+        working-directory: .
+        run: python tools/monitor_interaction_browser_check.py
+
       - name: 真浏览器验收（模型中心）
         working-directory: .
         run: python tools/model_center_browser_check.py

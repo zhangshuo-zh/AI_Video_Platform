@@ -337,8 +337,11 @@ def put_worker_concurrency(payload: WorkerLimitIn,
 def _process_out(state: dict, *, last_action: str = "") -> WorkerProcessOut:
     import worker_supervisor as sup
     from services.jobs_pkg.monitor import process_observation
+    tail = sup.public_log_tail()
     return WorkerProcessOut(**state, **process_observation(state),
-                            log_path=sup.public_log_path(), last_action=last_action)
+                            log_path=sup.public_log_path(), last_action=last_action,
+                            log_tail=tail["lines"], log_size=tail["size"],
+                            log_mtime=tail["mtime"], log_status=tail["status"])
 
 
 @router.get("/worker/process", response_model=WorkerProcessOut)
@@ -377,8 +380,20 @@ def start_worker_process(payload: WorkerStartIn | None = None,
     raise HTTPException(status_code=400, detail=sup.public_message(result["message"]))
 
 
+def _pause_daemon_before_stop(user: dict) -> None:
+    import worker_supervisor as sup
+    from repositories.config_log import record
+    try:
+        saved = sup.pause_daemon_recovery()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="暂停守护失败，未执行停止，请检查运行目录权限") from exc
+    record("worker_daemon", "singleton", "update", "停止前暂停守护",
+           payload=saved, created_by=user["id"])
+
+
 @router.post("/worker/process/stop", response_model=WorkerProcessOut)
-def stop_worker_process(user=Depends(require_permission("system:config"))
+def stop_worker_process(pause_daemon: bool = Query(False),
+                        user=Depends(require_permission("system:config"))
                         ) -> WorkerProcessOut:
     """停 worker。先 SIGTERM 让它自己收尾，8 秒不退再 SIGKILL。
 
@@ -386,9 +401,12 @@ def stop_worker_process(user=Depends(require_permission("system:config"))
     都不该报红。
     """
     import worker_supervisor as sup
+    if pause_daemon:
+        _pause_daemon_before_stop(user)
     result = sup.stop()
     state = sup.current()
-    return _process_out(state, last_action=sup.public_message("；".join(result["messages"])))
+    return _process_out(state, last_action=("全局守护已暂停；" if pause_daemon else "")
+                        + sup.public_message("；".join(result["messages"])))
 
 
 # ---------- 多开、守护与通知（0049） ----------
@@ -416,6 +434,7 @@ def start_many_workers(payload: WorkerStartIn | None = None,
 
 @router.post("/worker/process/stop-one", response_model=WorkerProcessOut)
 def stop_one_worker(payload: WorkerStopIn,
+                    pause_daemon: bool = Query(False),
                     user=Depends(require_permission("system:config"))
                     ) -> WorkerProcessOut:
     """停**指定的那一个** worker。`pid` 必填。
@@ -424,9 +443,12 @@ def stop_one_worker(payload: WorkerStopIn,
     按钮时不必判断调哪个接口。
     """
     import worker_supervisor as sup
+    if pause_daemon:
+        _pause_daemon_before_stop(user)
     result = sup.stop(pid=int(payload.pid) if payload.pid else None)
     state = sup.current()
-    return _process_out(state, last_action=sup.public_message("；".join(result["messages"])))
+    return _process_out(state, last_action=("全局守护已暂停；" if pause_daemon else "")
+                        + sup.public_message("；".join(result["messages"])))
 
 
 @router.post("/worker/process/clean-stale", response_model=WorkerProcessOut)

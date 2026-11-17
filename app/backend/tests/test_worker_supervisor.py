@@ -438,3 +438,79 @@ def test_并发启动守护只创建一个线程(monkeypatch):
         results = [first.result(timeout=5), second.result(timeout=5)]
     assert results == [True, False]
     assert len(created) == 1
+
+
+def test_暂停守护后旧轮次不得再fork(sup, monkeypatch, tmp_path):
+    import worker_daemon as daemon
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    daemon.save_config(enabled=True, desired=2)
+    calls = []
+    monkeypatch.setattr(sup, "_fork_workers", lambda **kwargs: calls.append(kwargs) or {"message": "test", "ok": True, "pids": [], "failed": []})
+    saved = sup.pause_daemon_recovery()
+    assert saved == {"enabled": False, "desired": 2}
+    assert sup.start(count=2, guard_daemon=True)["pids"] == []
+    assert calls == [], "暂停后旧一轮守护不得 fork"
+    # 手动启动不受守护开关约束，重新开启守护仍可准入。
+    sup.start(count=1)
+    daemon.save_config(enabled=True, desired=2)
+    sup.start(count=1, guard_daemon=True)
+    assert len(calls) == 2
+
+
+def test_暂停守护与fork准入共用短锁(sup, monkeypatch, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import worker_daemon as daemon
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    daemon.save_config(enabled=True, desired=1)
+    entered = threading.Event()
+    release = threading.Event()
+    saving = threading.Event()
+    original_save = daemon.save_config
+    def save(**kwargs):
+        saving.set()
+        return original_save(**kwargs)
+    monkeypatch.setattr(daemon, "save_config", save)
+
+    def fork(**kwargs):
+        entered.set()
+        assert release.wait(3)
+        return {"procs": [], "failed": [], "since": 0}
+
+    def await_beats(*args, **kwargs):
+        # 心跳等待必须在锁外；暂停不能被漫长心跳等待阻塞。
+        assert sup._LOCK.acquire(timeout=1)
+        sup._LOCK.release()
+        return {"ok": True, "pids": [], "failed": [], "message": "test"}
+
+    monkeypatch.setattr(sup, "_fork_workers", fork)
+    monkeypatch.setattr(sup, "_await_heartbeats", await_beats)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        start = pool.submit(sup.start, guard_daemon=True)
+        assert entered.wait(3)
+        pause = pool.submit(sup.pause_daemon_recovery)
+        try:
+            assert not saving.wait(0.2), "fork 尚未结束，暂停落盘必须等待同一把短锁"
+        finally:
+            release.set()
+        assert start.result(timeout=3)["ok"]
+        assert pause.result(timeout=3)["enabled"] is False
+
+
+def test_守护旧轮次暂停后不产生虚假补起记录(sup, monkeypatch, tmp_path):
+    import worker_daemon as daemon
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    daemon.save_config(enabled=True, desired=1)
+    monkeypatch.setattr(daemon, "_STATE", {**daemon._STATE, "actions": [], "failures": 0})
+    monkeypatch.setattr(daemon, "_notify_state", lambda online: None)
+    monkeypatch.setattr(sup, "current", lambda: {"count": 0})
+    original_start = sup.start
+    def paused_start(**kwargs):
+        assert kwargs["guard_daemon"] is True, "守护调用点必须走准入复查"
+        sup.pause_daemon_recovery()
+        return original_start(**kwargs)
+    monkeypatch.setattr(sup, "start", paused_start)
+    monkeypatch.setattr(sup, "_fork_workers", lambda **kwargs: pytest.fail("暂停后不得 fork"))
+    daemon._tick()
+    assert daemon._STATE["actions"] == []
+    assert daemon._STATE["failures"] == 0

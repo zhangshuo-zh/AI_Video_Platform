@@ -313,7 +313,7 @@ MAX_WORKERS = 8
 
 
 def start(*, max_global: int | None = None, per: dict | None = None,
-          count: int = 1) -> dict:
+          count: int = 1, guard_daemon: bool = False) -> dict:
     """起 `count` 个 worker（默认 1 个）。**逐个等心跳确认**，不是批量 fork 了事。
 
     0049 起允许多开：原来"已经在跑就拒绝"是单实例时代的规矩，现在多开是
@@ -335,6 +335,10 @@ def start(*, max_global: int | None = None, per: dict | None = None,
                 "message": f"数量必须 ≥ 1，给的是 {count}"}
 
     with _LOCK:
+        if guard_daemon:
+            import worker_daemon
+            if not worker_daemon.load_config()["enabled"]:
+                return {"ok": True, "pids": [], "failed": [], "message": "守护已暂停", "skipped": True}
         begun = _fork_workers(count=count, max_global=max_global, per=per)
     if "message" in begun:                  # 被上限拒绝，一个都没起
         return _public_start_result(begun)
@@ -560,6 +564,48 @@ def _log_tail(lines: int = 6) -> str:
     return public_message(" / ".join(tail), max_len=400)
 
 
+def public_log_tail(lines: int = 100, *, max_line: int = 1000) -> dict:
+    """worker.log 的尾巴 + 体积，给运行监控那张卡的下半区显示。
+
+    与 `_log_tail()` 的分工：那个是"起不来"时塞进一句话里的 6 行缩影
+    （` / ` 拼接、整条 400 字上限），只够解释一次失败；这里是给人**看**的
+    列表，每行独立、各自脱敏，行数也更多。
+
+    **两条纪律**：
+    1. 每行都过 `public_message()`。traceback 里全是绝对路径和启动参数，
+       不脱敏就是把这个接口变成 `/etc/passwd` 的另一种读法。
+    2. 明确返回 missing / empty / unreadable / ok；文件不存在不证明从未启动。
+       最多读尾部 16KB、100 行，每行最多 1000 字。
+    """
+    lines = max(1, min(int(lines), 100))
+    out: dict = {"lines": [], "size": 0, "mtime": None, "status": "missing"}
+    try:
+        st = os.stat(WORKER_LOG)
+    except FileNotFoundError:
+        return out
+    except OSError:
+        out["status"] = "unreadable"
+        return out
+    out["size"] = st.st_size
+    out["mtime"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))
+    try:
+        with open(WORKER_LOG, "rb") as fh:
+            # 只读尾巴：日志是追加写的，几 MB 的旧内容对"现在怎么了"没用。
+            fh.seek(max(0, st.st_size - 16384))
+            chunk = fh.read(16384).decode("utf-8", "replace")
+    except OSError:
+        out["status"] = "unreadable"
+        return out
+    # 二进制截断可能把第一行切断一半，丢掉它——半行 traceback 比没有更误导。
+    rows = chunk.splitlines()
+    if len(rows) > 1 and st.st_size > 16384:
+        rows = rows[1:]
+    out["lines"] = [public_message(ln, max_len=max_line)
+                    for ln in rows if ln.strip()][-lines:]
+    out["status"] = "ok" if out["lines"] else "empty"
+    return out
+
+
 def _cleanup_pid_if(pid: int) -> None:
     """删掉这个 pid 的登记文件。文件已不在也是成功（幂等）。"""
     _remove_pid_file(pid)
@@ -617,6 +663,14 @@ def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
     return {"ok": True, "pid": pid,
             "message": f"PID {pid} {timeout:.0f} 秒内没退，已强杀；"
                        f"它手上的作业会被下一轮 recover_stale 收掉"}
+
+
+def pause_daemon_recovery() -> dict:
+    """与守护 fork 共用短锁：暂停落盘后，不再准入守护补起；不持锁等退出。"""
+    import worker_daemon
+    with _LOCK:
+        cfg = worker_daemon.load_config()
+        return worker_daemon.save_config(enabled=False, desired=cfg["desired"])
 
 
 def stop(*, timeout: float = 8.0, pid: int | None = None) -> dict:

@@ -29,13 +29,22 @@ _LATEST_SQL = """
 
 
 def _history_filters(*, kind: str | None, state: str | None,
-                     only_bad: bool, before_id: int | None = None) -> tuple[str, list]:
+                     only_bad: bool, before_id: int | None = None,
+                     provider: str | None = None, model: str | None = None,
+                     date_from: str | None = None, date_to: str | None = None) -> tuple[str, list]:
     conditions: list[str] = []
     args: list = []
-    for column, value in (("kind", kind), ("state", state)):
+    for column, value in (("kind", kind), ("state", state),
+                          ("provider", provider), ("model", model)):
         if value is not None:
             conditions.append(f"{column} = ?")
             args.append(value)
+    if date_from is not None:
+        conditions.append("created_at >= ?")
+        args.append(date_from + " 00:00:00")
+    if date_to is not None:
+        conditions.append("created_at <= ?")
+        args.append(date_to + " 23:59:59.999999")
     if only_bad:
         conditions.append("state <> ?")
         args.append("ok")
@@ -169,7 +178,9 @@ class ValidationRepository:
 
     def list_recent(self, limit: int = 50, before_id: int | None = None,
                     *, kind: str | None = None, state: str | None = None,
-                    only_bad: bool = False
+                    only_bad: bool = False, provider: str | None = None,
+                    model: str | None = None, date_from: str | None = None,
+                    date_to: str | None = None
                     ) -> list[sqlite3.Row]:
         """按 id 倒序一页。`before_id` 是上一页最后一条的 id（翻旧账用）。
 
@@ -179,7 +190,8 @@ class ValidationRepository:
         """
         limit = max(1, min(int(limit), self.MAX_PAGE))
         where, args = _history_filters(kind=kind, state=state, only_bad=only_bad,
-                                       before_id=before_id)
+                                       before_id=before_id, provider=provider, model=model,
+                                       date_from=date_from, date_to=date_to)
         sql = "SELECT * FROM model_validation" + where
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
@@ -187,10 +199,14 @@ class ValidationRepository:
             return conn.execute(sql, tuple(args)).fetchall()
 
     def count(self, *, kind: str | None = None, state: str | None = None,
-              only_bad: bool = False) -> int:
+              only_bad: bool = False, provider: str | None = None,
+              model: str | None = None, date_from: str | None = None,
+              date_to: str | None = None) -> int:
         """历史总条数。给"一共多少条、这一页是第几页"用——
         只回一页而不说总量，人分不清"到底看完了没有"。"""
-        where, args = _history_filters(kind=kind, state=state, only_bad=only_bad)
+        where, args = _history_filters(kind=kind, state=state, only_bad=only_bad,
+                                       provider=provider, model=model,
+                                       date_from=date_from, date_to=date_to)
         with get_conn() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM model_validation" + where, args)
                        .fetchone()[0])

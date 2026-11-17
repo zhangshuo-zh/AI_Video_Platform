@@ -2776,6 +2776,41 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
 .wp-boundary{margin-top:10px;line-height:1.7}
 .wp-actions{margin:8px 0 0;padding-left:18px}
 
+/* ---------- 日志尾巴（0049）----------
+   这块要解决的是一个量出来的毛病：卡片被 `.mc-ops-grid` 的 stretch 拉到与
+   「并发设置」等高（1440 宽下 649px），而 worker 卡自己的内容只有 474px，
+   中间空出 175px。原来那 175px 全被 `margin-top:auto` 推成一个大空当。
+
+   填内容而不是削高度：worker.log 里本来就有启动/退出/崩溃栈，只是从没露过面。
+   这里把尾巴摆进去，并且让它**吃掉剩余高度**（flex:1），于是：
+     · 左卡比右卡矮 → 列表自己变高，空当被真实内容填满；
+     · 左卡反而更高  → `overflow:auto` 兜住，不会把右卡顶长。
+   两档都不靠猜数字，跟内容多少无关。 */
+.wp-logbox{
+  margin-top:18px;padding-top:16px;border-top:1px solid var(--line);
+  flex:1;display:flex;flex-direction:column;min-height:0;
+}
+.wp-loglist{
+  /* min-height 给一个下限：内容太少时别把列表压成一条缝，
+     看起来像"加载失败"；max-height 让它在窄屏不被撑爆（整卡会跟着变高）。
+     110 这个数是量出来的，不是拍的：1440 宽下 worker 卡的内容原本 474px、
+     被拉伸到 649px，空当 175px；列表放到 110px 时卡片正好回到 649px、
+     整页高度与改动前一致（1963px），空当全被真实输出吃掉，
+     一点额外高度都没多占。再大就会把页撑长（150→1996，260→2106）。 */
+  flex:1;min-height:72px;max-height:110px;overflow:auto;
+  margin:0;padding:8px 10px;list-style:none;
+  background:var(--bg);border:1px solid var(--line);border-radius:6px;
+}
+.wp-loglist > li{
+  padding:2px 0;font-size:12px;line-height:1.55;color:var(--ink-2);
+  /* 一行一条，超长折行而不是横向滚：traceback 的路径都很长，
+     横向滚会让人以为"右边还有别的列"。 */
+  white-space:pre-wrap;word-break:break-all;
+}
+/* 倒序显示（最新的在最上面），所以第一条加一点分量让它像"最新那条" */
+.wp-loglist > li:first-child{color:var(--ink)}
+.wp-logempty{margin:0;min-height:96px}
+
 /* ---------- 运行监控（模型中心 · 3） ----------
    卡片间距由容器统一给。原来靠 .mb-card 与 `.card + .card{margin-bottom:0}` 两条外边距
    互相打架：live 区最后一张卡（并发设置）被后一条清成 0，下面的「模型维度」就贴了上来。 */
@@ -2785,7 +2820,11 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
 .mc-ops-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:stretch;margin-bottom:20px}
 .mc-ops-grid .card{margin:0;display:flex;flex-direction:column;height:100%}
 .mc-ops-grid .card-body{flex:1;display:flex;flex-direction:column}
-.mc-ops-grid .wp-log,
+/* 并发设置卡的最后一块按钮仍然沉底（它下面没有可伸缩的内容）。
+   **`.wp-log` 在 0049 从这条规则里移出去了**：它原来是 `margin-top:auto`，
+   于是 worker 卡被拉伸出来的 175px 全变成日志行上方的一个空洞（1440 宽实测）。
+   现在日志尾巴 `.wp-logbox` 用 flex:1 吃掉剩余高度，日志行是它内部的最后一行，
+   跟着内容走——同样一张卡，同样的高度，空当变成了 8 行真实输出。 */
 .mc-ops-grid .row-actions{margin-top:auto !important;padding-top:14px}
 @media (min-width:1180px){.mc-ops-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 /* 队列与 worker 顶部三指标分块呈现，视觉更均衡 */
@@ -2829,7 +2868,9 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
 }
 .mc-conc-table .inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .mc-conc-table .inp::placeholder{color:var(--ink-3)}
-.wp-log{margin-top:14px}
+/* 日志行现在是 `.wp-logbox` 内部的一行（0049），与列表之间留一点气口，
+   不再需要那 14px 的外边距去跟上面的内容拉开——那是 `margin-top:auto` 时代的写法。 */
+.wp-logbox .wp-log{margin-top:10px}
 
 /* ================= 表格里的长文本（2026-11-11 布局审计） =================
  * 引擎实例那张表原来是"状态"格里塞一句 health_detail（可能长到
@@ -3789,3 +3830,11 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .help-tip.is-open .tip-pop{translate:var(--help-shift,0px) 0;pointer-events:auto;max-height:60dvh;overflow:auto}
 .pl-progress-cell{min-width:150px}
 .pl-episode-progress-cell{min-width:140px}
+
+/* 运行监控：筛选工具栏与完整验证说明。 */
+.mc-val-tools .inp{width:170px;max-width:100%;min-width:0}
+.mc-validation-detail{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-width:48rem}
+.wp-loglist > li{white-space:pre-wrap}
+.wp-loglist > li:first-child{color:var(--ink-2)}
+.wp-loglist > li:last-child{color:var(--ink)}
+.wp-sub-head{flex-wrap:wrap;gap:8px}
