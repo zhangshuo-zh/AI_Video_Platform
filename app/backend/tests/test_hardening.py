@@ -136,7 +136,7 @@ def test_未知权限级别不默认放行():
 
 
 def test_顶栏状态不摊别人项目的作业明细(app, as_role, people, seeded, fresh_project):
-    """running_jobs 前端根本不读，却把 job id／供应商／模型发给每个人。"""
+    """监控作业摘要和可跳转告警都按项目可见性裁剪。"""
     mine = seeded["project_id"]
     theirs = fresh_project("admin")
 
@@ -153,7 +153,8 @@ def test_顶栏状态不摊别人项目的作业明细(app, as_role, people, see
     with get_conn() as conn:
         for jid in (j_mine, j_theirs):
             conn.execute(
-                """UPDATE job SET status = 'running', started_at = datetime('now','localtime'),
+                """UPDATE job SET status = 'running', started_at = datetime('now','localtime','-1 day'),
+                          worker_id = 'monitor-test-worker',
                           lease_until = datetime('now','localtime','+60 seconds')
                     WHERE id = ?""", (jid,))
 
@@ -161,6 +162,9 @@ def test_顶栏状态不摊别人项目的作业明细(app, as_role, people, see
     ids = {r["id"] for r in body["running_jobs"]}
     assert ids == {j_mine}, f"editor 只该看到自己项目的作业，实得 {ids}"
     assert "log_path" not in body["running_jobs"][0], "日志路径不再往外给"
+    assert body["running_jobs"][0]["worker_id"] == "monitor-test-worker"
+    assert body["running_jobs"][0]["last_log_at"] is None
+    assert {a["job_id"] for a in body["alerts"] if a["code"] == "run_timeout"} == {j_mine}
     # 队列长度与待核对数不裁：那是共享机器的客观状态，不是项目内容
     assert body["queue"]["running"] == 2, body["queue"]
     admin_ids = {r["id"] for r in as_role("admin").get("/api/worker/status").json()["running_jobs"]}

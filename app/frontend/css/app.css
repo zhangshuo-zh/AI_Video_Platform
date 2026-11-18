@@ -3838,3 +3838,38 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .wp-loglist > li:first-child{color:var(--ink-2)}
 .wp-loglist > li:last-child{color:var(--ink)}
 .wp-sub-head{flex-wrap:wrap;gap:8px}
+
+/* 运行监控的指标、告警定位与窄屏记录。 */
+.mc-monitor-status{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--line)}
+.mc-monitor-status p{margin:0}
+.mc-dash-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.mc-resource-strip{display:flex;gap:6px;flex-wrap:wrap;padding-top:0}
+.mc-monitor-detail>summary,.mc-val-extra>summary,.wp-logbox>summary{cursor:pointer;font-weight:600}
+.mc-monitor-detail ul{padding-inline-start:16px;margin:8px 0}
+.mc-monitor-detail li{overflow-wrap:anywhere;margin-block:5px}
+#mc-running-jobs li span{margin-inline-start:8px}
+.mc-stop-choice{display:block;margin-top:10px}
+.mc-val-extra-fields{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.mc-val-extra-fields .ctl{width:165px;max-width:100%;min-width:0}
+.mc-val-applied{font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.mc-val-mobile-model{display:none}
+#mc-val-rows .mc-val-slot{overflow-wrap:anywhere}
+@media(max-width:760px){
+  .mc-dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .mc-val-extra[open]{flex-basis:100%}
+  .mc-val-extra-fields .ctl{width:min(100%,165px)}
+  .mc-val-applied:not(:empty){flex-basis:100%}
+  .mc-val-scroll table,.mc-val-scroll tbody{display:block;min-width:0;width:100%}
+  .mc-val-scroll thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  #mc-val-rows tr:has(.mc-val-slot){display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;padding:10px;border-bottom:1px solid var(--line)}
+  #mc-val-rows td{display:block;min-width:0;padding:0;border:0}
+  #mc-val-rows td::before{display:none}
+  #mc-val-rows .mc-val-slot{grid-area:1/1}
+  #mc-val-rows .mc-val-result{grid-area:1/2}
+  #mc-val-rows .mc-val-time{grid-area:2/1;white-space:normal}
+  #mc-val-rows .mc-val-kind{grid-area:2/2}
+  #mc-val-rows .mc-val-job{grid-area:3/2}
+  #mc-val-rows .mc-val-detail-cell{grid-area:3/1;overflow-wrap:anywhere}
+  .mc-val-detail-cell>.t-desc,.mc-val-desktop-model{display:none}
+  .mc-val-mobile-model{display:block}
+}

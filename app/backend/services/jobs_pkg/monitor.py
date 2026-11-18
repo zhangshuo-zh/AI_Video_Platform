@@ -254,12 +254,12 @@ def worker_status(user=None) -> dict:
                                f"worker 下一轮恢复会把它们收掉。"})
     for running in health["running_jobs"]:
         if running["over_runtime"]:
-            alerts.append({"level": "bad", "code": "run_timeout",
+            alerts.append({"level": "bad", "code": "run_timeout", "job_id": running["id"],
                            "text": f"作业 #{running['id']} 已跑 "
                                    f"{running['started_seconds']} 秒，超过上限 "
                                    f"{WORKER_MAX_RUNTIME_SECONDS} 秒。"})
         if running["silent_seconds"] is not None and running["silent_seconds"] > LOG_SILENCE_SECONDS:
-            alerts.append({"level": "warn", "code": "log_silent",
+            alerts.append({"level": "warn", "code": "log_silent", "job_id": running["id"],
                            "text": f"作业 #{running['id']} 已经 "
                                    f"{running['silent_seconds']} 秒没有新日志。"})
     if health["needs_attention"] > 0:

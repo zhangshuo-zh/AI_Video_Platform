@@ -15,7 +15,7 @@ import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, f
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
 import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
-import { takeJobPrefill } from '../navstate.js';
+import { takeJobListStatus, takeJobPrefill } from '../navstate.js';
 import { diagnosisHtml } from './diagnosis.js';
 
 // 作业状态的说法与配色在 js/validation.js，能力／运行位置／计费单位在 js/enums.js。
@@ -340,6 +340,8 @@ function filtersHtml() {
 
 export default {
   async render() {
+    const listStatus = takeJobListStatus();
+    if (listStatus) Object.assign(state, { status: listStatus, projectId: '', capability: '', mode: '', q: '' });
     const canSubmit = store.can('job:submit');
     return `
     <section class="view on gen-view">

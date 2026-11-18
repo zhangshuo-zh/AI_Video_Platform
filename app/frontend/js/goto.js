@@ -10,7 +10,7 @@
  * `module`／`sub` 说去哪儿，`shot_id`／`asset_id`／`job_id` 说去了要打开哪一个。
  */
 import { store } from './store.js';
-import { setParam, setSub } from './navstate.js';
+import { setJobListStatus, setParam, setSub } from './navstate.js';
 import { renderView } from './router.js';
 
 /** 认不出的 entry 就什么也不做——按钮点了没反应比跳错地方好。 */
@@ -23,6 +23,9 @@ export function gotoEntry(entry) {
     setParam('assets', Number(entry.asset_id));
   } else if (entry.module === 'generate' && entry.job_id) {
     setParam('generate', Number(entry.job_id));
+  } else if (entry.module === 'generate' && entry.job_status) {
+    setParam('generate', null);
+    setJobListStatus(entry.job_status);
   }
   renderView(entry.module);
   // 带着集号跳转时把顶栏上下文也对齐过去：页面装着第 3 集、顶栏写着第 1 集，

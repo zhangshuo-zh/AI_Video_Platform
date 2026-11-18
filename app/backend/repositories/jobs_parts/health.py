@@ -24,7 +24,7 @@ class JobsHealthMixin:
             # 算，不能按 `updated_at`（见下面 running_rows 里的注释）。
             running = conn.execute(
                 """SELECT id, status, project_id, started_at, updated_at, lease_until,
-                          capability, provider_code, model_code, execution_mode, log_path
+                          capability, provider_code, model_code, execution_mode, log_path, worker_id
                      FROM job
                     WHERE status IN ('starting','running','cancel_requested')
                     ORDER BY id"""
@@ -64,13 +64,15 @@ class JobsHealthMixin:
         running_rows = []
         for r in running:
             started = age(r["started_at"])
+            log = jobfiles.stat_log(r["log_path"]) if r["log_path"] else None
             running_rows.append({
                 # project_id 是给 worker_status 做可见性过滤用的；log_path 不再往外给：
                 # 前端零引用，而它会把服务器目录结构摆进任何登录者的响应里
                 "id": r["id"], "status": r["status"], "project_id": r["project_id"],
                 "capability": r["capability"], "provider": r["provider_code"],
                 "model": r["model_code"], "execution_mode": r["execution_mode"],
-                "started_seconds": started,
+                "started_seconds": started, "worker_id": r["worker_id"],
+                "last_log_at": log["mtime"] if log else None,
                 # **静默秒数按日志文件的 mtime 算，不是 `updated_at`**（2026-11-08）。
                 # `renew()` 每 0.2 秒就把 `updated_at` 刷成 now，所以只要 worker
                 # 活着、`_pump` 还在转，`updated_at` 永远是"刚刚"——拿它判静默，
@@ -79,8 +81,7 @@ class JobsHealthMixin:
                 # 是这台机器上真实发生过的形状）。
                 # 日志还没建出来（领取后极早期）时退回 `updated_at`：
                 # 那一刻"多久没动静"确实只能看行更新时间。
-                "silent_seconds": (jobfiles.stat_log(r["log_path"])["silent_seconds"]
-                                   if r["log_path"] else age(r["updated_at"])),
+                "silent_seconds": log["silent_seconds"] if log else age(r["updated_at"]),
                 "lease_expired": (r["lease_until"] is None
                                   or age(r["lease_until"]) is None
                                   or r["lease_until"] < now.strftime("%Y-%m-%d %H:%M:%S")),

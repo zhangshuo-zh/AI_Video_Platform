@@ -168,7 +168,7 @@ export default {
     <section class="view on">
       <div class="page-head">
         <div class="page-title-wrap">
-          <h1>模型中心</h1>
+          <h1>${sub === 3 ? '运行监控' : '模型中心'}</h1>
           <span class="help-tip lg">
             <span class="help-icon">?</span>
             <span class="tip-pop tip-right">
@@ -191,7 +191,7 @@ export default {
           <button class="btn primary" id="mc-add">登记模型</button>
         </div>
       </div>
-      ${overviewCard(s)}
+      ${sub === 3 ? '' : overviewCard(s)}
       ${body}
       ${MODALS}
     </section>`;

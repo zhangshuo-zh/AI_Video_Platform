@@ -51,3 +51,12 @@ export function takeJobPrefill() {
   jobPrefill = null;
   return value;
 }
+
+// 从监控打开指定状态的作业列表，进入生成中心后消费一次。
+let jobListStatus = '';
+export function setJobListStatus(value) { jobListStatus = value; }
+export function takeJobListStatus() {
+  const value = jobListStatus;
+  jobListStatus = '';
+  return value;
+}

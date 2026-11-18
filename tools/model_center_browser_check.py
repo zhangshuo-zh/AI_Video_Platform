@@ -429,8 +429,8 @@ def main():
         check("点「任务」跳到运行监控",
               (P.eval_js(cdp, "location.hash") or "").startswith("#models/3"),
               str(P.eval_js(cdp, "location.hash")))
-        # 先回仓库那一屏再点按钮：人在 sub3 时点"跳 sub3"看不出它有没有坏
-        P.eval_js(cdp, "document.querySelector('[data-stlink=registered]').click()")
+        # 运行监控隐藏目录概览，回到仓库后再点任务格里的快捷按钮。
+        go(cdp, BASE + '/#models/0')
         time.sleep(0.6)
         P.eval_js(cdp, "document.getElementById('mc-goto-monitor')?.click()")
         time.sleep(0.5)

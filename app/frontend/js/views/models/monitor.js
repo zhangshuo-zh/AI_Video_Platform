@@ -7,7 +7,7 @@
 import { api } from '../../api.js';
 import { store } from '../../store.js';
 import {
-  agoText, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
+  agoText, announce, bindModalDismiss, bindSubChips, confirmDanger, escapeHtml, run, subChipRow,
 } from '../../util.js';
 import { getSub, setSub } from '../../navstate.js';
 import { gotoEntry } from '../../goto.js';
@@ -40,15 +40,41 @@ const POLL_MS = 5000;
 let pollGeneration = 0;
 let operationBusy = false;
 let mutationVersion = 0;
-let monitorFreshness = { at: '', error: '' };
+let monitorFreshness = { at: '', error: '', failed: [] };
 const drafts = new WeakMap();
 
+/**
+ * 这页的"数据是活的"那一行。
+ *
+ * v1.52 改过三件事，理由都在实测里（2026-11-17）：
+ *
+ * 1. **删掉「立即刷新」按钮**。它不是新功能：点击走的是 `root.__monitorTick()`，
+ *    与下面 `setInterval(tick, POLL_MS)` 是**同一个函数**。实测点一下 63ms 见效、
+ *    不点最多等 2.95s——为了省不到 3 秒，在页头常驻一颗按钮，不划算。
+ *    按钮删了，但**"会自己刷新"这句话必须留着**：不留，新人会怀疑这是一屏快照，
+ *    停在这里盯半天不敢动。所以保留文案、去掉手动入口。
+ *
+ * 2. **正常态不再带 `role="status"`**。原来整行是活区，而这行每拍都换一次时间戳，
+ *    实测 11 秒内文字变 2 次——用读屏的人停在这页就是每 5 秒被念一次
+ *    "最后完整更新 21时10分06秒"，连续不断。正常节拍不该念。
+ *    异常态（读取失败）才挂活区：那才是"需要立刻知道"的事。
+ *
+ * 3. **时间戳不再逐秒显示**。它原来是 `toLocaleTimeString()`，精确到秒，
+ *    于是每 5 秒这一行就变一次。改成"数据是活的"这句静态话，
+ *    外加一个异常才出现的来源说明——人要看最近一次成功的时刻，
+ *    异常文案里仍然带着（`保留上次数据（21:10:06）`），够用。
+ */
 function freshnessHtml() {
-  return `<p id="mc-freshness" class="hint" role="status">${escapeHtml(
-    monitorFreshness.error
-      ? `连接异常：${monitorFreshness.error}；保留上次数据（${monitorFreshness.at || '尚未成功刷新'}）`
-      : `最后完整更新：${monitorFreshness.at || '等待刷新'} · 每 5 秒刷新`)}
-    <button class="btn xs" id="mc-monitor-refresh">立即刷新</button></p>`;
+  // 异常态：挂 role="status"，让读屏念出来；并且**不随时间流逝而变**，
+  // 同一句重复写不会反复触发播报（真恢复时它会整行消失）。
+  if (monitorFreshness.error) {
+    return `<p id="mc-freshness" class="hint" role="status">${escapeHtml(
+      `连接异常：${monitorFreshness.error}；保留上次数据`
+      + `（${monitorFreshness.at || '尚未成功刷新'}），恢复后自动清除。`)}</p>`;
+  }
+  // 正常态：**没有 role，没有秒级时间戳，没有按钮**。
+  return `<p id="mc-freshness" class="hint">${escapeHtml(
+    `队列、进程、守护每 5 秒自动刷新；读取失败会在这里标出来源。`)}</p>`;
 }
 
 function restoreDrafts(root) {
@@ -104,17 +130,19 @@ function jobJumpHtml(jobId) {
 /** 验证历史的一条行。首屏渲染与「更早」追加共用这一份——原来两处各抄了一遍
  *  同一段行 HTML，改一处忘另一处，翻到第二页列就错位。 */
 function valRow(v) {
+  const when = escapeHtml(String(v.created_at || '').slice(0, 16));
+  const model = escapeHtml(v.model || '未记录模型');
   return `<tr>
-    <td><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
-    <td>${stateChip(v.state)}</td>
-    <td class="hint">${escapeHtml(v.capability_label || v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}<br><code>${escapeHtml(v.model || '未记录模型')}</code></td>
-    <td>${v.job_id ? jobJumpHtml(v.job_id) : '—'}</td>
-    <td><span class="t-desc">${escapeHtml(v.detail || '')}</span>
+    <td class="mc-val-kind"><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
+    <td class="mc-val-result">${stateChip(v.state)}</td>
+    <td class="hint mc-val-slot"><strong class="mc-val-mobile-model">${model}</strong>${escapeHtml(v.capability_label || v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}<br class="mc-val-desktop-model"><code class="mc-val-desktop-model">${model}</code></td>
+    <td class="mc-val-job">${v.job_id ? jobJumpHtml(v.job_id) : '—'}</td>
+    <td class="mc-val-detail-cell"><span class="t-desc">${escapeHtml(v.detail || '')}</span>
       <details data-validation-detail="${Number(v.id)}"><summary class="btn-link">查看完整说明</summary>
         <p class="hint">记录 #${Number(v.id)} · ${escapeHtml(v.provider || '—')} / ${escapeHtml(v.model || '未记录模型')} · ${escapeHtml(v.created_at || '')}</p>
         <pre class="mc-validation-detail">${escapeHtml(v.detail || '未记录说明')}</pre>
       </details></td>
-    <td class="t-dim">${escapeHtml(String(v.created_at || '').slice(0, 16))}</td>
+    <td class="t-dim mc-val-time">${when}</td>
   </tr>`;
 }
 
@@ -134,6 +162,23 @@ export function validationPager() {
  * 前者只在登记/验证时才变，后者一重画就把人刚翻到的页码 reset 回第一页。
  * 每次调用都现读 cache.worker，所以轮询更新缓存后重画即是新数。
  */
+function ageLabel(seconds) {
+  if (seconds == null) return '—';
+  return seconds < 60 ? `${seconds} 秒` : agoText(seconds).replace(/前$/, '');
+}
+
+function staleLabel(source) {
+  return monitorFreshness.failed.includes(source) ? '<span class="chip amber">读取失败</span>' : '';
+}
+
+function alertAction(a) {
+  if (a.job_id) return `<button class="btn xs" data-goto-job="${Number(a.job_id)}">查看作业 #${Number(a.job_id)}</button>`;
+  if (a.code === 'worker_offline') return '<button class="btn xs" data-monitor-target="mc-process-card">查看 Worker 进程</button>';
+  if (a.code?.startsWith('concurrency_')) return '<button class="btn xs" data-monitor-target="mc-concurrency-card">查看并发设置</button>';
+  if (a.code === 'needs_attention') return '<button class="btn xs" data-job-status="needs_attention">查看待核对作业</button>';
+  return '<button class="btn xs" data-goto-gen>前往生成中心</button>';
+}
+
 function liveCards() {
   const w = cache.worker || {};
   const q = w.queue || {};
@@ -185,11 +230,17 @@ function liveCards() {
     `<span class="chip plain">${escapeHtml((JOB_STATUS[k] || [])[1] || k)} ${v}</span>`).join('')
     || '<span class="t-dim">—</span>';
 
-  const alertList = w.alerts || [];
+  const alertList = [...(w.alerts || [])].sort((a, b) => Number(b.level === 'bad') - Number(a.level === 'bad'));
+  const activeJobs = (w.running_jobs || []).map((j) => `<li>
+    ${jobJumpHtml(j.id)} <span>${escapeHtml(j.model || RES_LABEL[j.capability] || j.capability || '—')}</span>
+    <span>已运行 ${escapeHtml(ageLabel(j.started_seconds))}</span>
+    <span>最近日志 ${escapeHtml(j.last_log_at || '未取得')}</span>
+    <span class="mono" title="${escapeHtml(j.worker_id || '')}">${escapeHtml(j.worker_id || '未分配 Worker')}</span>
+  </li>`).join('');
   const alerts = alertList.map((a) => `<li class="mc-alert-item">
       <span class="chip ${a.level === 'bad' ? 'red' : 'amber'}">${escapeHtml(alertLabel(a.code))}</span>
       <span>${escapeHtml(a.text)}</span>
-      <button type="button" class="btn xs" data-goto-gen>去生成中心处理</button>
+      ${alertAction(a)}
     </li>`).join('');
 
   const alertCard = alertList.length ? `
@@ -210,7 +261,7 @@ function liveCards() {
         </span>
       </div>
       <span class="right">
-        <button type="button" class="btn xs" data-goto-gen>前往生成中心</button>
+        <button type="button" id="mc-alert-generate" class="btn xs" data-goto-gen>前往生成中心</button>
       </span>
     </div>
     <div class="card-body">
@@ -222,7 +273,8 @@ function liveCards() {
   <div class="card mb-card" >
     <div class="card-head">
       <div style="display:flex;align-items:center">
-        <h2>队列与 worker</h2>
+        <h2>队列与 Worker</h2>
+        ${staleLabel('队列 / 心跳')}
         <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
@@ -241,15 +293,13 @@ function liveCards() {
       </span>
     </div>
     <div class="card-body dash-grid mc-dash-grid">
-      <div><span class="grp">排队</span><b>${q.queued ?? 0}</b>
-        <div class="dash-chips">${queueChips}</div></div>
-      <div><span class="grp">执行中</span><b>${q.running ?? 0}</b>
-        <div class="dash-chips" title="各状态作业的累计数（库里全部作业），不是此刻在跑的数量">
-          <span class="t-dim mc-chip-lead">累计</span>${statusChips}</div></div>
-      <div><span class="grp">需要人看一眼</span><b>${w.needs_attention ?? 0}</b>
-        <div class="dash-chips"><span class="chip plain">租约过期 ${w.expired_leases ?? 0}</span>
-          <span class="chip plain">最长排队 ${w.oldest_queued_seconds ?? 0}s</span></div></div>
+      <div><span class="grp">排队</span><b>${q.queued ?? '—'}</b><span class="hint">最长等待 ${escapeHtml(ageLabel(w.oldest_queued_seconds))}</span></div>
+      <div><span class="grp">执行中</span><b>${q.running ?? '—'}</b><span class="hint">租约过期 ${w.expired_leases ?? '—'}</span></div>
+      <div><span class="grp">在线 Worker</span><b>${w.live_count ?? liveNodes.length}</b></div>
+      <div><span class="grp">待核对作业</span><b>${w.needs_attention ?? '—'}</b></div>
     </div>
+    <div class="card-body mc-resource-strip">${queueChips}</div>
+    ${activeJobs ? `<details id="mc-running-jobs" class="card-body mc-monitor-detail"><summary id="mc-running-summary">执行中作业 · ${w.running_jobs.length}</summary><ul>${activeJobs}</ul></details>` : ''}
     <div class="table-wrap"><table class="mc-worker-table">
       <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th></tr></thead>
       <tbody>${workers || `<tr><td colspan="5" class="hint">${
@@ -257,6 +307,7 @@ function liveCards() {
                          : '还没有 worker 登记过心跳'}</td></tr>`}</tbody>
     </table></div>
     ${historyLine}
+    <details id="mc-job-history" class="card-body mc-monitor-detail"><summary id="mc-history-summary">作业历史累计</summary><div class="dash-chips">${statusChips}</div></details>
   </div>`;
 }
 
@@ -266,7 +317,7 @@ function opsCards() {
 
 export function pageMonitor() {
   const s = cache.stats;
-  monitorFreshness = { at: '', error: '' };
+  monitorFreshness = { at: '', error: '', failed: [] };
   valFilterState = '';
   valFilterKind = '';
   valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
@@ -275,7 +326,7 @@ export function pageMonitor() {
   const kindOptions = Object.entries(VAL_KIND_LABEL).map(([k, label]) =>
     `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
   return `
-  ${freshnessHtml()}
+  <div class="mc-monitor-status">${freshnessHtml()}</div>
   <div id="mc-live">${liveCards()}</div>
   <div id="mc-ops" class="mc-ops-grid">${opsCards()}</div>
 
@@ -306,13 +357,16 @@ export function pageMonitor() {
           <option value="">全部出处</option>
           ${kindOptions}
         </select>
-        <input class="inp" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
-        <input class="inp" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
+        <details class="mc-val-extra" id="mc-val-extra"><summary>更多筛选</summary><div class="mc-val-extra-fields">
+        <input class="ctl" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
+        <input class="ctl" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
         <span class="hint">日期（含起止日）</span>
-        <input class="inp" type="date" id="mc-val-from" aria-label="开始日期">
-        <input class="inp" type="date" id="mc-val-to" aria-label="结束日期">
+        <input class="ctl" type="date" id="mc-val-from" aria-label="开始日期">
+        <input class="ctl" type="date" id="mc-val-to" aria-label="结束日期">
         <button class="btn xs" id="mc-val-apply">应用筛选</button>
+        </div></details>
         <button class="btn xs" id="mc-val-reset">重置</button>
+        <span class="mc-val-applied"></span>
         <span class="mc-val-pager">${validationPager()}</span>
       </div>
     </div>
@@ -328,11 +382,14 @@ export function pageMonitor() {
 /** 离线进程折叠按钮：轮询重画 #mc-live 后也要重绑，所以单独抽出来。
  *  展开状态存在 shared 的模块变量里，重画不会把人刚点开的那段折回去。 */
 function bindWorkerHistory(root) {
-  root.querySelector('#mc-worker-history')?.addEventListener('click', () => {
+  const button = root.querySelector('#mc-worker-history');
+  if (!button || button.dataset.bound) return;
+  button.dataset.bound = 'true';
+  button.addEventListener('click', () => {
     toggleWorkerHistory();
     // 只重画 live 两张卡，不动验证留痕（保住人翻到的页码）。
     const live = root.querySelector('#mc-live');
-    if (live) { live.innerHTML = liveCards(); bindWorkerHistory(root); }
+    if (refreshMarkup(live, liveCards())) bindWorkerHistory(root);
   });
 }
 
@@ -410,7 +467,8 @@ function workerProcessCard() {
   <div class="card mb-card">
     <div class="card-head">
       <div style="display:flex;align-items:center">
-        <h2>worker 进程</h2>
+        <h2 id="mc-process-card" tabindex="-1">Worker 进程</h2>
+        ${staleLabel('进程 / 日志')}
         <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
@@ -431,25 +489,14 @@ function workerProcessCard() {
         <strong>只有开了守护</strong>才会自动拉起。停止可能中断当前作业，需要人工检查后重试；不会自动续跑。
       </p>
 
-      <!-- 启停：标签在左、控件在右，用全站同一套 form-grid。
-           原来这几行用的是 row-actions 那个 class——它在 app.css 里根本
-           没有定义（全站 4 处用它，一行 CSS 都没有），全靠行内 style 撑，
-           于是"启动 [1] 个"和两个按钮挤成一行、宽度随内容乱跳。
-           注意：模板字符串里的注释**不能出现反引号**，会提前闭合模板
-           字面量、把后面的 HTML 当代码执行（这里撞上了同名的 actions）。 -->
       <div class="form-grid wp-grid">
-        <label>数量</label>
+        <label for="mc-wp-count">启动数量</label>
         <div class="wp-inline">
           <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1">
-          <span class="hint">个（上限 8）</span>
-        </div>
-        <label>操作</label>
-        <div class="wp-inline">
           <button class="btn primary" id="mc-wp-start">启动</button>
-          <select class="ctl sm" id="mc-stop-mode" aria-label="停止时的守护行为">
-            <option value="pause">暂停全局守护后停止</option>
-            <option value="once">仅本次停止，守护可能补起</option>
-          </select>
+        </div>
+        <label>进程控制</label>
+        <div class="wp-inline">
           <button class="btn danger" id="mc-wp-stop">全部停止</button>
           ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
           <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
@@ -466,7 +513,8 @@ function workerProcessCard() {
            人会不知道该先按哪个。 -->
       <section class="wp-sub">
         <div class="wp-sub-head">
-          <h3>守护（自动拉起）</h3>
+          <h3>守护设置</h3>
+          ${staleLabel('守护')}
           <span class="right">${daemonChip}</span>
         </div>
         <p class="note flush">${daemonLine}</p>
@@ -504,7 +552,8 @@ function workerProcessCard() {
            有启动/退出/崩溃栈，只是从来没在界面上露过面。
            行高定死、超出滚：日志不能反过来把卡片撑高，否则又跟并发设置卡
            打架（这次是它变高）。 -->
-      <section class="wp-logbox">
+      <details class="wp-logbox" id="mc-log-panel" open>
+        <summary id="mc-log-summary">Worker 日志</summary>
         <div class="wp-sub-head">
           <h3>最近输出</h3>
           <button class="btn xs" id="mc-log-follow">${logFollowing ? '暂停跟随' : '继续跟随'}</button>
@@ -522,7 +571,7 @@ function workerProcessCard() {
           完整日志：<code>${escapeHtml(String(p.log_path || 'data/logs/worker.log').replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log')}</code>
           （追加写，重启不丢上一次的输出）。
         </p>
-      </section>
+      </details>
     </div>
   </div>`;
 }
@@ -532,7 +581,7 @@ async function refreshWorkerProcess(root, action, payload) {
   operationBusy = true;
   mutationVersion += 1;
   syncOperationButtons(root);
-  const pauseDaemon = root.querySelector('#mc-stop-mode')?.value !== 'once';
+  let pauseDaemon = true;
   try {
     if (action !== 'start' && action !== 'clean') {
       // 确认前读取最新作业，读取失败则取消，避免用旧快照承诺没有影响。
@@ -542,10 +591,12 @@ async function refreshWorkerProcess(root, action, payload) {
         ? `当前运行作业（可能受影响）：${jobs.map((j) => `#${Number(j.id || j.job_id)}`).join('、')}。`
         : '当前未观测到运行作业，但确认期间仍可能有新作业被领取。';
       if (!(await confirmDanger({ title: action === 'stopOne' ? `停止 Worker ${payload.pid}` : '停止全部受管 Worker',
-        body: `${escapeHtml(affected)}<br>停止可能中断作业，需要检查后人工重试，不会自动续跑。<br>${pauseDaemon
-          ? '将先暂停全局守护；其他 Worker 也暂时失去自动补起保护。'
-          : '保留守护设置；若在线数量不足，守护会再次补起 Worker。'}`,
-        okText: pauseDaemon ? '暂停守护并停止' : '仅停止本次' }))) return;
+        body: `${escapeHtml(affected)}<br>停止可能中断作业，需要检查后人工重试。
+          <label class="mc-stop-choice"><input type="radio" name="mc-stop-mode" value="pause" checked> 暂停全局守护后停止</label>
+          <label class="mc-stop-choice"><input type="radio" name="mc-stop-mode" value="once"> 仅停止本次，守护可能再次补起</label>`,
+        okText: '确认停止' }))) return;
+      pauseDaemon = document.querySelector('input[name="mc-stop-mode"]:checked')?.value !== 'once';
+
     }
     setMsg(root, 'mc-wp-msg', action === 'start'
       ? '正在启动（逐个等它写第一份心跳）…' : action === 'clean' ? '正在复查并清理残留登记…' : '正在停止（可能中断当前作业）…');
@@ -606,28 +657,89 @@ async function saveDaemon(root) {
 
 function paintFreshness(root) {
   const el = root.querySelector('#mc-freshness');
-  if (el) el.outerHTML = freshnessHtml();
+  if (!el) return;
+  const next = freshnessHtml();
+  if (el.dataset.rendered !== next) {
+    el.outerHTML = next;
+    root.querySelector('#mc-freshness').dataset.rendered = next;
+  }
 }
 
-/** 重画实时区与运维操作区，保留验证留痕不动。 */
-function repaintLive(root) {
-  const live = root.querySelector('#mc-live');
-  if (live) {
-    live.innerHTML = liveCards();
-    bindWorkerHistory(root);
+/**
+ * 只在**状态翻转**时播报，不在每一拍播报。
+ *
+ * 这一行现在是正常态静默、异常态才有 `role="status"`。但"静默→异常"那一下
+ * 如果只靠节点的出现来触发，读屏未必会念（节点是整块换进去的，
+ * 有些读屏只认已存在活区里的文本变化）。所以显式用 `announce()` 说一次，
+ * 走的是全站同一套 aria-live 通道（util.js:756）。
+ *
+ * **必须去重**：tick 每 5 秒一次。不去重就是把刚治好的"每 5 秒念一遍"
+ * 原样搬到另一个通道上——异常持续期间会一直重复。所以记住上一次报过的错误文本，
+ * 只在它变了（新错误、或从异常恢复正常）时说话。
+ */
+let lastAnnouncedFreshness = '';
+function announceFreshness() {
+  const key = monitorFreshness.error;
+  if (key === lastAnnouncedFreshness) return;
+  lastAnnouncedFreshness = key;
+  announce(key ? `运行监控读取异常：${key}，已保留上次数据。`
+               : '运行监控连接已恢复。');
+}
+
+const monitorMarkup = new WeakMap();
+
+function refreshMarkup(host, html) {
+  if (!host || monitorMarkup.get(host) === html) return false;
+  const focused = host.contains(document.activeElement) ? document.activeElement : null;
+  const state = [...host.querySelectorAll('details[id]')].map((el) => [el.id, el.open]);
+  const next = document.createElement('template');
+  next.innerHTML = html;
+  for (const [id, open] of state) {
+    const el = next.content.getElementById(id);
+    if (el) el.open = open;
   }
+  // 轮询保留内容未变的整块卡片和仍然存在的键盘目标。
+  const stableAttrs = ['id', 'data-goto-job', 'data-monitor-target', 'data-job-status', 'data-stop-pid', 'data-goto-gen'];
+  const attr = focused && stableAttrs.find((key) => focused.hasAttribute(key));
+  const controls = attr ? [...next.content.querySelectorAll(`[${attr}]`)] : [];
+  const replacement = controls.find((el) => el.getAttribute(attr) === focused.getAttribute(attr)
+    && el.className === focused.className);
+  const existing = [...host.children];
+  const incoming = [...next.content.children];
+  if (existing.length === incoming.length) {
+    incoming.forEach((el, i) => {
+      if (existing[i].outerHTML !== el.outerHTML) existing[i].replaceWith(el);
+    });
+  } else {
+    host.replaceChildren(next.content);
+  }
+  monitorMarkup.set(host, html);
+  if (focused && !focused.isConnected) {
+    const target = replacement?.isConnected ? replacement : null;
+    target?.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+function repaintLive(root) {
+  if (refreshMarkup(root.querySelector('#mc-live'), liveCards())) bindWorkerHistory(root);
   const ops = root.querySelector('#mc-ops');
-  if (ops) {
-    const logScroll = root.querySelector('.wp-loglist')?.scrollTop || 0;
+  const logScroll = ops?.querySelector('.wp-loglist')?.scrollTop || 0;
+  // 运维表单保留既有草稿模型。避免给未替换的控件再次绑定监听。
+  const html = ops && opsCards();
+  if (ops && monitorMarkup.get(ops) !== html) {
     const focusedId = ops.contains(document.activeElement) ? document.activeElement.id : null;
-    ops.innerHTML = opsCards();
+    const details = [...ops.querySelectorAll('details[id]')].map((el) => [el.id, el.open]);
+    ops.innerHTML = html;
+    monitorMarkup.set(ops, html);
+    details.forEach(([id, open]) => { const el = document.getElementById(id); if (el) el.open = open; });
     bindWorkerProcess(root);
     bindConcurrency(root);
     restoreDrafts(root);
     syncOperationButtons(root);
     const logList = root.querySelector('.wp-loglist');
     if (logList) logList.scrollTop = logFollowing ? logList.scrollHeight : logScroll;
-    if (focusedId) root.querySelector(`#${focusedId}`)?.focus({ preventScroll: true });
+    if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   }
 }
 
@@ -726,14 +838,14 @@ function concurrencyCard() {
        </p>`;
 
   const sourceText = c.source === 'web'
-    ? `当前生效：<b>网页设置</b>（全局 ${effective.global ?? '—'}）`
-    : `当前生效：<b>进程默认</b>（全局 ${effective.global ?? '—'}，来自启动参数或环境变量）`;
+    ? `网页策略：<b>已保存</b>（全局 ${effective.global ?? '—'}）`
+    : `网页策略：<b>使用默认</b>（全局 ${effective.global ?? '—'}，配置基线）`;
 
   return `
   <div class="card mb-card">
     <div class="card-head">
       <div style="display:flex;align-items:center">
-        <h2>并发设置</h2>
+        <h2 id="mc-concurrency-card" tabindex="-1">并发设置</h2>
         <span class="help-tip">
           <span class="help-icon">?</span>
           <span class="tip-pop tip-right">
@@ -752,6 +864,13 @@ function concurrencyCard() {
     </div>
     <div class="card-body">
       <p class="note flush">${sourceText}</p>
+      <details id="mc-reported-limits" class="mc-monitor-detail">
+        <summary id="mc-limits-summary">在线 Worker 上报的并发上限</summary>
+        <ul>${((cache.worker || {}).workers || []).filter((w) => w.online).map((w) =>
+          `<li><code>${escapeHtml(w.worker_id || '—')}</code> · 全局 ${escapeHtml(String(w.limits?.global ?? '未上报'))}
+            ${Object.entries(w.limits?.per || {}).map(([key, value]) =>
+              escapeHtml(` · ${RES_LABEL[key] || key} ${value}`)).join('')}</li>`).join('') || '<li>暂无在线 Worker</li>'}</ul>
+      </details>
       <div class="table-wrap mc-conc-wrap"><table class="mc-conc-table">
         <thead><tr><th>资源类</th><th>本机实测占用</th><th>上限</th></tr></thead>
         <tbody>
@@ -894,11 +1013,17 @@ function renderValidationTable(root) {
   if (tbody) {
     const rows = cache.validations?.items || [];
     tbody.innerHTML = rows.map(valRow).join('')
-      || `<tr><td colspan="6" class="hint">${(valFilterState || valFilterKind)
+      || `<tr><td colspan="6" class="hint">${(valFilterState || valFilterKind || Object.values(valExtra).some(Boolean))
         ? '当前筛选条件下没有验证记录' : '还没有验证记录'}</td></tr>`;
   }
   const pager = root.querySelector('.mc-val-pager');
   if (pager) pager.innerHTML = validationPager();
+  const applied = root.querySelector('.mc-val-applied');
+  if (applied) {
+    const { provider, model, dateFrom, dateTo } = appliedFilters;
+    applied.textContent = [provider && `供应商 ${provider}`, model && `模型 ${model}`,
+      (dateFrom || dateTo) && `${dateFrom || '不限'} 至 ${dateTo || '不限'}`].filter(Boolean).join(' · ');
+  }
 }
 
 function restoreFilterControls(root, filters) {
@@ -985,6 +1110,18 @@ export function mountMonitor(root) {
   if (!root.__monitorNavDelegated) {
     root.__monitorNavDelegated = true;
     root.addEventListener('click', (e) => {
+      const target = e.target.closest('[data-monitor-target]');
+      if (target) {
+        const heading = document.getElementById(target.dataset.monitorTarget);
+        heading?.focus();
+        heading?.scrollIntoView({ block: 'center' });
+        return;
+      }
+      const status = e.target.closest('[data-job-status]');
+      if (status) {
+        gotoEntry({ module: 'generate', job_status: status.dataset.jobStatus });
+        return;
+      }
       const jobBtn = e.target.closest('[data-goto-job]');
       if (jobBtn) {
         gotoEntry({ module: 'generate', job_id: Number(jobBtn.dataset.gotoJob) });
@@ -1050,20 +1187,20 @@ export function mountMonitor(root) {
         if (result.status === 'fulfilled') cache[keys[i]] = result.value;
         else failed.push(['队列 / 心跳', '进程 / 日志', '守护'][i]);
       });
+      monitorFreshness.failed = failed;
       monitorFreshness.error = failed.length ? `${failed.join('、')}读取失败` : '';
       if (!failed.length) monitorFreshness.at = new Date().toLocaleTimeString();
       repaintLive(root);
       paintFreshness(root);
+      // 正常拍不发声，只在"刚出问题 / 刚恢复"那一下说一句（见 announceFreshness）。
+      announceFreshness();
     } finally { inFlight = false; }
   };
-  // 委托绑定不会因状态提示节点更新而丢失。
+  // `root.__monitorTick` 仍然挂着，但**不再有按钮去点它**（v1.52 删了「立即刷新」）。
+  // 留着这个引用是给浏览器验收用的：tools/monitor_interaction_browser_check.py
+  // 需要一个"立刻触发一拍"的入口来验单飞、写屏障、切页丢弃这些时序，
+  // 原来靠点按钮，现在直接调它——比"为此保留一个没人点的按钮"干净。
   root.__monitorTick = tick;
-  if (!root.__monitorRefreshBound) {
-    root.__monitorRefreshBound = true;
-    root.addEventListener('click', (e) => {
-      if (e.target.closest('#mc-monitor-refresh')) root.__monitorTick?.();
-    });
-  }
   tick();
   pollTimer = setInterval(() => {
     if (!alive()) { stopPoll(); return; }
