@@ -231,8 +231,8 @@ def worker_status(user=None) -> dict:
         age = live[0]["age_seconds"]
         current_job_id = next((w["current_job_id"] for w in live
                                if w["current_job_id"]), None)
-    elif state is not None:
-        # 兼容只写过单行 worker_state 的旧库／旧进程：没有节点明细时退回单行判断
+    elif state is not None and not any(w["worker_id"] == state["worker_id"] for w in nodes):
+        # 仅兼容没有对应节点的旧进程。节点已离线时，不能用早一拍读取的镜像覆盖。
         heartbeat = state["heartbeat_at"] or ""
         age = _seconds_since(heartbeat)
         online = age is not None and age <= WORKER_ONLINE_SECONDS

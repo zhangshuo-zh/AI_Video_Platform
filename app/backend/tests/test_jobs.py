@@ -583,6 +583,35 @@ def test_删项目留下作业与产物目录(as_role, clean_queue, fresh_projec
     assert job["id"] not in [j["id"] for j in as_role("outsider").get("/api/jobs").json()]
 
 
+def test_删项目后作业不计入历史累计(as_role, clean_queue, fresh_project):
+    """已删除项目的无主作业仍留账，但不计入运行监控的 by_status 历史累计。"""
+    base = as_role("admin").get("/api/worker/status").json()["by_status"].get("succeeded", 0)
+    c = as_role("editor")
+    pid_keep = fresh_project("editor")
+    pid_drop = fresh_project("editor")
+    _submit(c, pid_keep)
+    _submit(c, pid_drop)
+    worker.run_once("w-keep")
+    worker.run_once("w-drop")
+
+    before = as_role("admin").get("/api/worker/status").json()["by_status"]
+    assert before.get("succeeded", 0) == base + 2
+
+    services.delete_project_cascade(pid_drop, "测试")
+
+    after = as_role("admin").get("/api/worker/status").json()["by_status"]
+    assert after.get("succeeded", 0) == base + 1
+
+    # 极端情况：无主作业若仍在排队，物理队列深度 queued 仍如实统计
+    queued_job = _submit(c, pid_keep).json()
+    services.delete_project_cascade(pid_keep, "测试")
+    assert jobs.get(queued_job["id"])["project_id"] is None
+    st = as_role("admin").get("/api/worker/status").json()
+    assert st["by_status"].get("queued", 0) == 0
+    assert st["queue"]["queued"] == 1
+    assert sum(bucket["queued"] for bucket in st["queue"]["by_resource"].values()) == 1
+
+
 def test_日志路径越界读不到():
     assert jobfiles.read_log("/etc/passwd") == ""
     assert jobfiles.read_log("../platform.db") == ""

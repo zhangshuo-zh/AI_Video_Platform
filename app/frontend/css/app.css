@@ -2805,7 +2805,7 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
   padding:2px 0;font-size:12px;line-height:1.55;color:var(--ink-2);
   /* 一行一条，超长折行而不是横向滚：traceback 的路径都很长，
      横向滚会让人以为"右边还有别的列"。 */
-  white-space:pre-wrap;word-break:break-all;
+  white-space:pre-wrap;overflow-wrap:break-word;word-break:normal;
 }
 /* 倒序显示（最新的在最上面），所以第一条加一点分量让它像"最新那条" */
 .wp-loglist > li:first-child{color:var(--ink)}
@@ -2816,17 +2816,10 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
    互相打架：live 区最后一张卡（并发设置）被后一条清成 0，下面的「模型维度」就贴了上来。 */
 #mc-live{display:flex;flex-direction:column;gap:14px;margin-bottom:14px}
 #mc-live .card{margin:0}
-/* 进程启停与并发设置都是低频配置卡：宽屏等高并排对齐，窄屏仍单列；独立于轮询区避免失灵 */
-.mc-ops-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:stretch;margin-bottom:20px}
-.mc-ops-grid .card{margin:0;display:flex;flex-direction:column;height:100%}
-.mc-ops-grid .card-body{flex:1;display:flex;flex-direction:column}
-/* 并发设置卡的最后一块按钮仍然沉底（它下面没有可伸缩的内容）。
-   **`.wp-log` 在 0049 从这条规则里移出去了**：它原来是 `margin-top:auto`，
-   于是 worker 卡被拉伸出来的 175px 全变成日志行上方的一个空洞（1440 宽实测）。
-   现在日志尾巴 `.wp-logbox` 用 flex:1 吃掉剩余高度，日志行是它内部的最后一行，
-   跟着内容走——同样一张卡，同样的高度，空当变成了 8 行真实输出。 */
-.mc-ops-grid .row-actions{margin-top:auto !important;padding-top:14px}
-@media (min-width:1180px){.mc-ops-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+/* 进程启停与并发设置都是低频配置卡：独立于轮询区避免失灵，上下单列排布避免动态进程数撑出空洞 */
+.mc-ops-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-bottom:20px}
+.mc-ops-grid .card{margin:0}
+.mc-ops-grid .row-actions{padding-top:14px}
 /* 队列与 worker 顶部三指标分块呈现，视觉更均衡 */
 .mc-dash-grid{grid-template-columns:minmax(280px,1.5fr) minmax(0,1fr) minmax(0,1fr);gap:12px;padding:14px 18px}
 .mc-dash-grid > div{
@@ -3840,10 +3833,17 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .wp-sub-head{flex-wrap:wrap;gap:8px}
 
 /* 运行监控的指标、告警定位与窄屏记录。 */
-.mc-monitor-status{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--line)}
+.mc-monitor-status:has(.mc-fresh-ok){display:none}
+.mc-monitor-status{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--warn);background:var(--warn-soft);border-radius:0 var(--r-ctl) var(--r-ctl) 0}
 .mc-monitor-status p{margin:0}
+.mc-offline-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;border-top:1px solid var(--line);padding:10px 18px}
+.mc-val-filterbar{padding:10px 18px;background:var(--panel-2);border-bottom:1px solid var(--line)}
 .mc-dash-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
-.mc-resource-strip{display:flex;gap:6px;flex-wrap:wrap;padding-top:0}
+.mc-resource-strip{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding-top:0}
+.mc-resource-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mc-job-history{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.mc-job-history .hint{line-height:1}
+.mc-job-history .dash-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:0}
 .mc-monitor-detail>summary,.mc-val-extra>summary,.wp-logbox>summary{cursor:pointer;font-weight:600}
 .mc-monitor-detail ul{padding-inline-start:16px;margin:8px 0}
 .mc-monitor-detail li{overflow-wrap:anywhere;margin-block:5px}
@@ -3856,6 +3856,7 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 #mc-val-rows .mc-val-slot{overflow-wrap:anywhere}
 @media(max-width:760px){
   .mc-dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .mc-job-history{margin-left:0}
   .mc-val-extra[open]{flex-basis:100%}
   .mc-val-extra-fields .ctl{width:min(100%,165px)}
   .mc-val-applied:not(:empty){flex-basis:100%}
@@ -3872,4 +3873,58 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   #mc-val-rows .mc-val-detail-cell{grid-area:3/1;overflow-wrap:anywhere}
   .mc-val-detail-cell>.t-desc,.mc-val-desktop-model{display:none}
   .mc-val-mobile-model{display:block}
+}
+
+/* ---------- Worker 进程卡美化（2026-11-19） ----------
+   控件统一 32px：数字框、「启动」「全部停止」「清理残留」「保存」同高，
+   进程表里的行内「停止」用 xs（26px）——那是行内操作，不与主控件抢视觉。
+   「全部停止」降为红色描边次级按钮，悬停才填红，避免整卡一块大红底。 */
+.wp-inline .btn,.wp-inline .inp{height:32px;box-sizing:border-box}
+.wp-inline .btn{padding:0 14px}
+.wp-inline .inp{padding:0 10px}
+.wp-inline .btn.danger{background:transparent}
+.wp-inline .btn.danger:hover{background:var(--bad);color:var(--danger-fg);border-color:transparent}
+.wp-sub .wp-inline .hint{white-space:nowrap}
+.wp-sub .wp-inline .hint:last-child{white-space:normal}
+
+/* 进程表：受管＋外部同表，PID 只在这里出现一次 */
+.wp-proc{margin-top:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.wp-proc-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.wp-proc-table th{
+  text-align:left;font-weight:600;font-size:11.5px;color:var(--ink-3);
+  padding:6px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);
+}
+.wp-proc-table td{padding:6px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.wp-proc-table tbody tr:last-child td{border-bottom:0}
+.wp-proc-table .wp-op{text-align:right;white-space:nowrap}
+.wp-proc-table th:last-child{text-align:right}
+
+/* 日志：默认折叠成一行贴紧守护区；展开后自适应显示，时间戳淡化、级别着色 */
+.wp-logbox{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.wp-logbox > summary{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  list-style:none;font-size:13px;color:var(--ink);
+}
+.wp-logbox > summary::-webkit-details-marker{display:none}
+.wp-logbox > summary > span:first-child::before{
+  content:'▸';display:inline-block;margin-right:6px;font-size:11px;color:var(--ink-3);
+}
+.wp-logbox[open] > summary{margin-bottom:10px}
+.wp-logbox[open] > summary > span:first-child::before{content:'▾'}
+.wp-logbox .wp-log{margin-top:0;font-weight:400;text-align:right}
+.wp-logbox .wp-log code{font-size:11.5px}
+.wp-loglist .lg-t{color:var(--ink-3)}
+.wp-loglist .lg-lv{font-weight:600}
+.wp-loglist > li.lv-warn{color:var(--warn)}
+.wp-loglist > li.lv-error{color:var(--bad)}
+.wp-loglist > li.lv-warn:first-child,.wp-loglist > li.lv-warn:last-child{color:var(--warn)}
+.wp-loglist > li.lv-error:first-child,.wp-loglist > li.lv-error:last-child{color:var(--bad)}
+.wp-loglist > li.lv-debug .lg-lv{color:var(--ink-3)}
+.wp-loglist > li.lv-info .lg-lv{color:var(--ink-2)}
+
+/* Worker 进程卡上方：左侧启停与右侧守护设置宽屏并排，窄屏回落上下 */
+.wp-top-split{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+@media (min-width:960px){
+  .wp-top-split{grid-template-columns:auto minmax(0,1fr);gap:14px 28px;align-items:start}
+  .wp-daemon-side{margin-top:0;padding-top:0;border-top:0;border-left:1px solid var(--line);padding-left:24px}
 }

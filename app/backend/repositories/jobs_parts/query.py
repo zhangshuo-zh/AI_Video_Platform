@@ -165,7 +165,7 @@ class JobsQueryMixin:
 
 
     def queue_by_resource(self) -> dict:
-        """队列里排队／执行中各资源类几条——面板用来解释"为什么还没轮到我"。"""
+        """按全库在途作业分桶，含无主作业，与 queue_health 的 queued/running 同口径。"""
         with get_conn() as conn:
             rows = conn.execute(
                 f"""SELECT {RESOURCE_CLASS_SQL} AS cls, status, COUNT(*) AS n

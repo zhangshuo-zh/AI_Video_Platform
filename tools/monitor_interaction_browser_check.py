@@ -39,6 +39,8 @@ MUTATIONS_56 = {
     "model_snapshot": ("escapeHtml(v.model || '未记录模型')", "'未记录模型'"),
     "filter_rollback": ('restoreFilterControls(root, appliedFilters);', '// rollback removed'),
     "filtered_cursor": ('HISTORY_PAGE, last.id, appliedFilters', 'HISTORY_PAGE, last.id, {}'),
+    "process_table": ('<span class="hint">请在原终端关闭</span>', '<span class="hint"></span>'),
+    "log_levels": ("carry = LOG_LEVEL[m[3].toUpperCase()] || '';", "carry = '';"),
 }
 MUTATIONS.update(MUTATIONS_56)
 
@@ -190,9 +192,13 @@ def main() -> int:
             time.sleep(.1)
             checks['process_groups'] = ev("['受管运行中 1 个','外部运行中 2 个','残留登记 1 条'].every(t=>document.querySelector('#mc-wp-status').textContent.includes(t))")
             checks['log_order'] = ev("JSON.stringify([...document.querySelectorAll('.wp-loglist li')].map(el=>el.textContent))===JSON.stringify(['Traceback','  source line','RuntimeError: failed'])")
+            checks['process_table'] = ev("(()=>{const rows=[...document.querySelectorAll('.wp-proc-table tbody tr')];return rows.length===3 && document.querySelectorAll('.wp-proc-table [data-stop-pid]').length===1 && rows.filter(r=>r.textContent.includes('请在原终端关闭')).length===2 && !document.querySelector('#mc-wp-status').textContent.includes('PID')})()")
             ev("""window.cleanCalls=0;api.cleanStaleWorkers=async()=>{cleanCalls++;return {...processBase,count:1,pids:[81],stale_pids:[],last_action:'已清理 1 条残留 PID 登记'}};document.querySelector('#mc-wp-clean').click()""")
             time.sleep(.1)
             checks['cleanup'] = ev("cleanCalls===1 && !document.querySelector('#mc-wp-clean') && document.querySelector('#mc-wp-msg').textContent.includes('已清理 1 条')")
+            ev("""api.workerProcess=async()=>({...processBase,count:1,pids:[81],log_status:'ok',log_tail:['2026-11-19 14:34:07,290 [INFO] fastvideo.worker: ok','2026-11-19 14:34:08,000 [ERROR] boom','Traceback (most recent call last):','  File "x.py", line 1','2026-11-19 14:34:09,000 [WARNING] careful']});__tick()""")
+            time.sleep(.1)
+            checks['log_levels'] = ev("(()=>{const li=[...document.querySelectorAll('.wp-loglist li')];return li.length===5 && li[0].className.includes('lv-info') && li[1].className.includes('lv-error') && li[2].className.includes('lv-error') && li[3].className.includes('lv-error') && li[4].className.includes('lv-warn') && li[0].textContent==='2026-11-19 14:34:07,290 [INFO] fastvideo.worker: ok'})()")
             ev("""api.workerProcess=async()=>({...processBase,count:1,pids:[81],log_status:'ok',log_tail:['第一行','第二行']});__tick()""")
             time.sleep(.1)
             ev("""document.querySelector('#mc-log-follow').click();api.workerProcess=async()=>({...processBase,count:2,pids:[81,82],log_status:'ok',log_tail:['新日志']});__tick()""")
@@ -256,6 +262,12 @@ def main() -> int:
             ev("document.querySelector('[data-job-status=needs_attention]').click()")
             time.sleep(.4)
             checks['alert_status_navigation'] = ev("location.hash.startsWith('#generate') && document.querySelector('#gen-status')?.value==='needs_attention'")
+            fresh()
+            ev("api.workerStatus=async()=>({...base,by_status:{failed:2,succeeded:17}});__tick()")
+            time.sleep(.2)
+            ev("document.querySelector('#mc-job-history [data-job-status=failed]').click()")
+            time.sleep(.4)
+            checks['history_status_navigation'] = ev("location.hash.startsWith('#generate') && document.querySelector('#gen-status')?.value==='failed'")
             return checks
 
         checks = run_checks()

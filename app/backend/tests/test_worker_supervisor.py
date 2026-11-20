@@ -514,3 +514,176 @@ def test_守护旧轮次暂停后不产生虚假补起记录(sup, monkeypatch, t
     daemon._tick()
     assert daemon._STATE["actions"] == []
     assert daemon._STATE["failures"] == 0
+
+
+def test_停止受管进程立即标离线不闪现外部运行中(sup, monkeypatch, as_role):
+    import socket
+    from repositories.jobs import jobs as job_repo
+
+    pid = 776655
+    host = socket.gethostname()
+    wid = f"{host}:{pid}:teststop"
+    sup._write_pid_file(pid)
+    job_repo.heartbeat(wid, pid, None, "v1")
+    monkeypatch.setattr(sup, "_pid_alive", lambda p: False if p == pid else False)
+    monkeypatch.setattr(sup, "_reap", lambda p: None)
+
+    res = sup.stop_one(pid)
+    assert res["ok"] is True
+
+    proc = as_role("admin").get("/api/worker/process").json()
+    assert pid not in proc["pids"]
+    assert pid not in proc["external_online_pids"]
+    assert proc["external_online_count"] == 0
+
+
+def test_PID离线只更新本机新鲜行与兼容镜像(sup, monkeypatch):
+    import socket
+
+    from config import WORKER_ONLINE_SECONDS
+    from db import get_conn
+    from repositories.jobs import jobs
+
+    host = socket.gethostname()
+    pid = 776656
+    old = f"{host}:{pid}:old"
+    remote = f"other-machine:{pid}:live"
+    live = f"{host}:{pid}:live"
+    job_id = jobs.create({"project_id": None, "capability": "video", "kind": "video_local",
+                          "execution_mode": "local", "provider_code": "mock", "model_code": "mock"})["id"]
+    jobs.heartbeat(old, pid, job_id, "v1")
+    jobs.heartbeat(remote, pid, job_id, "v1")
+    jobs.heartbeat(live, pid, job_id, "v1")
+    with get_conn() as conn:
+        conn.execute("UPDATE worker_node SET heartbeat_at = datetime('now','localtime','-2 days') WHERE worker_id = ?", (old,))
+        old_at = conn.execute("SELECT heartbeat_at FROM worker_node WHERE worker_id = ?", (old,)).fetchone()[0]
+    jobs.mark_offline(pid=pid, host=host)
+    try:
+        nodes = {row["worker_id"]: row for row in jobs.workers(WORKER_ONLINE_SECONDS)}
+        assert not nodes[live]["online"] and nodes[live]["current_job_id"] is None
+        assert nodes[remote]["online"] and nodes[remote]["current_job_id"] == job_id
+        assert nodes[old]["heartbeat_at"] == old_at and nodes[old]["current_job_id"] == job_id
+        mirror = jobs.worker_state()
+        assert mirror["worker_id"] == live and mirror["current_job_id"] is None
+        assert mirror["heartbeat_at"] == nodes[live]["heartbeat_at"]
+        # 旧库只有镜像时，同样立即离线。
+        jobs.mark_offline(worker_id=remote)
+        with get_conn() as conn:
+            conn.execute("DELETE FROM worker_node WHERE worker_id = ?", (live,))
+            conn.execute("UPDATE worker_state SET heartbeat_at = datetime('now','localtime'), current_job_id = ?", (job_id,))
+        jobs.mark_offline(worker_id=live)
+        assert jobs.worker_state()["current_job_id"] is None
+        from services.jobs_pkg import monitor
+        # 门面重载测试可重建 jobs 单例，隔离应直接作用在状态服务的引用上。
+        monkeypatch.setattr(monitor.job_repo, "workers", lambda _window: [])
+        assert not monitor.worker_status()["online"]
+        assert jobs.get(job_id)["status"] == "queued"
+    finally:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM worker_node WHERE worker_id IN (?, ?, ?)", (old, remote, live))
+            conn.execute("DELETE FROM worker_state WHERE worker_id IN (?, ?, ?)", (old, remote, live))
+            conn.execute("DELETE FROM job WHERE id = ?", (job_id,))
+
+
+@pytest.mark.parametrize("first", ["startup", "daemon"])
+def test_自动启动和守护共享原子准入(sup, monkeypatch, tmp_path, first):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import worker_daemon as daemon
+
+    monkeypatch.setattr(daemon, "DAEMON_CONFIG", tmp_path / "daemon.json")
+    daemon.save_config(enabled=True, desired=1)
+    registered = []
+    awaiting = Event()
+    finish = Event()
+
+    def fork(**kwargs):
+        registered.extend(range(kwargs["count"]))
+        return {"procs": [], "failed": [], "since": ""}
+
+    def heartbeat(*args, **kwargs):
+        awaiting.set()
+        assert finish.wait(timeout=5)
+        return {"ok": True, "pids": [101], "failed": [], "message": "started"}
+
+    monkeypatch.setattr(sup, "current", lambda: {"count": len(registered)})
+    monkeypatch.setattr(sup, "_fork_workers", fork)
+    monkeypatch.setattr(sup, "_await_heartbeats", heartbeat)
+    modes = {"startup": {"only_if_empty": True}, "daemon": {"guard_daemon": True}}
+    second = "daemon" if first == "startup" else "startup"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        initial = pool.submit(sup.start, **modes[first])
+        try:
+            assert awaiting.wait(timeout=2)
+            later = pool.submit(sup.start, **modes[second])
+            assert later.result(timeout=2)["skipped"]
+        finally:
+            finish.set()
+    assert initial.result()["ok"] and len(registered) == 1
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_环境变量启动Worker且启动失败不阻塞API(monkeypatch, failure):
+    import main
+    import worker_daemon
+    import worker_supervisor
+
+    monkeypatch.setenv("FASTVIDEO_AUTO_START_WORKER", "1")
+    monkeypatch.setattr(worker_daemon, "start_thread", lambda: None)
+    callbacks = []
+    calls = []
+    warnings = []
+
+    class DeferredThread:
+        def __init__(self, *, target, name, daemon):
+            assert name == "worker-auto-start" and daemon
+            self.target = target
+
+        def start(self):
+            callbacks.append(self.target)
+
+    def start(**kwargs):
+        calls.append(kwargs)
+        if failure:
+            raise OSError("worker unavailable")
+        return {"ok": True}
+
+    monkeypatch.setattr(main.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(worker_supervisor, "start", start)
+    monkeypatch.setattr(main.get_logger("fastvideo.main"), "warning", lambda *args: warnings.append(args))
+    app = main.create_app()
+    assert app is not None and not calls and len(callbacks) == 1
+    callbacks[0]()
+    assert calls == [{"count": 1, "only_if_empty": True}]
+    assert any("worker_auto_start_failed" in args[0] for args in warnings) == failure
+
+
+def test_停止信号被拒绝保留PID与在线心跳(sup, monkeypatch):
+    import socket
+
+    from repositories.jobs import jobs
+
+    pid = 776657
+    worker_id = f"{socket.gethostname()}:{pid}:denied"
+    path = sup._write_pid_file(pid)
+    jobs.heartbeat(worker_id, pid, None, "v1")
+    monkeypatch.setattr(sup, "_pid_alive", lambda _: True)
+
+    def deny(pid, sig):
+        assert sig == signal.SIGTERM
+        raise PermissionError
+
+    monkeypatch.setattr(sup.os, "kill", deny)
+    try:
+        result = sup.stop_one(pid)
+        assert not result["ok"]
+        assert path.exists()
+        assert jobs.worker_state()["worker_id"] == worker_id
+        from config import WORKER_ONLINE_SECONDS
+        assert next(n for n in jobs.workers(WORKER_ONLINE_SECONDS) if n["worker_id"] == worker_id)["online"]
+    finally:
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute("DELETE FROM worker_state WHERE worker_id = ?", (worker_id,))
+            conn.execute("DELETE FROM worker_node WHERE worker_id = ?", (worker_id,))

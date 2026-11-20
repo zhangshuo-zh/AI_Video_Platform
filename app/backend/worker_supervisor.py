@@ -246,8 +246,10 @@ def _write_pid_file(pid: int) -> Path:
 def _remove_pid_file(pid: int) -> None:
     try:
         (PID_DIR / f"{pid}.pid").unlink()
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError as exc:
+        _audit_log.debug("worker_pid_unlink_failed pid=%s err=%s", pid, type(exc).__name__)
 
 
 def clean_stale() -> list[int]:
@@ -313,7 +315,7 @@ MAX_WORKERS = 8
 
 
 def start(*, max_global: int | None = None, per: dict | None = None,
-          count: int = 1, guard_daemon: bool = False) -> dict:
+          count: int = 1, guard_daemon: bool = False, only_if_empty: bool = False) -> dict:
     """起 `count` 个 worker（默认 1 个）。**逐个等心跳确认**，不是批量 fork 了事。
 
     0049 起允许多开：原来"已经在跑就拒绝"是单实例时代的规矩，现在多开是
@@ -335,11 +337,18 @@ def start(*, max_global: int | None = None, per: dict | None = None,
                 "message": f"数量必须 ≥ 1，给的是 {count}"}
 
     with _LOCK:
-        if guard_daemon:
-            import worker_daemon
-            if not worker_daemon.load_config()["enabled"]:
-                return {"ok": True, "pids": [], "failed": [], "message": "守护已暂停", "skipped": True}
-        begun = _fork_workers(count=count, max_global=max_global, per=per)
+        if guard_daemon or only_if_empty:
+            already = current()["count"]
+            if guard_daemon:
+                import worker_daemon
+                cfg = worker_daemon.load_config()
+                count = min(count, cfg["desired"] - already) if cfg["enabled"] else 0
+            if count <= 0 or (only_if_empty and already):
+                return {"ok": True, "pids": [], "failed": [],
+                        "message": "无需启动 worker", "skipped": True}
+            begun = _fork_workers(count=count, max_global=max_global, per=per, already=already)
+        else:
+            begun = _fork_workers(count=count, max_global=max_global, per=per)
     if "message" in begun:                  # 被上限拒绝，一个都没起
         return _public_start_result(begun)
     return _public_start_result(_await_heartbeats(begun["procs"], begun["failed"],
@@ -347,7 +356,7 @@ def start(*, max_global: int | None = None, per: dict | None = None,
 
 
 def _fork_workers(*, count: int, max_global: int | None,
-                  per: dict | None) -> dict:
+                  per: dict | None, already: int | None = None) -> dict:
     """锁内部分：检查上限并 fork。**调用方必须已持有 `_LOCK`**。
 
     返回 `{"procs": [(pid, 序号, Popen)], "failed": [...]}`；被上限拒绝时
@@ -360,7 +369,8 @@ def _fork_workers(*, count: int, max_global: int | None,
     2026-11-10 审计实测的后果是两条：死进程被报成「起来了但没写心跳」
     （把人指向环境/迁移问题），而且 PID 文件不删、永久留在盘上。
     """
-    already = current()["count"]
+    if already is None:
+        already = current()["count"]
     if count > MAX_WORKERS or already + count > MAX_WORKERS:
         return {"ok": False, "pids": [], "failed": [],
                 "message": f"已在跑 {already} 个、要求再起 {count} 个，"
@@ -607,8 +617,14 @@ def public_log_tail(lines: int = 100, *, max_line: int = 1000) -> dict:
 
 
 def _cleanup_pid_if(pid: int) -> None:
-    """删掉这个 pid 的登记文件。文件已不在也是成功（幂等）。"""
+    """删掉这个 pid 的登记文件，并立即在心跳表里标为离线（避免窗口期内被误判为外部运行中）。"""
     _remove_pid_file(pid)
+    try:
+        import socket
+        from repositories.jobs import jobs as job_repo
+        job_repo.mark_offline(pid=pid, host=socket.gethostname())
+    except (sqlite3.Error, OSError) as exc:
+        _audit_log.debug("worker_mark_offline_failed pid=%s err=%s", pid, type(exc).__name__)
 
 
 def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
@@ -641,9 +657,12 @@ def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
 
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
+    except ProcessLookupError:
         _cleanup_pid_if(pid)
-        return {"ok": False, "pid": pid, "message": f"给 PID {pid} 发 SIGTERM 失败：{exc}"}
+        return {"ok": True, "pid": pid, "message": f"PID {pid} 已退出"}
+    except OSError as exc:
+        return {"ok": False, "pid": pid,
+                "message": f"给 PID {pid} 发 SIGTERM 失败：{type(exc).__name__}"}
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -657,8 +676,20 @@ def stop_one(pid: int, *, timeout: float = 8.0) -> dict:
     # 由下一轮 `recover_stale` 收成 failed——这是既有机制，这里只如实说。
     try:
         os.kill(pid, signal.SIGKILL)
-    except OSError:
+    except ProcessLookupError:
         pass
+    except OSError as exc:
+        return {"ok": False, "pid": pid,
+                "message": f"给 PID {pid} 发 SIGKILL 失败：{type(exc).__name__}"}
+    # 发出信号不等于已经退出。未确认退出时保留 PID 和心跳供重试。
+    deadline = time.monotonic() + 2
+    while True:
+        _reap(pid)
+        if not _pid_alive(pid):
+            break
+        if time.monotonic() >= deadline:
+            return {"ok": False, "pid": pid, "message": f"PID {pid} 尚未退出，保留登记"}
+        time.sleep(0.1)
     _cleanup_pid_if(pid)
     return {"ok": True, "pid": pid,
             "message": f"PID {pid} {timeout:.0f} 秒内没退，已强杀；"
@@ -697,8 +728,16 @@ def stop(*, timeout: float = 8.0, pid: int | None = None) -> dict:
             stopped.append(item["pid"])
         messages.append(result["message"])
     for pid_ in stale:
-        _cleanup_pid_if(pid_)
-        messages.append(f"清掉了残留登记（PID {pid_}）")
+        # 可能与新的 fork 交错，锁内再次确认进程仍已死亡。
+        with _LOCK:
+            if not _pid_alive(pid_):
+                _remove_pid_file(pid_)
+                try:
+                    (PID_DIR / f"{pid_}.pid").stat()
+                except FileNotFoundError:
+                    messages.append(f"清掉了残留登记（PID {pid_}）")
+                except OSError as exc:
+                    _audit_log.debug("worker_pid_stat_failed pid=%s err=%s", pid_, type(exc).__name__)
     if not messages:
         messages.append("没有 worker 在跑")
-    return {"ok": True, "stopped": stopped, "messages": messages}
+    return {"ok": len(stopped) == len(workers), "stopped": stopped, "messages": messages}

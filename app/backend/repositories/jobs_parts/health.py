@@ -15,8 +15,17 @@ class JobsHealthMixin:
         运行超时只报"超过上限还在跑"，杀进程是 worker 的事（见 `worker.py` 的 deadline）。
         """
         with get_conn() as conn:
-            by_status = {r["status"]: int(r["n"]) for r in conn.execute(
-                "SELECT status, COUNT(*) AS n FROM job GROUP BY status")}
+            # 队列深度与执行中必须按全表算，真实反映 worker 槽位占用；
+            # 历史累计（by_status）排除已删除项目的无主作业（project_id IS NULL），
+            # 避免已删项目的历史记录长期挂在运行监控面板上干扰判断（账与文件仍在库里，
+            # 管理员可在生成中心「无主（项目已删除）」视图查阅）。
+            status_counts = conn.execute(
+                """SELECT status, COUNT(*) AS total, COUNT(project_id) AS with_project
+                     FROM job GROUP BY status"""
+            ).fetchall()
+            all_status = {r["status"]: int(r["total"]) for r in status_counts}
+            by_status = {r["status"]: int(r["with_project"]) for r in status_counts
+                         if r["with_project"]}
             oldest = conn.execute(
                 """SELECT MIN(queued_at) AS at FROM job WHERE status = 'queued'"""
             ).fetchone()["at"]
@@ -29,6 +38,7 @@ class JobsHealthMixin:
                     WHERE status IN ('starting','running','cancel_requested')
                     ORDER BY id"""
             ).fetchall()
+            # 待核对与未核账单是全库待办。项目删除后仍需核对，不能按历史累计口径过滤。
             # 「待核对作业」只认 status 一列。云端作业建单就是
             # pending_reconciliation、终态也不改它，旧口径把这一档 OR 进来，
             # 结果是每条云端成功作业都让面板 +1，人点进去又被 reconcile 的
@@ -89,8 +99,8 @@ class JobsHealthMixin:
             })
         return {
             "by_status": by_status,
-            "queued": by_status.get("queued", 0),
-            "running": sum(by_status.get(s, 0) for s in
+            "queued": all_status.get("queued", 0),
+            "running": sum(all_status.get(s, 0) for s in
                            ("starting", "running", "cancel_requested")),
             "oldest_queued_seconds": age(oldest),
             "running_jobs": running_rows,

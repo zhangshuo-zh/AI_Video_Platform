@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 
-from config import RESOURCE_CLASSES, WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE
+from config import RESOURCE_CLASSES, WORKER_MAX_GLOBAL, WORKER_MAX_PER_RESOURCE, WORKER_ONLINE_SECONDS
 from db import get_conn
 
 from .common import RESOURCE_CLASS_SQL, _loads
@@ -248,6 +248,37 @@ class JobsLeaseMixin:
                 (worker_id, pid, current_job_id, version),
             )
 
+
+    def mark_offline(self, *, worker_id: str | None = None,
+                     pid: int | None = None, host: str | None = None,
+                     offline_seconds: int = 3600) -> None:
+        """把本次退出的在线心跳和兼容镜像同时标离线，保留历史节点。
+
+        清空的是心跳展示指针。作业归属、日志和租约仍在 job 表，recover_stale
+        只按作业的租约与状态处理。PID 路径排除离线历史，防止 PID 复用误改旧行。
+        """
+        window = f"-{WORKER_ONLINE_SECONDS} seconds"
+        offset = f"-{max(WORKER_ONLINE_SECONDS + 1, int(offline_seconds))} seconds"
+        if worker_id:
+            node_match = mirror_match = "worker_id = ?"
+            identity: tuple[str | int, ...] = (worker_id,)
+        elif pid is not None and host:
+            node_match = "pid = ? AND host = ?"
+            mirror_match = "pid = ? AND substr(worker_id, 1, instr(worker_id, ':') - 1) = ?"
+            identity = (int(pid), host)
+        else:
+            return
+
+        with get_conn() as conn:
+            now = conn.execute("SELECT datetime('now','localtime')").fetchone()[0]
+            for table, match in (("worker_node", node_match), ("worker_state", mirror_match)):
+                conn.execute(
+                    f"""UPDATE {table}
+                           SET heartbeat_at = datetime(?, ?), current_job_id = NULL
+                         WHERE {match}
+                           AND heartbeat_at BETWEEN datetime(?, ?) AND ?""",
+                    (now, offset, *identity, now, window, now),
+                )
 
     def workers(self, online_seconds: int) -> list[dict]:
         """所有登记过的 worker 进程（最近的在前），带"现在还活着吗"。"""

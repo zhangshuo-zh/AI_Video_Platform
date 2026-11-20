@@ -5,7 +5,9 @@
 - 前端是纯静态文件（../frontend），由同一个进程兜底托管，
   以后要换 nginx 直接指过去即可，后端不用动。
 """
+import os
 import sqlite3
+import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -197,6 +199,20 @@ def create_app() -> FastAPI:
     except (OSError, RuntimeError) as exc:
         # 一句守护起不来不该让整个 API 起不来——它是增强项，不是必需项。
         logger.warning("worker_daemon_start_failed err=%s", type(exc).__name__)
+
+    if os.environ.get("FASTVIDEO_AUTO_START_WORKER") == "1":
+        def _auto_start_worker() -> None:
+            try:
+                import worker_supervisor
+                result = worker_supervisor.start(count=1, only_if_empty=True)
+                if not result["ok"]:
+                    logger.warning("worker_auto_start_failed result=not_started")
+            except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:
+                logger.warning("worker_auto_start_failed err=%s", type(exc).__name__)
+        try:
+            threading.Thread(target=_auto_start_worker, name="worker-auto-start", daemon=True).start()
+        except (OSError, RuntimeError) as exc:
+            logger.warning("worker_auto_start_thread_failed err=%s", type(exc).__name__)
     return app
 
 

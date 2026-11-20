@@ -16,6 +16,7 @@ import os
 import resource
 import select
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -528,6 +529,10 @@ def main(argv: list[str] | None = None) -> int:
             break
         if did is None:
             time.sleep(max(0.1, args.poll))
+    try:
+        jobs.mark_offline(worker_id=wid)
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("worker_mark_offline_failed err=%s", type(exc).__name__)
     logger.info("worker_stopped wid=%s", wid)
     return 0
 

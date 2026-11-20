@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 启动平台：静态前端和 /api 由同一个 uvicorn 进程托管。
 #
-#   ./run.sh                本机打开 http://127.0.0.1:8000
-#   ./run.sh dev            API 与 worker 一起起（日常开发省一个终端）
+#   ./run.sh                本机打开 http://127.0.0.1:8000（默认自动拉起 1 个网页受管 worker）
 #   ./run.sh worker         另开一个终端跑生成队列 worker（独立进程）
-#   ./run.sh --reload       改代码自动重启（开发时用）
+#   ./run.sh --reload       自动重载 API，不执行启动时的一次性 Worker 拉起
 #   ./run.sh stop           停掉 API 与 worker（按 PID 文件，不模糊匹配）
+#   FASTVIDEO_AUTO_START_WORKER=0 ./run.sh  仅起 API，不自动拉起受管 worker
 #   FASTVIDEO_HOST=0.0.0.0 ./run.sh   对局域网开放（一期还没做登录，先别开）
 #   FASTVIDEO_PORT=8080 ./run.sh      换端口
 set -euo pipefail
@@ -38,43 +38,76 @@ fi
 # 不再用 `pkill -f "worker.py"`——那条命令会误杀编辑器、grep、别的项目里
 # 任何命令行恰好含这串字符的进程，而且不确认进程是真的退出了。
 stop_one() {
-  local pidfile="$1" name="$2" pid i
-  if [ ! -f "$pidfile" ]; then
-    echo "  ${name}：没有 PID 文件（可能没在跑）"
+  local pidfile="$1" name="$2" allow_kill="$3" pid i=0
+  [ -f "$pidfile" ] || return 0
+  if ! pid="$(cat "$pidfile")"; then
+    echo "  ${name}：无法读取 PID 文件" >&2
     return 1
   fi
-  pid="$(cat "$pidfile" 2>/dev/null || true)"
-  rm -f "$pidfile"
-  if [ -z "$pid" ]; then
-    echo "  ${name}：PID 文件是空的"
-    return 1
+  case "$pid" in
+    ''|*[!0-9]*|0*|1)
+      echo "  ${name}：清理无效 PID 文件"
+      rm -f "$pidfile"
+      return
+      ;;
+  esac
+  # ps 可把已退出但尚未被回收的僵尸与存活进程区分开。
+  process_alive() {
+    local state
+    if kill -0 "$pid" 2>/dev/null; then
+      state="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+      case "$state" in *Z*) return 1 ;; esac
+      return 0
+    fi
+    ps -p "$pid" -o pid= >/dev/null 2>&1
+  }
+  if process_alive; then
+    if ! kill "$pid" 2>/dev/null && process_alive; then
+      echo "  ${name}：无法停止 PID ${pid}，保留登记" >&2
+      return 1
+    fi
+    while process_alive && [ "$i" -lt 100 ]; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    if process_alive && [ "$allow_kill" = "1" ]; then
+      kill -9 "$pid" 2>/dev/null || true
+      i=0
+      while process_alive && [ "$i" -lt 20 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    fi
+    if process_alive; then
+      echo "  ${name}：PID ${pid} 尚未退出，保留登记以便重试" >&2
+      return 1
+    fi
   fi
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "  ${name}：进程 ${pid} 已经不在了"
-    return 1
-  fi
-  kill "$pid" 2>/dev/null || true
-  i=0
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "  ${name}：5 秒内没退出，发 SIGKILL（${pid}）"
-    kill -9 "$pid" 2>/dev/null || true
-  else
-    echo "  ${name}：已停止（${pid}）"
-  fi
-  return 0
+  rm -f "$pidfile" || return 1
+  echo "  ${name}：已停止或清理残留登记（PID ${pid}）"
 }
 
 if [ "${1:-}" = "stop" ]; then
-  # worker 是独立进程，stop 必须两样一起收：只停 API 会让队列不再前进，
-  # 看起来像"作业卡住了"，其实是没人干活。
   echo "停止平台："
-  stop_one "$API_PID" "API" || true
-  stop_one "$WORKER_PID" "worker" || true
-  exit 0
+  # 先等 API（含 reloader）自行退出，确保守护不会和清理并发补起进程。
+  stop_one "$API_PID" "API" 0 || exit 1
+  stopped=0
+  stop_one "$WORKER_PID" "命令行 Worker" 1 || stopped=1
+  if [ -x .venv/bin/python ]; then
+    .venv/bin/python - <<'PYTHON' || stopped=1
+import worker_supervisor as sup
+result = sup.stop()
+for message in result["messages"]:
+    print(f"  受管 Worker：{sup.public_message(message)}")
+state = sup.current()
+if not result["ok"] or state["count"] or state["stale_pids"]:
+    raise SystemExit("受管 Worker 未全部停止或仍有残留登记，请检查后重试")
+PYTHON
+  elif [ -d "$RUN_DIR/workers" ]; then
+    echo "  受管 Worker：缺少后端虚拟环境，无法检查登记" >&2
+    stopped=1
+  fi
+  exit "$stopped"
 fi
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
@@ -158,63 +191,27 @@ if [ "${1:-}" = "worker" ]; then
   start_with_log "$LOG_DIR/worker.log" .venv/bin/python worker.py "$@"
 fi
 
-# `dev`：API 与 worker 一起起，日常开发省一个终端窗口（2026-11-09）。
-# 为什么不是默认行为：worker 的独立进程是架构选择不是懒（worker.py 模块头），
-# 并行开多个、批处理机只跑 worker、跑长作业时重启 API 调试，都靠它分开。
-# 所以默认仍是只起 API，要一起起就显式写 dev。
-DEV_MODE=0
-WORKER_ARGC=0
-WORKER_ARGS=()
 if [ "${1:-}" = "dev" ]; then
-  DEV_MODE=1
-  shift
-  # worker 参数从 dev 之后取，API 的参数保持空——两者认的参数不一样
-  # （worker 有 --max-global，uvicorn 不认），不能把同一串同时喂给两边。
-  # 记个数而不是只靠数组：见下面启动处那句注释（bash 3.2 的空数组坑）。
-  WORKER_ARGC=$#
-  WORKER_ARGS=("$@")
-  for arg in "$@"; do
-    case "$arg" in
-      --reload|--reload-*)
-        # uvicorn --reload 会起 reloader 父进程再 fork 工作进程；worker 若挂在
-        # 那个壳下面，重载一次就成了没人认领的孤儿（./run.sh stop 再也找不到）。
-        # 两个办法都不好，直接拒绝。
-        echo "dev 模式不支持 --reload：uvicorn 重载会让 worker 变成孤儿进程。" >&2
-        echo "开发时要自动重载，请分开跑：./run.sh --reload 与 ./run.sh worker" >&2
-        exit 1
-        ;;
-    esac
-  done
-  set --
+  echo "已取消 dev 子命令：直接运行 ./run.sh 即可启动平台并自动拉起 1 个网页受管 worker" >&2
+  exit 1
 fi
+
+# 默认自动拉起 1 个网页受管 worker（走后端 worker_supervisor 托管，可在「运行监控」统一扩缩容与启停）；
+# 如需仅起 API 不起 worker，可显式传 FASTVIDEO_AUTO_START_WORKER=0 ./run.sh
+export FASTVIDEO_AUTO_START_WORKER="${FASTVIDEO_AUTO_START_WORKER:-1}"
+# 重载子进程每次都会导入 main。开发重载期间交给网页手动启停或显式启用的守护。
+for arg in "$@"; do
+  if [ "$arg" = "--reload" ]; then
+    export FASTVIDEO_AUTO_START_WORKER=0
+    break
+  fi
+done
 
 if [ -f "$API_PID" ] && kill -0 "$(cat "$API_PID" 2>/dev/null || echo 0)" 2>/dev/null; then
   echo "API 已经在跑（PID $(cat "$API_PID")）；要重启先 ./run.sh stop" >&2
   exit 1
 fi
 check_port "$HOST" "$PORT"
-
-# 先起 worker 再 exec API：`start_with_log` 用 exec 替换当前 shell 进程，
-# 写在它后面的代码永远不会执行（实测：`exec` 之后的行被吞掉）。
-# PID 必须用 `$!`：后台子 shell 里 `$$` 仍是父 shell 的号，用它存 PID
-# 会让 ./run.sh stop 去停错进程（实测 $$ 与真实 worker 号不同）。
-if [ "$DEV_MODE" = "1" ]; then
-  if [ -f "$WORKER_PID" ] && kill -0 "$(cat "$WORKER_PID" 2>/dev/null || echo 0)" 2>/dev/null; then
-    echo "worker 已经在跑（PID $(cat "$WORKER_PID")）；要重启先 ./run.sh stop" >&2
-    echo "（API 尚未启动，本次什么都没起）" >&2
-    exit 1
-  fi
-  # 分两支而不是直接 "${WORKER_ARGS[@]}"：bash 3.2（macOS 自带）在
-  # `set -u` 下把**空数组**的展开当成「未定义变量」，报
-  # `WORKER_ARGS[@]: unbound variable` 直接退出——实测踩到过。
-  if [ "$WORKER_ARGC" -gt 0 ]; then
-    start_with_log "$LOG_DIR/worker.log" .venv/bin/python worker.py "${WORKER_ARGS[@]}" &
-  else
-    start_with_log "$LOG_DIR/worker.log" .venv/bin/python worker.py &
-  fi
-  echo $! > "$WORKER_PID"
-  echo "worker 已同时启动（PID $(cat "$WORKER_PID")；日志：$LOG_DIR/worker.log）"
-fi
 
 echo $$ > "$API_PID"
 echo "→ http://${HOST}:${PORT}（日志：$LOG_DIR/api.log）"

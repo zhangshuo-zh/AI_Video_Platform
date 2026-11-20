@@ -65,16 +65,12 @@ const drafts = new WeakMap();
  *    异常文案里仍然带着（`保留上次数据（21:10:06）`），够用。
  */
 function freshnessHtml() {
-  // 异常态：挂 role="status"，让读屏念出来；并且**不随时间流逝而变**，
-  // 同一句重复写不会反复触发播报（真恢复时它会整行消失）。
   if (monitorFreshness.error) {
-    return `<p id="mc-freshness" class="hint" role="status">${escapeHtml(
+    return `<p id="mc-freshness" class="hint mc-fresh-err" role="status">${escapeHtml(
       `连接异常：${monitorFreshness.error}；保留上次数据`
       + `（${monitorFreshness.at || '尚未成功刷新'}），恢复后自动清除。`)}</p>`;
   }
-  // 正常态：**没有 role，没有秒级时间戳，没有按钮**。
-  return `<p id="mc-freshness" class="hint">${escapeHtml(
-    `队列、进程、守护每 5 秒自动刷新；读取失败会在这里标出来源。`)}</p>`;
+  return `<p id="mc-freshness" class="hint mc-fresh-ok"></p>`;
 }
 
 function restoreDrafts(root) {
@@ -209,13 +205,11 @@ function liveCards() {
   const shownNodes = showWorkerHistory ? allNodes : liveNodes;
   const workers = shownNodes.map(nodeRow).join('');
   const historyLine = historyCount ? `
-    <div class="card-body" style="border-top:1px solid var(--line);padding-top:10px">
+    <div class="card-body mc-offline-bar">
       <button class="btn xs" id="mc-worker-history">
         ${showWorkerHistory ? '收起离线进程'
           : `另有 ${historyCount} 个进程在 7 天内登记过 · 现已离线（点开看）`}</button>
-      <span class="t-desc mc-wrap-note">离线行不领活、不影响队列；保留 7 天后自动清。
-        一行代表一个进程：它的并发上限与"正在跑哪条作业"都记在自己这行上，
-        两个进程共用一行会把租约算到别人头上，所以这里不合并、只折叠。</span>
+      <span class="hint">离线进程不领活，7 天后自动清理</span>
     </div>` : '';
 
   const queueChips = Object.entries(byRes).map(([k, v]) =>
@@ -226,9 +220,13 @@ function liveCards() {
   // by_status 是各状态作业的**累计数**（库里全部作业按状态分组），不是"此刻在跑"。
   // 它挂在「执行中」那个大数字下面，原来又印着 failed／succeeded 的英文键，
   // 一眼看过去像是"执行中 0，但有 2 个 failed 正在跑"。念成中文并点明是累计。
-  const statusChips = Object.entries(w.by_status || {}).map(([k, v]) =>
-    `<span class="chip plain">${escapeHtml((JOB_STATUS[k] || [])[1] || k)} ${v}</span>`).join('')
-    || '<span class="t-dim">—</span>';
+  const statusChips = Object.entries(w.by_status || {}).map(([k, v]) => {
+    const label = (JOB_STATUS[k] || [])[1] || k;
+    const statusParam = ['queued', 'starting', 'running', 'cancel_requested'].includes(k)
+      ? 'queued,starting,running,cancel_requested' : k;
+    return `<button type="button" class="chip plain" data-job-status="${escapeHtml(statusParam)}"
+      title="前往生成中心查看「${escapeHtml(label)}」作业">${escapeHtml(label)} ${v} ↗</button>`;
+  }).join('') || '<span class="t-dim">—</span>';
 
   const alertList = [...(w.alerts || [])].sort((a, b) => Number(b.level === 'bad') - Number(a.level === 'bad'));
   const activeJobs = (w.running_jobs || []).map((j) => `<li>
@@ -282,12 +280,14 @@ function liveCards() {
             <div class="tip-desc">实时读取 <code>/api/worker/status</code>，与生成中心保持完全同一口径。</div>
             <ul class="tip-list">
               <li><b>不开第二套队列</b>：模型中心只做真相观测，排队与调度权威归生成中心。</li>
+              <li><b>单进程按行展示</b>：并发上限与认领租约记在各自进程上，不合并，离线行默认折叠。</li>
               <li><b>双通道实时探活</b>：显示当前作业与等待数，离线或挂死时及时预警。</li>
             </ul>
           </span>
         </span>
       </div>
       <span class="right">
+        ${monitorFreshness.error ? '' : '<span class="chip plain">5s 自动刷新</span>'}
         <span class="chip ${alertList.length ? 'red' : 'green'}">${alertList.length ? `${alertList.length} 条告警` : '无异常告警'}</span>
         <span class="chip ${w.online ? 'green' : 'gray'}">${w.online ? 'worker 在线' : 'worker 未接入'}</span>
       </span>
@@ -298,7 +298,13 @@ function liveCards() {
       <div><span class="grp">在线 Worker</span><b>${w.live_count ?? liveNodes.length}</b></div>
       <div><span class="grp">待核对作业</span><b>${w.needs_attention ?? '—'}</b></div>
     </div>
-    <div class="card-body mc-resource-strip">${queueChips}</div>
+    <div class="card-body mc-resource-strip">
+      <div class="mc-resource-chips">${queueChips}</div>
+      <div id="mc-job-history" class="mc-job-history">
+        <span class="hint">历史累计</span>
+        <div class="dash-chips">${statusChips}</div>
+      </div>
+    </div>
     ${activeJobs ? `<details id="mc-running-jobs" class="card-body mc-monitor-detail"><summary id="mc-running-summary">执行中作业 · ${w.running_jobs.length}</summary><ul>${activeJobs}</ul></details>` : ''}
     <div class="table-wrap"><table class="mc-worker-table">
       <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th></tr></thead>
@@ -307,7 +313,6 @@ function liveCards() {
                          : '还没有 worker 登记过心跳'}</td></tr>`}</tbody>
     </table></div>
     ${historyLine}
-    <details id="mc-job-history" class="card-body mc-monitor-detail"><summary id="mc-history-summary">作业历史累计</summary><div class="dash-chips">${statusChips}</div></details>
   </div>`;
 }
 
@@ -348,27 +353,29 @@ export function pageMonitor() {
           </span>
         </span>
       </div>
-      <div class="right mc-val-tools">
-        <select class="ctl sm" id="mc-val-filter-state" aria-label="按结果筛选">
-          <option value="">全部结果</option>
-          <option value="bad">仅异常 / 未通过</option>
-        </select>
-        <select class="ctl sm" id="mc-val-filter-kind" aria-label="按出处筛选">
-          <option value="">全部出处</option>
-          ${kindOptions}
-        </select>
-        <details class="mc-val-extra" id="mc-val-extra"><summary>更多筛选</summary><div class="mc-val-extra-fields">
-        <input class="ctl" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
-        <input class="ctl" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
-        <span class="hint">日期（含起止日）</span>
-        <input class="ctl" type="date" id="mc-val-from" aria-label="开始日期">
-        <input class="ctl" type="date" id="mc-val-to" aria-label="结束日期">
-        <button class="btn xs" id="mc-val-apply">应用筛选</button>
-        </div></details>
-        <button class="btn xs" id="mc-val-reset">重置</button>
-        <span class="mc-val-applied"></span>
+      <div class="right">
         <span class="mc-val-pager">${validationPager()}</span>
       </div>
+    </div>
+    <div class="mc-val-tools mc-val-filterbar">
+      <select class="ctl sm" id="mc-val-filter-state" aria-label="按结果筛选">
+        <option value="">全部结果</option>
+        <option value="bad">仅异常 / 未通过</option>
+      </select>
+      <select class="ctl sm" id="mc-val-filter-kind" aria-label="按出处筛选">
+        <option value="">全部出处</option>
+        ${kindOptions}
+      </select>
+      <details class="mc-val-extra" id="mc-val-extra"><summary>更多筛选</summary><div class="mc-val-extra-fields">
+      <input class="ctl" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
+      <input class="ctl" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
+      <span class="hint">日期（含起止日）</span>
+      <input class="ctl" type="date" id="mc-val-from" aria-label="开始日期">
+      <input class="ctl" type="date" id="mc-val-to" aria-label="结束日期">
+      <button class="btn xs" id="mc-val-apply">应用筛选</button>
+      </div></details>
+      <button class="btn xs" id="mc-val-reset">重置</button>
+      <span class="mc-val-applied"></span>
     </div>
     <div class="table-wrap mc-val-scroll"><table>
       <thead><tr><th>出处</th><th>结果</th><th>槽位</th><th>作业</th><th>说明</th><th>时间</th></tr></thead>
@@ -410,10 +417,67 @@ function workerProcessStatusHtml() {
   const p = cache.workerProcess;
   if (!p || p.count == null) return '<span class="chip gray">进程状态未取得</span>';
   const parts = [];
-  if (p.count) parts.push(`<span class="chip green">受管运行中 ${Number(p.count)} 个</span><span class="hint mono">PID ${escapeHtml((p.pids || []).join('、'))}</span>`);
-  if (p.external_online_count) parts.push(`<span class="chip blue" title="本机外部在线心跳，不授予停止权限">外部运行中 ${Number(p.external_online_count)} 个</span><span class="hint mono">PID ${escapeHtml((p.external_online_pids || []).join('、'))}</span>`);
+  // 右上角只给数量；具体 PID 在下面的进程表里逐行列出，进程多了也不会把标题栏挤成一长串。
+  if (p.count) parts.push(`<span class="chip green">受管运行中 ${Number(p.count)} 个</span>`);
+  if (p.external_online_count) parts.push(`<span class="chip blue" title="本机外部在线心跳，不授予停止权限">外部运行中 ${Number(p.external_online_count)} 个</span>`);
   if (p.stale_pids?.length) parts.push(`<span class="chip amber">残留登记 ${p.stale_pids.length} 条 · ${escapeHtml(p.stale_pids.join('、'))}</span>`);
   return parts.join(' ') || '<span class="chip gray">未运行</span>';
+}
+
+/** 日志行按级别着色。textContent 必须与原始行逐字一致（复制日志与验收都读它），
+ *  所以只在原文外面包 span，不改、不补任何字符。
+ *  没有时间戳的续行（traceback 的栈帧、异常名）沿用上一行的级别：
+ *  崩溃栈整段红，而不是只有第一行红。 */
+const LOG_HEAD = /^(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:[.,]\d+)?\s+)(\[(\w+)\])(.*)$/s;
+const LOG_LEVEL = { CRITICAL: 'error', ERROR: 'error', WARNING: 'warn', WARN: 'warn', INFO: 'info', DEBUG: 'debug' };
+
+function logListHtml(lines) {
+  let carry = '';
+  return lines.map((line) => {
+    const text = String(line);
+    const m = LOG_HEAD.exec(text);
+    if (m) {
+      carry = LOG_LEVEL[m[3].toUpperCase()] || '';
+      return `<li class="mono lv-${carry || 'none'}"><span class="lg-t">${escapeHtml(m[1])}</span>`
+        + `<span class="lg-lv">${escapeHtml(m[2])}</span>${escapeHtml(m[4])}</li>`;
+    }
+    if (/^Traceback|^\s+File "|^\w*(Error|Exception)\b/.test(text)) carry = 'error';
+    const cls = carry === 'error' || carry === 'warn' ? carry : 'none';
+    return `<li class="mono lv-${cls}">${escapeHtml(text)}</li>`;
+  }).join('');
+}
+
+/** 进程表里的「已运行」。起点来自心跳表的 started_at，换算交给 util 的 agoText，
+ *  视图里不再另写一份相对时间。 */
+function uptimeLabel(startedAt) {
+  const t = Date.parse(String(startedAt || '').replace(' ', 'T'));
+  if (!Number.isFinite(t)) return '—';
+  const secs = Math.max(0, Math.floor((Date.now() - t) * 0.001));
+  return secs < 60 ? '刚启动' : ageLabel(secs);
+}
+
+/** 进程表：受管＋外部各占一行。受管行给「停止」；外部行只说明去哪关。 */
+function workerProcessTable(p) {
+  const nodes = new Map(((cache.worker || {}).workers || [])
+    .filter((n) => n.online).map((n) => [Number(n.pid), n]));
+  const row = (pid, managed) => {
+    const n = nodes.get(Number(pid));
+    const job = n?.current_job_id ? jobJumpHtml(n.current_job_id) : (n ? '<span class="hint">空闲</span>' : '—');
+    const kind = managed
+      ? '<span class="chip green">受管</span>'
+      : '<span class="chip blue" title="本机外部在线心跳，不授予停止权限">外部</span>';
+    const op = managed
+      ? `<button class="btn xs" data-stop-pid="${Number(pid)}" aria-label="停止 PID ${Number(pid)}">停止</button>`
+      : '<span class="hint">请在原终端关闭</span>';
+    return `<tr><td class="mono">${Number(pid)}</td><td>${kind}</td><td>${job}</td>`
+      + `<td class="hint">${escapeHtml(n ? uptimeLabel(n.started_at) : '—')}</td><td class="wp-op">${op}</td></tr>`;
+  };
+  const rows = (p.pids || []).map((pid) => row(pid, true))
+    .concat((p.external_online_pids || []).map((pid) => row(pid, false))).join('');
+  if (!rows) return '';
+  return `<div class="table-wrap wp-proc"><table class="wp-proc-table">
+    <thead><tr><th>PID</th><th>类型</th><th>当前作业</th><th>已运行</th><th>操作</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
 }
 
 function workerProcessCard() {
@@ -431,20 +495,19 @@ function workerProcessCard() {
   const daemonOn = !!d.enabled;
   const exposed = d.exposed !== false;
   const daemonKnown = typeof d.enabled === 'boolean';
-  const daemonChip = !daemonKnown ? '<span class="chip gray">守护状态未取得</span>' : !daemonOn
-    ? '<span class="chip gray">守护未开</span>'
-    : (exposed
-      ? '<span class="chip red">守护失效</span>'
-      : `<span class="chip green">守护中 · 期望 ${d.desired} 个</span>`);
+  // 标题栏的守护胶囊只在「异常」时出现：状态未取得、或配着却没在守。
+  // 正常态（开／关）开关本身就是答案，再放一枚胶囊只是同一件事说两遍。
+  const daemonChip = !daemonKnown ? '<span class="chip gray">守护状态未取得</span>' : (daemonOn && exposed)
+    ? '<span class="chip red">守护失效</span>'
+    : '';
 
   const daemonLine = !daemonKnown ? '未取得守护状态，请刷新确认。' : !daemonOn
-    ? '守护没开：worker 掉了要人手动点启动。'
+    ? ''
     : (exposed
       ? `<b>守护配着但没在守</b>${d.thread_alive ? '' : '（看门狗线程没在跑）'}`
         + (d.failures >= 3 ? `；连续 ${d.failures} 次没起来，已停止重试，等人工处理`
                            : '') + '。'
-      : `守护每 ${d.check_interval_seconds || 15} 秒检查一次；在线 ${d.online}
-         不足 ${d.desired} 就自动补起。累计已补 ${d.recovered || 0} 次。`);
+      : `守护中 · 每 ${d.check_interval_seconds || 15} 秒检查一次；在线 ${d.online} 不足 ${d.desired} 自动补起（累计已补 ${d.recovered || 0} 次）。`);
 
   const actions = (d.actions || []).slice(0, 4).map((a) =>
     `<li class="hint"><code>${escapeHtml(a.at)}</code> ${escapeHtml(a.action)}：${escapeHtml(a.detail)}</li>`
@@ -455,6 +518,8 @@ function workerProcessCard() {
   const log = logFollowing ? p : logSnapshot;
   const logLines = (log.log_tail || []).slice(-logLimit);
   const logSize = Number(log.log_size || 0);
+  const logPath = String(p.log_path || 'data/logs/worker.log')
+    .replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log';
   const logMeta = `${logSize < 1024 ? `${logSize} 字节` : `${(logSize / 1024).toFixed(1)} KB`}`
     + `${log.log_mtime ? ` · 最后写入 ${escapeHtml(log.log_mtime)}` : ''}`;
   const logEmptyReason = {
@@ -475,8 +540,9 @@ function workerProcessCard() {
             <span class="tip-title">Worker 进程与守护规范</span>
             <div class="tip-desc">启停后台执行作业的 worker 进程；与 <code>./run.sh worker</code> 是同一个入口。</div>
             <ul class="tip-list">
-              <li><b>进程独立性</b>：API 重启不会影响运行中的 worker 进程（独立会话）。</li>
-              <li><b>看门狗守护</b>：开启守护后，worker 异常崩溃退出时看门狗将自动拉起补齐。</li>
+              <li><b>进程独立性</b>：worker 为独立会话，API 重启不会带走运行中的进程；停止可能中断当前作业，需人工检查后重试。</li>
+              <li><b>看门狗守护</b>：守护线程住在 API 进程里（API 挂了守护也会停），开启后 worker 崩溃将自动拉起补齐。</li>
+              <li><b>外部进程</b>：命令行手动拉起的 worker 不授予网页停止权限，请在原终端关闭。</li>
             </ul>
           </span>
         </span>
@@ -484,93 +550,59 @@ function workerProcessCard() {
       <span class="right" id="mc-wp-status">${status}</span>
     </div>
     <div class="card-body">
-      <p class="note flush">
-        <b>API 重启不会带走它们</b>（每个都是独立会话）。但 worker 自己崩了
-        <strong>只有开了守护</strong>才会自动拉起。停止可能中断当前作业，需要人工检查后重试；不会自动续跑。
-      </p>
-
-      <div class="form-grid wp-grid">
-        <label for="mc-wp-count">启动数量</label>
-        <div class="wp-inline">
-          <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1">
-          <button class="btn primary" id="mc-wp-start">启动</button>
-        </div>
-        <label>进程控制</label>
-        <div class="wp-inline">
-          <button class="btn danger" id="mc-wp-stop">全部停止</button>
-          ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
-          <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
-        </div>
-        ${count ? `<label>逐个停止</label>
-        <div class="wp-inline">
-          ${pids.map((pid) => `<button class="btn xs" data-stop-pid="${pid}">
-            停止 PID ${escapeHtml(String(pid))}</button>`).join('')}
-        </div>` : ''}
-      </div>
-
-      <!-- 守护：**单独一块**，不和启停混排。它是"要不要让平台自己管进程"的
-           配置，上面是"我现在就要起/停"——两个等级不同的动作挤在同一操作行里，
-           人会不知道该先按哪个。 -->
-      <section class="wp-sub">
-        <div class="wp-sub-head">
-          <h3>守护设置</h3>
-          ${staleLabel('守护')}
-          <span class="right">${daemonChip}</span>
-        </div>
-        <p class="note flush">${daemonLine}</p>
+      <div class="wp-top-split">
         <div class="form-grid wp-grid">
-          <label>开启</label>
+          <label for="mc-wp-count">新增启动</label>
+          <div class="wp-inline">
+            <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1">
+            <button class="btn primary" id="mc-wp-start">启动</button>
+            <span class="hint">当前 ${count} / 上限 8</span>
+          </div>
+          <label>进程控制</label>
+          <div class="wp-inline">
+            <button class="btn danger" id="mc-wp-stop">全部停止</button>
+            ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
+            <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
+          </div>
+        </div>
+
+        <section class="wp-sub wp-daemon-side">
+          <div class="wp-sub-head">
+            <h3>守护设置</h3>
+            ${staleLabel('守护')}
+            <span class="right">${daemonChip}</span>
+          </div>
+          ${daemonLine ? `<p class="note flush">${daemonLine}</p>` : ''}
           <div class="wp-inline">
             <label class="switch-ui switch-green" title="worker 掉了自动补起">
               <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
-            <span class="hint">worker 掉了自动补起</span>
-          </div>
-          <label>期望在线</label>
-          <div class="wp-inline">
+            <span class="hint">掉线自动补起，保持</span>
             <input class="inp" type="number" id="mc-daemon-desired" min="0" max="8"
-                   value="${d.desired != null ? d.desired : 1}">
-            <span class="hint">个（0 = 不自动补）</span>
-          </div>
-          <label></label>
-          <div class="wp-inline">
-            <button class="btn" id="mc-daemon-save">保存守护设置</button>
+                   value="${d.desired != null ? d.desired : 1}" aria-label="期望在线个数">
+            <span class="hint">个在线（0 = 不补）</span>
+            <button class="btn" id="mc-daemon-save" title="保存守护设置">保存</button>
             <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg') || ''}</span>
           </div>
-        </div>
-        <p class="hint wp-boundary">
-          <b>边界说清楚</b>：守护住在 API 进程里——<strong>API 自己挂了，守护也跟着停</strong>。
-          它能挡的是"worker 崩了"，不是"整台机器挂了"。
-        </p>
-        ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
-      </section>
+          ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
+        </section>
+      </div>
+      ${workerProcessTable(p)}
 
-      <!-- 日志尾巴（0049）：这块原来只有一句"日志在哪"的路径说明，卡片被
-           右边「并发设置」拉高之后，下面那一百多像素全是空的（实测 1440 宽
-           下 175px）。空着不是罪，空着又没信息才可惜——worker.log 里本来就
-           有启动/退出/崩溃栈，只是从来没在界面上露过面。
-           行高定死、超出滚：日志不能反过来把卡片撑高，否则又跟并发设置卡
-           打架（这次是它变高）。 -->
-      <details class="wp-logbox" id="mc-log-panel" open>
-        <summary id="mc-log-summary">Worker 日志</summary>
+      <details class="wp-logbox" id="mc-log-panel">
+        <summary id="mc-log-summary">
+          <span>Worker 日志</span>
+          <span class="hint wp-log">${logFollowing ? '' : '已暂停跟随 · '}${logMeta} · <code>${escapeHtml(logPath)}</code></span>
+        </summary>
         <div class="wp-sub-head">
-          <h3>最近输出</h3>
           <button class="btn xs" id="mc-log-follow">${logFollowing ? '暂停跟随' : '继续跟随'}</button>
           <button class="btn xs" id="mc-log-more">${logLimit === 12 ? '显示更多' : '收起'}</button>
           <button class="btn xs" id="mc-log-copy" ${logLines.length ? '' : 'disabled'}>复制当前日志</button>
-          <span class="right hint">
-            ${logFollowing ? '' : '已暂停跟随 · '}${logMeta}
-          </span>
         </div>
         ${logLines.length
-          ? `<ol class="wp-loglist">${logLines.map((line) =>
-              `<li class="mono">${escapeHtml(line)}</li>`).join('')}</ol>`
+          ? `<ol class="wp-loglist">${logListHtml(logLines)}</ol>`
           : `<p class="hint wp-logempty">${escapeHtml(logEmptyReason)}</p>`}
-        <p class="hint wp-log">
-          完整日志：<code>${escapeHtml(String(p.log_path || 'data/logs/worker.log').replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log')}</code>
-          （追加写，重启不丢上一次的输出）。
-        </p>
       </details>
     </div>
   </div>`;
@@ -826,15 +858,9 @@ function concurrencyCard() {
     `${labels[d.class] || d.class} ${d.unit_peak_mb} MB × ${d.slots} = ${d.sum_mb} MB`).join('；');
 
   const basis = a.verdict === 'unknown'
-    ? `<p class="note flush" style="margin-top:8px">${escapeHtml(a.sentence || '')}</p>`
-    : `<p class="note flush" style="margin-top:8px">
+    ? `<p class="note flush" style="margin-top:10px">${escapeHtml(a.sentence || '')}</p>`
+    : `<p class="note flush" style="margin-top:10px">
          <b>${escapeHtml(ui.label)}</b>：${escapeHtml(a.sentence || '')}
-       </p>
-       <p class="hint" style="margin:4px 0 0">
-         依据：${escapeHtml(detail || '—')}（各类取峰值而不是平均，并把余量系数
-         ${a.safety_ratio ?? '—'} 计入）。总内存 ${a.total_mb
-           ? `${Math.round(a.total_mb / 1024)} GB` : '读不到'}，
-         已扣系统常驻 ${a.reserved_mb ? `${Math.round(a.reserved_mb / 1024)} GB` : '—'}。
        </p>`;
 
   const sourceText = c.source === 'web'
@@ -853,7 +879,8 @@ function concurrencyCard() {
             <div class="tip-desc">控制同时最多运行的作业条数。改完 worker 下一轮自动按新值领活。</div>
             <ul class="tip-list">
               <li><b>免重启生效</b>：保存后 worker 下一次领活时立即生效，无需重启进程。</li>
-              <li><b>资源防爆</b>：依据本机实测峰值内存测算推荐上限，防止显存与内存打满。</li>
+              <li><b>资源防爆</b>：依据本机实测峰值内存（乘安全余量系数 ${escapeHtml(String(a.safety_ratio ?? '—'))}）测算，当前明细：${escapeHtml(detail || '暂无样本')}。</li>
+              <li><b>优先级</b>：留空＝跟随进程默认（<code>./run.sh worker --max-global N</code> 或 <code>FASTVIDEO_WORKER_MAX_GLOBAL</code>）；命令行参数优先于网页配置。</li>
             </ul>
           </span>
         </span>
@@ -880,11 +907,7 @@ function concurrencyCard() {
         </tbody>
       </table></div>
       ${basis}
-      <p class="hint" style="margin-top:10px">
-        留空＝跟随进程默认（<code>./run.sh worker --max-global N</code> 或
-        <code>FASTVIDEO_WORKER_MAX_GLOBAL</code>）。命令行显式给的参数优先于这里，
-        不会被网页上的旧值盖掉。
-      </p>
+      <p class="hint" style="margin:6px 0 0">留空即跟随进程默认（命令行参数优先）。</p>
       <div class="row-actions" style="margin-top:10px">
         <button class="btn" id="mc-conc-save">保存并发设置</button>
         <span class="hint" id="mc-conc-msg">${hintOf('mc-conc-msg')}</span>
