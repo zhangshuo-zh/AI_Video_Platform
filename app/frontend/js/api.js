@@ -170,6 +170,7 @@ export const api = {
 
   // worker 进程启停（0048）。这是**手动启停不是守护**——崩了不会自动拉起，
   // 界面文案必须说出来（详见 worker_supervisor 模块头）。
+  workerOverview: (includeLog = false) => get(`/api/worker/overview?include_log=${includeLog}`),
   workerProcess: () => get('/api/worker/process'),
   cleanStaleWorkers: () => send('POST', '/api/worker/process/clean-stale', {}),
   startWorker: (body) => send('POST', '/api/worker/process/start', body || {}),
@@ -247,6 +248,12 @@ export const api = {
   // 验证历史：一页 + 总量。`before_id` 拿上一页最后一条的 id 往前翻——
   // 表只追加不改，所以"比某条更早"是稳定边界（用 offset 会因为新写入而错位）。
   // 总量在响应头 `X-Total-Count` 里，调用方据此说"共 N 条"而不是拿"少于 limit"猜。
+  validationOptions: (field, after = '', provider = '') => {
+    const params = new URLSearchParams({ field });
+    if (after) params.set('after', after);
+    if (provider) params.set('provider', provider);
+    return get(`/api/providers/validations/options?${params}`);
+  },
   providerValidations: async (limit = 50, beforeId = null,
     { kind = '', state = '', onlyBad = false, provider = '', model = '', dateFrom = '', dateTo = '' } = {}) => {
     const qs = new URLSearchParams({ limit: String(limit) });

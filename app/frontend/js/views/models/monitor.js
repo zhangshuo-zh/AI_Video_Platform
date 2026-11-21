@@ -33,6 +33,7 @@ import {
    为什么不用全站那条 20s 轮询：它只刷顶栏 chip（app.js paintWorker），
    监控页的队列表与告警它一概不动——名为"运行监控"却是切页那一刻的快照。 */
 let pollTimer = null;
+let daemonDebounceTimer = null;
 // 回前台补一拍的那个闭包。visibilitychange 只在 document 上派发、不冒泡，
 // 挂上去就不随 #mc-live 回收，所以必须记住引用、和计时器一起收。
 let visHandler = null;
@@ -91,8 +92,10 @@ function clearSubmittedDrafts(root, submitted) {
 }
 
 function syncOperationButtons(root) {
-  root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid], #mc-daemon-save, #mc-conc-save, #mc-conc-force, #mc-wp-clean')
-    .forEach((b) => { b.disabled = operationBusy; });
+  root.querySelectorAll('#mc-wp-start, #mc-wp-stop, [data-stop-pid], [data-quick-start-worker], #mc-daemon-on, #mc-daemon-sync, #mc-conc-save, #mc-conc-force, #mc-wp-clean')
+    .forEach((b) => { b.disabled = operationBusy || (!overviewReady && b.matches('#mc-wp-stop, [data-stop-pid], #mc-wp-clean')); });
+  const restartBtn = root.querySelector('#mc-wp-restart');
+  if (restartBtn) restartBtn.disabled = operationBusy || !overviewReady || !(Number(cache.workerProcess?.count) > 0);
 }
 
 /** 资源类的界面名。队列分桶的键是后端的英文类名，界面一律念中文
@@ -103,6 +106,10 @@ const RES_LABEL = { text: '文本', image: '图像', video: '视频', audio: '�
 let valFilterState = '';
 let valFilterKind = '';
 let valSeq = 0;
+let overviewReady = false;
+let overviewRows = [];
+let logFetched = false;
+let optionStates = new Map();
 let valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
 let appliedFilters = {};
 let logFollowing = true;
@@ -128,16 +135,14 @@ function jobJumpHtml(jobId) {
 function valRow(v) {
   const when = escapeHtml(String(v.created_at || '').slice(0, 16));
   const model = escapeHtml(v.model || '未记录模型');
-  return `<tr>
+  const detail = String(v.detail || '');
+  const rowCls = v.state && v.state !== 'ok' ? ' class="mc-val-bad"' : '';
+  return `<tr${rowCls}>
     <td class="mc-val-kind"><span class="chip plain">${escapeHtml(v.kind_label || VAL_KIND_LABEL[v.kind] || v.kind)}</span></td>
     <td class="mc-val-result">${stateChip(v.state)}</td>
     <td class="hint mc-val-slot"><strong class="mc-val-mobile-model">${model}</strong>${escapeHtml(v.capability_label || v.capability)} · ${escapeHtml(v.backend)} · ${escapeHtml(v.provider || '—')}<br class="mc-val-desktop-model"><code class="mc-val-desktop-model">${model}</code></td>
     <td class="mc-val-job">${v.job_id ? jobJumpHtml(v.job_id) : '—'}</td>
-    <td class="mc-val-detail-cell"><span class="t-desc">${escapeHtml(v.detail || '')}</span>
-      <details data-validation-detail="${Number(v.id)}"><summary class="btn-link">查看完整说明</summary>
-        <p class="hint">记录 #${Number(v.id)} · ${escapeHtml(v.provider || '—')} / ${escapeHtml(v.model || '未记录模型')} · ${escapeHtml(v.created_at || '')}</p>
-        <pre class="mc-validation-detail">${escapeHtml(v.detail || '未记录说明')}</pre>
-      </details></td>
+    <td class="mc-val-detail-cell"><span class="t-desc"${detail ? ` title="${escapeHtml(detail)}"` : ''}>${escapeHtml(detail || '—')}</span></td>
     <td class="t-dim mc-val-time">${when}</td>
   </tr>`;
 }
@@ -188,19 +193,40 @@ function liveCards() {
     if (r.rss_peak_mb != null) bits.push(`峰值内存 ${r.rss_peak_mb} MB`);
     return bits.length ? bits.join(' · ') : '—';
   };
-  const nodeRow = (n) => `<tr>
-      <td class="mono">${escapeHtml(n.worker_id || '—')}</td>
-      <td>${n.online ? '<span class="chip green">在线</span>' : '<span class="chip gray">离线</span>'}</td>
+  const p = cache.workerProcess || {};
+  const nodeRow = (n) => {
+    const pid = Number(n.pid);
+    const isManaged = n.ownership === 'managed';
+    const isExternal = n.ownership === 'local_external';
+    const stateBadge = n.heartbeat_state === 'missing'
+      ? '<span class="chip amber">等待心跳 · 受管</span>'
+      : !n.online
+        ? '<span class="chip gray">离线</span>'
+        : isManaged
+          ? '<span class="chip green">在线 · 受管</span>'
+          : isExternal
+            ? '<span class="chip blue" title="本机外部在线心跳，不授予停止权限">在线 · 外部</span>'
+            : n.ownership === 'remote' ? '<span class="chip plain">在线 · 远程</span>'
+              : '<span class="chip green">在线</span>';
+    const op = n.can_stop && overviewReady && (p.pids || []).includes(pid)
+      ? `<button type="button" class="btn xs" data-stop-pid="${pid}" aria-label="停止 PID ${pid}">停止</button>`
+      : isExternal
+        ? '<span class="hint">请在原终端关闭</span>'
+        : '<span class="hint">—</span>';
+    return `<tr>
+      <td class="mono">${escapeHtml(n.worker_id || `PID ${pid}`)}</td>
+      <td>${stateBadge}</td>
       <td>${n.current_job_id ? jobJumpHtml(n.current_job_id) : '<span class="hint">空闲</span>'}</td>
-      <td class="hint">${escapeHtml(String(n.heartbeat_at || '').slice(0, 16))}
-        ${agoText(n.age_seconds)}</td>
+      <td class="hint">${n.heartbeat_at ? `${escapeHtml(String(n.heartbeat_at).slice(0, 16))} ${agoText(n.age_seconds)}` : n.heartbeat_state === 'missing' ? '等待心跳' : '—'}</td>
       <td class="hint">${escapeHtml(resChips(n))}</td>
+      <td class="wp-op">${op}</td>
     </tr>`;
+  };
 
   // 一行＝一个进程，这是租约归属的要求，不该改；要改的是"默认给你看几行"。
   // 连续开发攒下的死行既不影响队列、也不该每天占着面板让人分辨哪条是真的在干活。
-  const allNodes = w.workers || [];
-  const liveNodes = allNodes.filter((n) => n.online);
+  const allNodes = overviewRows.length ? overviewRows : (w.workers || []);
+  const liveNodes = allNodes.filter((n) => n.online || n.heartbeat_state === 'missing');
   const historyCount = w.history_count != null ? Number(w.history_count) : allNodes.filter((n) => !n.online).length;
   const shownNodes = showWorkerHistory ? allNodes : liveNodes;
   const workers = shownNodes.map(nodeRow).join('');
@@ -307,10 +333,10 @@ function liveCards() {
     </div>
     ${activeJobs ? `<details id="mc-running-jobs" class="card-body mc-monitor-detail"><summary id="mc-running-summary">执行中作业 · ${w.running_jobs.length}</summary><ul>${activeJobs}</ul></details>` : ''}
     <div class="table-wrap"><table class="mc-worker-table">
-      <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th></tr></thead>
-      <tbody>${workers || `<tr><td colspan="5" class="hint">${
-        allNodes.length ? '现在没有在线的 worker——队列不会前进。启动：./run.sh worker'
-                         : '还没有 worker 登记过心跳'}</td></tr>`}</tbody>
+      <thead><tr><th>Worker</th><th>状态</th><th>当前作业</th><th>最近心跳</th><th>机器实况</th><th class="wp-op">操作</th></tr></thead>
+      <tbody>${workers || `<tr><td colspan="6" class="hint"><div class="mc-worker-empty"><span>${
+        allNodes.length ? '当前没有在线 Worker——队列将暂停推进，可在下方「Worker 进程」启动'
+                         : '还没有 Worker 登记过心跳'}</span><button type="button" class="btn xs" data-quick-start-worker>立即启动 1 个</button></div></td></tr>`}</tbody>
     </table></div>
     ${historyLine}
   </div>`;
@@ -318,6 +344,44 @@ function liveCards() {
 
 function opsCards() {
   return `${workerProcessCard()}${concurrencyCard()}`;
+}
+
+function optionKey(field, provider = '') {
+  return JSON.stringify([field, field === 'model' ? provider : '']);
+}
+
+function validationSelectOptions(field, emptyLabel, currentValue = '', provider = '') {
+  const choices = new Set(optionStates.get(optionKey(field, provider))?.items || []);
+  for (const entry of [...(cache.providers || []), ...(cache.validations?.items || [])]) {
+    if (field === 'model' && provider && entry.provider !== provider) continue;
+    if (entry[field]) choices.add(entry[field]);
+  }
+  if (currentValue) choices.add(currentValue);
+  return [`<option value="">${escapeHtml(emptyLabel)}</option>`,
+    ...[...choices].sort((a, b) => a.localeCompare(b)).map((v) =>
+      `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)].join('');
+}
+
+async function loadValidationOptions(root, field, more = false) {
+  const host = root.querySelector('#mc-val-extra');
+  if (!host) return;
+  const provider = field === 'model' ? root.querySelector('#mc-val-provider').value : '';
+  const key = optionKey(field, provider);
+  const previous = optionStates.get(key);
+  if (previous?.pending || (more ? !previous?.next_after : previous && !previous.error)) return;
+  const state = { ...previous, items: previous?.items || [], pending: true, error: false };
+  const page = optionStates;
+  page.set(key, state);
+  syncValidationSelectOptions(root);
+  try {
+    const result = await api.validationOptions(field, more ? previous.next_after : '', provider);
+    Object.assign(state, { items: [...state.items, ...result.items], next_after: result.next_after });
+  } catch {
+    state.error = true;
+  } finally {
+    state.pending = false;
+    if (host.isConnected && page === optionStates) syncValidationSelectOptions(root);
+  }
 }
 
 export function pageMonitor() {
@@ -328,6 +392,10 @@ export function pageMonitor() {
   valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
   appliedFilters = { ...valFilterParams() };
   valSeq += 1;
+  optionStates = new Map();
+  overviewReady = false;
+  overviewRows = [];
+  logFetched = false;
   const kindOptions = Object.entries(VAL_KIND_LABEL).map(([k, label]) =>
     `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
   return `
@@ -367,11 +435,14 @@ export function pageMonitor() {
         ${kindOptions}
       </select>
       <details class="mc-val-extra" id="mc-val-extra"><summary>更多筛选</summary><div class="mc-val-extra-fields">
-      <input class="ctl" id="mc-val-provider" aria-label="供应商精确匹配" placeholder="供应商（精确匹配）" maxlength="200">
-      <input class="ctl" id="mc-val-model" aria-label="模型精确匹配" placeholder="模型（精确匹配）" maxlength="200">
+      <select class="ctl sm" id="mc-val-provider" aria-label="供应商筛选">${validationSelectOptions('provider', '全部供应商')}</select>
+      <button type="button" class="btn xs" id="mc-val-more-provider" hidden>更多供应商</button>
+      <select class="ctl sm" id="mc-val-model" aria-label="模型筛选">${validationSelectOptions('model', '全部模型')}</select>
+      <button type="button" class="btn xs" id="mc-val-more-model" hidden>更多模型</button>
+      <span class="hint" id="mc-val-options-status"></span>
       <span class="hint">日期（含起止日）</span>
-      <input class="ctl" type="date" id="mc-val-from" aria-label="开始日期">
-      <input class="ctl" type="date" id="mc-val-to" aria-label="结束日期">
+      <input class="ctl sm" type="date" id="mc-val-from" aria-label="开始日期">
+      <input class="ctl sm" type="date" id="mc-val-to" aria-label="结束日期">
       <button class="btn xs" id="mc-val-apply">应用筛选</button>
       </div></details>
       <button class="btn xs" id="mc-val-reset">重置</button>
@@ -447,39 +518,6 @@ function logListHtml(lines) {
   }).join('');
 }
 
-/** 进程表里的「已运行」。起点来自心跳表的 started_at，换算交给 util 的 agoText，
- *  视图里不再另写一份相对时间。 */
-function uptimeLabel(startedAt) {
-  const t = Date.parse(String(startedAt || '').replace(' ', 'T'));
-  if (!Number.isFinite(t)) return '—';
-  const secs = Math.max(0, Math.floor((Date.now() - t) * 0.001));
-  return secs < 60 ? '刚启动' : ageLabel(secs);
-}
-
-/** 进程表：受管＋外部各占一行。受管行给「停止」；外部行只说明去哪关。 */
-function workerProcessTable(p) {
-  const nodes = new Map(((cache.worker || {}).workers || [])
-    .filter((n) => n.online).map((n) => [Number(n.pid), n]));
-  const row = (pid, managed) => {
-    const n = nodes.get(Number(pid));
-    const job = n?.current_job_id ? jobJumpHtml(n.current_job_id) : (n ? '<span class="hint">空闲</span>' : '—');
-    const kind = managed
-      ? '<span class="chip green">受管</span>'
-      : '<span class="chip blue" title="本机外部在线心跳，不授予停止权限">外部</span>';
-    const op = managed
-      ? `<button class="btn xs" data-stop-pid="${Number(pid)}" aria-label="停止 PID ${Number(pid)}">停止</button>`
-      : '<span class="hint">请在原终端关闭</span>';
-    return `<tr><td class="mono">${Number(pid)}</td><td>${kind}</td><td>${job}</td>`
-      + `<td class="hint">${escapeHtml(n ? uptimeLabel(n.started_at) : '—')}</td><td class="wp-op">${op}</td></tr>`;
-  };
-  const rows = (p.pids || []).map((pid) => row(pid, true))
-    .concat((p.external_online_pids || []).map((pid) => row(pid, false))).join('');
-  if (!rows) return '';
-  return `<div class="table-wrap wp-proc"><table class="wp-proc-table">
-    <thead><tr><th>PID</th><th>类型</th><th>当前作业</th><th>已运行</th><th>操作</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-
 function workerProcessCard() {
   const p = cache.workerProcess || {};
   const d = cache.workerDaemon || {};
@@ -495,11 +533,14 @@ function workerProcessCard() {
   const daemonOn = !!d.enabled;
   const exposed = d.exposed !== false;
   const daemonKnown = typeof d.enabled === 'boolean';
-  // 标题栏的守护胶囊只在「异常」时出现：状态未取得、或配着却没在守。
-  // 正常态（开／关）开关本身就是答案，再放一枚胶囊只是同一件事说两遍。
-  const daemonChip = !daemonKnown ? '<span class="chip gray">守护状态未取得</span>' : (daemonOn && exposed)
-    ? '<span class="chip red">守护失效</span>'
-    : '';
+  const daemonInterval = Number(d.check_interval_seconds || 15);
+  const daemonChip = !daemonKnown
+    ? '<span class="chip gray">守护状态未取得</span>'
+    : !daemonOn
+      ? `<span class="chip gray" title="开启后每 ${daemonInterval} 秒巡检一次">已暂停 · ${daemonInterval}s 巡检</span>`
+      : (exposed
+        ? '<span class="chip red">守护失效</span>'
+        : `<span class="chip green" title="每 ${daemonInterval} 秒巡检一次">守护中 · 已补 ${Number(d.recovered || 0)} 次</span>`);
 
   const daemonLine = !daemonKnown ? '未取得守护状态，请刷新确认。' : !daemonOn
     ? ''
@@ -520,10 +561,10 @@ function workerProcessCard() {
   const logSize = Number(log.log_size || 0);
   const logPath = String(p.log_path || 'data/logs/worker.log')
     .replace(/^.*?(?=(?:app\/backend\/)?(?:data\/)?logs\/)/, '') || 'data/logs/worker.log';
-  const logMeta = `${logSize < 1024 ? `${logSize} 字节` : `${(logSize / 1024).toFixed(1)} KB`}`
+  const logMeta = !logFetched ? '展开以读取' : `${logSize < 1024 ? `${logSize} 字节` : `${(logSize / 1024).toFixed(1)} KB`}`
     + `${log.log_mtime ? ` · 最后写入 ${escapeHtml(log.log_mtime)}` : ''}`;
   const logEmptyReason = {
-    missing: '日志文件尚不存在；不能据此判断 Worker 是否曾经启动。',
+    missing: !logFetched ? '展开后读取日志。' : '日志文件尚不存在；不能据此判断 Worker 是否曾经启动。',
     empty: '日志文件可读，当前没有非空日志行。',
     unreadable: '日志读取失败，请检查运行目录权限；保留进程状态供排查。',
   }[log.log_status] || '本次没有取得日志内容。';
@@ -550,45 +591,47 @@ function workerProcessCard() {
       <span class="right" id="mc-wp-status">${status}</span>
     </div>
     <div class="card-body">
-      <div class="wp-top-split">
-        <div class="form-grid wp-grid">
-          <label for="mc-wp-count">新增启动</label>
-          <div class="wp-inline">
+      <div class="wp-toolbar">
+        <div class="wp-inline wp-ctrl-group">
+          <span class="wp-seg">
+            <label for="mc-wp-count" class="wp-bar-label">新增</label>
             <input class="inp" type="number" id="mc-wp-count" min="1" max="8" value="1">
             <button class="btn primary" id="mc-wp-start">启动</button>
+          </span>
+          <button class="btn danger" id="mc-wp-stop">全部停止</button>
+          <button class="btn" id="mc-wp-restart" ${count ? '' : 'disabled'} title="先停止全部受管进程，再按当前数量重新拉起">重启全部</button>
+          ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
+          <span class="wp-cap" title="当前受管 ${count} / 上限 8">
+            <span class="wp-slots${count >= 8 ? ' full' : ''}" aria-hidden="true">${Array.from({ length: 8 }, (_, i) => `<i${i < count ? ' class="on"' : ''}></i>`).join('')}</span>
             <span class="hint">当前 ${count} / 上限 8</span>
-          </div>
-          <label>进程控制</label>
-          <div class="wp-inline">
-            <button class="btn danger" id="mc-wp-stop">全部停止</button>
-            ${p.stale_pids?.length ? '<button class="btn" id="mc-wp-clean">清理残留登记</button>' : ''}
-            <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
-          </div>
+          </span>
         </div>
 
-        <section class="wp-sub wp-daemon-side">
-          <div class="wp-sub-head">
-            <h3>守护设置</h3>
+        <div class="wp-inline wp-daemon-group">
+          <span class="wp-seg">
+            <span class="wp-bar-label">守护</span>
             ${staleLabel('守护')}
-            <span class="right">${daemonChip}</span>
-          </div>
-          ${daemonLine ? `<p class="note flush">${daemonLine}</p>` : ''}
-          <div class="wp-inline">
             <label class="switch-ui switch-green" title="worker 掉了自动补起">
               <input type="checkbox" id="mc-daemon-on" ${daemonOn ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
-            <span class="hint">掉线自动补起，保持</span>
+          </span>
+          <span class="wp-seg">
+            <span class="hint">补至</span>
             <input class="inp" type="number" id="mc-daemon-desired" min="0" max="8"
                    value="${d.desired != null ? d.desired : 1}" aria-label="期望在线个数">
-            <span class="hint">个在线（0 = 不补）</span>
-            <button class="btn" id="mc-daemon-save" title="保存守护设置">保存</button>
-            <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg') || ''}</span>
-          </div>
-          ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
-        </section>
+            <span class="hint">个</span>
+            <button type="button" class="btn xs" id="mc-daemon-sync" title="将期望在线数同步为当前受管数量并保存">对齐当前</button>
+          </span>
+          ${daemonChip}
+        </div>
       </div>
-      ${workerProcessTable(p)}
+      <div class="wp-feedback">
+        <span class="hint" id="mc-wp-msg">${hintOf('mc-wp-msg') || escapeHtml(msg)}</span>
+        <span class="hint" id="mc-daemon-msg">${hintOf('mc-daemon-msg') || ''}</span>
+      </div>
+      ${daemonLine ? `<p class="note flush wp-daemon-note">${daemonLine}</p>` : ''}
+      ${actions ? `<ul class="wp-actions hint">${actions}</ul>` : ''}
 
       <details class="wp-logbox" id="mc-log-panel">
         <summary id="mc-log-summary">
@@ -609,13 +652,23 @@ function workerProcessCard() {
 }
 
 async function refreshWorkerProcess(root, action, payload) {
-  if (operationBusy) return;
+  if (operationBusy || (!overviewReady && action !== 'start')) return;
   operationBusy = true;
   mutationVersion += 1;
   syncOperationButtons(root);
   let pauseDaemon = true;
+  const restartCount = Math.max(1, Math.min(8, Number(cache.workerProcess?.count) || 1));
   try {
-    if (action !== 'start' && action !== 'clean') {
+    if (action === 'restart') {
+      const status = await api.workerStatus();
+      const jobs = status.running_jobs || [];
+      const affected = jobs.length
+        ? `当前运行作业（可能受影响）：${jobs.map((j) => `#${Number(j.id || j.job_id)}`).join('、')}。`
+        : '当前未观测到运行作业，但确认期间仍可能有新作业被领取。';
+      if (!(await confirmDanger({ title: `重启全部受管 Worker（共 ${restartCount} 个）`,
+        body: `${escapeHtml(affected)}<br>将先停止当前受管进程，再按原数量重新拉起；停止可能中断作业，需要检查后人工重试。`,
+        okText: '确认重启' }))) return;
+    } else if (action !== 'start' && action !== 'clean') {
       // 确认前读取最新作业，读取失败则取消，避免用旧快照承诺没有影响。
       const status = await api.workerStatus();
       const jobs = status.running_jobs || [];
@@ -631,12 +684,18 @@ async function refreshWorkerProcess(root, action, payload) {
 
     }
     setMsg(root, 'mc-wp-msg', action === 'start'
-      ? '正在启动（逐个等它写第一份心跳）…' : action === 'clean' ? '正在复查并清理残留登记…' : '正在停止（可能中断当前作业）…');
+      ? '正在启动（逐个等它写第一份心跳）…'
+      : action === 'restart'
+        ? `正在重启 ${restartCount} 个受管 Worker…`
+        : action === 'clean' ? '正在复查并清理残留登记…' : '正在停止（可能中断当前作业）…');
     let out;
     if (action === 'start') {
-      const raw = root.querySelector('#mc-wp-count')?.value;
+      const raw = payload?.count ?? root.querySelector('#mc-wp-count')?.value;
       const count = Math.max(1, Math.min(8, Number(raw) || 1));
       out = await api.startWorkers({ count });
+    } else if (action === 'restart') {
+      const stopped = await api.stopWorker(false);
+      out = stopped?.ok === false ? stopped : await api.startWorkers({ count: restartCount });
     } else if (action === 'clean') {
       out = await api.cleanStaleWorkers();
     } else if (action === 'stopOne') {
@@ -645,8 +704,11 @@ async function refreshWorkerProcess(root, action, payload) {
       out = await api.stopWorker(pauseDaemon);
     }
     cache.workerProcess = out;
-    setMsg(root, 'mc-wp-msg', escapeHtml(out.last_action || (action === 'start' ? '启动请求已完成。' : action === 'clean' ? '残留登记清理已完成。' : '停止请求已完成。')));
-    if (action !== 'start' && action !== 'clean') {
+    setMsg(root, 'mc-wp-msg', escapeHtml(out.last_action || (
+      action === 'start' ? '启动请求已完成。'
+      : action === 'restart' ? `已重启 ${restartCount} 个受管 Worker。`
+      : action === 'clean' ? '残留登记清理已完成。' : '停止请求已完成。')));
+    if (action !== 'start' && action !== 'clean' && action !== 'restart') {
       try { cache.workerDaemon = await api.workerDaemon(); }
       catch { monitorFreshness.error = '守护状态读取失败，请刷新确认'; }
     }
@@ -664,6 +726,8 @@ async function refreshWorkerProcess(root, action, payload) {
 }
 
 async function saveDaemon(root) {
+  clearTimeout(daemonDebounceTimer);
+  daemonDebounceTimer = null;
   if (operationBusy) return;
   operationBusy = true;
   mutationVersion += 1;
@@ -776,6 +840,10 @@ function repaintLive(root) {
 }
 
 function bindWorkerProcess(root) {
+  const panel = root.querySelector('#mc-log-panel');
+  panel?.addEventListener('toggle', () => {
+    if (panel.open && panel.isConnected && !logFetched) root.__monitorTick?.();
+  });
   root.querySelector('#mc-wp-clean')?.addEventListener('click', () => refreshWorkerProcess(root, 'clean'));
   root.querySelector('#mc-log-follow')?.addEventListener('click', () => {
     logFollowing = !logFollowing;
@@ -798,13 +866,46 @@ function bindWorkerProcess(root) {
   root.querySelector('#mc-wp-stop')?.addEventListener('click', () => {
     refreshWorkerProcess(root, 'stop');
   });
-  root.querySelectorAll('[data-stop-pid]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const pid = Number(btn.dataset.stopPid);
-      refreshWorkerProcess(root, 'stopOne', { pid });
-    });
+  root.querySelector('#mc-wp-restart')?.addEventListener('click', () => {
+    refreshWorkerProcess(root, 'restart');
   });
-  root.querySelector('#mc-daemon-save')?.addEventListener('click', () => {
+  root.querySelector('#mc-daemon-on')?.addEventListener('change', () => {
+    saveDaemon(root);
+  });
+  const desiredEl = root.querySelector('#mc-daemon-desired');
+  desiredEl?.addEventListener('input', () => {
+    clearTimeout(daemonDebounceTimer);
+    daemonDebounceTimer = null;
+    const raw = String(desiredEl.value || '').trim();
+    if (raw === '') return;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > 8) return;
+    daemonDebounceTimer = setTimeout(() => {
+      daemonDebounceTimer = null;
+      if (root.isConnected) saveDaemon(root);
+    }, 600);
+  });
+  desiredEl?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveDaemon(root);
+    }
+  });
+  desiredEl?.addEventListener('blur', () => {
+    const raw = String(desiredEl.value || '').trim();
+    if (raw === '') {
+      clearTimeout(daemonDebounceTimer);
+      daemonDebounceTimer = null;
+      desiredEl.value = String(cache.workerDaemon?.desired ?? 1);
+      return;
+    }
+    if (daemonDebounceTimer) saveDaemon(root);
+  });
+  root.querySelector('#mc-daemon-sync')?.addEventListener('click', () => {
+    if (!desiredEl) return;
+    const count = Math.max(0, Math.min(8, Number(cache.workerProcess?.count) || 0));
+    desiredEl.value = String(count);
+    desiredEl.dispatchEvent(new Event('input', { bubbles: true }));
     saveDaemon(root);
   });
 }
@@ -863,10 +964,6 @@ function concurrencyCard() {
          <b>${escapeHtml(ui.label)}</b>：${escapeHtml(a.sentence || '')}
        </p>`;
 
-  const sourceText = c.source === 'web'
-    ? `网页策略：<b>已保存</b>（全局 ${effective.global ?? '—'}）`
-    : `网页策略：<b>使用默认</b>（全局 ${effective.global ?? '—'}，配置基线）`;
-
   return `
   <div class="card mb-card">
     <div class="card-head">
@@ -890,7 +987,6 @@ function concurrencyCard() {
       </span>
     </div>
     <div class="card-body">
-      <p class="note flush">${sourceText}</p>
       <details id="mc-reported-limits" class="mc-monitor-detail">
         <summary id="mc-limits-summary">在线 Worker 上报的并发上限</summary>
         <ul>${((cache.worker || {}).workers || []).filter((w) => w.online).map((w) =>
@@ -906,11 +1002,15 @@ function concurrencyCard() {
           ${rows}
         </tbody>
       </table></div>
-      ${basis}
-      <p class="hint" style="margin:6px 0 0">留空即跟随进程默认（命令行参数优先）。</p>
-      <div class="row-actions" style="margin-top:10px">
-        <button class="btn" id="mc-conc-save">保存并发设置</button>
-        <span class="hint" id="mc-conc-msg">${hintOf('mc-conc-msg')}</span>
+      <div class="mc-conc-foot">
+        <div class="mc-conc-notes">
+          ${basis}
+          <p class="hint" style="margin:4px 0 0">留空即跟随进程默认（命令行参数优先）。</p>
+        </div>
+        <div class="row-actions mc-conc-actions">
+          <span class="hint" id="mc-conc-msg">${hintOf('mc-conc-msg')}</span>
+          <button class="btn" id="mc-conc-save">保存并发设置</button>
+        </div>
       </div>
     </div>
   </div>`;
@@ -1031,7 +1131,34 @@ function bindConcurrency(root) {
   });
 }
 
+function syncValidationSelectOptions(root) {
+  for (const [id, field, emptyLabel] of [
+    ['mc-val-provider', 'provider', '全部供应商'],
+    ['mc-val-model', 'model', '全部模型'],
+  ]) {
+    const sel = root.querySelector(`#${id}`);
+    if (!sel) continue;
+    const current = sel.value || '';
+    const provider = root.querySelector('#mc-val-provider')?.value || '';
+    sel.innerHTML = validationSelectOptions(field, emptyLabel, current, provider);
+    const state = optionStates.get(optionKey(field, provider));
+    const more = root.querySelector(`#mc-val-more-${field}`);
+    if (more) {
+      more.hidden = !state?.next_after && !state?.error;
+      more.disabled = !!state?.pending;
+      more.textContent = state?.error ? '重试' : field === 'provider' ? '更多供应商' : '更多模型';
+    }
+    sel.value = current;
+  }
+  const provider = root.querySelector('#mc-val-provider')?.value || '';
+  const active = [optionStates.get(optionKey('provider')), optionStates.get(optionKey('model', provider))];
+  const message = root.querySelector('#mc-val-options-status');
+  if (message) message.textContent = active.some((state) => state?.error) ? '历史选项读取失败，仍可使用已加载选项。'
+    : active.some((state) => state?.pending) ? '正在读取历史选项…' : '';
+}
+
 function renderValidationTable(root) {
+  syncValidationSelectOptions(root);
   const tbody = root.querySelector('#mc-val-rows');
   if (tbody) {
     const rows = cache.validations?.items || [];
@@ -1053,7 +1180,12 @@ function restoreFilterControls(root, filters) {
   root.querySelector('#mc-val-filter-kind').value = filters.kind || '';
   root.querySelector('#mc-val-filter-state').value = filters.onlyBad ? 'bad' : '';
   for (const [key, id] of Object.entries({ provider: 'provider', model: 'model', dateFrom: 'from', dateTo: 'to' })) {
-    root.querySelector(`#mc-val-${id}`).value = filters[key] || '';
+    const input = root.querySelector(`#mc-val-${id}`);
+    const value = filters[key] || '';
+    if (input.tagName === 'SELECT' && value && ![...input.options].some((option) => option.value === value)) {
+      input.add(new Option(value, value));
+    }
+    input.value = value;
   }
 }
 
@@ -1111,13 +1243,30 @@ export function mountMonitor(root) {
   });
 
   const applyFilters = () => {
-    valExtra = { provider: root.querySelector('#mc-val-provider').value.trim(),
-      model: root.querySelector('#mc-val-model').value.trim(),
+    valExtra = { provider: root.querySelector('#mc-val-provider').value,
+      model: root.querySelector('#mc-val-model').value,
       dateFrom: root.querySelector('#mc-val-from').value,
       dateTo: root.querySelector('#mc-val-to').value };
     reloadValidations(root);
   };
   root.querySelector('#mc-val-apply')?.addEventListener('click', applyFilters);
+  const extras = root.querySelector('#mc-val-extra');
+  extras?.addEventListener('toggle', () => {
+    if (!extras.open) return;
+    loadValidationOptions(root, 'provider');
+    loadValidationOptions(root, 'model');
+  });
+  root.querySelector('#mc-val-provider')?.addEventListener('change', () => {
+    root.querySelector('#mc-val-model').value = '';
+    syncValidationSelectOptions(root);
+    loadValidationOptions(root, 'model');
+  });
+  for (const field of ['provider', 'model']) {
+    root.querySelector(`#mc-val-more-${field}`)?.addEventListener('click', () => {
+      const provider = root.querySelector('#mc-val-provider').value;
+      loadValidationOptions(root, field, !!optionStates.get(optionKey(field, provider))?.next_after);
+    });
+  }
   for (const id of ['provider', 'model', 'from', 'to']) {
     root.querySelector(`#mc-val-${id}`)?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') applyFilters();
@@ -1127,6 +1276,7 @@ export function mountMonitor(root) {
     valFilterKind = ''; valFilterState = '';
     valExtra = { provider: '', model: '', dateFrom: '', dateTo: '' };
     restoreFilterControls(root, valFilterParams());
+    if (extras?.open) loadValidationOptions(root, 'model');
     reloadValidations(root);
   });
 
@@ -1148,6 +1298,15 @@ export function mountMonitor(root) {
       const jobBtn = e.target.closest('[data-goto-job]');
       if (jobBtn) {
         gotoEntry({ module: 'generate', job_id: Number(jobBtn.dataset.gotoJob) });
+        return;
+      }
+      if (e.target.closest('[data-quick-start-worker]')) {
+        refreshWorkerProcess(root, 'start', { count: 1 });
+        return;
+      }
+      const stopBtn = e.target.closest('[data-stop-pid]');
+      if (stopBtn) {
+        refreshWorkerProcess(root, 'stopOne', { pid: Number(stopBtn.dataset.stopPid) });
         return;
       }
       if (e.target.closest('[data-goto-gen]')) {
@@ -1200,16 +1359,42 @@ export function mountMonitor(root) {
     inFlight = true;
     const version = mutationVersion;
     try {
-      const results = await Promise.allSettled([
-        api.workerStatus(), api.workerProcess(), api.workerDaemon(),
-      ]);
-      if (!alive() || generation !== pollGeneration || version !== mutationVersion) return;
-      const keys = ['worker', 'workerProcess', 'workerDaemon'];
+      const includeLog = !!root.querySelector('#mc-log-panel')?.open;
       const failed = [];
-      results.forEach((result, i) => {
-        if (result.status === 'fulfilled') cache[keys[i]] = result.value;
-        else failed.push(['队列 / 心跳', '进程 / 日志', '守护'][i]);
-      });
+      try {
+        const result = await api.workerOverview(includeLog);
+        if (!alive() || generation !== pollGeneration || version !== mutationVersion) return;
+        overviewRows = result.worker_rows;
+        cache.worker = { ...result.status, workers: overviewRows.filter((row) => row.heartbeat_state !== 'missing') };
+        overviewReady = !!result.process;
+        if (result.process) {
+          const { log_tail, log_size, log_mtime, log_status } = cache.workerProcess || {};
+          cache.workerProcess = result.log_included ? result.process : {
+            ...result.process, log_tail, log_size, log_mtime, log_status,
+          };
+          if (result.log_included) logFetched = true;
+        }
+        if (result.daemon) cache.workerDaemon = result.daemon;
+        if (result.errors?.includes('process')) failed.push('进程 / 日志');
+        if (result.errors?.includes('daemon')) failed.push('守护');
+      } catch (err) {
+        if (!alive() || generation !== pollGeneration || version !== mutationVersion) return;
+        // 旧后端或非运维账号仍可读取公开给登录用户的状态。不开启进程操作。
+        if (err.status === 404 || err.status === 403) {
+          const status = await api.workerStatus().catch(() => null);
+          if (!alive() || generation !== pollGeneration || version !== mutationVersion) return;
+          if (status) {
+            cache.worker = status;
+            overviewRows = [];
+          } else failed.push('队列 / 心跳');
+          if (err.status === 403) {
+            cache.workerProcess = {};
+            cache.workerDaemon = {};
+          }
+        } else failed.push('队列 / 心跳');
+        overviewReady = false;
+        failed.push('进程 / 日志', '守护');
+      }
       monitorFreshness.failed = failed;
       monitorFreshness.error = failed.length ? `${failed.join('、')}读取失败` : '';
       if (!failed.length) monitorFreshness.at = new Date().toLocaleTimeString();

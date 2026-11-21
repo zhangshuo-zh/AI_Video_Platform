@@ -290,7 +290,7 @@ def stop_thread() -> None:
     _STOP.set()
 
 
-def check() -> dict:
+def check(*, process_state: dict | None = None) -> dict:
     """给界面看的守护状态。**不改任何东西**——改是 `_tick` 的事。
 
     `exposed` 是这里最该被读懂的一句：守护停了、或已放弃重试时，
@@ -299,7 +299,7 @@ def check() -> dict:
     """
     import worker_supervisor as sup
     cfg = load_config()
-    state = sup.current()
+    state = process_state if process_state is not None else sup.current()
     running = _THREAD is not None and _THREAD.is_alive()
     return {
         "enabled": cfg["enabled"],

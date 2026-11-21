@@ -436,3 +436,74 @@ def test_worker日志读取状态不猜启动历史(as_role, monkeypatch, tmp_pa
         assert body["log_tail"] == ["Traceback", "  source line", "RuntimeError: failed"]
     else:
         assert body["log_tail"] == []
+
+
+def test_worker_overview复用探测且按主机判归属(as_role, monkeypatch):
+    import socket
+    import worker_supervisor as sup
+    from services.jobs_pkg import monitor
+
+    hostname = socket.gethostname()
+    nodes = [
+        {"worker_id": "remote", "host": "test-remote.invalid", "pid": 11, "online": True},
+        {"worker_id": "local", "host": hostname, "pid": 11, "online": True},
+        {"worker_id": "external", "host": hostname, "pid": 31, "online": True},
+        {"worker_id": "previous", "host": hostname, "pid": 12, "online": False},
+        {"worker_id": "stale", "host": hostname, "pid": 41, "online": True},
+    ]
+    calls = []
+    def current(*, strict):
+        assert strict
+        calls.append("process")
+        return {"running": True, "count": 2, "pids": [11, 12], "stale_pids": [41]}
+
+    def workers(seconds, *, conn):
+        calls.append("heartbeat")
+        assert conn.in_transaction
+        return [{**node, "age_seconds": 1, "heartbeat_at": "", "current_job_id": None} for node in nodes]
+
+    def tail():
+        calls.append("log")
+        return {"lines": ["redacted"], "size": 8, "mtime": None, "status": "ok"}
+
+    monkeypatch.setattr(sup, "current", current)
+    monkeypatch.setattr(sup, "public_log_tail", tail)
+    monkeypatch.setattr(monitor.job_repo, "workers", workers)
+    client = as_role("admin")
+    path = "/api/worker/overview"
+    response = client.get(path)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert calls == ["heartbeat", "process"]
+    rows = {r["row_key"]: r for r in body["worker_rows"]}
+    assert rows["node:local"]["can_stop"] and rows["node:local"]["ownership"] == "managed"
+    assert rows["node:remote"]["ownership"] == "remote" and not rows["node:remote"]["can_stop"]
+    assert rows["node:external"]["ownership"] == "local_external" and not rows["node:external"]["can_stop"]
+    assert not rows["node:previous"]["can_stop"] and rows["managed:12"]["heartbeat_state"] == "missing"
+    assert not rows["node:stale"]["can_stop"]
+    assert body["process"]["external_online_pids"] == [31]
+    assert body["daemon"]["pids"] == [11, 12] and body["process"]["log_tail"] == []
+    assert client.get(path, params={"include_log": 1}).json()["process"]["log_tail"] == ["redacted"]
+    assert calls == ["heartbeat", "process", "heartbeat", "process", "log"]
+    assert as_role("editor").get(path).status_code == 403
+
+    def unavailable(*, strict):
+        raise OSError("private directory")
+    monkeypatch.setattr(sup, "current", unavailable)
+    degraded = client.get(path).json()
+    assert degraded["errors"] == ["process", "daemon"] and degraded["process"] is None
+    assert all(not row["can_stop"] for row in degraded["worker_rows"])
+    assert "private directory" not in str(degraded)
+
+
+def test_worker_overview_作业指针受项目可见性限制(as_role, monkeypatch):
+    from services.jobs_pkg import monitor
+
+    node = {"worker_id": "scoped", "host": "remote", "pid": 88, "online": True,
+            "heartbeat_at": "", "age_seconds": 1, "current_job_id": 902}
+    monkeypatch.setattr(monitor.job_repo, "workers", lambda seconds, *, conn: [node])
+    monkeypatch.setattr("access.visible_project_ids", lambda user: set())
+    body = as_role("admin").get("/api/worker/overview").json()
+    assert body["status"]["current_job_id"] is None
+    assert "workers" not in body["status"]
+    assert body["worker_rows"][0]["current_job_id"] is None

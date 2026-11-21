@@ -55,6 +55,8 @@ def main() -> int:
     original = monitor.read_text()
     from repositories.validation import validations
     from db import get_conn
+    validations.record({"capability": "text", "backend": "local", "provider": "gate-retired",
+                        "model": "gate-retired-model", "kind": "env_check", "state": "ok"})
     for i in range(57):
         row = validations.record({"capability": "text", "backend": "local",
             "provider": "gate-provider" if i != 54 else "gate-other",
@@ -94,6 +96,23 @@ def main() -> int:
             M.go(cdp, M.BASE + '/#models/3')
             assert ev("!!document.querySelector('#mc-wp-start')"), '页面未挂载'
             ev("""(async()=>{window.api=(await import('/js/api.js')).api;window.cache=(await import('/js/views/models/shared.js')).cache;window.base=structuredClone(cache.worker);window.processBase=structuredClone(cache.workerProcess);window.daemonBase=structuredClone(cache.workerDaemon);})()""")
+            # Preserve the existing UI scenarios with controllable snapshots.
+            # Separate assertions below exercise the actual new HTTP routes.
+            ev("""window.realOverview=api.workerOverview;
+              api.workerOverview=async(_includeLog)=>{
+                const [a,b,c]=await Promise.allSettled([api.workerStatus(),api.workerProcess(),api.workerDaemon()]);
+                if(a.status==='rejected') throw a.reason;
+                const status=a.value, process=b.status==='fulfilled'?b.value:null;
+                const managed=new Set(process?.pids||[]), external=new Set(process?.external_online_pids||[]);
+                const rows=(status.workers||[]).map(n=>({...n,heartbeat_state:n.online?'online':'offline',
+                  ownership:n.online&&managed.has(n.pid)?'managed':'unknown',can_stop:n.online&&managed.has(n.pid)}));
+                for(const pid of [...managed,...external]){
+                  if(!rows.some(n=>n.online&&n.pid===pid)) rows.push({pid,online:true,
+                    ownership:managed.has(pid)?'managed':'local_external',can_stop:managed.has(pid)});
+                }
+                return {status,process,daemon:c.status==='fulfilled'?c.value:null,worker_rows:rows,log_included:true,
+                  errors:[...(b.status==='rejected'?['process']:[]),...(c.status==='rejected'?['daemon']:[])]};
+              }""")
             # v1.52 删掉了页头那颗「立即刷新」按钮（它与 5 秒轮询是同一个 tick，
             # 点一下只省最多 3 秒）。这些时序用例仍需要一个"立刻触发一拍"的入口：
             # 取 `root.__monitorTick`（mount 时挂的，本来就是按钮的调用点），
@@ -116,7 +135,7 @@ def main() -> int:
             time.sleep(.1)
             checks['success_message'] = ev("document.querySelector('#mc-wp-msg').textContent==='模拟启动完成'")
             checks['drafts'] = ev("document.querySelector('#mc-conc-global').value==='3' && document.querySelector('#mc-daemon-desired').value==='6'")
-            ev("api.setWorkerDaemon=async(body)=>({...daemonBase,...body}); document.querySelector('#mc-daemon-save').click()")
+            ev("api.setWorkerDaemon=async(body)=>({...daemonBase,...body}); const d=document.querySelector('#mc-daemon-desired'); d.dispatchEvent(new Event('blur',{bubbles:true}))")
             time.sleep(.1)
             checks['daemon_message'] = ev("document.querySelector('#mc-daemon-msg').textContent==='守护设置已保存。'")
             checks['other_draft_survives_save'] = ev("document.querySelector('#mc-conc-global').value==='3'")
@@ -188,11 +207,11 @@ def main() -> int:
             time.sleep(.1)
             checks['stop_once'] = ev('stopCalls.at(-1)===false')
             fresh()
-            ev("""api.workerProcess=async()=>({...processBase,count:1,pids:[81],external_online_count:2,external_online_pids:[91,92],stale_pids:[999],log_status:'ok',log_tail:['Traceback','  source line','RuntimeError: failed']});__tick()""")
+            ev("""api.workerStatus=async()=>({...base,workers:[]});api.workerProcess=async()=>({...processBase,count:1,pids:[81],external_online_count:2,external_online_pids:[91,92],stale_pids:[999],log_status:'ok',log_tail:['Traceback','  source line','RuntimeError: failed']});__tick()""")
             time.sleep(.1)
             checks['process_groups'] = ev("['受管运行中 1 个','外部运行中 2 个','残留登记 1 条'].every(t=>document.querySelector('#mc-wp-status').textContent.includes(t))")
             checks['log_order'] = ev("JSON.stringify([...document.querySelectorAll('.wp-loglist li')].map(el=>el.textContent))===JSON.stringify(['Traceback','  source line','RuntimeError: failed'])")
-            checks['process_table'] = ev("(()=>{const rows=[...document.querySelectorAll('.wp-proc-table tbody tr')];return rows.length===3 && document.querySelectorAll('.wp-proc-table [data-stop-pid]').length===1 && rows.filter(r=>r.textContent.includes('请在原终端关闭')).length===2 && !document.querySelector('#mc-wp-status').textContent.includes('PID')})()")
+            checks['process_table'] = ev("(()=>{const rows=[...document.querySelectorAll('.mc-worker-table tbody tr')];return rows.length===3 && document.querySelectorAll('.mc-worker-table [data-stop-pid]').length===1 && rows.filter(r=>r.textContent.includes('请在原终端关闭')).length===2 && !document.querySelector('#mc-wp-status').textContent.includes('PID') && !document.querySelector('.wp-proc-table')})()")
             ev("""window.cleanCalls=0;api.cleanStaleWorkers=async()=>{cleanCalls++;return {...processBase,count:1,pids:[81],stale_pids:[],last_action:'已清理 1 条残留 PID 登记'}};document.querySelector('#mc-wp-clean').click()""")
             time.sleep(.1)
             checks['cleanup'] = ev("cleanCalls===1 && !document.querySelector('#mc-wp-clean') && document.querySelector('#mc-wp-msg').textContent.includes('已清理 1 条')")
@@ -230,9 +249,8 @@ def main() -> int:
             ev("document.querySelector('#mc-val-older')?.click()")
             time.sleep(.3)
             checks['filtered_cursor'] = ev("document.querySelectorAll('#mc-val-rows>tr').length===53 && document.querySelector('.mc-val-pager').textContent.includes('已加载 53 条') && historyCalls.at(-1)[1]>0 && historyCalls.at(-1)[2].model==='gate-a'")
-            ev("document.querySelector('[data-validation-detail] summary').click()")
-            checks['full_detail'] = ev("document.querySelector('[data-validation-detail]').open && document.querySelector('.mc-validation-detail').textContent.includes('结束 <img') && !document.querySelector('#mc-val-rows img')")
-            ev("""api.providerValidations=async()=>{throw new Error('模拟筛选失败')};document.querySelector('#mc-val-provider').value='wrong-provider';document.querySelector('#mc-val-apply').click()""")
+            checks['full_detail'] = ev("(()=>{const el=document.querySelector('.mc-val-detail-cell .t-desc');return !!el && !document.querySelector('[data-validation-detail]') && el.textContent.includes('结束 <img') && (el.getAttribute('title')||'').includes('结束 <img') && !document.querySelector('#mc-val-rows img')})()")
+            ev("""api.providerValidations=async()=>{throw new Error('模拟筛选失败')};document.querySelector('#mc-val-provider').value='gate-other';document.querySelector('#mc-val-apply').click()""")
             time.sleep(.1)
             checks['filter_rollback'] = ev("document.querySelector('#mc-val-provider').value==='gate-provider' && document.querySelector('#mc-val-filter-state').value==='bad' && document.querySelectorAll('#mc-val-rows>tr').length===53")
             ev("api.providerValidations=originalHistory;document.querySelector('#mc-val-reset').click()")
@@ -268,6 +286,31 @@ def main() -> int:
             ev("document.querySelector('#mc-job-history [data-job-status=failed]').click()")
             time.sleep(.4)
             checks['history_status_navigation'] = ev("location.hash.startsWith('#generate') && document.querySelector('#gen-status')?.value==='failed'")
+            fresh()
+            checks['overview_http'] = ev("""(async()=>{const result=await realOverview(false);
+                const logged=await realOverview(true);
+                return !!result.status && !!result.process && Array.isArray(result.worker_rows)
+                  && !result.log_included && logged.log_included && result.process.log_tail.length===0;})()""")
+            checks['retired_option_initial'] = ev("!document.querySelector('#mc-val-provider option[value=gate-retired]')")
+            ev("document.querySelector('#mc-val-extra').open=true")
+            time.sleep(.4)
+            checks['retired_provider_option'] = ev("!!document.querySelector('#mc-val-provider option[value=gate-retired]')")
+            ev("""const sel=document.querySelector('#mc-val-provider');sel.value='gate-retired';
+                sel.dispatchEvent(new Event('change',{bubbles:true}));""")
+            time.sleep(.3)
+            checks['retired_model_option'] = ev("!!document.querySelector('#mc-val-model option[value=gate-retired-model]') && !document.querySelector('#mc-val-model option[value=gate-a]')")
+            ev("""api.workerOverview=async(includeLog)=>({status:base,process:{...processBase,count:1,pids:[42]},
+                  daemon:daemonBase,log_included:includeLog,errors:[],worker_rows:[
+                    {row_key:'managed:42',pid:42,online:false,ownership:'managed',heartbeat_state:'missing',can_stop:true},
+                    {row_key:'node:remote',worker_id:'remote-collision',pid:42,online:true,ownership:'remote',heartbeat_state:'online',can_stop:false}
+                  ]});__tick()""")
+            time.sleep(.2)
+            checks['remote_same_pid'] = ev("""(()=>{const rows=[...document.querySelectorAll('.mc-worker-table tbody tr')];
+                const remote=rows.find(row=>row.textContent.includes('remote-collision'));
+                return !!remote && !remote.querySelector('[data-stop-pid]') && document.querySelectorAll('[data-stop-pid="42"]').length===1;})()""")
+            ev("api.workerOverview=async()=>{throw Error('connection')};__tick()")
+            time.sleep(.2)
+            checks['stale_pid_actions_disabled'] = ev("!document.querySelector('[data-stop-pid]') && document.querySelector('#mc-wp-stop').disabled && document.querySelector('.mc-worker-table').textContent.includes('remote-collision')")
             return checks
 
         checks = run_checks()

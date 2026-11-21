@@ -4,6 +4,12 @@ POST 只做校验与落库，202 立刻返回——真正的执行在独立的 `
 这条边界是规格 02 §7.2 的原话：请求接口不得等待模型跑完。
 """
 import mimetypes
+import socket
+import sqlite3
+from datetime import datetime, timezone
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status as http_status
 from fastapi.responses import FileResponse
@@ -13,6 +19,7 @@ import error_catalog
 import job_state
 import jobfiles
 import services
+from log import get_logger
 from deps import require_permission, require_user
 from models import (CAPABILITIES, JOB_STATUSES,
                     JobDiagnosisOut,
@@ -334,14 +341,82 @@ def put_worker_concurrency(payload: WorkerLimitIn,
 # **这不是守护进程**：没有自动拉起、没有崩溃重启。按钮存在只为省掉"开终端敲命令"，
 # 界面必须把这句话写出来——详见 `worker_supervisor` 模块头。
 
-def _process_out(state: dict, *, last_action: str = "") -> WorkerProcessOut:
+def _process_out(state: dict, *, last_action: str = "", nodes: list[dict] | None = None,
+                 include_log: bool = True) -> WorkerProcessOut:
     import worker_supervisor as sup
     from services.jobs_pkg.monitor import process_observation
-    tail = sup.public_log_tail()
-    return WorkerProcessOut(**state, **process_observation(state),
+    tail: dict = sup.public_log_tail() if include_log else {"lines": [], "size": 0, "mtime": None, "status": "missing"}
+    return WorkerProcessOut(**state, **process_observation(state, nodes=nodes),
                             log_path=sup.public_log_path(), last_action=last_action,
                             log_tail=tail["lines"], log_size=tail["size"],
                             log_mtime=tail["mtime"], log_status=tail["status"])
+
+
+class WorkerOverviewRow(BaseModel):
+    row_key: str
+    worker_id: str | None = None
+    host: str
+    pid: int
+    online: bool
+    ownership: Literal["managed", "local_external", "remote", "unknown"]
+    heartbeat_state: Literal["online", "offline", "missing"]
+    can_stop: bool
+    current_job_id: int | None = None
+    heartbeat_at: str | None = None
+    age_seconds: int | None = None
+    resources: dict = Field(default_factory=dict)
+    limits: dict = Field(default_factory=dict)
+
+
+class WorkerOverviewStatus(WorkerStatusOut):
+    # Heartbeat rows are already carried by worker_rows. The legacy /status keeps its list.
+    workers: list[dict] = Field(default_factory=list, exclude=True)
+
+
+class WorkerOverviewOut(BaseModel):
+    observed_at: datetime
+    status: WorkerOverviewStatus
+    process: WorkerProcessOut | None = None
+    daemon: WorkerDaemonOut | None = None
+    worker_rows: list[WorkerOverviewRow]
+    log_included: bool = False
+    errors: list[Literal["process", "daemon"]] = Field(default_factory=list)
+
+
+@router.get("/worker/overview", response_model=WorkerOverviewOut)
+def worker_overview(include_log: bool = False,
+                    user=Depends(require_permission("system:config"))) -> WorkerOverviewOut:
+    import worker_daemon
+    import worker_supervisor as sup
+    from services.jobs_pkg import monitor
+
+    log = get_logger(__name__)
+    try:
+        status = monitor.worker_status(user, overview=True)
+    except sqlite3.Error as exc:
+        log.warning("worker_overview_status_failed err=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="队列或心跳暂时无法读取") from exc
+    try:
+        state = sup.current(strict=True)
+    except (OSError, RuntimeError) as exc:
+        log.warning("worker_overview_process_failed err=%s", type(exc).__name__)
+        return WorkerOverviewOut(observed_at=datetime.now(timezone.utc), status=WorkerOverviewStatus(**status),
+                                 worker_rows=[WorkerOverviewRow(**row) for row in
+                                              monitor.overview_rows(status["workers"], None, socket.gethostname())],
+                                 errors=["process", "daemon"])
+    process = _process_out(state, nodes=status["workers"], include_log=include_log)
+    daemon = None
+    errors: list[Literal["process", "daemon"]] = []
+    try:
+        daemon = WorkerDaemonOut(**worker_daemon.check(process_state=state))
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        log.warning("worker_overview_daemon_failed err=%s", type(exc).__name__)
+        errors.append("daemon")
+    return WorkerOverviewOut(observed_at=datetime.now(timezone.utc), status=WorkerOverviewStatus(**status),
+                             process=process, daemon=daemon, log_included=include_log,
+                             worker_rows=[WorkerOverviewRow(**row) for row in
+                                          monitor.overview_rows(status["workers"], state, socket.gethostname())],
+                             errors=errors)
 
 
 @router.get("/worker/process", response_model=WorkerProcessOut)

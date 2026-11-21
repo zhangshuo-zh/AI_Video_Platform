@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Literal
 
 from db import get_conn
 
@@ -180,7 +181,7 @@ class ValidationRepository:
                     *, kind: str | None = None, state: str | None = None,
                     only_bad: bool = False, provider: str | None = None,
                     model: str | None = None, date_from: str | None = None,
-                    date_to: str | None = None
+                    date_to: str | None = None, conn: sqlite3.Connection | None = None
                     ) -> list[sqlite3.Row]:
         """按 id 倒序一页。`before_id` 是上一页最后一条的 id（翻旧账用）。
 
@@ -195,21 +196,40 @@ class ValidationRepository:
         sql = "SELECT * FROM model_validation" + where
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
+        if conn is not None:
+            return conn.execute(sql, args).fetchall()
         with get_conn() as conn:
-            return conn.execute(sql, tuple(args)).fetchall()
+            return conn.execute(sql, args).fetchall()
 
     def count(self, *, kind: str | None = None, state: str | None = None,
               only_bad: bool = False, provider: str | None = None,
               model: str | None = None, date_from: str | None = None,
-              date_to: str | None = None) -> int:
+              date_to: str | None = None, conn: sqlite3.Connection | None = None) -> int:
         """历史总条数。给"一共多少条、这一页是第几页"用——
         只回一页而不说总量，人分不清"到底看完了没有"。"""
         where, args = _history_filters(kind=kind, state=state, only_bad=only_bad,
                                        provider=provider, model=model,
                                        date_from=date_from, date_to=date_to)
+        sql = "SELECT COUNT(*) FROM model_validation" + where
+        if conn is not None:
+            return int(conn.execute(sql, args).fetchone()[0])
         with get_conn() as conn:
-            return int(conn.execute("SELECT COUNT(*) FROM model_validation" + where, args)
-                       .fetchone()[0])
+            return int(conn.execute(sql, args).fetchone()[0])
+
+    def options(self, *, field: Literal["provider", "model"], after: str,
+                provider: str | None, limit: int) -> list[str]:
+        column = {"provider": "provider", "model": "model"}[field]
+        scope = " AND provider = ?" if provider is not None else ""
+        args: list[str | int] = [after]
+        if provider is not None:
+            args.append(provider)
+        args.append(limit + 1)
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {column} FROM model_validation "
+                f"WHERE {column} > ?{scope} ORDER BY {column} LIMIT ?", args
+            ).fetchall()
+        return [row[0] for row in rows]
 
     def for_job(self, job_id: int) -> list[sqlite3.Row]:
         with get_conn() as conn:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import sqlite3
 import time
@@ -280,10 +281,10 @@ class JobsLeaseMixin:
                     (now, offset, *identity, now, window, now),
                 )
 
-    def workers(self, online_seconds: int) -> list[dict]:
+    def workers(self, online_seconds: int, *, conn: sqlite3.Connection | None = None) -> list[dict]:
         """所有登记过的 worker 进程（最近的在前），带"现在还活着吗"。"""
-        with get_conn() as conn:
-            rows = conn.execute(
+        with (get_conn() if conn is None else nullcontext(conn)) as db:
+            rows = db.execute(
                 """SELECT worker_id, pid, host, started_at, heartbeat_at,
                           current_job_id, version, limits_json, resources_json,
                           CAST(strftime('%s','now','localtime')
@@ -303,6 +304,6 @@ class JobsLeaseMixin:
         return out
 
 
-    def worker_state(self) -> sqlite3.Row | None:
-        with get_conn() as conn:
-            return conn.execute("SELECT * FROM worker_state WHERE id = 1").fetchone()
+    def worker_state(self, *, conn: sqlite3.Connection | None = None) -> sqlite3.Row | None:
+        with (get_conn() if conn is None else nullcontext(conn)) as db:
+            return db.execute("SELECT * FROM worker_state WHERE id = 1").fetchone()

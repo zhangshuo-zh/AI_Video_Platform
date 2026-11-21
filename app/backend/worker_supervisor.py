@@ -171,12 +171,16 @@ def _pid_alive(pid: int) -> bool:
         return True      # 查不到就按"活着"处理：宁可多等，不要误判成已退
 
 
-def _pid_files() -> list[Path]:
+def _pid_files(*, strict: bool = False) -> list[Path]:
     """`PID_DIR` 下所有 `<pid>.pid`，按 pid 排序。目录不存在返回空表。"""
     try:
-        return sorted(PID_DIR.glob("*.pid"),
+        return sorted((path for path in PID_DIR.iterdir() if path.suffix == ".pid"),
                       key=lambda f: int(f.stem) if f.stem.isdigit() else 0)
+    except FileNotFoundError:
+        return []
     except OSError:
+        if strict:
+            raise
         return []
 
 
@@ -192,7 +196,7 @@ def read_pid() -> int | None:
     return None
 
 
-def list_workers() -> list[dict]:
+def list_workers(*, strict: bool = False) -> list[dict]:
     """这台机器上所有登记过的 worker：`[{pid, alive, stale}]`。
 
     `stale=True` 表示 PID 文件还在但进程已经没了（上次强杀/崩溃留下的）。
@@ -200,7 +204,7 @@ def list_workers() -> list[dict]:
     悄悄删掉就等于把一次异常消失得无影无踪。
     """
     out = []
-    for path in _pid_files():
+    for path in (_pid_files(strict=True) if strict else _pid_files()):
         try:
             pid = int(path.stem)
         except ValueError:
@@ -217,13 +221,13 @@ def list_workers() -> list[dict]:
     return out
 
 
-def current() -> dict:
+def current(*, strict: bool = False) -> dict:
     """汇总：有几个 worker 在跑、分别是哪些 pid、有没有残留。
 
     **以 PID 目录 + 进程探测为准**，不靠内存里的状态——API 重启后内存没了而
     worker 还活着，记内存会让界面显示"未启动"，人一按就起第二个。
     """
-    workers = list_workers()
+    workers = list_workers(strict=True) if strict else list_workers()
     live = [w for w in workers if w["alive"]]
     stale = [w["pid"] for w in workers if w["stale"]]
     return {

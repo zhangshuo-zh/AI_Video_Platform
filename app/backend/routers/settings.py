@@ -12,6 +12,9 @@ P0 又加了一件事：**把"环境齐"和"真跑过"分开显示**。健康状
 """
 import re
 from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
@@ -22,6 +25,7 @@ import engines
 import validations
 from config import ALLOW_MOCK
 from deps import require_permission, require_user
+from db import get_conn
 from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderManifestOut,
                     ProviderOptionOut, ProviderOut, ProviderUpdate, ValidationIn,
                     ValidationOut, provider_slot_version)
@@ -257,14 +261,36 @@ def list_validations(response: Response, limit: int = Query(50, ge=1),
         raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
     start = date_from.isoformat() if date_from else None
     end = date_to.isoformat() if date_to else None
-    rows = [ValidationOut.from_row(r)
-            for r in validation_repo.list_recent(limit, before_id, kind=kind, state=state,
-                                                 only_bad=only_bad, provider=provider, model=model,
-                                                 date_from=start, date_to=end)]
-    response.headers["X-Total-Count"] = str(validation_repo.count(kind=kind, state=state, only_bad=only_bad,
-                                                               provider=provider, model=model,
-                                                               date_from=start, date_to=end))
-    return rows
+    # Deferred read transaction pins one WAL snapshot without reserving the writer.
+    with get_conn() as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        rows = validation_repo.list_recent(
+            limit, before_id, kind=kind, state=state, only_bad=only_bad,
+            provider=provider, model=model, date_from=start, date_to=end, conn=conn)
+        total = validation_repo.count(
+            kind=kind, state=state, only_bad=only_bad, provider=provider,
+            model=model, date_from=start, date_to=end, conn=conn)
+    response.headers["X-Total-Count"] = str(total)
+    return [ValidationOut.from_row(row) for row in rows]
+
+
+class ValidationOptionsOut(BaseModel):
+    items: list[str]
+    next_after: str | None = None
+
+
+@router.get("/providers/validations/options", response_model=ValidationOptionsOut)
+def validation_options(field: Literal["provider", "model"],
+                       after: str = Query("", max_length=200),
+                       provider: str | None = Query(None, min_length=1, max_length=200),
+                       limit: int = Query(100, ge=1, le=200),
+                       _=Depends(require_permission("system:config"))) -> ValidationOptionsOut:
+    if provider is not None and field != "model":
+        raise HTTPException(status_code=422, detail="仅模型选项支持按供应商筛选")
+    rows = validation_repo.options(field=field, after=after, provider=provider, limit=limit)
+    return ValidationOptionsOut(items=rows[:limit], next_after=rows[limit - 1] if len(rows) > limit else None)
+
 
 
 @router.post("/providers/validate", response_model=ValidationOut)

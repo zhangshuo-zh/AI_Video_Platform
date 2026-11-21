@@ -410,3 +410,47 @@ def test_验证历史筛选使用窄索引():
         for column, index in [("provider", "provider"), ("model", "model"), ("created_at", "time")]:
             plan = conn.execute(f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM model_validation WHERE {column} >= ?", ("x",)).fetchall()
             assert f"idx_validation_history_{index}" in " ".join(str(row[3]) for row in plan)
+
+
+def test_validation_options_覆盖旧记录并按原值翻页(as_role):
+    provider = "options-only-retired-provider"
+    for model in ("Old", "old", "older", "", "Old"):
+        val_repo.record({"capability": "text", "backend": "local", "provider": provider,
+                         "model": model, "kind": "env_check", "state": "ok"})
+    for i in range(51):
+        val_repo.record({"capability": "text", "backend": "local", "provider": "options-new-provider",
+                         "model": f"new-{i}", "kind": "env_check", "state": "ok"})
+    path = "/api/providers/validations"
+    client = as_role("admin")
+    assert provider not in {row["provider"] for row in client.get(path).json()}
+    choices = client.get(path + "/options", params={"field": "provider", "after": "options-only"}).json()
+    assert provider in choices["items"]
+
+    params = {"field": "model", "provider": provider, "limit": 2}
+    first = client.get(path + "/options", params=params).json()
+    assert first == {"items": ["Old", "old"], "next_after": "old"}
+    final = client.get(path + "/options", params={**params, "after": first["next_after"]}).json()
+    assert final == {"items": ["older"], "next_after": None}
+    assert client.get(path, params={"provider": provider, "model": "Old"}).headers["X-Total-Count"] == "2"
+    assert as_role("editor").get(path + "/options", params=params).status_code == 403
+    assert client.get(path + "/options", params={"field": "provider", "provider": provider}).status_code == 422
+
+
+def test_validation_page与总数同一读取快照(as_role, monkeypatch):
+    provider = "snapshot-test-provider"
+    data = {"capability": "text", "backend": "local", "provider": provider,
+            "model": "m", "kind": "env_check", "state": "ok"}
+    val_repo.record(data)
+    original = val_repo.list_recent
+
+    def read_then_write(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        val_repo.record(data)
+        return rows
+
+    monkeypatch.setattr(val_repo, "list_recent", read_then_write)
+    response = as_role("admin").get("/api/providers/validations", params={"provider": provider})
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Total-Count"] == "1"
+    assert len(response.json()) == 1
+    assert val_repo.count(provider=provider) == 2

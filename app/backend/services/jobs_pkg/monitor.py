@@ -30,18 +30,20 @@ def _seconds_since(text: str | None) -> int | None:
 
 
 
-def process_observation(managed: dict) -> dict:
+def process_observation(managed: dict, *, nodes: list[dict] | None = None) -> dict:
     """补充本机新鲜心跳的观测，不把心跳 PID 自动纳入启停权限。"""
     import socket
     pids = set(managed.get("pids") or [])
     hostname = socket.gethostname()
-    online = {int(row["pid"]) for row in job_repo.workers(WORKER_ONLINE_SECONDS)
+    online = {int(row["pid"]) for row in (nodes if nodes is not None else job_repo.workers(WORKER_ONLINE_SECONDS))
               if row["online"] and row.get("host") == hostname and int(row["pid"] or 0) > 0}
+    if nodes is not None:
+        online.difference_update(managed.get("stale_pids", ()))
     external = sorted(online - pids)
     return {"external_online_pids": external, "external_online_count": len(external),
             "heartbeat_online_count": len(online), "total_observed_count": len(pids | online)}
 
-def concurrency_now() -> dict:
+def concurrency_now(*, running_by_resource: dict[str, int] | None = None) -> dict:
     """并发设置的现值 + 这台机器扛不扛得住。给 `/api/worker/status` 与设置接口共用。
 
     为什么放服务层而不是路由：两处（读状态、写设置）都要同一份评估，
@@ -81,18 +83,19 @@ def concurrency_now() -> dict:
         rows = []
 
     # 正在跑的各算一类，让评估能顺带回答"现在已经在跑几条"。
-    running_now: dict[str, int] = {}
-    try:
-        with get_conn() as conn:
-            from repositories.jobs_parts.common import RESOURCE_CLASS_SQL
-            for row in conn.execute(
-                f"""SELECT {RESOURCE_CLASS_SQL} AS cls, COUNT(*) AS n
-                      FROM job
-                     WHERE status IN ('starting','running','cancel_requested')
-                     GROUP BY cls""").fetchall():
-                running_now[str(row["cls"])] = int(row["n"])
-    except sqlite3.Error:
-        running_now = {}
+    running_now = running_by_resource if running_by_resource is not None else {}
+    if running_by_resource is None:
+        try:
+            with get_conn() as conn:
+                from repositories.jobs_parts.common import RESOURCE_CLASS_SQL
+                for row in conn.execute(
+                    f"""SELECT {RESOURCE_CLASS_SQL} AS cls, COUNT(*) AS n
+                          FROM job
+                         WHERE status IN ('starting','running','cancel_requested')
+                         GROUP BY cls""").fetchall():
+                    running_now[str(row["cls"])] = int(row["n"])
+        except sqlite3.Error:
+            running_now = {}
 
     assessment = concurrency_plan.assess(
         limits=effective, rows=rows, running_now=running_now)
@@ -189,7 +192,7 @@ def _set_concurrency(payload, user=None) -> dict:
 
 
 
-def worker_status(user=None) -> dict:
+def worker_status(user=None, *, overview: bool = False) -> dict:
     """worker 状态 + 队列健康。
 
     这里刻意**不**把"超时"写成 failed：判定与处置分开。
@@ -199,9 +202,17 @@ def worker_status(user=None) -> dict:
     每人都在拉的，别人项目的 job id／供应商／模型不该顺着它漏出去。
     计数（队列长度、待核对数）不裁——那是共享机器的客观状态，不是项目内容。
     """
-    state = job_repo.worker_state()
+    if overview:
+        # Keep heartbeat rows and their compatibility mirror on one WAL snapshot.
+        with get_conn() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
+            state = job_repo.worker_state(conn=conn)
+            nodes = job_repo.workers(WORKER_ONLINE_SECONDS, conn=conn)
+    else:
+        state = job_repo.worker_state()
+        nodes = job_repo.workers(WORKER_ONLINE_SECONDS)
     health = job_repo.queue_health(WORKER_MAX_RUNTIME_SECONDS)
-    nodes = job_repo.workers(WORKER_ONLINE_SECONDS)
     by_resource = job_repo.queue_by_resource()
     if user is not None:
         # **一次读出可见项目集，不再逐行判权限**（2026-11-09 外部审查第 10 条）。
@@ -238,6 +249,13 @@ def worker_status(user=None) -> dict:
         online = age is not None and age <= WORKER_ONLINE_SECONDS
         current_job_id = state["current_job_id"] if online else None
 
+    if overview and user is not None and allowed is not None:
+        visible_jobs = {row["id"] for row in health["running_jobs"]}
+        nodes = [{**node, "current_job_id": node["current_job_id"]
+                  if node.get("current_job_id") in visible_jobs else None} for node in nodes]
+        if current_job_id not in visible_jobs:
+            current_job_id = None
+
     alerts: list[dict] = []
     if health["queued"] > 0 and not online:
         alerts.append({"level": "bad", "code": "worker_offline",
@@ -270,7 +288,9 @@ def worker_status(user=None) -> dict:
     # 并发设置与它的风险评估（0047）。读不到就报空，不影响其余状态——
     # 顶栏小圆点不该因为"这行配置读不出来"而整个 500。
     try:
-        concurrency = concurrency_now()
+        concurrency = (concurrency_now(running_by_resource={key: value["running"]
+                                                            for key, value in by_resource.items()})
+                       if overview else concurrency_now())
     except (sqlite3.Error, OSError, ValueError) as exc:
         _audit_log.debug("worker_status_fallback error=%s", type(exc).__name__)
         concurrency = {}
@@ -307,3 +327,29 @@ def worker_status(user=None) -> dict:
         "needs_attention": health["needs_attention"],
         "concurrency": concurrency,
     }
+
+
+def overview_rows(nodes: list[dict], managed: dict | None, hostname: str) -> list[dict]:
+    """Join only fresh local heartbeats; preserve offline and remote worker identities."""
+    pids = set(managed["pids"]) if managed is not None else set()
+    stale = set(managed.get("stale_pids", [])) if managed is not None else set()
+    joined: set[int] = set()
+    rows = []
+    for node in nodes:
+        host = node.get("host") or ""
+        pid = int(node.get("pid") or 0)
+        online = bool(node["online"])
+        local_live = host == hostname and online and pid > 0
+        is_managed = local_live and pid in pids and pid not in joined
+        if is_managed:
+            joined.add(pid)
+        ownership = ("managed" if is_managed else "remote" if host and host != hostname
+                     else "local_external" if local_live and managed is not None
+                     and pid not in pids and pid not in stale else "unknown")
+        rows.append({**node, "pid": pid, "host": host, "row_key": f"node:{node['worker_id']}",
+                     "ownership": ownership, "can_stop": is_managed,
+                     "heartbeat_state": "online" if online else "offline"})
+    rows.extend({"row_key": f"managed:{pid}", "host": hostname, "pid": pid,
+                 "ownership": "managed", "can_stop": True, "online": False,
+                 "heartbeat_state": "missing"} for pid in sorted(pids - joined))
+    return rows

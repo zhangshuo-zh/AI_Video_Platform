@@ -209,6 +209,7 @@ ROUTES = [
     # 成本账按可见项目汇总：看不见那个项目时就是空账，不是 404
     ("GET", "/api/jobs/costs", None, 200),
     ("GET", "/api/worker/status", None, 200),
+    ("GET", "/api/worker/overview", None, 403),
     # 0047：并发设置。读是任何登录者都行（客观状态），写要 system:config ⇒ 403。
     ("GET", "/api/worker/concurrency", None, 200),
     ("PUT", "/api/worker/concurrency", {"global_max": 2}, 403),
@@ -281,6 +282,7 @@ ROUTES = [
     # P0：验证历史与两条验证写入都要 system:config，editor 一律 403。
     # validate 只收 env_check；validate-job 反过来不收 env_check（要带 job_id）。
     ("GET", "/api/providers/validations", None, 403),
+    ("GET", "/api/providers/validations/options?field=provider", None, 403),
     ("POST", "/api/providers/validate",
      {"capability": "text", "backend": "local", "kind": "env_check"}, 403),
     ("POST", "/api/providers/validate-job/{j}",

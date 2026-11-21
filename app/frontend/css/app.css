@@ -2851,16 +2851,22 @@ td.shot-jobs .t-desc{max-width:180px;font-family:var(--mono);font-size:11px}
   position:sticky;top:0;z-index:2;
   background:linear-gradient(var(--panel-2),var(--panel-2)),var(--field);
 }
-/* 并发上限输入框：.inp 没有全局样式，原来裸奔成浏览器默认的黑边小框 */
+/* 并发上限输入框：统一 32px 紧凑高度并右对齐贴齐右缘 */
 .mc-conc-wrap{margin-top:8px}
+.mc-conc-table th:last-child,.mc-conc-table td:last-child{text-align:right;width:124px}
 .mc-conc-table .inp{
-  width:84px;font:inherit;font-size:12.5px;padding:6px 10px;
-  border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  width:88px;height:32px;box-sizing:border-box;font:inherit;font-size:12.5px;padding:0 10px;
+  text-align:right;border:1px solid var(--line-strong);border-radius:var(--r-ctl);
   background:var(--field);color:var(--ink);
   transition:border-color var(--fast),box-shadow var(--fast);
 }
 .mc-conc-table .inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .mc-conc-table .inp::placeholder{color:var(--ink-3)}
+.mc-conc-foot{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;margin-top:12px}
+.mc-conc-notes{min-width:0;flex:1 1 320px}
+.mc-conc-notes .note{margin-top:0 !important}
+.mc-conc-actions{padding-top:0 !important;margin-left:auto;justify-content:flex-end}
+.mc-conc-actions .btn{height:32px;padding:0 14px;box-sizing:border-box}
 /* 日志行现在是 `.wp-logbox` 内部的一行（0049），与列表之间留一点气口，
    不再需要那 14px 的外边距去跟上面的内容拉开——那是 `margin-top:auto` 时代的写法。 */
 .wp-logbox .wp-log{margin-top:10px}
@@ -3654,6 +3660,7 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .table-wrap > table th:first-child,.table-wrap > table td:first-child{padding-left:18px}
 .table-wrap > table th:last-child,.table-wrap > table td:last-child{padding-right:18px}
 .table-wrap > table tbody tr:not(.mc-expanded) > td:first-child{position:relative}
+.table-wrap > table tbody tr:not(.mc-expanded):hover{background:transparent}
 .table-wrap > table tbody tr:not(.mc-expanded):hover > td{background:var(--row-hover)}
 .table-wrap > table tbody tr:not(.mc-expanded):hover > td:first-child::before{
   content:'';position:absolute;left:0;top:8px;bottom:8px;width:3.5px;
@@ -3837,7 +3844,7 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .mc-monitor-status{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--warn);background:var(--warn-soft);border-radius:0 var(--r-ctl) var(--r-ctl) 0}
 .mc-monitor-status p{margin:0}
 .mc-offline-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;border-top:1px solid var(--line);padding:10px 18px}
-.mc-val-filterbar{padding:10px 18px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+.mc-val-filterbar{padding:10px 18px;background:transparent;border-bottom:1px solid var(--line)}
 .mc-dash-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 .mc-resource-strip{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding-top:0}
 .mc-resource-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -3849,9 +3856,12 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .mc-monitor-detail li{overflow-wrap:anywhere;margin-block:5px}
 #mc-running-jobs li span{margin-inline-start:8px}
 .mc-stop-choice{display:block;margin-top:10px}
-.mc-val-extra-fields{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.mc-val-extra-fields .ctl{width:165px;max-width:100%;min-width:0}
-.mc-val-applied{font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.mc-val-tools input.ctl.sm[type="date"]{width:140px;padding:0 10px}
+.mc-val-tools .btn.xs{height:28px;display:inline-flex;align-items:center}
+.mc-val-extra[open]{flex-basis:100%;order:2;padding-top:8px;border-top:1px dashed var(--line)}
+.mc-val-extra-fields{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
+.mc-val-extra-fields .ctl,.mc-val-extra-fields .ctl.sm{max-width:190px;min-width:0}
+.mc-val-applied{order:3;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
 .mc-val-mobile-model{display:none}
 #mc-val-rows .mc-val-slot{overflow-wrap:anywhere}
 @media(max-width:760px){
@@ -3871,7 +3881,7 @@ table.tbl-fixed code{overflow-wrap:anywhere}
   #mc-val-rows .mc-val-kind{grid-area:2/2}
   #mc-val-rows .mc-val-job{grid-area:3/2}
   #mc-val-rows .mc-val-detail-cell{grid-area:3/1;overflow-wrap:anywhere}
-  .mc-val-detail-cell>.t-desc,.mc-val-desktop-model{display:none}
+  .mc-val-desktop-model{display:none}
   .mc-val-mobile-model{display:block}
 }
 
@@ -3881,23 +3891,19 @@ table.tbl-fixed code{overflow-wrap:anywhere}
    「全部停止」降为红色描边次级按钮，悬停才填红，避免整卡一块大红底。 */
 .wp-inline .btn,.wp-inline .inp{height:32px;box-sizing:border-box}
 .wp-inline .btn{padding:0 14px}
-.wp-inline .inp{padding:0 10px}
+.wp-inline .inp{
+  padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  background:var(--field);color:var(--ink);
+  transition:border-color var(--fast),box-shadow var(--fast);
+}
+.wp-inline .inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .wp-inline .btn.danger{background:transparent}
 .wp-inline .btn.danger:hover{background:var(--bad);color:var(--danger-fg);border-color:transparent}
 .wp-sub .wp-inline .hint{white-space:nowrap}
 .wp-sub .wp-inline .hint:last-child{white-space:normal}
 
-/* 进程表：受管＋外部同表，PID 只在这里出现一次 */
-.wp-proc{margin-top:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.wp-proc-table{width:100%;border-collapse:collapse;font-size:12.5px}
-.wp-proc-table th{
-  text-align:left;font-weight:600;font-size:11.5px;color:var(--ink-3);
-  padding:6px 12px;background:var(--panel-2);border-bottom:1px solid var(--line);
-}
-.wp-proc-table td{padding:6px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
-.wp-proc-table tbody tr:last-child td{border-bottom:0}
-.wp-proc-table .wp-op{text-align:right;white-space:nowrap}
-.wp-proc-table th:last-child{text-align:right}
+/* 合并后的唯一 Worker 表操作列右对齐 */
+.mc-worker-table .wp-op{text-align:right;white-space:nowrap}
 
 /* 日志：默认折叠成一行贴紧守护区；展开后自适应显示，时间戳淡化、级别着色 */
 .wp-logbox{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
@@ -3922,9 +3928,41 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .wp-loglist > li.lv-debug .lg-lv{color:var(--ink-3)}
 .wp-loglist > li.lv-info .lg-lv{color:var(--ink-2)}
 
-/* Worker 进程卡上方：左侧启停与右侧守护设置宽屏并排，窄屏回落上下 */
-.wp-top-split{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
-@media (min-width:960px){
-  .wp-top-split{grid-template-columns:auto minmax(0,1fr);gap:14px 28px;align-items:start}
-  .wp-daemon-side{margin-top:0;padding-top:0;border-top:0;border-left:1px solid var(--line);padding-left:24px}
+/* Worker 进程卡上方：启停与守护以双等分浅底面板并排，与顶部指标卡同款质感，消除宽屏中间裂谷 */
+.wp-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.wp-ctrl-group,.wp-daemon-group{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:10px 14px;min-width:0;justify-content:space-between;
+}
+.wp-ctrl-group > .btn{padding:0 16px}
+.wp-seg{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wp-daemon-group .inp{width:62px}
+#mc-daemon-sync{padding:0 10px;font-size:12px}
+.wp-cap{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.wp-slots{display:inline-flex;align-items:center;gap:3px}
+.wp-slots > i{display:block;width:6px;height:13px;border-radius:2px;background:var(--line-strong);transition:background var(--fast)}
+.wp-slots > i.on{background:var(--ok)}
+.wp-slots.full > i.on{background:var(--warn)}
+.wp-proc-table tbody tr,.wp-proc-table tbody tr > td{height:44px !important}
+.wp-bar-label{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
+.wp-feedback{display:flex;flex-wrap:wrap;gap:6px 16px}
+.wp-feedback:has(span:not(:empty)){margin-top:8px}
+.wp-feedback span:empty{display:none}
+.wp-daemon-note{margin-top:8px}
+@media (max-width:1080px){
+  .wp-toolbar{grid-template-columns:minmax(0,1fr)}
+}
+
+/* 运行监控 4 项精细打磨（2026-11-20）：空态快捷按钮、留痕列宽重分配与异常行微雾高亮 */
+.mc-worker-empty{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.mc-val-scroll th:nth-child(1),.mc-val-scroll td.mc-val-kind{width:104px;white-space:nowrap}
+.mc-val-scroll th:nth-child(2),.mc-val-scroll td.mc-val-result{width:96px;white-space:nowrap}
+.mc-val-scroll th:nth-child(3),.mc-val-scroll td.mc-val-slot{width:21%}
+.mc-val-scroll th:nth-child(4),.mc-val-scroll td.mc-val-job{width:76px;white-space:nowrap}
+.mc-val-scroll th:nth-child(6),.mc-val-scroll td.mc-val-time{width:136px;white-space:nowrap;text-align:right}
+.mc-val-detail-cell .t-desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;max-width:none;white-space:normal;overflow:hidden;overflow-wrap:anywhere;line-height:1.5}
+#mc-val-rows tr.mc-val-bad td{background:color-mix(in srgb,var(--bad-soft) 45%,transparent)}
+@media(max-width:760px){
+  .mc-val-scroll td.mc-val-kind,.mc-val-scroll td.mc-val-result,.mc-val-scroll td.mc-val-slot,
+  .mc-val-scroll td.mc-val-job,.mc-val-scroll td.mc-val-time{width:auto;text-align:left}
 }
