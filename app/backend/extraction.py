@@ -13,7 +13,7 @@ import json
 import math
 import re
 
-PROMPT_VERSION = "extract-v1"
+PROMPT_VERSION = "extract-v2"
 MAX_INPUT_CHARS = 30000
 MAX_ITEMS_PER_KIND = 60
 KIND_LABELS = {"character": "角色", "scene": "场景", "prop": "道具", "shot": "镜头"}
@@ -45,6 +45,8 @@ JSON 形状固定为：
   "characters": [
     {{"name": "角色名", "aliases": ["别名"], "role": "主角/配角/群像",
       "appearance": "外形与服装", "personality": "性格要点",
+      "identity_name": "原文能确认时填建议的统一角色名，否则留空",
+      "variant_name": "这条证据对应的独立服装或人物状态，否则留空",
       "suggested_prompt": "可喂给图像模型的平涂提示词",
       "confidence": 0.0,
       "evidence": {{"quote": "原文中逐字出现的一句"}}}}
@@ -74,7 +76,9 @@ JSON 形状固定为：
 2. 每条 evidence.quote 必须从正文里逐字复制，不许改写、不许补主语；
    这句话要能让人回到原文核对。找不到原句的条目干脆不要。
 3. confidence 只填 0—1 的小数，表示你自己的把握，不参与计费。
-4. 角色名用正文里的叫法；同一人物的不同称呼放进 aliases。
+4. 角色名用正文里的叫法；同一人物的不同称呼放进 aliases。若别称或服装形态需单独核对，
+   可以保留成各自带证据的候选，并给它们同一个 identity_name。身份关系不明确时不要推定。
+   variant_name 只写这一条证据里体现的服装或形态。
 5. 只写正文里出现或能直接推出的东西，不要新增设定。
 6. 台词只抄正文里已有的对白，不改写。
 """
@@ -137,6 +141,8 @@ def _clean_payload(kind: str, raw: dict) -> dict:
             "role": _text(raw.get("role"), 40),
             "appearance": _text(raw.get("appearance"), 600),
             "personality": _text(raw.get("personality"), 400),
+            **{key: value for key in ("identity_name", "variant_name")
+               if (value := _text(raw.get(key), 60))},
             "suggested_prompt": _text(raw.get("suggested_prompt"), 800),
         }
     if kind == "scene":

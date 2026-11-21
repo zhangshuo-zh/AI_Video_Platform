@@ -1337,3 +1337,32 @@ def test_正常导入与恢复文件操作均在数据库事务外(as_role, stud
     (FILES_DIR / orphan).write_bytes(PNG)
     assert asset_import_recovery.recover()["removed"] == 1
     assert "discard" in calls
+
+
+def test_candidate_batch_review_and_import_are_durable_and_retry_safe(as_role, studio):
+    c = as_role("editor")
+    aid = _new_asset(studio["pid"])
+    job = _make_job(studio["pid"], "image", ["op:asset_image", f"asset:{aid}"],
+                    files={"one.png": PNG, "two.png": PNG, "bad.png": b"not png"})
+    jid = job["id"]
+    review = f"/api/assets/{aid}/candidate-review/{jid}"
+    batch = f"/api/assets/{aid}/generated-images/batch"
+    assert c.put(review, json={"indexes": [0, 1], "state": "favorite"}).json() == {
+        "0": "favorite", "1": "favorite",
+    }
+    assert c.put(review, json={"indexes": [0, 22], "state": "archived"}).status_code == 422
+    assert c.get(review).json() == {"0": "favorite", "1": "favorite"}
+    assert c.put(review, json={"indexes": [1], "state": "archived"}).status_code == 200
+    assert c.post(batch, json={"job_id": jid, "indexes": [0, 1]}).status_code == 409
+    assert c.put(review, json={"indexes": [1], "state": "pending"}).json() == {"0": "favorite"}
+
+    assert c.post(batch, json={"job_id": jid, "indexes": [0, 2]}).status_code == 415
+    assert c.get(f"/api/assets/{aid}").json()["ref_images"] == []
+    variant = variants.create(asset_id=aid, variant_type="outfit", name="雨衣")
+    payload = {"job_id": jid, "indexes": [0, 1], "variant_id": variant["id"]}
+    first = c.post(batch, json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json() == {"imported": 2, "reused": 0}
+    assert c.post(batch, json=payload).json() == {"imported": 0, "reused": 2}
+    assert len(json.loads(variants.get(variant["id"])["ref_images"])) == 2
+    assert as_role("outsider").get(review).status_code == 404

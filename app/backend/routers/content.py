@@ -8,7 +8,7 @@ from functools import wraps
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
                      status as http_status)
 
-from services import content_operations, content_units, asset_media
+from services import asset_candidates, content_operations, content_units, asset_media
 
 import asset_studio
 import asset_import_recovery
@@ -16,8 +16,8 @@ import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
 from deps import actor_name, require_permission
 
-from models import (AssetCoverIn, AssetGenIn, AssetGenOut,
-                    AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut,
+from models import (AssetCandidateReviewIn, AssetImageBatchIn, AssetReferenceReplacementIn, EpisodeAssetPresetIn, AssetCoverIn, AssetGenIn, AssetGenOut,
+                    AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut, AssetImagePurposeIn,
                     AssetImpactOut, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
                     AssetShotOut, EpisodeIn, EpisodeOut, EpisodeStatusIn, ShotExtractFrameIn, ShotExtractFrameOut, ShotIn, ShotOut,
                     VariantIn, VariantOut, VariantUpdateIn)
@@ -103,6 +103,35 @@ def list_shots(episode_id: int,
                user=Depends(require_permission("doc:read"))) -> list[ShotOut]:
     ensure_by("episode", episode_id, user, "read", "创作单元")
     return _content_call(content_units.list_shots, episode_id)
+
+
+@router.get("/episodes/{episode_id}/asset-preparation",
+            dependencies=[Depends(require_permission("asset:read"))])
+def episode_asset_preparation(episode_id: int,
+                              user=Depends(require_permission("doc:read"))) -> dict:
+    project = ensure_by("episode", episode_id, user, "read", "创作单元")
+    return content_units.asset_preparation(episode_id, int(project["id"]))
+
+
+@router.get("/episodes/{episode_id}/asset-presets")
+def episode_asset_presets(episode_id: int,
+                          user=Depends(require_permission("doc:read"))) -> list[dict]:
+    project = ensure_by("episode", episode_id, user, "read", "创作单元")
+    return _content_call(content_units.episode_asset_presets, episode_id, int(project["id"]))
+
+
+@router.post("/episodes/{episode_id}/asset-presets", status_code=http_status.HTTP_204_NO_CONTENT)
+def save_episode_asset_preset(episode_id: int, payload: EpisodeAssetPresetIn,
+                              user=Depends(require_permission("doc:write"))) -> None:
+    project = ensure_by("episode", episode_id, user, "write", "创作单元")
+    _content_call(content_units.save_episode_asset_preset, episode_id, int(project["id"]), payload)
+
+
+@router.delete("/episodes/{episode_id}/asset-presets", status_code=http_status.HTTP_204_NO_CONTENT)
+def delete_episode_asset_preset(episode_id: int, name: str = Query(min_length=1, max_length=60),
+                                user=Depends(require_permission("doc:write"))) -> None:
+    ensure_by("episode", episode_id, user, "write", "创作单元")
+    _content_call(content_units.delete_episode_asset_preset, episode_id, name)
 
 
 def _shot_form_fields(payload) -> dict:
@@ -224,12 +253,52 @@ def set_asset_cover(asset_id: int, payload: AssetCoverIn,
     return _content_call(content_units.set_asset_cover, asset_id, payload)
 
 
+@router.put("/assets/{asset_id}/image-purpose", status_code=http_status.HTTP_204_NO_CONTENT)
+def set_asset_image_purpose(asset_id: int, payload: AssetImagePurposeIn,
+                            user=Depends(require_permission("asset:write"))) -> None:
+    ensure_asset(asset_id, user, "write")
+    _content_call(asset_media.set_image_purpose, asset_id, payload)
+
+
 @router.get("/assets/{asset_id}/shots", response_model=list[AssetShotOut])
 def asset_shots(asset_id: int,
                 user=Depends(require_permission("asset:read"))) -> list[AssetShotOut]:
     ensure_asset(asset_id, user, "read")
     rows = _shots_visible(content_units.asset_reference_rows(asset_id), user)
     return _content_call(content_units.asset_shots, asset_id, rows)
+
+
+def _project_reference_asset(project_id: int, asset_id: int, user) -> None:
+    asset = ensure_asset(asset_id, user, "read")
+    if asset["project_id"] not in (None, project_id):
+        raise HTTPException(status_code=404, detail="资产不存在")
+
+
+@router.get("/projects/{project_id}/assets/{asset_id}/reference-usage",
+            dependencies=[Depends(require_permission("asset:read"))])
+def asset_reference_usage(project_id: int, asset_id: int,
+                          user=Depends(require_permission("job:read"))) -> list[dict]:
+    ensure(user, project_id, "read")
+    _project_reference_asset(project_id, asset_id, user)
+    return asset_media.asset_reference_usage(project_id, asset_id)
+
+
+@router.post("/projects/{project_id}/assets/{asset_id}/reference-usage",
+             dependencies=[Depends(require_permission("asset:read")), Depends(require_permission("job:read"))])
+def replace_asset_references(project_id: int, asset_id: int, payload: AssetReferenceReplacementIn,
+                             user=Depends(require_permission("doc:write"))) -> dict:
+    ensure(user, project_id, "write")
+    _project_reference_asset(project_id, asset_id, user)
+    return {"updated": _content_call(asset_media.replace_asset_references, project_id, asset_id, payload)}
+
+
+@router.get("/projects/{project_id}/assets/{asset_id}/appearances",
+            dependencies=[Depends(require_permission("asset:read"))])
+def recent_asset_appearances(project_id: int, asset_id: int,
+                             user=Depends(require_permission("job:read"))) -> list[dict]:
+    ensure(user, project_id, "read")
+    _project_reference_asset(project_id, asset_id, user)
+    return asset_media.character_appearances(project_id, asset_id)
 
 
 @router.get("/assets/{asset_id}/impact", response_model=AssetImpactOut)
@@ -467,3 +536,30 @@ def import_generated_image(asset_id: int, payload: AssetImageImportIn,
     # BEGIN IMMEDIATE 保证两个人同时存图不会互相覆盖那份 JSON
     out = asset_studio.import_generated_image_tx(asset, payload)
     return AssetImageImportOut(**out)
+
+@router.get("/assets/{asset_id}/candidate-review/{job_id}",
+            dependencies=[Depends(require_permission("asset:read"))])
+@studio_errors
+def get_candidate_review(asset_id: int, job_id: int,
+                         user=Depends(require_permission("job:read"))) -> dict[int, str]:
+    asset = _asset_for(asset_id, user, "read")
+    ensure_by("job", job_id, user, "read", "作业")
+    return asset_candidates.asset_candidate_review(asset, job_id)
+
+
+@router.put("/assets/{asset_id}/candidate-review/{job_id}")
+@studio_errors
+def put_candidate_review(asset_id: int, job_id: int, payload: AssetCandidateReviewIn,
+                         user=Depends(require_permission("asset:write"))) -> dict[int, str]:
+    asset = _asset_for(asset_id, user, "write")
+    ensure_by("job", job_id, user, "read", "作业")
+    return asset_candidates.update_asset_candidate_review(asset, job_id, payload)
+
+
+@router.post("/assets/{asset_id}/generated-images/batch")
+@studio_errors
+def batch_import_candidates(asset_id: int, payload: AssetImageBatchIn,
+                            user=Depends(require_permission("asset:write"))) -> dict:
+    asset = _asset_for(asset_id, user, "write")
+    ensure_by("job", payload.job_id, user, "read", "作业")
+    return asset_candidates.import_asset_candidates(asset, payload)

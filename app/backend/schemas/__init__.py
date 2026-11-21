@@ -37,7 +37,7 @@
 
 from .assets import (
     AssetProfileIn, AssetProfileOut, VariantIn, VariantUpdateIn, VariantOut, AssetGenIn,
-    AssetGenOut, AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut
+    AssetGenOut, AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut, AssetImagePurposeIn, AssetImageBatchIn, AssetCandidateReviewIn
 )
 
 from .audio import (
@@ -50,6 +50,7 @@ from .composition import (
 )
 
 from .content import (
+    EpisodeAssetPresetIn, ShotReferenceChangeIn, AssetReferenceReplacementIn, ShotReferenceRequirement,
     EpisodeIn, EpisodeStatusIn, EpisodeOut, ShotIn, ContextIn, ShotOut, AssetIn,
     AssetOut, AssetCoverIn, AssetShotOut, AssetImpactOut,
     ShotExtractFrameIn, ShotExtractFrameOut
@@ -178,6 +179,10 @@ __all__ = [
     "ASSET_KINDS",
     "AffixCategory",
     "AgentRunIn",
+    "EpisodeAssetPresetIn",
+    "ShotReferenceChangeIn",
+    "ShotReferenceRequirement",
+    "AssetReferenceReplacementIn",
     "AssetCoverIn",
     "AssetGenIn",
     "AssetGenOperation",
@@ -185,6 +190,9 @@ __all__ = [
     "AssetGenPreviewOut",
     "AssetImageImportIn",
     "AssetImageImportOut",
+    "AssetImageBatchIn",
+    "AssetCandidateReviewIn",
+    "AssetImagePurposeIn",
     "AssetIn",
     "AssetKind",
     "AssetOut",

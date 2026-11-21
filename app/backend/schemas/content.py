@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .assets import _image_purposes_of
 from .enums import ASSET_KINDS, AssetKind, EpisodeStatus, ShotTransition
 from .tokens import asset_version
 
@@ -11,6 +12,24 @@ class EpisodeIn(BaseModel):
     title: str = Field(min_length=1, max_length=60)
 
 
+
+
+class EpisodeAssetPresetIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    asset_ids: list[int] = Field(default_factory=list, max_length=40)
+    variant_ids: list[int] = Field(default_factory=list, max_length=40)
+
+
+class ShotReferenceChangeIn(BaseModel):
+    shot_id: int = Field(gt=0)
+    field: Literal["first_frame_image", "last_frame_image"]
+    expected: str = Field(max_length=500)
+
+
+class AssetReferenceReplacementIn(BaseModel):
+    old_path: str = Field(min_length=1, max_length=500)
+    new_path: str = Field(min_length=1, max_length=500)
+    changes: list[ShotReferenceChangeIn] = Field(min_length=1, max_length=100)
 
 
 class EpisodeStatusIn(BaseModel):
@@ -36,6 +55,12 @@ class EpisodeOut(BaseModel):
 
 
 
+class ShotReferenceRequirement(BaseModel):
+    asset_id: int = Field(gt=0)
+    variant_id: int | None = Field(default=None, gt=0)
+    purpose: str = Field(min_length=1, max_length=30, pattern=r"^[^\r\n]+$")
+
+
 class ShotIn(BaseModel):
     summary: str = Field(min_length=1, max_length=500)
     prompt: str = Field(default="", max_length=2000)
@@ -44,6 +69,7 @@ class ShotIn(BaseModel):
     # 0034：这一镜用的是这个资产的**哪一个形态**（人物的哪套衣服）。
     # 服务端会保证父资产同时出现在 asset_ids 里，见 routers/content._checked_variant_ids。
     variant_ids: list[int] = []
+    reference_requirements: list[ShotReferenceRequirement] | None = Field(default=None, max_length=120)
     # 0037：镜头设定五栏（任务书 §6.1 第一阶段）。全部可留空——它们是给人看的
     # 生产语言，今天没有任何执行器读它们，所以**不进源版本指纹**：
     # 补填一个景别不该把这一镜已经签过字的产物判成过期。
@@ -102,6 +128,7 @@ class ShotOut(BaseModel):
     duration: float
     asset_ids: list[int]
     variant_ids: list[int] = []
+    reference_requirements: list[ShotReferenceRequirement] = Field(default_factory=list)
     shot_size: str = ""
     camera_move: str = ""
     aspect: str = ""
@@ -147,6 +174,8 @@ class ShotOut(BaseModel):
                                       if "first_frame_image" in keys else ""),
                    last_frame_image=(row["last_frame_image"]
                                      if "last_frame_image" in keys else ""),
+                   reference_requirements=(json.loads(row["reference_requirements"])
+                                           if "reference_requirements" in keys else []),
                    variant_labels=variant_labels or {},
                    source_stale=bool(source_stale))
 
@@ -185,6 +214,7 @@ class AssetOut(BaseModel):
     aliases: list[str] = []
     tags: list[str] = []
     ref_images: list[str]
+    image_purposes: dict[str, str] = {}
     # 这里没有 status：资产那一列（0004 带来的 `draft|ready`）从来没有写入方，
     # 0023 把它从表里摘掉了。"这个资产算不算齐了"在界面上由引用数与有没有定妆图现算，
     # 留一列没人写的状态只会让人以为它有含义。
@@ -202,13 +232,14 @@ class AssetOut(BaseModel):
     @classmethod
     def from_row(cls, row) -> "AssetOut":
         keys = row.keys()
+        images = json.loads(row["ref_images"] or "[]")
         return cls(id=row["id"], project_id=row["project_id"], kind=row["kind"],
                    kind_label=ASSET_KINDS.get(row["kind"], row["kind"]),
                    name=row["name"], summary=row["summary"],
                    consistency_prompt=row["consistency_prompt"],
                    aliases=json.loads(row["aliases"] or "[]") if "aliases" in keys else [],
                    tags=json.loads(row["tags"] or "[]") if "tags" in keys else [],
-                   ref_images=json.loads(row["ref_images"] or "[]"),
+                   ref_images=images, image_purposes=_image_purposes_of(row, images),
                    created_at=row["created_at"], updated_at=row["updated_at"],
                    ref_shot_count=(row["ref_shot_count"] or 0)
                    if "ref_shot_count" in keys else 0,

@@ -151,15 +151,19 @@ from .model_configuration import ModelOperationError
 
 from .content_units import (
     list_episodes, create_episode, set_episode_status, delete_episode,
-    list_shots, create_shot, update_shot, delete_shot,
+    episode_asset_presets, save_episode_asset_preset, delete_episode_asset_preset,
+    list_shots, asset_preparation, create_shot, update_shot, delete_shot,
     list_assets, create_asset, get_asset, update_asset,
     set_asset_cover, asset_shots, get_character_profile, put_character_profile,
     list_variants, asset_row, asset_reference_rows,
 )
 from .asset_media import (
     delete_asset, upload_asset_image, delete_asset_image, delete_variant,
-    upload_variant_image, delete_variant_image,
+    upload_variant_image, delete_variant_image, set_image_purpose,
+    asset_reference_usage, replace_asset_references, character_appearances,
 )
+
+from .asset_candidates import asset_candidate_review, update_asset_candidate_review, import_asset_candidates
 
 __all__ = [
     'create_model',
@@ -188,6 +192,16 @@ __all__ = [
     'set_episode_status',
     'delete_episode',
     'list_shots',
+    'asset_preparation',
+    'episode_asset_presets',
+    'save_episode_asset_preset',
+    'delete_episode_asset_preset',
+    'asset_reference_usage',
+    'character_appearances',
+    'asset_candidate_review',
+    'update_asset_candidate_review',
+    'import_asset_candidates',
+    'replace_asset_references',
     'create_shot',
     'update_shot',
     'delete_shot',
@@ -208,6 +222,7 @@ __all__ = [
     'delete_variant',
     'upload_variant_image',
     'delete_variant_image',
+    'set_image_purpose',
     "prepare_job", "PreparedJob",
     "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
     "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",

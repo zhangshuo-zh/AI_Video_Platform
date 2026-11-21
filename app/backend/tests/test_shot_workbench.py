@@ -29,7 +29,7 @@ def _setup(client, n_shots=1):
     return pid, eid, sids
 
 
-def _video_job(pid, eid, sid, client, source_version: str = ""):
+def _video_job(pid, eid, sid, client, source_version: str = "", resources=None):
     """一条成功但没签字的本地视频作业，产物在盘上。
 
     `source_version` 由调用方在**建作业之前**算好传进来——它就是"这条产物
@@ -48,7 +48,7 @@ def _video_job(pid, eid, sid, client, source_version: str = ""):
     _logs, outputs = jobfiles.ensure_dirs(row["id"])
     target = outputs / "out.mp4"
     target.write_bytes(b"fake-video-bytes")
-    job_repo.succeed(row["id"], "wb-worker", "", [jobfiles.relative(target)], 1)
+    job_repo.succeed(row["id"], "wb-worker", "", [jobfiles.relative(target)], 1, resources=resources)
     return job_repo.get(row["id"])
 
 
@@ -275,3 +275,71 @@ def test_镜头列表和正式预览复用同一次产物扫描(as_role, clean_q
     body = out.json()
     assert body["preview"]["formal_video"] == body["videos"]["jobs"][0]
     assert observed[job["result_paths_json"]] == 1, observed
+
+
+def test_reference_usage_comes_from_execution_and_replacement_is_selective(as_role, clean_queue):
+    from config import FILES_DIR
+    from repositories.jobs import jobs as job_repo
+
+    client = as_role("editor")
+    pid, eid, (selected, untouched, other) = _setup(client, n_shots=3)
+    asset = asset_repo.create(pid, "character", "侧身", "", "", [])
+    aid = asset["id"]
+    old, new = f"{aid}/old.png", f"{aid}/new.png"
+    (FILES_DIR / str(aid)).mkdir(parents=True, exist_ok=True)
+    for path in (old, new):
+        (FILES_DIR / path).write_bytes(b"test")
+        asset_repo.add_image(aid, path)
+
+    receipt = {"runner": "mlx-video", "image": str(FILES_DIR.resolve() / old)}
+    used = _video_job(pid, eid, selected, client, resources=receipt)
+    _sign(pid, used["id"], client)
+    _video_job(pid, eid, untouched, client, resources=receipt)
+    _video_job(pid, eid, other, client, resources={"runner": "fastmetal", "image": old})
+    shots.set_frame_image(selected, first_frame_image=f"/files/{old}")
+    shots.set_frame_image(untouched, first_frame_image=new)
+    url = f"/api/projects/{pid}/assets/{aid}/reference-usage"
+    result = client.get(url)
+    assert result.status_code == 200, result.text
+    by_shot = {row["shot_id"]: row for row in result.json()}
+    assert set(by_shot) == {selected, untouched}
+    assert by_shot[selected]["signed"] and by_shot[selected]["replaceable"]
+    assert not by_shot[untouched]["replaceable"]
+
+    item = {"shot_id": selected, "field": "first_frame_image", "expected": f"/files/{old}"}
+    mixed = [item, {**item, "shot_id": untouched}]
+    assert client.post(url, json={"old_path": old, "new_path": new, "changes": mixed}).status_code == 409
+    assert shots.get(selected)["first_frame_image"] == f"/files/{old}"
+    response = client.post(url, json={"old_path": old, "new_path": new, "changes": [item]})
+    assert response.status_code == 200 and response.json() == {"updated": 1}, response.text
+    assert shots.get(selected)["first_frame_image"] == new
+    assert shots.get(untouched)["first_frame_image"] == new
+    assert shots.get(other)["first_frame_image"] == ""
+    assert job_repo.get(used["id"])["resources_json"] == used["resources_json"]
+    assert client.post(url, json={"old_path": old, "new_path": new, "changes": [item]}).status_code == 409
+    assert as_role("outsider").get(url).status_code == 404
+
+
+def test_character_appearances_select_signed_job_per_referencing_shot(as_role, clean_queue):
+    c = as_role("editor")
+    pid, eid, (linked, unrelated) = _setup(c, n_shots=2)
+    aid = asset_repo.create(pid, "character", "出镜", "", "", [])["id"]
+    variant = c.post(f"/api/assets/{aid}/variants",
+                     json={"variant_type": "outfit", "name": "常服"}).json()
+    response = c.put(f"/api/shots/{linked}", json={
+        "summary": "转身", "asset_ids": [aid], "variant_ids": [variant["id"]],
+    })
+    assert response.status_code == 200, response.text
+    approved = _video_job(pid, eid, linked, c)
+    _sign(pid, approved["id"], c)
+    newest = _video_job(pid, eid, linked, c)
+    outside = _video_job(pid, eid, unrelated, c)
+    _sign(pid, outside["id"], c)
+    url = f"/api/projects/{pid}/assets/{aid}/appearances"
+    rows = c.get(url).json()
+    assert [(row["shot_id"], row["job_id"], row["variant_names"], row["artifact_index"]) for row in rows] == [
+        (linked, approved["id"], ["常服"], 0),
+    ]
+    _sign(pid, newest["id"], c)
+    assert c.get(url).json()[0]["job_id"] == newest["id"]
+    assert as_role("outsider").get(url).status_code == 404

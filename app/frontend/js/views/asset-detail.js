@@ -1,3 +1,6 @@
+import { openCharacterAppearances } from './asset-appearances.js';
+import { openReferenceUsage } from './asset-reference-usage.js';
+import { referenceActions, bindReferenceActions } from './asset-reference-actions.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
@@ -152,7 +155,7 @@ export async function renderDetail(id) {
             return `<div class="card">
             <div class="card-head"><h2>还缺什么</h2>
               <span class="sub">${miss.length ? `${miss.length} 项` : '该有都有了'}</span>
-              ${miss.length ? '<div class="right"><button class="btn sm" data-goto-studio>去资产创作补齐</button></div>' : ''}</div>
+              ${miss.length ? '<div class="right"><button class="btn sm" data-goto-studio>去补齐</button></div>' : ''}</div>
             <div class="card-body">
               ${miss.length ? `<div class="ad-miss-list">${miss.map((m) => `<span class="chip amber">缺 · ${escapeHtml(m)}</span>`).join('')}</div>
                   <p class="t-dim" style="margin:8px 0 0">以上项目可在「资产创作」中补齐——这里只读，写只在创作那一页。</p>`
@@ -168,7 +171,7 @@ export async function renderDetail(id) {
           <div class="card">
             <div class="card-head"><h2>人物档案</h2>
               <span class="sub">${data.profile && data.profile.exists ? '最后改于 ' + escapeHtml(data.profile.updated_at) : '还没写过'}</span>
-              <div class="right"><button class="btn sm" data-goto-studio>去资产创作改</button></div></div>
+              <div class="right"><button class="btn sm" data-goto-studio>去创作</button></div></div>
             <div class="card-body">
               ${[['履历', 'biography'], ['性格', 'personality'], ['成长过程', 'growth_arc'],
                  ['文字设定提示词', 'text_prompt']].map(([label, key]) => `
@@ -188,7 +191,7 @@ export async function renderDetail(id) {
           <div class="card">
             <div class="card-head"><h2>命名形态</h2>
               <span class="sub">${variants.length} 个 · 图跟着形态走</span>
-              <div class="right"><button class="btn sm" data-goto-studio>去资产创作加</button></div></div>
+              <div class="right"><button class="btn sm" data-goto-studio>加形态</button></div></div>
             <div class="card-body">
               ${variants.length ? variants.map((v) => `
                 <div class="as-variant">
@@ -198,7 +201,7 @@ export async function renderDetail(id) {
                   ${v.prompt ? `<p class="t-desc">${escapeHtml(v.prompt)}</p>` : ''}
                   ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((ip) => `
                     <figure class="ad-img"><img src="${escapeHtml(`/files/${ip}`)}" alt="${escapeHtml(v.name)} 的图"
-                      data-preview="${escapeHtml(`/files/${ip}`)}"></figure>`).join('')}</div>`
+                      loading="lazy" data-preview="${escapeHtml(`/files/${ip}`)}"></figure>`).join('')}</div>`
                     : '<p class="t-dim">这个形态还没有图。</p>'}
                 </div>`).join('')
                 : '<p class="t-dim">还没有形态。服饰、视角、形态各存各的图，'
@@ -225,77 +228,93 @@ export async function renderDetail(id) {
           <div class="card">
             <div class="card-head"><h2>参考图</h2>
               <span class="sub">第一张是封面</span>
-              ${canEdit ? `<div class="right"><label class="btn sm ad-upload">上传参考图
-                <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
-              </label></div>` : ''}</div>
+              <div class="right">
+                ${a.kind === 'character' && store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
+                  ? '<button class="btn sm" data-appearance-open>角色出镜对照</button>' : ''}
+                ${canEdit ? `<label class="btn sm ad-upload">上传参考图
+                  <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
+                </label>` : ''}
+              </div></div>
             <div class="card-body">
               <div class="ad-imgs">
                 ${a.ref_images.map((p, i) => `
                   <figure class="ad-img${i === 0 ? ' cover' : ''}">
-                    <img src="${escapeHtml(`/files/${p}`)}" alt="参考图 ${i + 1}" data-preview="${escapeHtml(`/files/${p}`)}">
+                    <img src="${escapeHtml(`/files/${p}`)}" alt="参考图 ${i + 1}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}">
                     <figcaption>
                       ${i === 0 ? '<span class="chip blue">封面</span>'
                         : (canEdit ? `<button class="btn xs" data-cover="${escapeHtml(p)}">设为封面</button>` : '')}
                       ${canEdit ? `<button class="btn xs danger" data-rm-img="${escapeHtml(p)}">删除</button>` : ''}
                     </figcaption>
+                    ${referenceActions(p, a.image_purposes?.[p], canEdit,
+                      Boolean(store.currentEpisodeId && store.can('job:submit')))}
                   </figure>`).join('')
-                  || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，'
-                     + '它们是同一资产的不同视角，不会各自变成一条新资产。</p>'}
+                  || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，第一张自动为封面。</p>'}
               </div>
-              ${canEdit ? `<p class="modal-meta">PNG / JPEG / WebP，单张不超过 20MB；iPhone 的 HEIC 请先转格式。
-                服务端按文件头判断类型，不看文件名。</p>` : ''}
+              ${canEdit ? `<p class="modal-meta">支持 PNG / JPEG / WebP（≤20MB）。</p>` : ''}
             </div>
           </div>
 
           <div class="card">
             <div class="card-head"><h2>最近生成记录</h2>
               <span class="sub">${(data.gens || []).length} 条 · 只读</span>
-              <div class="right"><button class="btn sm" data-goto-studio>去资产创作跑一条</button></div></div>
+              <div class="right"><button class="btn sm" data-goto-studio>去生成</button></div></div>
             <div class="card-body">
               ${data.gensError ? `<div class="bar bad">生成记录读不到：${escapeHtml(data.gensError)}</div>` : ''}
-              ${(data.gens || []).length ? (data.gens || []).map((j) => `
-                <div class="ad-ref">
-                  <div>
-                    <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
-                      <span class="chip ${jobTone(j.status)}" title="${escapeHtml(j.status_label || j.status)}">${escapeHtml(publicStatus(j.status))}</span></div>
-                    <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
-                      (j.execution_mode === 'cloud' ? '云端' : '本地'))}
-                      ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}
-                      ${j.cost_micros ? `· 预计 ${escapeHtml(formatMoney(j.cost_micros, j.currency))}` : ''}
-                      ${j.target_variant_id ? `· 形态 #${j.target_variant_id}` : ''}</p>
-                  </div>
-                  <a class="btn xs" href="#generate/0">生成中心</a>
-                </div>`).join('')
-                : '<p class="t-dim">这个项目里还没有针对它的生成记录。'
-                  + '成功的图像作业产物「不会自动进资产」——要逐张预览后显式存入。</p>'}
+              <details class="ad-fold"${data.gensError ? ' open' : ''}>
+                <summary class="ad-fold-sum">${(data.gens || []).length ? `展开查看 ${(data.gens || []).length} 条生成记录` : '暂无生成记录（产物需在「资产创作」显式存入）'}</summary>
+                <div class="ad-fold-body">
+                  ${(data.gens || []).length ? (data.gens || []).map((j) => `
+                    <div class="ad-ref">
+                      <div>
+                        <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
+                          <span class="chip ${jobTone(j.status)}" title="${escapeHtml(j.status_label || j.status)}">${escapeHtml(publicStatus(j.status))}</span></div>
+                        <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
+                          (j.execution_mode === 'cloud' ? '云端' : '本地'))}
+                          ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}
+                          ${j.cost_micros ? `· 预计 ${escapeHtml(formatMoney(j.cost_micros, j.currency))}` : ''}
+                          ${j.target_variant_id ? `· 形态 #${j.target_variant_id}` : ''}</p>
+                      </div>
+                      <a class="btn xs" href="#generate/0">查看</a>
+                    </div>`).join('')
+                    : '<p class="t-dim">暂无记录。图像生成成功后需预览并显式存入资产。</p>'}
+                </div>
+              </details>
             </div>
           </div>
 
           <div class="card">
             <div class="card-head"><h2>被哪些镜头引用</h2>
-              <span class="sub">${refs.length} 条 · 只读${impactCounts?.stale ? ` · ${impactCounts.stale} 镜源已变` : ''}</span></div>
+              <span class="sub">${refs.length} 条 · 只读${impactCounts?.stale ? ` · ${impactCounts.stale} 镜源已变` : ''}</span>
+              ${store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
+                ? `<div class="right"><button class="btn xs" data-reference-usage-open>查作业实际用图</button>
+                  ${a.kind === 'character' ? '<button class="btn xs" data-appearance-open>角色出镜对照</button>' : ''}</div>` : ''}</div>
             <div class="card-body">
-              ${refs.length ? refs.map((s) => {
-                const imp = impactMap.get(Number(s.shot_id));
-                const impBadge = !imp ? ''
-                  : imp.stale ? '<span class="chip amber">源已变 · 建议重跑</span>'
-                  : imp.job_id ? `<span class="chip green">${imp.signed ? '已签字仍可用' : '产物仍可用'}</span>`
-                  : '<span class="chip gray">未生成</span>';
-                return `
-                <div class="ad-ref">
-                  <div>
-                    <div class="t-strong">${escapeHtml(s.project_name)}
-                      <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span> ${impBadge}</div>
-                    <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
-                      ${s.variant_names && s.variant_names.length
-                        ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
-                  </div>
-                  <button class="btn xs" data-goto-shot="${s.episode_id}">去创作中心</button>
-                </div>`;
-              }).join('')
-                : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
               ${cache.refsError ? `<div class="bar bad">引用清单读不到：${escapeHtml(cache.refsError)}
                 ——这一格先别当成"没有引用"，更别照着它决定删不删</div>` : ''}
+              <details class="ad-fold"${(refs.length > 0 && refs.length <= 5) || impactCounts?.stale || cache.refsError ? ' open' : ''}>
+                <summary class="ad-fold-sum">${refs.length ? `展开查看 ${refs.length} 条引用镜头明细` : '暂无镜头引用（在创作中心分镜表引用）'}</summary>
+                <div class="ad-fold-body">
+                  ${refs.length ? refs.map((s) => {
+                    const imp = impactMap.get(Number(s.shot_id));
+                    const impBadge = !imp ? ''
+                      : imp.stale ? '<span class="chip amber">源已变 · 建议重跑</span>'
+                      : imp.job_id ? `<span class="chip green">${imp.signed ? '已签字仍可用' : '产物仍可用'}</span>`
+                      : '<span class="chip gray">未生成</span>';
+                    return `
+                    <div class="ad-ref">
+                      <div>
+                        <div class="t-strong">${escapeHtml(s.project_name)}
+                          <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span> ${impBadge}</div>
+                        <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
+                          ${s.variant_names && s.variant_names.length
+                            ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
+                      </div>
+                      <button class="btn xs" data-goto-shot="${s.episode_id}">去分镜</button>
+                    </div>`;
+                  }).join('')
+                    : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
+                </div>
+              </details>
             </div>
           </div>
         </div>
@@ -329,6 +348,11 @@ export function mountDetail(root, id) {
 
   if (!cache || cache.error) return;
   const a = cache.asset;
+  bindReferenceActions(root, a);
+  root.querySelectorAll('[data-appearance-open]').forEach((btn) => {
+    btn.addEventListener('click', () => openCharacterAppearances(a, cache.variants || []));
+  });
+  root.querySelector('[data-reference-usage-open]')?.addEventListener('click', () => openReferenceUsage(a));
 
   root.querySelectorAll('[data-preview]').forEach((img) => {
     // 打开前先验一遍同源白名单：`dataset` 读回来的已经是**解转义后**的字符串，

@@ -9,6 +9,19 @@ from .jobs import JobEstimateIn
 
 # ---------- 资产增强：人物档案、命名形态、资产生成与产物导入（迁移 0033） ----------
 
+class AssetImagePurposeIn(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    variant_id: int | None = Field(default=None, gt=0)
+    purpose: str = Field(default="", max_length=30)
+
+
+def _image_purposes_of(row, images: list[str]) -> dict[str, str]:
+    if "image_purposes" not in row.keys():
+        return {}
+    purposes = json.loads(row["image_purposes"])
+    return {path: purposes[path] for path in images if path in purposes}
+
+
 class AssetProfileIn(BaseModel):
     """人物文字档案，整体提交。
 
@@ -81,6 +94,7 @@ class VariantOut(BaseModel):
     name: str
     prompt: str
     ref_images: list[str] = []
+    image_purposes: dict[str, str] = {}
     image_count: int = 0
     # 只用于追溯"这批图是哪次生成来的"：状态与成本回生成中心读，这里不存副本。
     # 作业被清掉时这一列会随外键置空，形态与图都还在。
@@ -91,12 +105,13 @@ class VariantOut(BaseModel):
 
     @classmethod
     def from_row(cls, row) -> "VariantOut":
-        images = json.loads(row["ref_images"] or "[]") if row["ref_images"] else []
+        images = [p for p in json.loads(row["ref_images"] or "[]") if isinstance(p, str)]
         return cls(
             id=row["id"], asset_id=row["asset_id"], variant_type=row["variant_type"],
             variant_type_label=VARIANT_KINDS.get(row["variant_type"], row["variant_type"]),
             name=row["name"], prompt=row["prompt"],
-            ref_images=[p for p in images if isinstance(p, str)],
+            ref_images=images,
+            image_purposes=_image_purposes_of(row, images),
             image_count=len(images), source_job_id=row["source_job_id"],
             sort_order=row["sort_order"], created_at=row["created_at"],
             updated_at=row["updated_at"])
@@ -207,6 +222,17 @@ class AssetImageImportIn(BaseModel):
     variant_id: int | None = None
 
 
+
+
+class AssetImageBatchIn(BaseModel):
+    job_id: int = Field(gt=0)
+    indexes: list[int] = Field(min_length=1, max_length=32)
+    variant_id: int | None = Field(default=None, gt=0)
+
+
+class AssetCandidateReviewIn(BaseModel):
+    indexes: list[int] = Field(min_length=1, max_length=64)
+    state: Literal["favorite", "archived", "pending"]
 
 
 class AssetImageImportOut(BaseModel):

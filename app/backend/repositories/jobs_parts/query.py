@@ -90,6 +90,23 @@ class JobsQueryMixin:
         return self._latest_by_shot(episode_ids, "video", ("succeeded",))
 
 
+    def video_reference_receipts(self, project_id: int) -> list[sqlite3.Row]:
+        """成功的视频作业中，执行器明确记录了帧输入的回执。"""
+        with get_conn() as conn:
+            return conn.execute(
+                """SELECT j.id AS job_id, j.shot_id, j.resources_json, s.seq,
+                          s.episode_id, s.first_frame_image, s.last_frame_image,
+                          e.seq AS episode_seq
+                     FROM job j JOIN shot s ON s.id = j.shot_id
+                     JOIN episode e ON e.id = s.episode_id AND e.project_id = j.project_id
+                    WHERE j.project_id = ? AND j.status = 'succeeded'
+                      AND j.capability = 'video'
+                      AND CASE WHEN json_valid(j.resources_json) THEN
+                          json_extract(j.resources_json, '$.runner') = 'mlx-video' END
+                    ORDER BY j.id DESC""",
+                (project_id,),
+            ).fetchall()
+
     def submission_counts(self, project_ids: list[int] | None) -> list[dict]:
         """谁提交了多少条作业（按 `created_by` 分组）。
 

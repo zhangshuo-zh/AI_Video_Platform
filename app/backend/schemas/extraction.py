@@ -65,6 +65,8 @@ class ExtractItemOut(BaseModel):
 
 class ExtractAcceptIn(BaseModel):
     """确认入库时的覆盖值。只开放资产编辑面上真有意义的几项。"""
+    variant_asset_id: int | None = Field(default=None, gt=0)
+    variant_name: str | None = Field(default=None, min_length=1, max_length=60)
     name: str | None = Field(default=None, max_length=60)
     summary: str | None = Field(default=None, max_length=500)
     consistency_prompt: str | None = Field(default=None, max_length=1000)

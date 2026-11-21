@@ -1,15 +1,24 @@
 """资产图片上传与删除业务；不依赖 HTTP 上传对象。"""
 
+import json
+
+import jobfiles
 import uuid
+from pathlib import Path
 import asset_studio
 from config import FILES_DIR
+from db import transaction
 from imagetypes import ALLOWED_TYPES, MAX_IMAGE_BYTES, is_heic, looks_like
-from models import (AssetOut, VariantOut)
+from models import AssetImagePurposeIn, AssetReferenceReplacementIn, AssetOut, VariantOut
 from paths import listdir_empty, resolve_within
-from repositories.content import _images_of, assets
+from repositories.content import _images_of, assets, shots
 from repositories.content import variants as variant_repo
+from repositories.jobs import jobs as job_repo
+from repositories.reviews import reviews
+from repositories.production import production
 
 from .content_operations import (ContentOperationError)
+from .jobs import shot_variant_ids
 from typing import BinaryIO
 
 def delete_asset(asset_id: int, refs) -> None:
@@ -72,7 +81,8 @@ def upload_asset_image(asset_id: int, stream: BinaryIO, content_type: str | None
 
 
 def delete_asset_image(asset_id: int, path: str) -> AssetOut:
-    row, removed = assets.remove_image(asset_id, path)
+    with transaction():
+        row, removed = assets.remove_image(asset_id, path)
     if row is None:
         raise ContentOperationError(status_code=404, detail="资产不存在")
     if not removed:
@@ -139,3 +149,112 @@ def delete_variant_image(variant_id: int, path: str) -> VariantOut:
         # 不能回一句"删好了"而实际什么都没动——那是最难查的一种假成功。
         raise ContentOperationError(status_code=404, detail="这张图不在该形态下")
     return VariantOut.from_row(out)
+
+
+def set_image_purpose(asset_id: int, payload: AssetImagePurposeIn) -> None:
+    variant_id = payload.variant_id
+    with transaction() as conn:
+        row = assets.get(asset_id) if variant_id is None else variant_repo.get(variant_id)
+        if (row is None or (variant_id is not None and row["asset_id"] != asset_id)
+                or payload.path not in _images_of(row)):
+            raise ContentOperationError(status_code=404, detail="这张图不在指定的资产或形态下")
+        purposes = json.loads(row["image_purposes"])
+        purpose = payload.purpose.strip()
+        if purpose:
+            purposes[payload.path] = purpose
+        else:
+            purposes.pop(payload.path, None)
+        if variant_id is None:
+            conn.execute("UPDATE asset SET image_purposes = ? WHERE id = ?",
+                         (json.dumps(purposes, ensure_ascii=False), asset_id))
+        else:
+            conn.execute("UPDATE asset_variant SET image_purposes = ? WHERE id = ?",
+                         (json.dumps(purposes, ensure_ascii=False), variant_id))
+
+_FRAME_KEYS = {"first_frame_image": "image", "last_frame_image": "last_frame_image"}
+
+
+def _asset_frame_path(value: str, asset_id: int) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    for prefix in ("/api/files/", "/files/", "files/"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            path = path.relative_to(FILES_DIR.resolve())
+        except ValueError:
+            return None
+    if len(path.parts) != 2 or path.parts[0] != str(asset_id) or path.name == "..":
+        return None
+    return path.as_posix()
+
+
+def _reference_uses(project_id: int, asset_id: int) -> list[dict]:
+    uses = []
+    for row in job_repo.video_reference_receipts(project_id):
+        receipt = json.loads(row["resources_json"])
+        for field, key in _FRAME_KEYS.items():
+            path = _asset_frame_path(receipt.get(key, ""), asset_id)
+            if path:
+                current = row[field] or ""
+                replaceable = not current or _asset_frame_path(current, asset_id) == path
+                uses.append({**{name: row[name] for name in ("job_id", "shot_id", "seq",
+                                                            "episode_id", "episode_seq")},
+                             "path": path, "field": field, "current": current if replaceable else "",
+                             "replaceable": replaceable})
+    return uses
+
+
+def asset_reference_usage(project_id: int, asset_id: int) -> list[dict]:
+    uses = _reference_uses(project_id, asset_id)
+    signs = reviews.signs_by_targets("job", {row["job_id"] for row in uses})
+    return [{**row, "signed": any(sign["decision"] == "approved"
+                                 for sign in signs.get(row["job_id"], []))}
+            for row in uses]
+
+
+def replace_asset_references(project_id: int, asset_id: int,
+                             payload: AssetReferenceReplacementIn) -> int:
+    if _asset_frame_path(payload.old_path, asset_id) != payload.old_path:
+        raise ContentOperationError(422, "旧图路径不属于这条资产")
+    if payload.new_path == payload.old_path:
+        raise ContentOperationError(422, "请选择另一张图")
+    with transaction():
+        asset = assets.get(asset_id)
+        if asset is None or asset["project_id"] not in (None, project_id):
+            raise ContentOperationError(404, "资产不存在")
+        registered = set(_images_of(asset))
+        for variant in variant_repo.list_by_asset(asset_id):
+            registered.update(_images_of(variant))
+        target = resolve_within(FILES_DIR, payload.new_path)
+        if (payload.new_path not in registered or target is None or not target.is_file()
+                or _asset_frame_path(payload.new_path, asset_id) != payload.new_path):
+            raise ContentOperationError(422, "新图必须是这条资产中已登记且仍可读取的图片")
+        eligible = {(row["shot_id"], row["field"], row["current"])
+                    for row in _reference_uses(project_id, asset_id)
+                    if row["path"] == payload.old_path and row["replaceable"]}
+        changes: dict[int, dict[str, str]] = {}
+        for change in payload.changes:
+            if (change.shot_id, change.field, change.expected) not in eligible:
+                raise ContentOperationError(409, "镜头帧输入已变化，请刷新影响清单后重试")
+            changes.setdefault(change.shot_id, {})[change.field] = payload.new_path
+        for shot_id, fields in changes.items():
+            shots.set_frame_image(shot_id, **fields)
+        return len(changes)
+
+
+def character_appearances(project_id: int, asset_id: int) -> list[dict]:
+    rows = production.recent_character_appearances(project_id, asset_id, limit=8)
+    variant_rows = {row["id"]: row for row in variant_repo.list_by_asset(asset_id)}
+    items = []
+    for row in rows:
+        names = [variant_rows[vid]["name"] for vid in sorted(shot_variant_ids(row)) if vid in variant_rows]
+        index = next((i for i, art in enumerate(jobfiles.artifacts(row["result_paths_json"]))
+                      if art["exists"] and Path(art["path"]).suffix.lower() in {".mp4", ".webm", ".mov", ".m4v"}), None)
+        items.append({**{key: row[key] for key in ("shot_id", "seq", "summary", "episode_id",
+                                                "episode_seq", "job_id", "finished_at")},
+                      "variant_names": names, "artifact_index": index})
+    return items

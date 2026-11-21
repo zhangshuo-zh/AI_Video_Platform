@@ -52,6 +52,34 @@ class ProductionRepository:
         with get_conn() as conn:
             return conn.execute(sql, (asset_id, asset_id)).fetchall()
 
+    def recent_character_appearances(self, project_id: int, asset_id: int, limit: int) -> list[sqlite3.Row]:
+        """每个有引用的镜头取最新的签审通过视频。"""
+        with get_conn() as conn:
+            return conn.execute(
+                """WITH ranked AS (
+                       SELECT s.id AS shot_id, s.seq, s.summary, s.variant_ids, e.id AS episode_id,
+                              e.seq AS episode_seq, j.id AS job_id, j.finished_at, j.result_paths_json,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY s.id ORDER BY j.finished_at DESC, j.id DESC
+                              ) AS rank
+                         FROM episode e JOIN shot s ON s.episode_id = e.id
+                         JOIN job j ON j.shot_id = s.id AND j.project_id = e.project_id
+                        WHERE e.project_id = ? AND j.capability = 'video' AND j.status = 'succeeded'
+                          AND (
+                              EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(s.asset_ids)
+                                  THEN s.asset_ids ELSE '[]' END) x WHERE CAST(x.value AS INTEGER) = ?)
+                              OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(s.variant_ids)
+                                  THEN s.variant_ids ELSE '[]' END) x
+                                  JOIN asset_variant av ON av.id = CAST(x.value AS INTEGER) WHERE av.asset_id = ?)
+                          )
+                          AND (SELECT r.decision FROM review_item r
+                               WHERE r.project_id = e.project_id AND r.target_kind = 'job' AND r.target_id = j.id
+                               ORDER BY r.signed_at DESC, r.id DESC LIMIT 1) = 'approved'
+                   )
+                   SELECT * FROM ranked WHERE rank = 1 ORDER BY finished_at DESC, job_id DESC LIMIT ?""",
+                (project_id, asset_id, asset_id, limit),
+            ).fetchall()
+
     # ---------- 集内文档与解析 ----------
 
     def documents_by_kind(self, episode_id: int) -> dict[str, int]:

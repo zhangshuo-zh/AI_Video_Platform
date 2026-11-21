@@ -364,3 +364,32 @@ def test_作业停在待核对时抽取运行不许永远显示抽取中(as_role
     # error_message 那一列来自联表的 job 行——两份都要能看见，各说各的事
     assert "待核对" in view["note"], view["note"]
     assert view["error_message"] == "产物要人先看一眼"
+
+
+def test_character_identity_hints_keep_source_evidence():
+    raw = {"characters": [{**REPLY["characters"][0], "identity_name": "掌灯人",
+                           "variant_name": "雨夜外套"}]}
+    items, _ = extraction.parse_output(CONTENT, json.dumps(raw, ensure_ascii=False))
+    row = items[0]
+    assert row["payload"]["identity_name"] == "掌灯人"
+    assert row["payload"]["variant_name"] == "雨夜外套"
+    assert CONTENT[row["evidence"]["start"]:row["evidence"]["end"]] == row["evidence"]["quote"]
+
+
+def test_accept_candidate_as_one_variant_of_an_existing_character(as_role, text_ai, fresh_project, clean_queue):
+    doc, _, pid = _make_doc(fresh_project)
+    client = as_role("editor")
+    existing = assets.create(pid, "character", "灯市老者", "正式设定", "", [], [])
+    run = _submit(client, pid, doc["id"]).json()
+    _drain(run["job_id"])
+    items = client.get(f"/api/extract/runs/{run['id']}/items").json()
+    character = next(item for item in items if item["kind"] == "character")
+    url = f"/api/extract/items/{character['id']}/accept"
+    payload = {"variant_asset_id": existing["id"], "variant_name": "雨夜外套"}
+    accepted = client.post(url, json=payload)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["asset"]["summary"] == "正式设定"
+    assert accepted.json()["item"]["status"] == "accepted"
+    assert client.post(url, json=payload).status_code == 409
+    rows = client.get(f"/api/assets/{existing['id']}/variants").json()
+    assert [row["name"] for row in rows] == ["雨夜外套"]

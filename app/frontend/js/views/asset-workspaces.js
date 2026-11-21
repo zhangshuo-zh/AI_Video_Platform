@@ -38,21 +38,16 @@ export function setWsIndex(i) { setSub('assets', i); }
  * `jobPrefill` 同一个道理，见 navstate.js 顶上那段注释）。
  */
 let studioTarget = null;
-let studioProjectId = null;
 
-export function setStudioTarget(assetId) {
-  studioTarget = Number(assetId) || null;
-  studioProjectId = null;      // 由调用方在下一个渲染里认领
+export function setStudioTarget(assetId, variantId = null) {
+  studioTarget = { projectId: store.currentId, assetId: Number(assetId), variantId };
 }
 
-/** 取走并清空：创作页只认一次，避免下次进来还被上一条资产拽回去。 */
+/** 一次交棒，只在发起跳转的项目里生效。 */
 export function takeStudioTarget(projectId) {
-  if (studioTarget === null) return null;
-  if (studioProjectId === null) studioProjectId = projectId;
-  if (projectId !== studioProjectId) { studioTarget = null; return null; }
-  const value = studioTarget;
+  const target = studioTarget;
   studioTarget = null;
-  return value;
+  return target?.projectId === projectId ? target : null;
 }
 
 /**

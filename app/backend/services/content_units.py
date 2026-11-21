@@ -1,11 +1,15 @@
 """创作单元、分镜与资产元数据业务；权限由路由先行检查。"""
 
+import json
+import unicodedata
+
 import asset_studio
-from models import (ASSET_KINDS, asset_version, AssetCoverIn, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
+from db import transaction
+from models import (ASSET_KINDS, asset_version, EpisodeAssetPresetIn, AssetCoverIn, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
                     AssetShotOut, EpisodeIn, EpisodeOut, EpisodeStatusIn, profile_version,
-                    ShotIn, ShotOut,
+                    ShotIn, ShotOut, ShotReferenceRequirement,
                     VariantOut)
-from repositories.content import assets, episodes, shots
+from repositories.content import _images_of, assets, episodes, shots
 from repositories.content import profiles as profile_repo
 from repositories.content import variants as variant_repo
 
@@ -53,17 +57,149 @@ def list_shots(episode_id: int) -> list[ShotOut]:
             for item in items]
 
 
+def _episode_presets(episode_id: int) -> dict:
+    row = episodes.get(episode_id)
+    if row is None:
+        raise ContentOperationError(404, "创作单元不存在")
+    return json.loads(row["asset_presets"])
+
+
+def episode_asset_presets(episode_id: int, project_id: int) -> list[dict]:
+    presets = _episode_presets(episode_id)
+    asset_ids = {asset_id for preset in presets.values() for asset_id in preset["asset_ids"]}
+    variant_ids = {variant_id for preset in presets.values() for variant_id in preset["variant_ids"]}
+    available_assets = assets.usable_ids(project_id, list(asset_ids))
+    available_variants = variant_repo.usable_ids(project_id, list(variant_ids))
+    return [{
+        "name": name,
+        "asset_ids": [i for i in preset["asset_ids"] if i in available_assets],
+        "variant_ids": [i for i in preset["variant_ids"] if i in available_variants],
+        "missing": (sum(i not in available_assets for i in preset["asset_ids"])
+                    + sum(i not in available_variants for i in preset["variant_ids"])),
+    } for name, preset in presets.items()]
+
+
+def save_episode_asset_preset(episode_id: int, project_id: int, payload: EpisodeAssetPresetIn) -> None:
+    name = payload.name.strip()
+    if not name:
+        raise ContentOperationError(422, "请填写搭配名称")
+    with transaction():
+        presets = _episode_presets(episode_id)
+        if name in presets:
+            raise ContentOperationError(409, "此集已有同名搭配，请另取名称或先删除旧搭配")
+        if len(presets) >= 50:
+            raise ContentOperationError(422, "每集最多保存 50 套资产搭配")
+        asset_ids = _checked_asset_ids(project_id, payload.asset_ids)
+        variant_ids = _checked_variant_ids(project_id, payload.variant_ids, asset_ids)
+        if not asset_ids:
+            raise ContentOperationError(422, "请先选择要保存的资产")
+        presets[name] = {"asset_ids": asset_ids, "variant_ids": variant_ids}
+        episodes.set_asset_presets(episode_id, presets)
+
+
+def delete_episode_asset_preset(episode_id: int, name: str) -> None:
+    with transaction():
+        presets = _episode_presets(episode_id)
+        if name in presets:
+            del presets[name]
+            episodes.set_asset_presets(episode_id, presets)
+
+
+def _purpose_key(purpose: str) -> str:
+    return unicodedata.normalize("NFKC", purpose).strip().casefold()
+
+
+def _missing_reference_purposes(shot_rows: list[ShotOut], asset_rows: dict,
+                                variant_rows: dict, project_id: int) -> list[dict]:
+    missing = []
+    known_purposes: dict[tuple[int, int | None], set[str]] = {}
+    for shot in shot_rows:
+        for item in shot.reference_requirements:
+            if item.asset_id not in shot.asset_ids:
+                continue
+            parent = asset_rows.get(item.asset_id)
+            if parent is None or parent["project_id"] not in (None, project_id):
+                continue
+            key = (item.asset_id, item.variant_id)
+            if key not in known_purposes:
+                row = parent
+                if item.variant_id is not None:
+                    row = variant_rows.get(item.variant_id)
+                    if row is None or row["asset_id"] != item.asset_id:
+                        continue
+                labels = json.loads(row["image_purposes"])
+                known_purposes[key] = {_purpose_key(labels[path])
+                                       for path in _images_of(row) if path in labels}
+            if item.variant_id is not None and item.variant_id not in shot.variant_ids:
+                continue
+            purpose_key = _purpose_key(item.purpose)
+            if purpose_key not in known_purposes[key]:
+                missing.append({"seq": shot.seq, "purpose_key": purpose_key, **item.model_dump()})
+    return missing
+
+
+def _checked_reference_requirements(requirements: list[ShotReferenceRequirement],
+                                    asset_ids: list[int], variant_ids: list[int],
+                                    *, allow_removed: bool = False) -> list[dict]:
+    if not requirements:
+        return []
+    owners = {vid: row["asset_id"] for vid, row in variant_repo.get_many(variant_ids).items()}
+    seen: set[tuple[int, int | None, str]] = set()
+    checked = []
+    for item in requirements:
+        valid = item.asset_id in asset_ids and (
+            item.variant_id is None or owners.get(item.variant_id) == item.asset_id)
+        if not valid and allow_removed:
+            continue
+        if not valid:
+            raise ContentOperationError(422, "参考图用途必须属于本镜已引用的资产或形态")
+        purpose = item.purpose.strip()
+        purpose_key = _purpose_key(purpose)
+        if not purpose_key:
+            raise ContentOperationError(422, "参考图用途不能为空")
+        key = (item.asset_id, item.variant_id, purpose_key)
+        if key not in seen:
+            seen.add(key)
+            checked.append({"asset_id": item.asset_id, "variant_id": item.variant_id, "purpose": purpose})
+    return checked
+
+
+def asset_preparation(episode_id: int, project_id: int) -> dict:
+    shot_rows = [ShotOut.from_row(row) for row in shots.list_by_episode(episode_id)]
+    asset_ids = {asset_id for shot in shot_rows for asset_id in shot.asset_ids}
+    variant_ids = {variant_id for shot in shot_rows for variant_id in shot.variant_ids}
+    asset_rows = assets.get_many(asset_ids, with_image_purposes=True)
+    variant_rows = variant_repo.get_many(variant_ids)
+    return {
+        "shots": [{"seq": shot.seq, "asset_ids": shot.asset_ids, "variant_ids": shot.variant_ids}
+                  for shot in shot_rows],
+        "missing_purposes": _missing_reference_purposes(shot_rows, asset_rows, variant_rows, project_id),
+        "assets": [{
+            "id": row["id"], "kind": row["kind"], "name": row["name"],
+            "is_global": row["project_id"] is None, "image_count": len(_images_of(row)),
+        } for row in asset_rows.values() if row["project_id"] in (None, project_id)],
+        "variants": [{
+            "id": row["id"], "asset_id": row["asset_id"], "name": row["name"],
+            "image_count": len(_images_of(row)),
+        } for row in variant_rows.values()
+            if (parent := asset_rows.get(row["asset_id"])) is not None
+            and parent["project_id"] in (None, project_id)],
+    }
+
+
 def create_shot(episode_id: int, payload: ShotIn, project_id: int) -> ShotOut:
     summary = payload.summary.strip()
     if not summary:
         raise ContentOperationError(status_code=422, detail="镜头描述不能为空")
-    asset_ids = _checked_asset_ids(project_id, payload.asset_ids)
-    # 顺序有讲究：先收敛形态（它会往 asset_ids 里补父资产），再落库。
-    # 反过来的话"只勾了形态、没勾人"这条引用就进了库，而删除保护看不见它。
-    variant_ids = _checked_variant_ids(project_id, payload.variant_ids, asset_ids)
-    row = shots.create(episode_id, summary, payload.prompt.strip(),
-                       payload.duration, asset_ids, variant_ids,
-                       **_shot_form_fields(payload))
+    with transaction():
+        asset_ids = _checked_asset_ids(project_id, payload.asset_ids)
+        # 顺序有讲究：先收敛形态（它会往 asset_ids 里补父资产），再落库。
+        # 反过来的话"只勾了形态、没勾人"这条引用就进了库，而删除保护看不见它。
+        variant_ids = _checked_variant_ids(project_id, payload.variant_ids, asset_ids)
+        requirements = _checked_reference_requirements(payload.reference_requirements or [], asset_ids, variant_ids)
+        row = shots.create(episode_id, summary, payload.prompt.strip(),
+                           payload.duration, asset_ids, variant_ids,
+                           reference_requirements=requirements, **_shot_form_fields(payload))
     # 回显带形态名字：新建那一行马上就会出现在分镜表里，界面不该先闪一下 #12
     return ShotOut.from_row(row, variant_labels=_variant_labels([dict(row)]).get(int(row["id"]), {}))
 
@@ -78,11 +214,20 @@ def update_shot(shot_id: int, payload: ShotIn, project_id: int) -> ShotOut:
     summary = payload.summary.strip()
     if not summary:
         raise ContentOperationError(status_code=422, detail="镜头描述不能为空")
-    asset_ids = _checked_asset_ids(project_id, payload.asset_ids)
-    variant_ids = _checked_variant_ids(project_id, payload.variant_ids, asset_ids)
-    row = shots.update(shot_id, summary, payload.prompt.strip(),
-                       payload.duration, asset_ids, variant_ids,
-                       **_shot_form_fields(payload))
+    with transaction():
+        asset_ids = _checked_asset_ids(project_id, payload.asset_ids)
+        variant_ids = _checked_variant_ids(project_id, payload.variant_ids, asset_ids)
+        omitted = payload.reference_requirements is None
+        supplied = payload.reference_requirements or []
+        if omitted:
+            current = shots.get(shot_id)
+            if current is None:
+                raise ContentOperationError(status_code=404, detail="镜头不存在")
+            supplied = ShotOut.from_row(current).reference_requirements
+        requirements = _checked_reference_requirements(supplied, asset_ids, variant_ids, allow_removed=omitted)
+        row = shots.update(shot_id, summary, payload.prompt.strip(),
+                           payload.duration, asset_ids, variant_ids,
+                           reference_requirements=requirements, **_shot_form_fields(payload))
     if row is None:
         raise ContentOperationError(status_code=404, detail="镜头不存在")
     return ShotOut.from_row(row, variant_labels=_variant_labels([dict(row)]).get(int(row["id"]), {}))

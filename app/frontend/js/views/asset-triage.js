@@ -1,3 +1,4 @@
+import { referenceDialog } from './asset-reference-actions.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindSubChips, confirmDanger, escapeHtml, run, subChipRow } from '../util.js';
@@ -92,20 +93,62 @@ function mergePlan(item, target) {
   return out;
 }
 
+function relatedCharacterRows(rows) {
+  const groups = [];
+  const key = (value) => String(value || '').normalize('NFKC').trim().toLowerCase();
+  for (const row of rows) {
+    if (row.status !== 'pending' || !row.evidence?.quote) continue;
+    const info = row.payload || {};
+    const keys = new Set([info.name, info.identity_name, ...(Array.isArray(info.aliases) ? info.aliases : [])]
+      .map(key).filter(Boolean));
+    if (!keys.size) continue;
+    const hits = groups.filter((group) => [...keys].some((name) => group.keys.has(name)));
+    const group = { keys, rows: [row] };
+    for (const hit of hits) {
+      for (const name of hit.keys) group.keys.add(name);
+      group.rows.push(...hit.rows);
+      groups.splice(groups.indexOf(hit), 1);
+    }
+    groups.push(group);
+  }
+  return groups.filter((group) => group.rows.length > 1);
+}
+
+function characterRowsHtml(rows, assets) {
+  const groups = relatedCharacterRows(rows);
+  const byId = new Map(groups.flatMap((group) => group.rows.map((row) => [row.id, group])));
+  const shown = new Set();
+  return rows.map((row) => {
+    const group = byId.get(row.id);
+    if (!group) return itemRow(row, assets);
+    if (shown.has(group)) return '';
+    shown.add(group);
+    const members = rows.filter((item) => byId.get(item.id) === group);
+    return `<div class="asset-related-characters" data-related-characters>
+      <div class="as-related-head"><h3>可能是同一角色 · ${members.length} 条待核对</h3><span class="t-dim">并排对照原文证据，避免重复新建</span></div>
+      <div class="as-related-grid">${members.map((item) => itemRow(item, assets)).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
 function itemRow(row, assets) {
   const f = itemsOf(row);
   const decided = row.status !== 'pending';
   const canWrite = store.can('asset:write');
   const mergeable = assets.filter((a) => a.kind === row.kind);
   const hit = suggest(mergeable, f, row);
+  const identity = row.kind === 'character' ? row.payload?.identity_name : '';
+  const variantName = row.kind === 'character' ? row.payload?.variant_name : '';
   return `
-    <div class="as-item" data-item="${row.id}" id="as-item-${row.id}">
+    <div class="as-item${decided ? ' is-decided' : ''}" data-item="${row.id}" id="as-item-${row.id}">
       <div class="as-item-head">
         <b>${escapeHtml(f.name)}</b>
         <span class="chip ${STATUS_TONE[row.status] || 'plain'}">${escapeHtml(row.status_label)}</span>
         ${row.confidence != null ? `<span class="t-dim">把握 ${Math.round(row.confidence * 100)}%</span>` : ''}
         ${row.decided_by_name ? `<span class="t-dim">${escapeHtml(row.decided_by_name)} · ${escapeHtml(row.decided_at || '')}</span>` : ''}
       </div>
+      ${identity || variantName ? `<p class="hint">${identity ? `建议归到「${escapeHtml(identity)}」` : ''}
+        ${variantName ? ` · 建议形态「${escapeHtml(variantName)}」` : ''}</p>` : ''}
       ${f.summary ? `<p class="t-desc">${escapeHtml(f.summary)}</p>` : ''}
       ${f.quote ? `<blockquote class="as-quote">「${escapeHtml(f.quote)}」
         <span class="t-dim">原文第 ${f.start ?? '?'}—${f.end ?? '?'} 字</span></blockquote>`
@@ -116,13 +159,15 @@ function itemRow(row, assets) {
             <span class="t-dim">${(hit.name || '').trim() === (f.name || '').trim()
               ? '同名' : '别名命中'}；建议合并进去，不要再建一条</span>` : ''}
           ${row.kind !== 'shot' && canWrite ? `
-            <button class="btn sm ${hit ? '' : 'primary'}" data-accept="${row.id}">接受成新资产</button>
+            <button class="btn sm ${hit ? '' : 'primary'}" data-accept="${row.id}">新建资产</button>
             ${mergeable.length ? `<select class="ctl sm" data-merge-sel="${row.id}">
-                <option value="">合并到已有…</option>
+                <option value="">合并到…</option>
                 ${mergeable.map((a) => `<option value="${a.id}"
                   ${hit && a.id === hit.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
               </select>
-              <button class="btn sm" data-merge="${row.id}">合并</button>` : ''}` : ''
+              <button class="btn sm" data-merge="${row.id}">合并</button>` : ''}
+            ${row.kind === 'character' && f.quote && mergeable.some((asset) => asset.project_id != null || store.isManager)
+              ? `<button class="btn sm" data-accept-variant="${row.id}">存为形态</button>` : ''}` : ''
           }
           ${row.kind === 'shot' ? '<span class="t-desc">已接纳的镜头候选可点下方「一键导入为分镜」直接落库</span>' : ''}
           ${row.kind !== 'shot' && canWrite ? `<button class="btn sm danger" data-reject="${row.id}">拒绝</button>` : ''}
@@ -215,7 +260,7 @@ export default {
             ${itemsErr ? `<div class="bar bad">候选读不到：${escapeHtml(itemsErr)}</div>` : ''}
             ${!itemsErr && groups.length ? groups.map((g) => `
               <div class="grp">${g.label} · ${g.rows.length} 条</div>
-              ${g.rows.map((row) => itemRow(row, assets)).join('')}`).join('') : ''}
+              ${g.kind === 'character' ? characterRowsHtml(g.rows, assets) : g.rows.map((row) => itemRow(row, assets)).join('')}`).join('') : ''}
             ${!itemsErr && !groups.length ? `<div class="empty">
               <div class="empty-t">${runId ? (filter ? '这一类没有候选' : '这次抽取没有候选') : '还没有抽取记录'}</div>
               <p>${runId ? '换一类看看，或到创作中心再抽一次别的文档。' : '先发起一次抽取，回到这一页处理候选。'}</p>
@@ -290,6 +335,39 @@ export default {
         if (ok) { notice = '已合并：只补空字段，别名与标签去重，不覆盖已填内容。'; refresh(); }
       });
     });
+    root.querySelectorAll('[data-accept-variant]').forEach((button) => button.addEventListener('click', () => {
+      const item = itemsCache.find((row) => row.id === Number(button.dataset.acceptVariant));
+      if (!item) return;
+      const characters = assetsCache.filter((asset) => asset.kind === 'character'
+        && (asset.project_id != null || store.isManager));
+      const dialog = referenceDialog('存为角色形态', `
+        <blockquote class="as-quote">${escapeHtml(item.evidence?.quote || '')}</blockquote>
+        <label>角色 <select class="ctl" name="asset">
+          <option value="">选择已有角色</option>
+          ${characters.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.name)}</option>`).join('')}
+        </select></label>
+        <label>形态名称 <input class="ctl" name="variant" maxlength="60"
+          value="${escapeHtml(item.payload?.variant_name || '')}"></label>
+        <p class="hint" role="status" data-variant-note></p>
+        <button type="button" class="btn primary" data-save-extracted-variant>确认存入</button>`);
+      dialog.querySelector('[data-save-extracted-variant]').addEventListener('click', async (event) => {
+        if (store.currentId !== project.id) return;
+        const form = dialog.querySelector('form');
+        const assetId = Number(form.elements.asset.value);
+        const name = form.elements.variant.value.trim();
+        if (!assetId || !name) {
+          dialog.querySelector('[data-variant-note]').textContent = '请选择角色并填写形态名称。';
+          return;
+        }
+        const ok = await run('保存候选形态', () => api.extractAccept(item.id, {
+          variant_asset_id: assetId, variant_name: name,
+        }), { btn: event.currentTarget });
+        if (!ok || !dialog.open) return;
+        dialog.close();
+        notice = `已保存形态「${name}」。`;
+        refresh();
+      });
+    }));
     root.querySelectorAll('[data-reject]').forEach((btn) => {
       btn.addEventListener('click', async () => {
       const ok = await run('拒绝候选', () => api.extractReject(Number(btn.dataset.reject), ''), { btn: btn });

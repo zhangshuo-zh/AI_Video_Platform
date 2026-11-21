@@ -275,3 +275,137 @@ def test_列表的引用数不区分数字与字符串写法(as_role, fresh_proj
     hit = mine[0]
     assert hit["ref_shot_count"] == 2, f"两种写法要算成同一个数，实得 {hit['ref_shot_count']}"
     assert hit["tags"] == ["A类", "夜戏", "灯"], f"标签顺序变了：{hit['tags']}"
+
+
+def test_reference_image_purposes_are_scoped_and_follow_the_file(as_role, fresh_project):
+    pid = fresh_project("editor")
+    client = as_role("editor")
+    asset_id = _mk_asset(client, pid)["id"]
+    other_id = _mk_asset(client, pid)["id"]
+    base = f"/api/assets/{asset_id}"
+    files = {"file": ("ref.png", _png(), "image/png")}
+    uploaded = client.post(f"{base}/images", files=files)
+    assert uploaded.status_code == 200, uploaded.text
+    path = uploaded.json()["ref_images"][0]
+    assert uploaded.json()["image_purposes"] == {}
+    variant = client.post(f"{base}/variants", json={"variant_type": "outfit", "name": "雨衣"})
+    assert variant.status_code == 201, variant.text
+    vid = variant.json()["id"]
+    variant_url = f"/api/asset-variants/{vid}/images"
+    variant_upload = client.post(variant_url, files=files)
+    assert variant_upload.status_code == 200, variant_upload.text
+    variant_path = variant_upload.json()["ref_images"][0]
+
+    purpose = {"path": variant_path, "variant_id": vid, "purpose": " 侧脸 "}
+    assert client.put(f"/api/assets/{other_id}/image-purpose", json=purpose).status_code == 404
+    assert client.put(f"{base}/image-purpose", json={**purpose, "path": path}).status_code == 404
+    assert client.put(f"{base}/image-purpose", json=purpose).status_code == 204
+    assert client.put(f"{base}/image-purpose", json={"path": path, "purpose": "正脸"}).status_code == 204
+    assert client.get(base).json()["image_purposes"] == {path: "正脸"}
+    assert client.get(f"{base}/variants").json()[0]["image_purposes"] == {variant_path: "侧脸"}
+
+    cleared = client.put(f"{base}/image-purpose", json={**purpose, "purpose": ""})
+    assert cleared.status_code == 204
+    assert client.get(f"{base}/variants").json()[0]["image_purposes"] == {}
+    removed = client.delete(f"{base}/images", params={"path": path})
+    assert removed.status_code == 200
+    assert removed.json()["image_purposes"] == {}
+    with get_conn() as conn:
+        assert conn.execute("SELECT image_purposes FROM asset WHERE id = ?", (asset_id,)).fetchone()[0] == "{}"
+
+
+def test_asset_preparation_lists_only_referenced_assets_and_variants(as_role, fresh_project):
+    pid = fresh_project("editor")
+    client = as_role("editor")
+    actor = _mk_asset(client, pid)
+    scene = _mk_asset(client, pid, kind="scene")
+    _mk_asset(client, pid)
+    variant = client.post(f"/api/assets/{actor['id']}/variants",
+                          json={"variant_type": "outfit", "name": "雨衣"}).json()
+    episode = client.post(f"/api/projects/{pid}/episodes", json={"title": "雨夜"}).json()
+    path = f"/api/episodes/{episode['id']}"
+    shot = client.post(f"{path}/shots", json={"summary": "进站", "asset_ids": [scene["id"]],
+                                             "variant_ids": [variant["id"]]})
+    assert shot.status_code == 201, shot.text
+    data = client.get(f"{path}/asset-preparation")
+    assert data.status_code == 200, data.text
+    out = data.json()
+    assert {row["id"] for row in out["assets"]} == {actor["id"], scene["id"]}
+    assert out["variants"] == [{"id": variant["id"], "asset_id": actor["id"],
+                                "name": "雨衣", "image_count": 0}]
+    assert out["shots"] == [{key: shot.json()[key] for key in ("seq", "asset_ids", "variant_ids")}]
+
+
+def test_episode_asset_presets_validate_references_and_handle_deleted_variants(as_role, fresh_project):
+    client = as_role("editor")
+    pid = fresh_project("editor")
+    aid = _mk_asset(client, pid)["id"]
+    episode = client.post(f"/api/projects/{pid}/episodes", json={"title": "夜戏"}).json()
+    url = f"/api/episodes/{episode['id']}/asset-presets"
+    assert client.get(url).json() == []
+    variant = client.post(f"/api/assets/{aid}/variants",
+                          json={"variant_type": "outfit", "name": "雨衣"}).json()
+    body = {"name": " 雨夜车站 ", "variant_ids": [variant["id"]]}
+    assert client.post(url, json={**body, "asset_ids": [999999]}).status_code == 422
+    assert client.post(url, json=body).status_code == 204
+    assert client.post(url, json=body).status_code == 409
+    assert client.get(url).json() == [{"name": "雨夜车站", "asset_ids": [aid],
+                                      "variant_ids": [variant["id"]], "missing": 0}]
+    assert client.delete(f"/api/asset-variants/{variant['id']}").status_code == 204
+    assert client.get(url).json() == [{"name": "雨夜车站", "asset_ids": [aid],
+                                      "variant_ids": [], "missing": 1}]
+    assert client.delete(url, params={"name": "雨夜车站"}).status_code == 204
+    assert client.get(url).json() == []
+
+
+def test_preparation_checks_purpose_on_the_selected_image_group(as_role, fresh_project):
+    client = as_role("editor")
+    pid = fresh_project("editor")
+    aid = _mk_asset(client, pid)["id"]
+    asset = f"/api/assets/{aid}"
+    first = client.post(f"{asset}/variants", json={"variant_type": "outfit", "name": "雨衣"}).json()["id"]
+    second = client.post(f"{asset}/variants", json={"variant_type": "outfit", "name": "便服"}).json()["id"]
+    eid = client.post(f"/api/projects/{pid}/episodes", json={"title": "第 1 集"}).json()["id"]
+    episode = f"/api/episodes/{eid}"
+    files = {"file": ("ref.png", _png(), "image/png")}
+    for variant_id in (None, first, second):
+        upload_url = f"{asset}/images" if variant_id is None else f"/api/asset-variants/{variant_id}/images"
+        upload = client.post(upload_url, files=files)
+        assert upload.status_code == 200, upload.text
+        image_path = upload.json()["ref_images"][0]
+        purpose = "正脸" if variant_id == first else "SＩＤＥ"
+        assert client.put(f"{asset}/image-purpose", json={
+            "path": image_path, "variant_id": variant_id, "purpose": purpose,
+        }).status_code == 204
+        if variant_id == first:
+            first_path = image_path
+
+    requirement = {"asset_id": aid, "variant_id": first, "purpose": " side "}
+    body = {"summary": "人物转身", "asset_ids": [aid], "variant_ids": [first]}
+    invalid = client.post(f"{episode}/shots", json={
+        **body, "reference_requirements": [{**requirement, "variant_id": second}],
+    })
+    assert invalid.status_code == 422
+
+    created = client.post(f"{episode}/shots", json={
+        **body, "reference_requirements": [requirement, {**requirement, "purpose": "ＳＩＤＥ"}],
+    })
+    assert created.status_code == 201, created.text
+    saved = {**requirement, "purpose": "side"}
+    assert created.json()["reference_requirements"] == [saved]
+    sid = created.json()["id"]
+    prep = f"{episode}/asset-preparation"
+    missing = {"seq": 1, "purpose_key": "side", **saved}
+    out = client.get(prep).json()
+    assert out["variants"][0]["image_count"] == 1
+    assert out["missing_purposes"] == [missing]
+
+    assert client.put(f"{asset}/image-purpose", json={
+        "path": first_path, "variant_id": first, "purpose": " ＳＩＤＥ ",
+    }).status_code == 204
+    assert client.get(prep).json()["missing_purposes"] == []
+
+    persisted = client.put(f"/api/shots/{sid}", json={**body, "summary": "只改描述"})
+    assert persisted.status_code == 200 and persisted.json()["reference_requirements"] == [saved]
+    pruned = client.put(f"/api/shots/{sid}", json={**body, "variant_ids": [second]})
+    assert pruned.status_code == 200 and pruned.json()["reference_requirements"] == []

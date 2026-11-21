@@ -420,7 +420,10 @@ export default {
               <label for="jm-template">参数模板</label>
               <select id="jm-template" class="ctl"><option value="">不使用模板</option></select>
               <span class="pf-label top">参数</span>
-              <div id="jm-params" class="gen-params"></div>
+              <div>
+                <div id="jm-params" class="gen-params"></div>
+                <div id="jm-reference-preview" hidden></div>
+              </div>
               <label class="top" for="jm-prompt">提示词</label>
               <div class="stack">
                 <div id="jm-affix-bar" class="gen-affix-bar" hidden></div>
@@ -1194,6 +1197,29 @@ export default {
 
     let pendingPrefillParams = null;
 
+    let requireReferenceImage = false;
+    let requireLastFrame = false;
+
+    function renderReferencePreview() {
+      const host = root.querySelector('#jm-reference-preview');
+      host.hidden = !requireReferenceImage;
+      host.replaceChildren();
+      if (!requireReferenceImage) return;
+      const input = root.querySelector('#jm-params [data-param="image"][data-type="image"]');
+      const path = input?.value.trim() || '';
+      const caption = document.createElement('p');
+      caption.className = 'hint';
+      caption.textContent = path ? '本次作业的首帧输入' : '请选择支持首帧的模型并填写首帧。';
+      host.append(caption);
+      if (/^(?:\/files\/)?[0-9]+\/[a-zA-Z0-9._-]+$/.test(path)) {
+        const img = document.createElement('img');
+        img.className = 'asset-reference-preview';
+        img.alt = '本次作业首帧';
+        img.src = path.startsWith('/files/') ? path : `/files/${path}`;
+        host.append(img);
+      }
+    }
+
     function renderParams(values) {
       // 默认轨与显式轨都按"当前选中的 provider/model"去找模型档
       const option = selectedOption();
@@ -1202,6 +1228,7 @@ export default {
         || option?.models?.[0] || null;
       const merged = values !== undefined ? values : (pendingPrefillParams || {});
       root.querySelector('#jm-params').innerHTML = paramFields(model, merged || {}, option);
+      renderReferencePreview();
     }
 
     /** 清单里登记的官方价；当分辨率/时长等条件命中时优先用那一条。 */
@@ -1420,6 +1447,8 @@ export default {
     async function openJobModal(prefill) {
       jobModal.hidden = false;
       root.querySelector('#jm-error').textContent = '';
+      requireReferenceImage = Boolean(prefill?.requireReferenceImage);
+      requireLastFrame = Boolean(prefill?.requireLastFrame);
       pendingPrefillParams = prefill?.params ? { ...prefill.params } : null;
       linked = (prefill?.episodeId || prefill?.shotId)
         ? { episodeId: prefill.episodeId || null, shotId: prefill.shotId || null } : null;
@@ -1700,9 +1729,21 @@ export default {
         if (!projectId) { errEl.textContent = '先选一个项目。'; return; }
         if (!prompt) { errEl.textContent = '提示词不能为空。'; return; }
 
+        const params = readParams();
+        if (requireReferenceImage && (capability !== 'video'
+            || !root.querySelector('#jm-params [data-param="image"][data-type="image"]')
+            || !params.image)) {
+          errEl.textContent = '请选择支持首帧的图生视频模型，并填写首帧。';
+          return;
+        }
+        if (requireLastFrame && (!root.querySelector('#jm-params [data-param="last_frame_image"][data-type="image"]')
+            || !params.last_frame_image)) {
+          errEl.textContent = '请选择支持尾帧的模型，并填写尾帧。';
+          return;
+        }
         const body = {
           project_id: projectId, capability, prompt,
-          params: readParams(), input_refs: [],
+          params, input_refs: [],
         };
         if (linked?.episodeId) body.episode_id = linked.episodeId;
         if (linked?.shotId) body.shot_id = linked.shotId;
@@ -2178,6 +2219,7 @@ export default {
       renderCostSection();
     });
     // 改分辨率/时长时，官方价档跟着变（720P 与 1080P 是两条价）
+    root.querySelector('#jm-params').addEventListener('input', renderReferencePreview);
     root.querySelector('#jm-params').addEventListener('change', () => {
       if (!jobModal.hidden && isCloud()) renderCostSection();
     });

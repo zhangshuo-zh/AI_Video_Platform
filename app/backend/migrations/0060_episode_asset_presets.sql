@@ -1,0 +1,1 @@
+ALTER TABLE episode ADD COLUMN asset_presets TEXT NOT NULL DEFAULT '{}';

@@ -1,3 +1,4 @@
+import { openAssetPreparation } from './asset-preparation.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, escapeHtml, run } from '../util.js';
@@ -147,6 +148,19 @@ function gridHtml(shown, total, filtering, canWrite) {
 }
 
 /** 只更新网格与那一格计数；搜索框、chip、焦点一概不碰。 */
+function activeFiltersHtml() {
+  const parts = [];
+  if (kind) parts.push(`类型：${KINDS.find((k) => k.code === kind)?.label || kind}`);
+  if (scope !== 'all') parts.push(`范围：${SCOPE_LABELS[scope] || scope}`);
+  if (complete) parts.push(`状态：${COMPLETE_LABELS[complete] || complete}`);
+  if (keyword.trim()) parts.push(`关键词：「${keyword.trim()}」`);
+  if (!parts.length) return '';
+  return `<div class="asset-active-filters" id="asset-active-filters">
+    <span class="t-dim">当前筛选：${escapeHtml(parts.join(' · '))}</span>
+    <button type="button" class="btn xs ghost" data-clear-inline>清除筛选</button>
+  </div>`;
+}
+
 function paintGrid(root, list) {
   const shown = sortShown(list);
   const box = root.querySelector('#asset-grid-box');
@@ -155,6 +169,14 @@ function paintGrid(root, list) {
   if (box) box.innerHTML = gridHtml(shown, list.length, filtering, canWrite);
   const count = root.querySelector('#asset-count');
   if (count) count.textContent = `${shown.length} / ${list.length} 条`;
+  const activeHost = root.querySelector('#asset-active-host');
+  if (activeHost) {
+    activeHost.innerHTML = activeFiltersHtml();
+    activeHost.querySelector('[data-clear-inline]')?.addEventListener('click', () => {
+      keyword = ''; complete = ''; scope = 'all'; kind = '';
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+    });
+  }
   bindCards(root);
   bindGridHelp(root);
 }
@@ -278,8 +300,12 @@ export default {
       <div class="card">
         <div class="card-head">
           <h2>资产</h2><span class="sub" id="asset-count">${shown.length} / ${list.length} 条</span>
-          <div class="right"><input id="asset-search" class="ctl sm" placeholder="搜名称、标签、别名、提示词"
-                                    style="width:240px" value="${escapeHtml(keyword)}"></div>
+          <div class="right asset-head-tools">
+            <input id="asset-search" class="ctl sm" placeholder="搜名称、标签、别名、提示词"
+                   value="${escapeHtml(keyword)}">
+            ${store.currentEpisodeId && store.can('doc:read')
+              ? '<button class="btn sm" id="asset-preparation">本场待备素材</button>' : ''}
+          </div>
         </div>
         <div class="card-body asset-filters" id="asset-filters">
           <span class="note">类型</span>${chips}
@@ -291,6 +317,7 @@ export default {
             <option value="name"${sortBy === 'name' ? ' selected' : ''}>名称</option>
           </select>
         </div>
+        <div id="asset-active-host">${activeFiltersHtml()}</div>
         <div class="card-body" id="asset-grid-box">
           ${gridHtml(shown, list.length, filtering, canWrite)}
         </div>
@@ -361,6 +388,7 @@ export default {
     if (detailId || !store.current) return;
 
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+    root.querySelector('#asset-preparation')?.addEventListener('click', openAssetPreparation);
     const searchEl = root.querySelector('#asset-search');
     const filters = root.querySelector('#asset-filters');
 
@@ -391,6 +419,10 @@ export default {
     });
     root.querySelector('[data-quick-complete]')?.addEventListener('click', (e) => {
       complete = e.currentTarget.dataset.quickComplete || '';
+      refresh();
+    });
+    root.querySelector('[data-clear-inline]')?.addEventListener('click', () => {
+      keyword = ''; complete = ''; scope = 'all'; kind = '';
       refresh();
     });
 

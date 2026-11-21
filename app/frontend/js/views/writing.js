@@ -1706,9 +1706,23 @@ function shotModalHtml() {
 
             <label class="top">引用资产</label>
             <div class="shot-pick">
+              <details class="shot-asset-presets">
+                <summary>本集资产搭配</summary>
+                <label>已存搭配 <select id="sm-preset" class="ctl"></select></label>
+                <button type="button" class="btn xs" id="sm-apply-preset">套用到当前镜头</button>
+                <button type="button" class="btn xs" id="sm-delete-preset">删除搭配</button>
+                <label>搭配名称 <input id="sm-preset-name" class="ctl" maxlength="60" placeholder="如雨夜车站"></label>
+                <button type="button" class="btn xs" id="sm-save-preset">保存当前搭配</button>
+                <p class="hint" id="sm-preset-note" role="status">套用会替换弹窗中勾选的资产与形态，保存镜头后生效。</p>
+              </details>
               <input id="sm-asset-q" class="ctl" placeholder="搜名字、标签或别名">
               <div id="sm-assets" class="asset-pick"></div>
               <div id="sm-variants" class="variant-pick"></div>
+              <details id="sm-reference-needs" hidden>
+                <summary>参考图用途要求</summary>
+                <p class="hint">填写此镜需要的用途，例如「侧脸」或「反打」。每行填写一个用途，留空只检查有无参考图。</p>
+                <div id="sm-reference-fields" class="shot-reference-fields"></div>
+              </details>
               <p class="hint u-text-left"
                  title="角色／场景／道具的内容到资产中心改。选中的是哪一套形态会记在这一镜上；旧素材会不会因此过期，看分镜表那格「源已变」。">
                 只选引用。换衣服不用另建人物，形态记在这一镜上。</p>
@@ -1794,6 +1808,13 @@ function mountShots(root) {
     const shotModal = root.querySelector('#shot-modal');
     let shotEdit = null;      // { id: number|null, selected: Set, query: string }
 
+    function removeShotAsset(id) {
+      shotEdit.selected.delete(id);
+      for (const [variantId, owner] of shotEdit.variantOwners) {
+        if (owner === id) shotEdit.sel.delete(variantId);
+      }
+    }
+
     const paintPicker = () => {
       const box = root.querySelector('#sm-assets');
       if (!box || !shotEdit) return;
@@ -1832,7 +1853,7 @@ function mountShots(root) {
       box.querySelectorAll('[data-pick-asset]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const id = Number(btn.dataset.pickAsset);
-          if (shotEdit.selected.has(id)) shotEdit.selected.delete(id);
+          if (shotEdit.selected.has(id)) removeShotAsset(id);
           else shotEdit.selected.add(id);
           paintPicker();
           paintVariants();     // 刚点的那个人有没有形态，要立刻在这一格里回答
@@ -1840,12 +1861,50 @@ function mountShots(root) {
       });
       box.querySelectorAll('[data-unpick]').forEach((btn) => {
         btn.addEventListener('click', () => {
-          shotEdit.selected.delete(Number(btn.dataset.unpick));
+          removeShotAsset(Number(btn.dataset.unpick));
           paintPicker();
           paintVariants();
         });
       });
     };
+
+    function paintReferenceRequirements(edit, selectedAssets, loadedVariants) {
+      const panel = root.querySelector('#sm-reference-needs');
+      panel.hidden = !selectedAssets.length;
+      const variants = new Map(loadedVariants.map((variant) => [variant.id, variant]));
+      for (const entry of edit.referenceRequirements.values()) {
+        if (entry.variant_id && !variants.has(entry.variant_id) && edit.variantError[entry.asset_id]) {
+          variants.set(entry.variant_id, {
+            id: entry.variant_id, asset_id: entry.asset_id,
+            name: edit.variantLabels[entry.variant_id] || `形态 #${entry.variant_id}`,
+          });
+        }
+      }
+      const usedVariants = [...variants.values()].filter((variant) => edit.sel.has(variant.id));
+      const rows = selectedAssets.flatMap((asset) => [
+        { assetId: asset.id, variantId: null, name: `${asset.name} · 基础图` },
+        ...usedVariants.filter((variant) => variant.asset_id === asset.id)
+          .map((variant) => ({ assetId: asset.id, variantId: variant.id, name: `${asset.name} · ${variant.name}` })),
+      ]);
+      const host = panel.querySelector('#sm-reference-fields');
+      host.innerHTML = rows.map(({ assetId, variantId, name }) => {
+        const key = `${assetId}/${variantId ?? ''}`;
+        const value = edit.referenceRequirements.get(key)?.value || '';
+        return `<label><span>${escapeHtml(name)}</span><textarea class="ctl" rows="2"
+          data-reference-asset="${assetId}" data-reference-variant="${variantId ?? ''}"
+          maxlength="3720">${escapeHtml(value)}</textarea></label>`;
+      }).join('');
+    }
+
+    root.querySelector('#sm-reference-fields')?.addEventListener('input', (event) => {
+      const input = event.target.closest('[data-reference-asset]');
+      if (!input || !shotEdit) return;
+      const assetId = Number(input.dataset.referenceAsset);
+      const variantId = Number(input.dataset.referenceVariant) || null;
+      shotEdit.referenceRequirements.set(`${assetId}/${variantId ?? ''}`, {
+        asset_id: assetId, variant_id: variantId, value: input.value,
+      });
+    });
 
     /**
      * 形态选择（0034）。只有**已选中的资产**才有形态可挑，
@@ -1857,34 +1916,44 @@ function mountShots(root) {
     const paintVariants = async () => {
       const box = root.querySelector('#sm-variants');
       if (!box || !shotEdit) return;
-      const chars = [...shotEdit.selected]
+      const edit = shotEdit;
+      const request = (edit.variantRequest || 0) + 1;
+      edit.variantRequest = request;
+      const selectedAssets = [...edit.selected]
         .map((id) => (shotCache.assets || []).find((a) => a.id === id))
-        .filter((a) => a && a.kind === 'character');
-      if (!chars.length) {
+        .filter(Boolean);
+      if (!selectedAssets.length) {
+        edit.variantsLoading = false;
+        if (!edit.selected.size) edit.sel.clear();
         box.innerHTML = '';
+        paintReferenceRequirements(edit, [], []);
         return;
       }
-      for (const a of chars) {
-        if (!shotEdit.variants[a.id]) {
+      edit.variantsLoading = true;
+      for (const a of selectedAssets) {
+        if (!edit.variants[a.id]) {
           try {
-            shotEdit.variants[a.id] = await api.assetVariants(a.id);
+            edit.variants[a.id] = await api.assetVariants(a.id);
           } catch (e) {
-            shotEdit.variants[a.id] = null;      // 读失败要在界面上说出来，不能当"没有形态"
-            shotEdit.variantError = shotEdit.variantError || {};
-            shotEdit.variantError[a.id] = e.message || String(e);
+            edit.variants[a.id] = null;      // 读失败要在界面上说出来，不能当"没有形态"
+            edit.variantError = edit.variantError || {};
+            edit.variantError[a.id] = e.message || String(e);
           }
         }
       }
-      // 父资产被取消引用了，它名下的形态选择跟着清掉：留着就出现
-      // "镜头引了形态却没引这个资产"那种删除保护看不见的引用
-      const owners = new Set(chars.map((a) => a.id));
-      const all = [];
-      chars.forEach((a) => (shotEdit.variants[a.id] || []).forEach((v) => all.push(v)));
-      [...shotEdit.sel].forEach((vid) => {
-        const hit = all.find((v) => v.id === vid);
-        if (!hit || !owners.has(hit.asset_id)) shotEdit.sel.delete(vid);
-      });
-      box.innerHTML = chars.map((a) => {
+      if (shotEdit !== edit || edit.variantRequest !== request) return;
+      edit.variantsLoading = false;
+      const all = selectedAssets.flatMap((a) => edit.variants[a.id] || []);
+      const loadedIds = new Set(all.map((variant) => variant.id));
+      const allLoaded = selectedAssets.length === edit.selected.size
+        && selectedAssets.every((asset) => Array.isArray(edit.variants[asset.id]));
+      for (const id of edit.sel) {
+        const owner = edit.variantOwners.get(id);
+        if ((owner && !edit.selected.has(owner)) || (allLoaded && !loadedIds.has(id))) edit.sel.delete(id);
+      }
+      for (const variant of all) edit.variantOwners.set(variant.id, variant.asset_id);
+      paintReferenceRequirements(edit, selectedAssets, all);
+      box.innerHTML = selectedAssets.map((a) => {
         const list = shotEdit.variants[a.id];
         if (list === null) {
           return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
@@ -1892,7 +1961,7 @@ function mountShots(root) {
         }
         if (!list.length) {
           return `<div class="pick-block"><div class="pick-grp">${escapeHtml(a.name)} 的形态</div>
-            <span class="t-desc">这条人物还没有形态；到资产中心「资产创作」加一套衣服再回来。</span></div>`;
+            <span class="t-desc">这条资产还没有形态。可到「资产创作」添加。</span></div>`;
         }
         const chips = list.map((v) => `<button type="button" class="chip ${shotEdit.sel.has(v.id) ? 'blue' : 'plain'}"
             data-pick-variant="${v.id}" title="${escapeHtml(v.prompt || '')}">
@@ -1947,9 +2016,20 @@ function mountShots(root) {
           first_frame_image: shot.first_frame_image || '',
           last_frame_image: shot.last_frame_image || '',
         } : {},
-        variants: {}, variantError: {},
+        variants: {}, variantError: {}, variantOwners: new Map(), presets: [],
+        referenceRequirements: new Map(), variantLabels: shot?.variant_labels || {},
         query: '',
       };
+      for (const { asset_id, variant_id, purpose } of shot?.reference_requirements || []) {
+        const key = `${asset_id}/${variant_id ?? ''}`;
+        const prev = shotEdit.referenceRequirements.get(key)?.value;
+        shotEdit.referenceRequirements.set(key, { asset_id, variant_id, value: prev ? `${prev}\n${purpose}` : purpose });
+        if (variant_id) shotEdit.variantOwners.set(variant_id, asset_id);
+      }
+      const referencePanel = root.querySelector('#sm-reference-needs');
+      referencePanel.hidden = true;
+      referencePanel.open = Boolean(shotEdit.referenceRequirements.size);
+      root.querySelector('#sm-reference-fields').replaceChildren();
       root.querySelector('#shot-modal-title').textContent = shot
         ? `编辑第 ${shot.seq} 镜` : '新建镜头';
       root.querySelector('#sm-summary').value = shot ? shot.summary : '';
@@ -1964,17 +2044,102 @@ function mountShots(root) {
       paintPicker();
       paintVariants();
       shotModal.hidden = false;
+      root.querySelector('#sm-preset-name').value = '';
+      root.querySelector('#sm-preset-note').textContent = '套用只修改当前弹窗，保存镜头后生效。';
+      paintPresetList();
+      void loadPresets(shotEdit);
       root.querySelector('#sm-summary').focus();
     };
+
+    function paintPresetList() {
+      const select = root.querySelector('#sm-preset');
+      select.innerHTML = '<option value="">选择搭配</option>' + shotEdit.presets.map((preset, i) =>
+        `<option value="${i}">${escapeHtml(preset.name)}${preset.missing ? ' · 有失效引用' : ''}</option>`).join('');
+    }
+
+    async function loadPresets(edit) {
+      const request = (edit.presetRequest || 0) + 1;
+      edit.presetRequest = request;
+      try {
+        const presets = await api.episodeAssetPresets(pickedEpisodeId);
+        if (shotEdit !== edit || edit.presetRequest !== request) return;
+        edit.presets = presets;
+        paintPresetList();
+      } catch (error) {
+        if (shotEdit === edit) root.querySelector('#sm-preset-note').textContent = error.message;
+      }
+    }
+
+    function selectedPreset() {
+      const value = root.querySelector('#sm-preset').value;
+      return shotEdit && value !== '' ? shotEdit.presets[Number(value)] : null;
+    }
+
+    root.querySelector('#sm-apply-preset')?.addEventListener('click', () => {
+      const preset = selectedPreset();
+      if (!preset) return;
+      if (!preset.asset_ids.length) {
+        root.querySelector('#sm-preset-note').textContent = '这套搭配已无可用资产，请重新选择。';
+        return;
+      }
+      shotEdit.selected = new Set(preset.asset_ids);
+      shotEdit.sel = new Set(preset.variant_ids);
+      paintPicker();
+      paintVariants();
+      root.querySelector('#sm-preset-note').textContent = preset.missing
+        ? `已套用可用引用，跳过 ${preset.missing} 项失效引用。确认后保存镜头。`
+        : '已套用，可以继续调整并保存镜头。';
+    });
+
+    root.querySelector('#sm-save-preset')?.addEventListener('click', async (event) => {
+      const edit = shotEdit;
+      if (!edit) return;
+      const input = root.querySelector('#sm-preset-name');
+      const name = input.value.trim();
+      const note = root.querySelector('#sm-preset-note');
+      if (edit.variantsLoading) { note.textContent = '请等形态读取完成。'; return; }
+      if (!name || !edit.selected.size) {
+        note.textContent = '请填写名称并选择至少一条资产。';
+        return;
+      }
+      const ok = await run('保存搭配', () => api.saveEpisodeAssetPreset(pickedEpisodeId, {
+        name, asset_ids: [...edit.selected], variant_ids: [...edit.sel],
+      }), { btn: event.currentTarget });
+      if (ok && shotEdit === edit) {
+        note.textContent = `已保存「${name}」。`;
+        input.value = '';
+        await loadPresets(edit);
+      }
+    });
+
+    root.querySelector('#sm-delete-preset')?.addEventListener('click', async (event) => {
+      const edit = shotEdit;
+      const preset = selectedPreset();
+      const button = event.currentTarget;
+      if (!preset || !(await confirmDanger({ title: '删除资产搭配',
+        body: `删除「${escapeHtml(preset.name)}」这套搭配？`, okText: '删除' })) || shotEdit !== edit) return;
+      const ok = await run('删除搭配', () => api.deleteEpisodeAssetPreset(pickedEpisodeId, preset.name), { btn: button });
+      if (ok && shotEdit === edit) await loadPresets(edit);
+    });
 
     const saveShot = async () => {
       if (!shotEdit) return;
       const summary = root.querySelector('#sm-summary').value.trim();
       const errEl = root.querySelector('#sm-error');
+      if (shotEdit.variantsLoading) { errEl.textContent = '请等形态读取完成。'; return; }
       if (!summary) { errEl.textContent = '内容不能为空'; return; }
       const duration = Number(root.querySelector('#sm-duration').value);
       if (!(duration > 0 && duration <= 60)) {
         errEl.textContent = '时长要在 1—60 秒之间';
+        return;
+      }
+      const requirements = [...shotEdit.referenceRequirements.values()]
+        .filter(({ asset_id, variant_id }) => shotEdit.selected.has(asset_id)
+          && (variant_id === null || shotEdit.sel.has(variant_id)))
+        .flatMap(({ asset_id, variant_id, value }) => value.split(/\r?\n/).map((purpose) => purpose.trim())
+          .filter(Boolean).map((purpose) => ({ asset_id, variant_id, purpose })));
+      if (requirements.length > 120 || requirements.some((item) => Array.from(item.purpose).length > 30)) {
+        errEl.textContent = '每镜最多填写 120 项用途，每项不超过 30 个字符。';
         return;
       }
       const body = {
@@ -1986,14 +2151,15 @@ function mountShots(root) {
         asset_ids: [...shotEdit.selected],
         // 服务端会保证父资产也在 asset_ids 里（只勾形态没勾人的那种手滑由它补上）
         variant_ids: [...shotEdit.sel],
+        reference_requirements: requirements,
       };
       const saveBtn = root.querySelector('#sm-save');
-            errEl.textContent = '';
-      const editing = shotEdit.id;
-      const ok = editing
-        ? await run('保存镜头', () => api.updateShot(editing, body))
+      errEl.textContent = '';
+      const edit = shotEdit;
+      const ok = edit.id
+        ? await run('保存镜头', () => api.updateShot(edit.id, body), { btn: saveBtn })
         : await run('新建镜头', () => api.createShot(pickedEpisodeId, body), { btn: saveBtn });
-      if (!ok) return;          // 失败时弹窗留着，填的字还在
+      if (!ok || shotEdit !== edit) return;
       closeShot();
       refresh();
     };
@@ -2038,6 +2204,12 @@ function mountShots(root) {
           // 带上它，提交框才会把"这个场景谁可能行、别的为什么不行"摆出来。
           sceneKey: 'shot_video',
           prompt: shot ? ((shot.prompt || '').trim() || shot.summary) : '',
+          params: shot ? {
+            image: shot.first_frame_image || '',
+            last_frame_image: shot.last_frame_image || '',
+          } : undefined,
+          requireReferenceImage: Boolean(shot?.first_frame_image || shot?.last_frame_image),
+          requireLastFrame: Boolean(shot?.last_frame_image),
         });
         window.dispatchEvent(new CustomEvent('app:go', { detail: 'generate' }));
       });

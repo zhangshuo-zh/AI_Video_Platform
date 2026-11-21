@@ -542,6 +542,8 @@ export default {
         shotId: Number(shotId), capability: 'video',
         // 同一镜的生成入口，场景键与分镜页那一处一致（`shot_video`）。
         sceneKey: 'shot_video',
+        requireReferenceImage: Boolean(firstFrameVal || lastFrameVal),
+        requireLastFrame: Boolean(lastFrameVal),
         prompt: (root.querySelector('#sw-prompt') || {}).value || '',
         params: Object.keys(prefillParams).length ? prefillParams : undefined });
       renderView('generate');

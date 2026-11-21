@@ -51,6 +51,12 @@ class EpisodeRepository:
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM episode WHERE id = ?", (episode_id,)).fetchone()
 
+    def set_asset_presets(self, episode_id: int, presets: dict) -> None:
+        with get_conn() as conn:
+            conn.execute("UPDATE episode SET asset_presets = ? WHERE id = ?",
+                         (json.dumps(presets, ensure_ascii=False), episode_id))
+            touch(conn, "episode", episode_id)
+
     def delete(self, episode_id: int) -> bool:
         with get_conn() as conn:
             # 先推时间再删行：删完就查不到它属于哪个项目了
@@ -93,7 +99,8 @@ class ShotRepository:
                trim_in_ms: int = 0, trim_out_ms: int = 0,
                transition: str = "cut",
                first_frame_image: str = "",
-               last_frame_image: str = "") -> sqlite3.Row:
+               last_frame_image: str = "",
+               reference_requirements: list[dict] | None = None) -> sqlite3.Row:
         with get_conn() as conn:
             seq = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM shot WHERE episode_id = ?",
@@ -104,12 +111,13 @@ class ShotRepository:
                                      asset_ids, variant_ids,
                                      shot_size, camera_move, aspect, style,
                                      negative_prompt, trim_in_ms, trim_out_ms, transition,
-                                     first_frame_image, last_frame_image)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                     first_frame_image, last_frame_image, reference_requirements)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (episode_id, seq, summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
                  style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
-                 transition or "cut", first_frame_image, last_frame_image),
+                 transition or "cut", first_frame_image, last_frame_image,
+                 json.dumps(reference_requirements or [], ensure_ascii=False)),
             )
             touch(conn, "episode", episode_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -122,7 +130,8 @@ class ShotRepository:
                trim_in_ms: int = 0, trim_out_ms: int = 0,
                transition: str = "cut",
                first_frame_image: str = "",
-               last_frame_image: str = "") -> sqlite3.Row | None:
+               last_frame_image: str = "",
+               reference_requirements: list[dict] | None = None) -> sqlite3.Row | None:
         """整体改一镜的可编辑字段（0034 起加形态引用，0037 起加镜头设定五栏，0054/0055 加粗剪转场与首尾帧）。
 
         **不动 episode_id 与 seq**：镜头属于集、镜号是这一集里的顺序，
@@ -141,13 +150,16 @@ class ShotRepository:
                           style = ?, negative_prompt = ?,
                           trim_in_ms = ?, trim_out_ms = ?, transition = ?,
                           first_frame_image = ?, last_frame_image = ?,
+                          reference_requirements = COALESCE(?, reference_requirements),
                           revision = revision + 1,
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (summary, prompt, duration, json.dumps(asset_ids),
                  json.dumps(variant_ids or []), shot_size, camera_move, aspect,
                  style, negative_prompt, int(trim_in_ms or 0), int(trim_out_ms or 0),
-                 transition or "cut", first_frame_image, last_frame_image, shot_id),
+                 transition or "cut", first_frame_image, last_frame_image,
+                 None if reference_requirements is None else json.dumps(reference_requirements, ensure_ascii=False),
+                 shot_id),
             )
             touch(conn, "shot", shot_id)
             return conn.execute("SELECT * FROM shot WHERE id = ?", (shot_id,)).fetchone()
@@ -254,10 +266,11 @@ class AssetRepository:
     # 指纹与预检只读这几列。用 `self._SELECT` 会顺手把 `tags` 与 `ref_shot_count`
     # 两个相关子查询也跑一遍——那是资产中心卡片要显示的数，分镜列表与生产前检查
     # 根本不碰，为一个不看的数字给每个资产多打两次 shot 表扫描不值当。
-    _PLAIN_COLUMNS = ("id", "name", "kind", "summary", "consistency_prompt",
+    _PLAIN_COLUMNS = ("id", "project_id", "name", "kind", "summary", "consistency_prompt",
                       "ref_images", "updated_at")
 
-    def get_many(self, asset_ids: list[int] | set[int]) -> dict[int, sqlite3.Row]:
+    def get_many(self, asset_ids: list[int] | set[int], *,
+                 with_image_purposes: bool = False) -> dict[int, sqlite3.Row]:
         """一次读回一组资产（含全局资产），键是 id。
 
         存在的理由就是一句 SQL 打完一遍，而不是循环里逐个 `get()`：
@@ -270,6 +283,8 @@ class AssetRepository:
             return {}
         marks = ",".join("?" for _ in ids)
         columns = ", ".join(f"a.{c}" for c in self._PLAIN_COLUMNS)
+        if with_image_purposes:
+            columns += ", a.image_purposes"
         with get_conn() as conn:
             rows = conn.execute(
                 f"SELECT {columns} FROM asset a WHERE a.id IN ({marks})", ids).fetchall()
@@ -419,16 +434,19 @@ class AssetRepository:
     def remove_image(self, asset_id: int, relative_path: str) -> tuple[sqlite3.Row | None, bool]:
         """从 ref_images 里摘掉一条。返回 (资产行, 是否确实删掉了)。"""
         with get_conn() as conn:
-            row = conn.execute("SELECT ref_images FROM asset WHERE id = ?", (asset_id,)).fetchone()
+            row = conn.execute("SELECT * FROM asset WHERE id = ?", (asset_id,)).fetchone()
             if row is None:
                 return None, False
             images = json.loads(row["ref_images"] or "[]")
             if relative_path not in images:
                 return self.get(asset_id), False
             images.remove(relative_path)
+            purposes = json.loads(row["image_purposes"])
+            if relative_path not in images:
+                purposes.pop(relative_path, None)
             conn.execute(
-                "UPDATE asset SET ref_images = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-                (json.dumps(images), asset_id),
+                "UPDATE asset SET ref_images = ?, image_purposes = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                (json.dumps(images), json.dumps(purposes, ensure_ascii=False), asset_id),
             )
             touch(conn, "asset", asset_id)
             return conn.execute(f"{self._SELECT} WHERE a.id = ?", (asset_id,)).fetchone(), True
@@ -660,10 +678,13 @@ class VariantRepository:
             if relative_path not in images:
                 return self.get(variant_id), False
             images.remove(relative_path)
+            purposes = json.loads(row["image_purposes"])
+            if relative_path not in images:
+                purposes.pop(relative_path, None)
             conn.execute(
-                """UPDATE asset_variant SET ref_images = ?,
+                """UPDATE asset_variant SET ref_images = ?, image_purposes = ?,
                           updated_at = datetime('now','localtime') WHERE id = ?""",
-                (json.dumps(images, ensure_ascii=False), variant_id))
+                (json.dumps(images, ensure_ascii=False), json.dumps(purposes, ensure_ascii=False), variant_id))
             touch(conn, "asset", row["asset_id"])
             return conn.execute("SELECT * FROM asset_variant WHERE id = ?",
                                 (variant_id,)).fetchone(), True

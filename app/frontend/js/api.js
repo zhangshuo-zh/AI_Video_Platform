@@ -378,6 +378,10 @@ export const api = {
   deleteEpisode: (id) => send('DELETE', `/api/episodes/${id}`),
   setEpisodeStatus: (id, status) => send('PATCH', `/api/episodes/${id}/status`, { status }),
 
+  assetPreparation: (eid) => get(`/api/episodes/${eid}/asset-preparation`),
+  episodeAssetPresets: (eid) => get(`/api/episodes/${eid}/asset-presets`),
+  saveEpisodeAssetPreset: (eid, body) => send('POST', `/api/episodes/${eid}/asset-presets`, body),
+  deleteEpisodeAssetPreset: (eid, name) => send('DELETE', `/api/episodes/${eid}/asset-presets?` + new URLSearchParams({ name })),
   shots: (eid) => get(`/api/episodes/${eid}/shots`),
   createShot: (eid, body) => send('POST', `/api/episodes/${eid}/shots`, body),
   // 整体改一镜：内容／提示词／时长／引用资产；镜号与所属集不在可改范围
@@ -514,7 +518,14 @@ export const api = {
   // 整体提交：名称／类型／简介／提示词／别名／标签／范围一次改完。
   // 同一个字段不留第二个编辑入口，所以没有"只改标签"这种半截接口
   updateAsset: (id, body) => send('PUT', `/api/assets/${id}`, body),
+  setAssetImagePurpose: (id, body) => send('PUT', `/api/assets/${id}/image-purpose`, body),
   setAssetCover: (id, path) => send('PUT', `/api/assets/${id}/cover`, { path }),
+  assetReferenceUsage: (pid, aid) => get(`/api/projects/${pid}/assets/${aid}/reference-usage`),
+  replaceAssetReferences: (pid, aid, body) => send('POST', `/api/projects/${pid}/assets/${aid}/reference-usage`, body),
+  characterAppearances: (pid, aid) => get(`/api/projects/${pid}/assets/${aid}/appearances`),
+  assetCandidateReview: (aid, jid) => get(`/api/assets/${aid}/candidate-review/${jid}`),
+  setAssetCandidateReview: (aid, jid, body) => send('PUT', `/api/assets/${aid}/candidate-review/${jid}`, body),
+  batchImportAssetCandidates: (aid, body) => send('POST', `/api/assets/${aid}/generated-images/batch`, body),
   assetShots: (id) => get(`/api/assets/${id}/shots`),
   deleteAsset: (id) => send('DELETE', `/api/assets/${id}`),
   uploadAssetImage: (id, file) => {

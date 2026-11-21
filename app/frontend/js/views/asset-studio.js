@@ -1,3 +1,4 @@
+import { referenceActions, bindReferenceActions, referenceDialog } from './asset-reference-actions.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl, subChipRow } from '../util.js';
@@ -92,7 +93,7 @@ let lastOptions = [];    // 本次渲染拿到的槽位清单，提交时用它�
 
 function newDraft(kind = 'character') {
   return {
-    targetId: 0, kind, loadedAsset: 0,
+    targetId: 0, kind, loadedAsset: 0, baseReference: null,
     fields: Object.fromEntries(TEXT_FIELDS[kind].map(([k]) => [k, ''])),
     textPrompt: '', consistency: '', assetName: '',
     ttsVoice: '', ttsRate: 1.0, ttsMood: '',
@@ -102,7 +103,7 @@ function newDraft(kind = 'character') {
     imagePrompt: '', imageVariantId: 0, imageParams: {},
     cloudConfirm: false,
     textJob: null, imageJob: null,
-    preview: null, candidates: null, jobMeta: null, variants: [],
+    preview: null, candidates: null, jobMeta: null, candidateReview: null, imageHistory: null, variants: [],
     sections: [], reused: false, editing: null,
     notice: '', conflict: '', error: '', dirty: false,
     // 两把弱版本令牌：一把对资产、一把对人物档案（服务端各算各的，
@@ -483,31 +484,101 @@ function paramRows(d, which) {
  * 整页重绘会把人正在敲的提示词框连光标一起换掉（纪律 5）。
  * 绑事件也一起抽到 `bindCandidates`，两处共用同一份，不会出现"渲染改了、绑定没改"。
  */
+function candidateReviewFor(d) {
+  const key = `${d.targetId}/${d.candidates?.job_id}`;
+  d.candidateReviews ??= new Map();
+  if (!d.candidateReviews.has(key)) {
+    d.candidateReviews.set(key, {
+      key, state: 'idle', marks: {}, selected: new Set(), filter: 'active', target: '', busy: false, statusText: '',
+    });
+  }
+  d.candidateReview = d.candidateReviews.get(key);
+  return d.candidateReview;
+}
+
 function candidatesHtml(d) {
   const cand = d.candidates;
+  const history = (d.imageHistory || []).filter((job) => job.status === 'succeeded');
+  const historyPicker = history.length ? `<label class="as-tb-item">批次 <select class="ctl xs" data-candidate-history>
+    <option value="">选择批次</option>${history.map((job) =>
+      `<option value="${job.job_id}"${job.job_id === cand?.job_id ? ' selected' : ''}>
+        #${job.job_id} · ${escapeHtml(String(job.finished_at || job.created_at || '').slice(5, 16))}</option>`).join('')}
+    </select></label>` : '';
   if (!cand) {
-    return '<p class="t-desc">还没有候选。选好轨道、写提示词，点「生成图像候选」。</p>';
+    return `<div class="as-cand-toolbar">${historyPicker}</div>`
+      + '<p class="t-desc">选择历史批次，或生成新的图像候选。</p>';
   }
   const items = cand.items || [];
   if (!items.length) {
-    return '<p class="t-desc">这条作业成功了，但产物清单是空的。</p>';
+    return `<div class="as-cand-toolbar">${historyPicker}</div>`
+      + '<p class="t-desc">该批次产物清单为空，可切换其他批次或重新生成。</p>';
   }
   const meta = d.jobMeta || {};
-  const head = `<p class="t-dim">作业 #${cand.job_id}｜${escapeHtml(
+  const head = `<p class="t-dim as-cand-meta">作业 #${cand.job_id}｜${escapeHtml(
     `${meta.execution_mode_label || ''} ${meta.provider_code || ''}/${meta.model_code || ''}`.trim())
     || '档位未知'}｜完成 ${escapeHtml(meta.finished_at || '—')}`
     + `${meta.cost_micros ? `｜成本 ${fmtMoney(meta.cost_micros, meta.currency)}` : ''}`
-    + `｜<a href="#generate/0" class="plain">到生成中心看这条作业</a></p>`;
-  const canSave = d.targetId > 0;
-  const grid = items.map((a, i) => `
-      <figure class="as-cand">
-        <img src="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}" alt="候选 ${i + 1}"
-             data-preview-img="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}"
-             ${a.exists ? '' : 'style="opacity:.35"'}>
+    + `｜<a href="#generate/0" class="plain">去生成中心</a></p>`;
+  const canSave = d.targetId > 0 && store.can('asset:write')
+    && (d.baseReference?.project_id != null || store.isManager);
+  const review = candidateReviewFor(d);
+  const groupOptions = `<option value="">存进哪儿…</option><option value="base">基础参考图</option>
+    ${d.variants.map((v) => `<option value="${v.id}">形态 · ${escapeHtml(v.name)}</option>`).join('')}`;
+  const selectedSize = review.selected.size;
+  const targetLabel = review.target === 'base' ? '基础参考图'
+    : (d.variants.find((v) => String(v.id) === String(review.target))?.name || '');
+  const controls = `<div class="as-cand-toolbar${selectedSize ? ' has-selection' : ''}">
+    ${historyPicker}
+    ${canSave ? `
+      <label class="as-tb-item">筛选 <select class="ctl xs" data-candidate-filter>
+        ${[['active', '待选及收藏'], ['favorite', '仅收藏'], ['archived', '已淘汰']]
+          .map(([k, label]) => `<option value="${k}"${review.filter === k ? ' selected' : ''}>${label}</option>`).join('')}
+      </select></label>
+      ${review.state === 'error' ? '<button class="btn xs" data-reload-candidates>重读审选</button>' : ''}
+      ${review.state === 'loading' ? '<span class="t-dim" role="status">读取审选…</span>' : ''}
+      ${review.state === 'ready' ? `
+        <span class="chip ${selectedSize ? 'blue' : 'plain'}" data-candidate-count>已选 ${selectedSize} 张</span>
+        <span class="t-dim as-cand-scope" data-candidate-scope>${selectedSize ? `范围：#${cand.job_id}` : ''}</span>
+        <div class="as-tb-actions">
+          <button class="btn xs" data-candidate-mark="favorite">收藏</button>
+          <button class="btn xs" data-candidate-mark="archived">淘汰</button>
+          <button class="btn xs" data-candidate-mark="pending">恢复</button>
+        </div>
+        <div class="as-tb-import">
+          <select class="ctl xs" data-candidate-target aria-label="批量存入位置">${groupOptions}</select>
+          <button class="btn xs primary" data-candidate-import>${selectedSize && targetLabel ? `存入 ${selectedSize} 张到${escapeHtml(targetLabel)}` : '批量存入'}</button>
+        </div>` : ''}
+    ` : ''}
+  </div>`;
+  const statusLine = `<p class="as-cand-status t-dim" role="status" data-candidate-status>${escapeHtml(review.statusText || '')}</p>`;
+  const grid = items.map((a, i) => {
+    const mark = review.marks[i];
+    if ((review.filter === 'archived' && mark !== 'archived')
+        || (review.filter === 'favorite' && mark !== 'favorite')
+        || (review.filter === 'active' && mark === 'archived')) return '';
+    const image = a.exists && /\.(png|jpe?g|webp)$/i.test(a.path || '');
+    const isSel = review.selected.has(i);
+    const cls = ['as-cand', isSel && 'is-selected', mark === 'favorite' && 'is-favorite', mark === 'archived' && 'is-archived']
+      .filter(Boolean).join(' ');
+    return `
+      <figure class="${cls}" data-cand-card="${i}">
+        <div class="as-cand-media">
+          <img src="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}" alt="候选 ${i + 1}"
+               loading="lazy" data-preview-img="${escapeHtml(`/api/jobs/${cand.job_id}/artifacts/${i}`)}"
+               ${a.exists ? '' : 'style="opacity:.35"'}>
+          ${mark === 'favorite' ? '<span class="as-cand-badge fav">★ 已收藏</span>'
+            : mark === 'archived' ? '<span class="as-cand-badge arch">已淘汰</span>' : ''}
+        </div>
         <figcaption>
+          ${image && canSave && review.state === 'ready' && i < 64
+            ? `<label class="as-cand-tick"><input type="checkbox" data-candidate-tick="${i}" ${isSel ? 'checked' : ''}> 选中</label>` : ''}
+          ${image && d.jobMeta?.prompt_snapshot
+            ? `<button class="btn xs" data-candidate-continue="${i}">沿用生成参数</button>` : ''}
+          ${a.exists && canSave ? `<button class="btn xs" data-compare-candidate="${i}"
+            data-compare-job="${cand.job_id}" data-compare-variant="${cand.variant_id || 0}">对比已存参考图</button>` : ''}
           <span class="t-dim">#${i + 1}${a.exists ? ` · ${Math.round((a.size || 0) / 1024)}KB`
             : ' · 文件不在'}</span>
-          ${a.exists && canSave ? `
+          ${a.exists && canSave && mark !== 'archived' ? `
             <select class="ctl xs" data-save-target="${i}">
               <option value="">存进哪儿…</option>
               <option value="base">人物／场景基础参考图（追加为最后一张）</option>
@@ -515,14 +586,13 @@ function candidatesHtml(d) {
             </select>
             <button class="btn xs" data-confirm-img="${i}">存入</button>` : ''}
         </figcaption>
-      </figure>`).join('');
+      </figure>`;
+  }).join('');
   const note = canSave ? ''
-    : '<p class="t-desc">还没保存成资产，所以先存不了：产物不会自动写进任何资产。</p>';
-  return `${head}${note}
-    <div class="as-cands">${grid}</div>
-    <p class="t-dim">存进去是「追加」：已有参考图一张都不会被顶掉，封面仍是原来那张
-      （要换封面去详情页点那张图的「设为封面」）。这一屏收起只是不显示，
-      产物本身还在生成中心，随时能再来存。</p>`;
+    : '<p class="t-desc">还没保存成资产，先保存基本信息后再存图。</p>';
+  return `${controls}${statusLine}${head}${note}
+    <div class="as-cands">${grid || '<p class="t-dim">当前筛选下没有候选，可切换筛选或更换批次。</p>'}</div>
+    <p class="t-dim">存进去是「追加」，已有参考图与封面不变。</p>`;
 }
 
 function imagePanel(d) {
@@ -585,6 +655,8 @@ function imagePanel(d) {
 }
 
 function variantPanel(d) {
+  const canEdit = store.can('asset:write') && (d.baseReference?.project_id != null || store.isManager);
+  const canUse = Boolean(store.currentEpisodeId && store.can('job:submit'));
   const rows = d.variants.map((v, idx) => {
     const editing = d.editing === v.id;
     return `
@@ -617,6 +689,7 @@ function variantPanel(d) {
         <figure class="ad-img"><img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(v.name)} 的图"
           data-preview-img="${escapeHtml(`/files/${p}`)}">
           <figcaption><button class="btn xs danger" data-vid="${escapeHtml(v.id)}" data-path="${escapeHtml(p)}">删这张</button></figcaption>
+          ${referenceActions(p, v.image_purposes?.[p], canEdit, canUse)}
         </figure>`).join('')}</div>`
         : '<p class="t-desc">这个形态还没有图。生成候选后在图下面选「形态：这个名字」再存入。</p>'}
     </div>`;
@@ -724,13 +797,18 @@ export default {
       return `<section class="view on"><div class="card"><div class="empty">
         <div class="empty-t">先选一个项目</div><p>资产创作按项目组织。</p></div></div></section>`;
     }
-    const d = ensureDraft();
+    let d = ensureDraft();
     // 详情页/分诊页交棒过来的"要改哪一条"：只认一次，且只认同项目
     const handed = takeStudioTarget(project.id);
-    if (handed && handed !== d.targetId) {
-      d.targetId = handed;
-      d.loadedAsset = 0;          // 强制按服务端这一份重新灌一次表单
+    if (handed && handed.assetId !== d.targetId) {
+      const next = newDraft(d.kind);
+      next.textTrack = d.textTrack;
+      next.imageTrack = d.imageTrack;
+      next.textMode = d.textMode;
+      next.targetId = handed.assetId;
+      draft = d = next;
     }
+    d.focusVariant = handed?.variantId;
     const wanted = ++reqSeq;
     let list = [];
     let err = '';
@@ -760,6 +838,7 @@ export default {
     if (asset) {
       d.kind = asset.kind;
       d.assetName = asset.name;
+      d.baseReference = asset;
       d.baseVersion = asset.version || '';
       // 表单里的字只在这一条资产"第一次被读进来"时从服务端灌一次。
       // 每次刷新都重灌＝把人刚敲进去、还没保存的内容擦掉（上一轮验收里
@@ -787,19 +866,23 @@ export default {
         }
         // 形态是服务端的清单，不是人正在敲的文字——它跟着刷新才对
         d.variants = variants;
+        if (handed?.variantId && !d.imageJob && variants.some((v) => v.id === handed.variantId)) {
+          d.imageVariantId = handed.variantId;
+        }
         d.loadedAsset = asset.id;
       } catch (e) {
         d.notice = `这条资产的档案读不出来：${e.message || e}`;
       }
       // 刷新或切走再回来，"我刚生成的那批"不该消失：状态一律从作业表读，
       // 页面只挑出属于这条资产、每种能力最新的那一条。
-      if (!d.textJob || !d.imageJob) {
+      if (!d.textJob || !d.imageJob || !d.imageHistory) {
         try {
           const recent = await api.assetGenerations(project.id, asset.id);
           if (wanted !== reqSeq) return '<section class="view on"></section>';
           const mine = recent.filter((j) => j.target_asset_id === asset.id);
           if (!d.textJob) d.textJob = mine.find((j) => j.operation !== 'asset_image') || null;
-          if (!d.imageJob) d.imageJob = mine.find((j) => j.operation === 'asset_image') || null;
+          d.imageHistory = mine.filter((j) => j.operation === 'asset_image');
+          if (!d.imageJob) d.imageJob = d.imageHistory[0] || null;
         } catch (e) {
           d.notice = `最近的生成记录读不到：${e.message || e}`;
         }
@@ -813,7 +896,7 @@ export default {
             const [items, meta] = await Promise.all([
               api.jobArtifacts(job.job_id), api.job(job.job_id).catch(() => null)]);
             if (wanted !== reqSeq) return '<section class="view on"></section>';
-            d.candidates = { job_id: job.job_id, items };
+            d.candidates = { job_id: job.job_id, variant_id: job.target_variant_id, items };
             d.jobMeta = meta;
           }
         } catch (e) {
@@ -1179,6 +1262,16 @@ export default {
       });
     });
 
+    root.querySelectorAll('.as-variant[data-variant]').forEach((panel) => {
+      const variantId = Number(panel.dataset.variant);
+      const variant = d.variants.find((item) => item.id === variantId);
+      if (d.baseReference && variant) bindReferenceActions(panel, d.baseReference, variant);
+      if (variantId === d.focusVariant) {
+        panel.tabIndex = -1;
+        panel.focus();
+        panel.scrollIntoView({ block: 'center' });
+      }
+    });
     bindLive(root, d);
     startPoll(d, project.id, () => patchStatus(root, d), alive);
   },
@@ -1192,8 +1285,226 @@ export default {
  * 新按钮根本没人听**，人点它什么也不会发生（不报错过、也不填表）。
  * 凡是"会被 patch 重画出来的交互控件"，绑定必须住在 bindLive 里。
  */
-function bindLive(root, d) {
+function bindCandidateReview(root, d) {
+  const host = root.querySelector('#as-cands');
+  if (!host || host.dataset.reviewBound) return;
+  // patchStatus 重画候选节点，事件委托保留在宿主上。
+  host.dataset.reviewBound = '1';
   const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  function paint() {
+    if (!host.isConnected) return;
+    const scrollY = window.scrollY;
+    const active = host.contains(document.activeElement) ? document.activeElement : null;
+    const focusSelector = active?.dataset?.candidateHistory !== undefined ? '[data-candidate-history]'
+      : active?.dataset?.candidateFilter !== undefined ? '[data-candidate-filter]'
+      : active?.dataset?.candidateTarget !== undefined ? '[data-candidate-target]'
+      : active?.dataset?.candidateTick !== undefined ? `[data-candidate-tick="${active.dataset.candidateTick}"]`
+      : active?.dataset?.candidateMark !== undefined ? `[data-candidate-mark="${active.dataset.candidateMark}"]`
+      : null;
+    host.innerHTML = candidatesHtml(d);
+    bindLive(root, d);
+    sync();
+    if (focusSelector) host.querySelector(focusSelector)?.focus({ preventScroll: true });
+    window.scrollTo({ top: scrollY });
+  }
+  function sync() {
+    const review = candidateReviewFor(d);
+    const count = host.querySelector('[data-candidate-count]');
+    if (count) {
+      count.textContent = `已选 ${review.selected.size} 张`;
+      count.className = `chip ${review.selected.size ? 'blue' : 'plain'}`;
+    }
+    const scopeEl = host.querySelector('[data-candidate-scope]');
+    if (scopeEl) scopeEl.textContent = review.selected.size && d.candidates ? `范围：#${d.candidates.job_id}` : '';
+    const toolbar = host.querySelector('.as-cand-toolbar');
+    if (toolbar) toolbar.classList.toggle('has-selection', review.selected.size > 0);
+    const target = host.querySelector('[data-candidate-target]');
+    if (target) target.value = review.target;
+    const importBtn = host.querySelector('[data-candidate-import]');
+    if (importBtn) {
+      const targetLabel = review.target === 'base' ? '基础参考图'
+        : (d.variants.find((v) => String(v.id) === String(review.target))?.name || '');
+      importBtn.textContent = review.busy ? `存入 ${review.selected.size} 张中…`
+        : (review.selected.size && targetLabel ? `存入 ${review.selected.size} 张到${targetLabel}` : '批量存入');
+    }
+    const statusEl = host.querySelector('[data-candidate-status]');
+    if (statusEl) statusEl.textContent = review.statusText || '';
+    host.querySelectorAll('[data-candidate-mark], [data-candidate-import]').forEach((button) => {
+      button.disabled = review.busy || !review.selected.size;
+    });
+  }
+  async function load() {
+    if (!d.candidates || !d.targetId || !host.querySelector('[data-candidate-filter]')) return;
+    const review = candidateReviewFor(d);
+    if (review.state !== 'idle') return;
+    review.state = 'loading';
+    paint();
+    try {
+      review.marks = await api.assetCandidateReview(d.targetId, d.candidates.job_id);
+      review.state = 'ready';
+    } catch {
+      review.state = 'error';
+    }
+    if (review === d.candidateReview) paint();
+  }
+  host.addEventListener('change', async (event) => {
+    const input = event.target;
+    if (input.matches('[data-candidate-history]')) {
+      const job = d.imageHistory?.find((item) => item.job_id === Number(input.value));
+      if (!job) return;
+      const request = (host.historyRequest || 0) + 1;
+      host.historyRequest = request;
+      const statusEl = host.querySelector('[data-candidate-status]');
+      if (statusEl) statusEl.textContent = `正在读取批次 #${job.job_id}…`;
+      host.querySelector('.as-cands')?.classList.add('is-loading');
+      const ok = await run('读取候选批次', async () => {
+        const [items, meta] = await Promise.all([api.jobArtifacts(job.job_id), api.job(job.job_id)]);
+        if (!host.isConnected || request !== host.historyRequest) return;
+        d.candidates = { job_id: job.job_id, variant_id: job.target_variant_id, items };
+        d.jobMeta = meta;
+        paint();
+      });
+      if (!ok && host.isConnected && request === host.historyRequest) {
+        host.querySelector('.as-cands')?.classList.remove('is-loading');
+        if (statusEl) statusEl.textContent = `读取批次 #${job.job_id} 失败，请重试。`;
+      }
+      return;
+    }
+    const review = candidateReviewFor(d);
+    if (input.matches('[data-candidate-filter]')) {
+      review.filter = input.value;
+      review.selected.clear();
+      review.statusText = '';
+      paint();
+    } else if (input.matches('[data-candidate-target]')) {
+      review.target = input.value;
+      sync();
+    } else if (input.matches('[data-candidate-tick]')) {
+      const index = Number(input.dataset.candidateTick);
+      if (input.checked) review.selected.add(index);
+      else review.selected.delete(index);
+      input.closest('.as-cand')?.classList.toggle('is-selected', input.checked);
+      sync();
+    }
+  });
+  host.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-reload-candidates], [data-candidate-mark], [data-candidate-import], [data-candidate-continue]');
+    if (!button || !d.candidates) return;
+    const review = candidateReviewFor(d);
+    if (button.matches('[data-reload-candidates]')) {
+      review.state = 'idle';
+      await load();
+      return;
+    }
+    if (button.matches('[data-candidate-continue]')) {
+      const job = d.jobMeta;
+      if (!job || inflight(d.imageJob) || d.busyImage) return;
+      const slot = optionsFor('image', job.execution_mode).find((option) =>
+        option.provider === job.provider_code && option.model === job.model_code);
+      if (d.candidates.variant_id && !d.variants.some((item) => item.id === d.candidates.variant_id)) {
+        d.notice = '原作业的目标形态已不可用，请先确认要续跑的形态。';
+      } else if (!slot) {
+        d.notice = '原作业的图像模型当前不可选择，请先恢复该槽位。';
+      } else {
+        d.imageTrack = job.execution_mode;
+        d.imageProvider = job.provider_code;
+        d.imageModel = job.model_code;
+        d.imageVariantId = d.candidates.variant_id || 0;
+        d.imagePrompt = job.prompt_snapshot;
+        d.imageParams = { ...job.params };
+        d.cloudConfirm = false;
+        d.dirty = true;
+        d.notice = '已填回该候选所属作业的参数和提示词，可调整后点「换一批」。';
+      }
+      refresh();
+      return;
+    }
+    if (review.busy || !review.selected.size) return;
+    const indexes = [...review.selected];
+    const jobId = d.candidates.job_id;
+    const state = button.dataset.candidateMark;
+    if (!state && (!review.target || indexes.length > 32)) {
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: '请选择存入位置，每次最多存入 32 张。', kind: 'warn' },
+      }));
+      return;
+    }
+    review.busy = true;
+    review.statusText = state ? `正在更新 #${jobId} 中 ${indexes.length} 张状态…` : `正在存入 ${indexes.length} 张…`;
+    sync();
+    let result;
+    const ok = await run(state ? '更新候选标记' : '批量存入', async () => {
+      result = state
+        ? await api.setAssetCandidateReview(d.targetId, jobId, { indexes, state })
+        : await api.batchImportAssetCandidates(d.targetId, {
+            job_id: jobId, indexes, variant_id: review.target === 'base' ? null : Number(review.target),
+          });
+    });
+    review.busy = false;
+    if (!ok) {
+      review.statusText = state ? '更新标记失败，已保留勾选，可直接重试。' : '批量存入失败，已保留勾选和存入目标，可直接重试。';
+      sync();
+      return;
+    }
+    review.selected.clear();
+    if (state) {
+      review.marks = result;
+      const stateLabel = state === 'favorite' ? '收藏' : state === 'archived' ? '淘汰' : '待选';
+      review.statusText = `已将 ${indexes.length} 张标记为「${stateLabel}」。`;
+      paint();
+    } else {
+      if (!host.isConnected) return;
+      const msg = `已存入 ${result.imported} 张${result.reused ? `，另有 ${result.reused} 张已在目标图库` : ''}。`;
+      review.statusText = msg;
+      d.notice = msg;
+      paint();
+      Promise.all([api.asset(d.targetId), api.assetVariants(d.targetId)])
+        .then(([assetRow, variantRows]) => {
+          if (!host.isConnected || d.targetId !== assetRow.id) return;
+          d.baseReference = assetRow;
+          d.variants = variantRows;
+        }).catch(() => {});
+    }
+  });
+  host.loadCandidateReview = load;
+  host.syncCandidateReview = sync;
+}
+
+function bindLive(root, d) {
+  bindCandidateReview(root, d);
+  const candidateHost = root.querySelector('#as-cands');
+  candidateHost?.syncCandidateReview?.();
+  void candidateHost?.loadCandidateReview?.();
+  const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+  root.querySelectorAll('[data-compare-candidate]:not([data-bound])').forEach((button) => {
+    button.dataset.bound = '1';
+    button.addEventListener('click', () => {
+      const groups = [d.baseReference, ...d.variants].filter(Boolean);
+      const references = groups.flatMap((group) => (group.ref_images || []).map((path, index) => ({
+        path, groupId: group === d.baseReference ? 0 : group.id,
+        label: `${group === d.baseReference ? '基础参考图' : group.name} · ${group.image_purposes?.[path] || '第 ' + (index + 1) + ' 张'}`,
+      })));
+      if (!references.length) {
+        referenceDialog('对比参考图', '<p>这条资产还没有已存的参考图。</p>');
+        return;
+      }
+      const first = references.findIndex((ref) => ref.groupId === Number(button.dataset.compareVariant));
+      const dialog = referenceDialog('参考图与候选对比', `
+        <label>已存参考图 <select class="ctl" name="reference">
+          ${references.map((ref, i) => `<option value="${i}" ${i === first ? 'selected' : ''}>${escapeHtml(ref.label)}</option>`).join('')}
+        </select></label>
+        <div class="asset-reference-compare">
+          <figure><img class="asset-reference-preview" data-reference-original alt="已存参考图"><figcaption>已存参考图</figcaption></figure>
+          <figure><img class="asset-reference-preview" src="/api/jobs/${button.dataset.compareJob}/artifacts/${button.dataset.compareCandidate}" alt="候选图"><figcaption>候选图</figcaption></figure>
+        </div>`);
+      const select = dialog.querySelector('select');
+      const update = () => {
+        dialog.querySelector('[data-reference-original]').src = `/files/${references[Number(select.value)].path}`;
+      };
+      select.addEventListener('change', update);
+      update();
+    });
+  });
   root.querySelectorAll('[data-confirm-img]').forEach((btn) => {
     // bindLive 每 tick 都跑一遍，所以这里必须问一句"这颗绑过没有"。
     // 被 patch 重画出来的节点是新对象，加了守卫照样会绑；**没被重画的那几格
@@ -1359,7 +1670,8 @@ function startPoll(d, projectId, patch, alive) {
             const [items, meta] = await Promise.all([
               api.jobArtifacts(j.job_id), api.job(j.job_id).catch(() => null)]);
             if (wanted !== reqSeq || !alive('#as-cands')) return;
-            d.candidates = { job_id: j.job_id, items };
+            d.candidates = { job_id: j.job_id, variant_id: next.target_variant_id, items };
+            d.imageHistory = [j, ...(d.imageHistory || []).filter((job) => job.job_id !== j.job_id)];
             d.jobMeta = meta;
             d.error = '';
           } catch (e) { d.error = `候选读不到：${e.message || e}`; }

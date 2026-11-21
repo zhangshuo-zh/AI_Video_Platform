@@ -10,7 +10,7 @@ import json
 
 from db import transaction
 from models import JobEstimateIn
-from repositories.content import assets, episodes, shots
+from repositories.content import assets, episodes, shots, variants
 from repositories.documents import documents as docs
 from repositories.extraction import runs as extraction_runs
 from repositories.jobs import jobs as job_repo
@@ -295,8 +295,36 @@ def extraction_accept(item_id: int, overrides, user) -> dict:
     doc = docs.get(run["doc_id"]) if run["doc_id"] else None
     if doc is None:
         raise ExtractConflict("原文档已删除，不能再按这条证据入库")
-    if read_content(doc)["version"] != run["base_version"]:
+    original = read_content(doc)
+    if original["version"] != run["base_version"]:
         raise ExtractConflict("文档在抽取之后被改过，旧证据不能再用；请重新抽取")
+    if overrides.variant_asset_id is not None or overrides.variant_name is not None:
+        target_id = overrides.variant_asset_id
+        variant_name = (overrides.variant_name or "").strip()
+        if row["kind"] != "character" or target_id is None or not variant_name:
+            raise extraction.ExtractInvalid("请为角色候选选择目标角色并填写形态名称")
+        with transaction():
+            target = access.ensure_asset(target_id, user, "write")
+            if target["project_id"] not in (None, run["project_id"]):
+                raise ExtractMissing("目标资产不存在")
+            full_target = assets.get(target_id)
+            if full_target is None or full_target["kind"] != "character":
+                raise extraction.ExtractInvalid("请选择角色资产")
+            evidence = json.loads(row["evidence"] or "{}")
+            quote = evidence.get("quote")
+            if not isinstance(quote, str) or not quote or quote not in original["content"]:
+                raise ExtractConflict("这条候选缺少可核对的原文证据")
+            if variants.exists_name(target_id, "outfit", variant_name):
+                raise ExtractConflict("已存在同名服饰形态")
+            payload = json.loads(row["payload"] or "{}")
+            prompt = overrides.consistency_prompt
+            if prompt is None:
+                prompt = payload.get("suggested_prompt") or payload.get("appearance") or ""
+            variants.create(asset_id=target_id, variant_type="outfit", name=variant_name, prompt=prompt.strip())
+            if not extraction_runs.decide(item_id, "accepted", user["id"], target_id):
+                raise ExtractConflict("这条候选已经处理过了，刷新后再看")
+        return {"item": extraction_runs.get_item(item_id), "asset": full_target}
+
     name, summary, prompt, aliases, tags = _candidate_fields(row, overrides)
     if not name:
         raise extraction.ExtractInvalid("资产名不能为空")
