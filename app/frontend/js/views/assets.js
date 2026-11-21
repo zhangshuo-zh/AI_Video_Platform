@@ -7,7 +7,7 @@ import { bindSubChips, subChipRow } from '../util.js';
 import { renderDetail, mountDetail } from './asset-detail.js';
 import studio from './asset-studio.js';
 import triage from './asset-triage.js';
-import { WS_LABELS, setWsIndex, workerChip, wsIndex } from './asset-workspaces.js';
+import { WS_LABELS, setStudioTarget, setWsIndex, workerChip, wsIndex } from './asset-workspaces.js';
 
 /**
  * 资产中心：角色／场景／道具的东家，也是三个工作区的调度者。
@@ -29,7 +29,14 @@ const KINDS = [
 ];
 
 const SCOPE_LABELS = { all: '全部范围', project: '本项目', global: '全局池' };
-const COMPLETE_LABELS = { '': '全部状态', noimg: '缺参考图', noprompt: '缺一致性提示词' };
+const COMPLETE_LABELS = {
+  '': '全部状态',
+  ready: '已完整',
+  incomplete: '待完善',
+  used_incomplete: '被引用待完善',
+  noimg: '缺参考图',
+  noprompt: '缺一致性提示词',
+};
 
 // 筛选状态放模块级：切分类不清空搜索词（指令 §3.1-B 明写"保留搜索词与其他条件"），
 // 批量操作后整页重画也要还在。和项目中心 v0.57 同一条纪律。
@@ -56,6 +63,9 @@ function matches(a) {
     if (!hay.includes(kw)) return false;
   }
   const g = gaps(a);
+  if (complete === 'ready' && (g.noImg || g.noPrompt)) return false;
+  if (complete === 'incomplete' && !g.noImg && !g.noPrompt) return false;
+  if (complete === 'used_incomplete' && !(a.ref_shot_count > 0 && (g.noImg || g.noPrompt))) return false;
   if (complete === 'noimg' && !g.noImg) return false;
   if (complete === 'noprompt' && !g.noPrompt) return false;
   return true;
@@ -79,6 +89,7 @@ function kindIcon(kind) {
 function cardHtml(a) {
   const g = gaps(a);
   const isGlobal = a.project_id === null;
+  const canStudio = store.can('asset:write') && (!isGlobal || store.isManager);
   const badge = g.noImg || g.noPrompt
     ? `<span class="chip amber">${g.noImg && g.noPrompt ? '缺图与提示词'
         : g.noImg ? '缺参考图' : '缺提示词'}</span>`
@@ -104,7 +115,10 @@ function cardHtml(a) {
       </div>
       <div class="asset-foot">
         <span class="t-dim">${a.ref_images.length} 图 · 关联 ${a.ref_shot_count} 镜</span>
-        ${badge}
+        <span class="asset-foot-right">
+          ${badge}
+          ${canStudio ? `<button type="button" class="btn xs" data-studio="${a.id}" title="直达资产创作编辑提示词与生图">去创作</button>` : ''}
+        </span>
       </div>
     </div>`;
 }
@@ -171,6 +185,14 @@ function sortShown(list) {
 
 /** 卡片点开的绑定。网格重画后要再来一次，所以单独一条。 */
 function bindCards(root) {
+  root.querySelectorAll('[data-studio]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setStudioTarget(Number(btn.dataset.studio));
+      setWsIndex(1);
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+    });
+  });
   root.querySelectorAll('[data-open]').forEach((el) => {
     el.addEventListener('click', (e) => {
       if (e.target.closest('button') && e.target !== el) return;
@@ -245,10 +267,10 @@ export default {
       </div>
 
       <div class="asset-stats">
-        <span><b>${stats.total}</b> 条可见资产</span>
+        <span><b>${stats.total}</b> 条${kindCode() || scope !== 'all' ? '（当前筛选）' : '可见资产'}</span>
         <span class="t-dim">角色 ${stats.character} · 场景 ${stats.scene} · 道具 ${stats.prop}</span>
         <span class="t-dim">其中全局 ${stats.global}</span>
-        ${stats.incomplete ? `<span class="chip amber">${stats.incomplete} 条待完善</span>`
+        ${stats.incomplete ? `<button type="button" class="chip amber" data-quick-complete="incomplete" title="点击筛出待完善资产">${stats.incomplete} 条待完善</button>`
                            : '<span class="chip green">都已完善</span>'}
         ${workerChip()}
       </div>
@@ -366,6 +388,10 @@ export default {
     });
     filters?.querySelectorAll('[data-complete]').forEach((el) => {
       el.addEventListener('click', () => { complete = el.dataset.complete; refresh(); });
+    });
+    root.querySelector('[data-quick-complete]')?.addEventListener('click', (e) => {
+      complete = e.currentTarget.dataset.quickComplete || '';
+      refresh();
     });
 
     // 卡片：整块可点，标题是真按钮（键盘停得住）。卡内若有别的控件要记得 stopPropagation

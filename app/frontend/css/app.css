@@ -517,6 +517,11 @@ tr.mc-offline:hover{background:transparent}
   justify-self:end;font-size:12px;color:var(--ink-3);
   white-space:nowrap;line-height:1.4;
 }
+.form-grid > label.chk{justify-self:start;white-space:normal;color:var(--ink-2)}
+.form-grid .fv-pick-btn,.form-grid select.ctl{
+  display:flex;align-items:center;width:100%;min-height:36px;
+  padding:7px 28px 7px 12px;font-size:12.5px;line-height:1.4;
+}
 /* 多行控件那一行，字段名要贴顶，不然会垂直居中到文本域中间 */
 .form-grid > label.top,.form-grid > .pf-label.top{align-self:start;padding-top:8px}
 .form-grid input,.form-grid textarea{
@@ -730,6 +735,13 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
    380px 下不换行就会把整页撑出横向滚动条（实测溢出 46px）。
    窄屏那一段本来就把 .right 收成整行宽，这里只补"里面可以再折一行"。 */
 .page-head .right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.page-head.ad-page-head{flex-wrap:wrap;align-items:center;gap:6px 16px}
+.page-head.ad-page-head h1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.page-head.ad-page-head h1 .crumb{display:inline-flex;align-items:center;font-size:inherit;font-weight:inherit;color:var(--ink-2);background:none;border:0;padding:0;cursor:pointer}
+.page-head.ad-page-head h1 .crumb:hover{color:var(--ink)}
+.page-head.ad-page-head h1 .crumb-sep{color:var(--ink-3);font-weight:400}
+.page-head.ad-page-head p{flex-basis:100%;order:3;margin:2px 0 0}
+.ad-miss-list{display:flex;flex-wrap:wrap;gap:8px}
 
 
 /* ---------- 间距语义类 ----------
@@ -1332,6 +1344,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
    所以它是一行文字而不是四张数字卡 */
 .asset-stats{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px;font-size:12px;color:var(--ink-2)}
 .asset-stats b{font-size:14px;color:var(--ink);font-variant-numeric:tabular-nums}
+.asset-stats button.chip{cursor:pointer}
 .asset-filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line)}
 .asset-filters .note{margin:0 2px 0 12px}
 .asset-filters .note:first-child{margin-left:0}
@@ -1367,6 +1380,7 @@ td.mono{font-family:var(--mono);font-size:11.5px}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .asset-foot{margin-top:auto;padding:8px 12px 10px;display:flex;align-items:center;
   justify-content:space-between;gap:8px;font-size:11.5px;border-top:1px solid var(--line)}
+.asset-foot-right{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
 
 .ad-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;
   align-items:start}

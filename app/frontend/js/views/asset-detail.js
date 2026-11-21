@@ -32,34 +32,29 @@ async function load(id) {
   } catch (err) {
     return { error: err.message || '读不到这条资产', status: err.status };
   }
-  let shots = [];
-  let refsError = '';
-  try { shots = await api.assetShots(id); } catch (e) {
-    // 读失败不演成"没有镜头引用它"：那会让人以为这条资产可以放心删
-    refsError = e.message || String(e);
-  }
+  const [shotsRes, profileRes, variantsRes, gensRes, impactRes] = await Promise.allSettled([
+    api.assetShots(id),
+    asset.kind === 'character' ? api.assetProfile(id) : Promise.resolve(null),
+    api.assetVariants(id),
+    store.currentId ? api.assetGenerations(store.currentId, id) : Promise.resolve([]),
+    asset.ref_shot_count > 0 ? api.assetImpact(id) : Promise.resolve(null),
+  ]);
+  // 读失败不演成"没有镜头引用它"：那会让人以为这条资产可以放心删
+  const shots = shotsRes.status === 'fulfilled' ? shotsRes.value : [];
+  const refsError = shotsRes.status === 'rejected' ? (shotsRes.reason?.message || String(shotsRes.reason)) : '';
   // 人物档案与命名形态是附属信息：读不到不挡住这一页，但原因要说出来
-  let profile = null;
-  let profileError = '';
-  if (asset.kind === 'character') {
-    try { profile = await api.assetProfile(id); } catch (e) { profileError = e.message || String(e); }
-  }
-  let variants = [];
-  let variantsError = '';
-  try { variants = await api.assetVariants(id); } catch (e) { variantsError = e.message || String(e); }
+  const profile = profileRes.status === 'fulfilled' ? profileRes.value : null;
+  const profileError = profileRes.status === 'rejected' ? (profileRes.reason?.message || String(profileRes.reason)) : '';
+  const variants = variantsRes.status === 'fulfilled' ? variantsRes.value : [];
+  const variantsError = variantsRes.status === 'rejected' ? (variantsRes.reason?.message || String(variantsRes.reason)) : '';
   // 最近生成记录：刷新后"我刚跑的那两条"还要看得见，读的是 job 表而不是浏览器记忆。
-  // 全局资产的作业仍然属于某个项目，所以按当前项目过滤（换项目看到的是那个项目里
-  // 对这条资产的生成记录，这是事实而不是缺陷）。
-  let gens = [];
-  let gensError = '';
-  if (store.currentId) {
-    try {
-      gens = (await api.assetGenerations(store.currentId, id))
-        .filter((j) => j.target_asset_id === id);
-    } catch (e) { gensError = e.message || String(e); }
-  }
+  const gens = gensRes.status === 'fulfilled'
+    ? (gensRes.value || []).filter((j) => j.target_asset_id === id)
+    : [];
+  const gensError = gensRes.status === 'rejected' ? (gensRes.reason?.message || String(gensRes.reason)) : '';
+  const impact = impactRes.status === 'fulfilled' ? impactRes.value : null;
   return { asset, shots, refsError, profile, profileError, variants, variantsError,
-           gens, gensError };
+           gens, gensError, impact };
 }
 
 export async function renderDetail(id) {
@@ -82,6 +77,10 @@ export async function renderDetail(id) {
 
   const a = data.asset;
   const isGlobal = a.project_id === null;
+  const impactShots = (data.impact && data.impact.shots) || [];
+  const impactMap = new Map(impactShots.map((item) => [Number(item.shot_id), item]));
+  const impactCounts = data.impact?.counts || null;
+  const signedCount = impactShots.filter((item) => item.signed).length;
   // 能不能改：全局要管理员，项目要 asset:write（服务端同样判一遍）
   const canEdit = store.can('asset:write') && (!isGlobal || store.isManager);
   // 译名从 enums.js 取（2026-11-10 统一为「角色」）：这里原来又抄了一份，
@@ -91,7 +90,7 @@ export async function renderDetail(id) {
 
   return `
     <section class="view on">
-      <div class="page-head">
+      <div class="page-head ad-page-head">
         <h1><button class="crumb" data-back>资产中心</button>
           <span class="crumb-sep">›</span> ${escapeHtml(a.name)}</h1>
         <p>${a.kind_label} · ${isGlobal ? '全局资产池（各项目共享引用，不属于单个项目）'
@@ -144,6 +143,7 @@ export async function renderDetail(id) {
               </div>
               <p class="modal-meta">创建于 ${a.created_at}　最后修改 ${a.updated_at}
                 ${canEdit ? '' : '　· 你对此资产只读'}</p>
+              ${a.ref_shot_count ? `<p class="note" style="margin-top:8px">当前被 <b>${a.ref_shot_count}</b> 条镜头引用${signedCount ? `（含 <b>${signedCount}</b> 条已签字正式产物）` : ''}${impactCounts?.stale ? `，其中 <b>${impactCounts.stale}</b> 镜源已过期` : ''}；修改一致性提示词或更换封面后，相关镜头产物将标记为源已变。</p>` : ''}
             </div>
           </div>
 
@@ -151,10 +151,11 @@ export async function renderDetail(id) {
             const miss = missingOf(a, data.profile, variants);
             return `<div class="card">
             <div class="card-head"><h2>还缺什么</h2>
-              <span class="sub">${miss.length ? `${miss.length} 项` : '该有都有了'}</span></div>
+              <span class="sub">${miss.length ? `${miss.length} 项` : '该有都有了'}</span>
+              ${miss.length ? '<div class="right"><button class="btn sm" data-goto-studio>去资产创作补齐</button></div>' : ''}</div>
             <div class="card-body">
-              ${miss.length ? `<p class="note">${escapeHtml(miss.join('、'))}
-                  还没补上。缺哪一项就去资产创作补哪一项——这里只读，写只在创作那一页。</p>`
+              ${miss.length ? `<div class="ad-miss-list">${miss.map((m) => `<span class="chip amber">缺 · ${escapeHtml(m)}</span>`).join('')}</div>
+                  <p class="t-dim" style="margin:8px 0 0">以上项目可在「资产创作」中补齐——这里只读，写只在创作那一页。</p>`
                 : '<p class="t-dim">基础资料齐了。齐不等于对：一致性提示词好不好用，'
                   + '要看下一镜出来的画面，那要跑一次才知道。</p>'}
             </div>
@@ -223,7 +224,10 @@ export async function renderDetail(id) {
         <div class="stack">
           <div class="card">
             <div class="card-head"><h2>参考图</h2>
-              <span class="sub">第一张是封面</span></div>
+              <span class="sub">第一张是封面</span>
+              ${canEdit ? `<div class="right"><label class="btn sm ad-upload">上传参考图
+                <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
+              </label></div>` : ''}</div>
             <div class="card-body">
               <div class="ad-imgs">
                 ${a.ref_images.map((p, i) => `
@@ -238,10 +242,7 @@ export async function renderDetail(id) {
                   || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，'
                      + '它们是同一资产的不同视角，不会各自变成一条新资产。</p>'}
               </div>
-              ${canEdit ? `<label class="btn ad-upload">上传参考图
-                <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
-              </label>
-              <p class="modal-meta">PNG / JPEG / WebP，单张不超过 20MB；iPhone 的 HEIC 请先转格式。
+              ${canEdit ? `<p class="modal-meta">PNG / JPEG / WebP，单张不超过 20MB；iPhone 的 HEIC 请先转格式。
                 服务端按文件头判断类型，不看文件名。</p>` : ''}
             </div>
           </div>
@@ -272,19 +273,26 @@ export async function renderDetail(id) {
 
           <div class="card">
             <div class="card-head"><h2>被哪些镜头引用</h2>
-              <span class="sub">${refs.length} 条 · 只读</span></div>
+              <span class="sub">${refs.length} 条 · 只读${impactCounts?.stale ? ` · ${impactCounts.stale} 镜源已变` : ''}</span></div>
             <div class="card-body">
-              ${refs.length ? refs.map((s) => `
+              ${refs.length ? refs.map((s) => {
+                const imp = impactMap.get(Number(s.shot_id));
+                const impBadge = !imp ? ''
+                  : imp.stale ? '<span class="chip amber">源已变 · 建议重跑</span>'
+                  : imp.job_id ? `<span class="chip green">${imp.signed ? '已签字仍可用' : '产物仍可用'}</span>`
+                  : '<span class="chip gray">未生成</span>';
+                return `
                 <div class="ad-ref">
                   <div>
                     <div class="t-strong">${escapeHtml(s.project_name)}
-                      <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span></div>
+                      <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span> ${impBadge}</div>
                     <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
                       ${s.variant_names && s.variant_names.length
                         ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
                   </div>
                   <button class="btn xs" data-goto-shot="${s.episode_id}">去创作中心</button>
-                </div>`).join('')
+                </div>`;
+              }).join('')
                 : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
               ${cache.refsError ? `<div class="bar bad">引用清单读不到：${escapeHtml(cache.refsError)}
                 ——这一格先别当成"没有引用"，更别照着它决定删不删</div>` : ''}
