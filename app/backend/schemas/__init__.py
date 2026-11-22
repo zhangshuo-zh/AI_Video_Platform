@@ -155,7 +155,9 @@ from .review import (
 )
 
 from .system import (
-    GcExecuteIn, GcExecuteOut, GcItemOut, GcPreviewOut, HealthOut, ProviderManifestOut
+    CacheInfoOut, CpuInfoOut, DiskInfoOut, GcExecuteIn, GcExecuteOut,
+    GcItemOut, GcPreviewOut, HealthOut, MemInfoOut, ProviderManifestOut,
+    SystemResourcesOut,
 )
 
 from .tokens import (
@@ -427,6 +429,7 @@ __all__ = [
     "ModelProbeOut", "ModelResolveOut", "ModelScenesOut", "ModelStatsOut",
     "OkOut", "PasswordChangeOut", "PipelinePreflightOut", "PrecheckOut",
     "ProviderManifestOut", "ShotWorkbenchOut",
+    "CacheInfoOut", "CpuInfoOut", "DiskInfoOut", "MemInfoOut", "SystemResourcesOut",
     "_digest",
     "asset_version",
     "profile_version",

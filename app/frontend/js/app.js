@@ -3,7 +3,7 @@
  * 页面内容全部由 router + views 负责，这里只管壳。
  */
 import { mountHelpTips } from './help-tips.js';
-import { MODULES } from './modules.js';
+import { MODULES, subIcon } from './modules.js';
 import { store } from './store.js';
 import { api } from './api.js';
 import { renderView, currentViewId } from './router.js';
@@ -11,6 +11,7 @@ import { setParam, setSub } from './navstate.js';
 import { escapeHtml, announce } from './util.js';
 import { applyPicks, restorePicks } from './pick.js';
 import { mountNotifications, stopNotifications } from './notifications.js';
+import { setupRightQueueDock } from './right-dock.js';
 
 /* ---------------- worker 状态条 ---------------- */
 
@@ -74,6 +75,22 @@ function paintWorker() {
     workerSpoken = spoken;
     workerOnlineSpoken = online;
   }
+
+  // 同步右侧边缘感应条与实时队列浮窗头部状态
+  const rEdge = document.getElementById('right-dock-edge');
+  const rdDot = document.getElementById('rd-worker-dot');
+  const rdLabel = document.getElementById('rd-worker-label');
+  const rdStats = document.getElementById('rd-stats');
+  const q = w?.queue || { queued: 0, running: 0 };
+  const busy = (q.queued + q.running) > 0;
+  if (rEdge) rEdge.dataset.busy = busy ? 'true' : 'false';
+  if (rdDot) rdDot.className = 'dot ' + (online ? 'live' : 'idle');
+  if (rdLabel) rdLabel.textContent = online ? '本地 worker 在线' : '未接入';
+  if (rdStats) {
+    rdStats.innerHTML = busy
+      ? `<span class="pill blue">运行中 ${q.running}</span><span class="pill">排队 ${q.queued}</span>`
+      : `<span class="pill">队列空闲</span>`;
+  }
 }
 
 /* ---------------- 侧栏 ---------------- */
@@ -99,10 +116,10 @@ function buildNav() {
   });
   nav.innerHTML = groups.map((g) => {
     const body = g.items.map((m) => {
-      const item = `<div class="nav-item" data-v="${m.id}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span>${m.label}</div>`;
+      const item = `<div class="nav-item" data-v="${m.id}" data-label="${escapeHtml(m.label)}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span><span class="nav-lbl">${m.label}</span></div>`;
       if (!m.subs.length) return item;
       const subs = m.subs
-        .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}">${s}</span>`).join('');
+        .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}"><span class="sub-ico" aria-hidden="true"><svg><use href="#${subIcon(m.id, s)}"/></svg></span>${s}</span>`).join('');
       // 内层那圈 `.nav-sub-in` 是动效的必需品：`grid-template-rows:0fr` 要压的是
       // 一个可以缩到 0 的行，padding/gap 必须住在内层，否则那条内边距撑着一个
       // "0 高度"的容器，缩回时收不干净（app.css 的 .nav-sub 注释写了为什么不用 display 切换）
@@ -663,6 +680,293 @@ function setupPalette() {
  */
 
 const THEME_KEY = 'fv.theme';
+const SIDEBAR_KEY = 'fv.sidebar';
+
+/**
+ * 侧栏 Dock 引擎：
+ * - 默认处于 dock 自动隐藏态（100% 满屏画布），鼠标靠近左边缘即呼出；
+ * - 鼠标离开或 4.5s 闲置自动收起隐藏；
+ * - 鼠标在图标上滑动时产生 macOS Dock 波纹鱼眼放大 + 轻快跳跃动效；
+ * - 悬停立即展示模块名称，停顿 280ms 弹出带独立图标的二级菜单浮卡；
+ * - 点击左上角按钮可在「自动隐藏 Dock」与「固定展开（pinned）」之间切换。
+ */
+function setupDockSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const nav = document.getElementById('nav');
+  const edge = document.getElementById('dock-edge');
+  const flyout = document.getElementById('dock-flyout');
+  const btn = document.getElementById('sidebar-toggle');
+  if (!sidebar || !nav || !flyout || !btn) return;
+
+  const root = document.documentElement;
+  const isDockMode = () => root.dataset.sidebar !== 'pinned' && window.innerWidth > 860;
+
+  let closeTimer = 0;
+  let idleTimer = 0;
+  let subDelayTimer = 0;
+  let activeItem = null;
+  let flyoutHover = false;
+  let sidebarHover = false;
+
+  const clearTimers = () => {
+    clearTimeout(closeTimer); closeTimer = 0;
+    clearTimeout(idleTimer); idleTimer = 0;
+    clearTimeout(subDelayTimer); subDelayTimer = 0;
+  };
+
+  const resetWave = () => {
+    nav.querySelectorAll('.nav-item').forEach((el) => {
+      el.style.removeProperty('--dock-scale');
+      el.style.removeProperty('--dock-shift');
+    });
+  };
+
+  const hideFlyout = () => {
+    clearTimeout(subDelayTimer); subDelayTimer = 0;
+    activeItem = null;
+    flyout.hidden = true;
+    flyout.classList.remove('open', 'is-label');
+    flyout.innerHTML = '';
+  };
+
+  const closeDock = () => {
+    clearTimers();
+    hideFlyout();
+    resetWave();
+    sidebar.classList.remove('dock-open');
+    sidebarHover = false;
+    flyoutHover = false;
+  };
+
+  const bumpIdle = () => {
+    clearTimeout(idleTimer);
+    if (!isDockMode() || !sidebar.classList.contains('dock-open')) return;
+    idleTimer = setTimeout(() => {
+      if (!sidebarHover && !flyoutHover) {
+        closeDock();
+        return;
+      }
+      // 即使鼠标仍停在 Dock 上，只要 4.5s 完全无操作/移动也自动隐藏
+      closeDock();
+    }, 4500);
+  };
+
+  const openDock = () => {
+    if (!isDockMode()) return;
+    clearTimeout(closeTimer); closeTimer = 0;
+    if (!sidebar.classList.contains('dock-open')) {
+      sidebar.classList.add('dock-open');
+    }
+    bumpIdle();
+  };
+
+  const scheduleClose = (delay = 340) => {
+    clearTimeout(closeTimer);
+    if (!isDockMode()) return;
+    closeTimer = setTimeout(() => {
+      if (!sidebarHover && !flyoutHover) closeDock();
+    }, delay);
+  };
+
+  const syncModeBtn = () => {
+    const pinned = root.dataset.sidebar === 'pinned';
+    btn.setAttribute('aria-expanded', pinned ? 'true' : 'false');
+    const label = pinned ? '收起为隐藏 Dock 菜单' : '钉住展开侧栏菜单';
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+    if (pinned) closeDock();
+  };
+
+  syncModeBtn();
+
+  btn.addEventListener('click', () => {
+    const nextPinned = root.dataset.sidebar !== 'pinned';
+    root.dataset.sidebar = nextPinned ? 'pinned' : 'dock';
+    try {
+      localStorage.setItem(SIDEBAR_KEY, root.dataset.sidebar);
+    } catch { /* ignore */ }
+    syncModeBtn();
+  });
+
+  // 左边缘靠近呼出（0..12px），远离左侧 Dock 区且未悬停时自动安排收起
+  document.addEventListener('mousemove', (e) => {
+    if (!isDockMode()) return;
+    const gate = document.getElementById('gate');
+    if (gate && !gate.hidden) return;
+    if (e.clientX <= 12) {
+      openDock();
+    } else if (sidebar.classList.contains('dock-open') && !sidebarHover && !flyoutHover && e.clientX > 110) {
+      scheduleClose(340);
+    }
+  }, { passive: true });
+
+  if (edge) {
+    edge.addEventListener('mouseenter', () => openDock());
+  }
+
+  sidebar.addEventListener('mouseenter', () => {
+    sidebarHover = true;
+    openDock();
+  });
+  sidebar.addEventListener('mouseleave', (e) => {
+    sidebarHover = false;
+    if (!isDockMode()) return;
+    if (e.relatedTarget && (flyout.contains(e.relatedTarget) || (edge && edge.contains(e.relatedTarget)))) return;
+    scheduleClose(340);
+  });
+
+  flyout.addEventListener('mouseenter', () => {
+    flyoutHover = true;
+    clearTimeout(closeTimer); closeTimer = 0;
+    bumpIdle();
+  });
+  flyout.addEventListener('mouseleave', (e) => {
+    flyoutHover = false;
+    if (!isDockMode()) return;
+    if (e.relatedTarget && sidebar.contains(e.relatedTarget)) return;
+    scheduleClose(300);
+  });
+
+  // 定位并渲染悬停气泡（先出模块名称，停顿 280ms 后若有二级菜单则展开带图标子菜单）
+  const positionFlyout = (itemEl) => {
+    const r = itemEl.getBoundingClientRect();
+    const sr = sidebar.getBoundingClientRect();
+    const left = Math.round(sr.right + 10);
+    const maxTop = window.innerHeight - 24;
+    flyout.style.left = `${left}px`;
+    flyout.style.top = `${Math.max(16, Math.min(maxTop, Math.round(r.top + r.height / 2)))}px`;
+  };
+
+  const renderLabelFlyout = (itemEl, mod) => {
+    flyout.classList.add('is-label');
+    flyout.innerHTML = `<div class="dock-fly-head">`
+      + `<span class="dock-fly-ico" aria-hidden="true"><svg><use href="#${mod.icon}"/></svg></span>`
+      + `<span>${escapeHtml(mod.label)}</span></div>`;
+    positionFlyout(itemEl);
+    flyout.hidden = false;
+    requestAnimationFrame(() => flyout.classList.add('open'));
+  };
+
+  const renderSubFlyout = (itemEl, mod) => {
+    if (!mod || !mod.subs.length) return;
+    const group = itemEl.closest('.nav-group');
+    const activeIdx = group
+      ? [...group.querySelectorAll('.nav-sub .sub')].findIndex((s) => s.classList.contains('on'))
+      : -1;
+    const rows = mod.subs.map((s, idx) => {
+      const ico = subIcon(mod.id, s);
+      const onCls = idx === activeIdx ? ' on' : '';
+      return `<button type="button" class="dock-fly-sub${onCls}" data-v="${mod.id}" data-sub-idx="${idx}">`
+        + `<span class="dock-fly-ico" aria-hidden="true"><svg><use href="#${ico}"/></svg></span>`
+        + `<span>${escapeHtml(s)}</span></button>`;
+    }).join('');
+    flyout.classList.remove('is-label');
+    flyout.innerHTML = `<button type="button" class="dock-fly-title" data-v="${mod.id}">`
+      + `<span class="dock-fly-ico" aria-hidden="true"><svg><use href="#${mod.icon}"/></svg></span>`
+      + `<span>${escapeHtml(mod.label)}</span></button>`
+      + `<div class="dock-fly-list">${rows}</div>`;
+    positionFlyout(itemEl);
+    // 确保展开后底部不超出视口
+    const fr = flyout.getBoundingClientRect();
+    if (fr.bottom > window.innerHeight - 12) {
+      const overflow = fr.bottom - (window.innerHeight - 12);
+      const curTop = parseFloat(flyout.style.top) || 16;
+      flyout.style.top = `${Math.max(16, Math.round(curTop - overflow))}px`;
+    }
+    flyout.hidden = false;
+    requestAnimationFrame(() => flyout.classList.add('open'));
+  };
+
+  // 波纹鱼眼效果 + 图标跳跃 + 模块名称 & 停顿二级菜单
+  let waveRaf = 0;
+  nav.addEventListener('mousemove', (e) => {
+    if (!isDockMode()) return;
+    bumpIdle();
+    const clientY = e.clientY;
+    if (!waveRaf) {
+      waveRaf = requestAnimationFrame(() => {
+        waveRaf = 0;
+        const items = [...nav.querySelectorAll('.nav-item')];
+        const radius = 112;
+        items.forEach((el) => {
+          const r = el.getBoundingClientRect();
+          const cy = r.top + r.height / 2;
+          const d = Math.abs(clientY - cy);
+          const w = d < radius ? 0.5 * (1 + Math.cos((Math.PI * d) / radius)) : 0;
+          el.style.setProperty('--dock-scale', (1 + 0.20 * w).toFixed(3));
+          el.style.setProperty('--dock-shift', `${(4 * w).toFixed(2)}px`);
+        });
+      });
+    }
+
+    const item = e.target.closest('.nav-item');
+    if (item && item !== activeItem) {
+      activeItem = item;
+      clearTimeout(subDelayTimer);
+
+      const mod = MODULES.find((m) => m.id === item.dataset.v);
+      if (mod) {
+        renderLabelFlyout(item, mod);
+        if (mod.subs.length) {
+          const targetItem = item;
+          subDelayTimer = setTimeout(() => {
+            if (activeItem === targetItem && isDockMode() && sidebar.classList.contains('dock-open')) {
+              renderSubFlyout(targetItem, mod);
+            }
+          }, 280);
+        }
+      }
+    }
+  });
+
+  nav.addEventListener('mouseleave', (e) => {
+    resetWave();
+    if (!isDockMode()) return;
+    if (e.relatedTarget && flyout.contains(e.relatedTarget)) return;
+    clearTimeout(subDelayTimer); subDelayTimer = 0;
+    setTimeout(() => {
+      if (!flyoutHover && !sidebarHover) hideFlyout();
+    }, 140);
+  });
+
+  // 浮卡点击跳转一级/二级页并收起 Dock
+  flyout.addEventListener('click', (e) => {
+    const subBtn = e.target.closest('.dock-fly-sub');
+    if (subBtn) {
+      const viewId = subBtn.dataset.v;
+      const idx = Number(subBtn.dataset.subIdx);
+      setSub(viewId, idx);
+      setParam(viewId, undefined);
+      closeDock();
+      goView(viewId);
+      return;
+    }
+    const titleBtn = e.target.closest('.dock-fly-title');
+    if (titleBtn) {
+      const viewId = titleBtn.dataset.v;
+      setParam(viewId, undefined);
+      closeDock();
+      goView(viewId);
+    }
+  });
+
+  // 点击 Dock 图标跳转后温柔收起
+  nav.addEventListener('click', () => {
+    if (isDockMode()) setTimeout(() => closeDock(), 120);
+  });
+
+  // Esc 收起 Dock
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isDockMode() && sidebar.classList.contains('dock-open')) {
+      closeDock();
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (!isDockMode()) closeDock();
+  });
+}
+
 
 function getSystemIsDark() {
   try {
@@ -813,8 +1117,8 @@ async function startApp() {
   const view = (entry && !allowed(entry)) ? 'overview' : startView;
   if (startSub !== undefined && startSub !== '') setSub(view, Number(startSub));
   // a57 这种写法：只有数字部分认，别的都当没给（粘错地址不该渲染出一个空详情壳）
-  if (view === startView && /^a\d+$/.test(startDeep || '')) {
-    setParam(view, Number(startDeep.slice(1)));
+  if (view === startView && (/^a\d+$/.test(startDeep || '') || (view === 'assets' && startDeep === 'anew'))) {
+    setParam(view, startDeep === 'anew' ? 'new' : Number(startDeep.slice(1)));
   }
   await renderView(view);
 }
@@ -822,6 +1126,8 @@ async function startApp() {
 async function boot() {
   mountHelpTips();
   setupTheme();       // 要在问身份之前：未登录时能看见的只有闸门里那枚切换钮
+  setupDockSidebar();
+  setupRightQueueDock({ isReady: () => appStarted, onNavigate: goView });
   // 通知铃铛（0049）：DOM 就绪就能挂；未登录时接口 401，refresh 内部 catch
   // 掉、不显示角标——所以不必等身份回来。
   mountNotifications();

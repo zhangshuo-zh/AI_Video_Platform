@@ -399,6 +399,7 @@ ROUTES = [
      {"action": "adopt"}, 404),
     # ---------- M4：SSE 实时状态流与历史废片安全清理（GC） ----------
     ("GET", "/api/events/stream?once=1", None, 200),
+    ("GET", "/api/system/resources", None, 200),
     ("GET", "/api/system/gc-preview", None, 403),
     ("POST", "/api/system/gc-execute", {}, 403),
 ]

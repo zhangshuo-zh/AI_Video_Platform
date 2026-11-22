@@ -125,3 +125,27 @@ def test_预检与统计说的是同一句话(as_role, fresh_project):
     shot_check = c.get(f"/api/precheck/shot/{shot['id']}").json()
     shot_disk = [i for i in shot_check["items"] if i["code"] == "env.disk"]
     assert shot_disk and "还差 1 镜" in shot_disk[0]["text"], shot_disk[0]["text"]
+
+
+def test_gc_orphan_and_cache_agree(app, tmp_path, monkeypatch):
+    from db import get_conn
+    from schemas import GcPreviewOut
+
+    monkeypatch.setattr(jobfiles, "JOBS_DIR", tmp_path)
+    job = job_repo.create({"project_id": None, "capability": "image", "kind": "image",
+                           "execution_mode": "local", "provider_code": "mock", "model_code": "mock"})
+    jid = job["id"]
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET status='failed' WHERE id=?", (jid,))
+    logs, outputs = jobfiles.ensure_dirs(jid)
+    (logs / "run.log").write_bytes(b"log")
+    (outputs / "clip").write_bytes(b"abcd")
+    (outputs / "loop").symlink_to(outputs, target_is_directory=True)
+    (outputs / "alias").symlink_to(logs / "run.log")
+    preview = GcPreviewOut(**diskplan.gc_preview())
+    assert len(preview.items) == 1
+    item = preview.items[0]
+    assert (item.job_id, item.project_id, item.files, item.bytes) == (jid, None, ["clip"], 4)
+    assert diskplan.cache_usage() == dict(total_bytes=7, reclaimable_bytes=4, candidate_count=1)
+    assert diskplan.gc_execute(job_ids=[jid])["reclaimed_bytes"] == 4
+    assert (logs / "run.log").read_bytes() == b"log"

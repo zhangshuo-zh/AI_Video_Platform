@@ -1,0 +1,374 @@
+/**
+ * 右侧悬浮控制台：X3-UI 风格系统资源仪表盘 + 产物缓存安全清理 + 实时作业队列。
+ * 平时完全隐藏在屏幕右边缘，仅在垂直中间带靠近时滑出，收起后立即停止轮询。
+ */
+import { api } from './api.js';
+import { store } from './store.js';
+import { escapeHtml } from './util.js';
+import { CAPS } from './enums.js';
+
+const JOB_STATUS = {
+  queued: ['排队中', 'amber'],
+  running: ['运行中', 'blue'],
+  succeeded: ['已完成', 'green'],
+  failed: ['失败', 'red'],
+  canceled: ['已取消', ''],
+};
+
+function fmtBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n >= 1024 ** 3) return `${(n / (1024 ** 3)).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / (1024 ** 2))} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+function toneOf(pct, disabled) {
+  if (disabled) return 'muted';
+  if (pct >= 85) return 'danger';
+  if (pct >= 65) return 'warn';
+  return 'ok';
+}
+
+function renderGauge({ label, pct, sub, disabled = false }) {
+  const clamped = Math.max(0, Math.min(100, Number(pct || 0)));
+  const circ = 113.1;
+  const offset = disabled ? circ : (circ * (1 - clamped / 100)).toFixed(2);
+  const tone = toneOf(clamped, disabled);
+  const pctText = disabled ? '--' : `${Math.round(clamped)}%`;
+  return `<div class="rd-gauge tone-${tone}">`
+    + `<div class="rd-ring">`
+    + `<svg viewBox="0 0 48 48" aria-hidden="true">`
+    + `<circle class="rd-ring-bg" cx="24" cy="24" r="18"/>`
+    + `<circle class="rd-ring-fg" cx="24" cy="24" r="18" stroke-dasharray="${circ}" stroke-dashoffset="${offset}"/>`
+    + `</svg>`
+    + `<span class="rd-ring-val">${pctText}</span>`
+    + `</div>`
+    + `<div class="rd-g-meta"><div class="rd-g-name">${escapeHtml(label)}</div>`
+    + `<div class="rd-g-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</div></div>`
+    + `</div>`;
+}
+
+export function setupRightQueueDock({ isReady, onNavigate }) {
+  const edge = document.getElementById('right-dock-edge');
+  const dock = document.getElementById('right-dock');
+  const gaugesEl = document.getElementById('rd-gauges');
+  const cacheEl = document.getElementById('rd-cache');
+  const platEl = document.getElementById('rd-sys-plat');
+  const listEl = document.getElementById('rd-list');
+  const goBtn = document.getElementById('rd-go-gen');
+  if (!edge || !dock || !listEl || !gaugesEl || !cacheEl) return;
+
+  let closeTimer = 0;
+  let idleTimer = 0;
+  let pollTimer = 0;
+  let visBound = false;
+  let dockHover = false;
+  let loadingJobs = false;
+  let loadingSys = false;
+  let confirmClear = false;
+  let clearing = false;
+  let clearFeedback = '';
+  let lastSys = null;
+
+  const isEnabled = () => window.innerWidth > 860 && isReady();
+
+  // 初始化即填好占位骨架，确保初次从屏幕正中滑出时高度已稳定，不发生上下跳闪
+  gaugesEl.innerHTML = ['CPU', '内存', 'Swap', '磁盘']
+    .map((label) => renderGauge({ label, pct: 0, sub: '采样中…', disabled: true }))
+    .join('');
+  cacheEl.innerHTML = `<div class="rd-cache-info"><div class="rd-cache-t">产物缓存</div>`
+    + `<div class="rd-cache-s">等待采样…</div></div>`;
+
+  const renderCacheBar = (cache) => {
+    if (!cache) {
+      cacheEl.innerHTML = '';
+      return;
+    }
+    const totalStr = fmtBytes(cache.total_bytes);
+    const reclaimBytes = Number(cache.reclaimable_bytes || 0);
+    const reclaimStr = fmtBytes(reclaimBytes);
+    const cnt = Number(cache.candidate_count || 0);
+    const infoLine = reclaimBytes > 0
+      ? `总计 ${totalStr} · 可清 ${reclaimStr}（${cnt} 项）`
+      : `总计 ${totalStr} · 暂无冗余废片`;
+
+    let actionHtml = '';
+    if (clearFeedback) {
+      actionHtml = `<span class="rd-cache-msg">${escapeHtml(clearFeedback)}</span>`;
+    } else if (!cache.can_clear) {
+      actionHtml = `<span class="rd-cache-ro">只读 · 可汇报管理员</span>`;
+    } else if (clearing) {
+      actionHtml = `<button type="button" class="btn sm" disabled>清理中…</button>`;
+    } else if (confirmClear) {
+      actionHtml = `<div class="rd-cache-acts">`
+        + `<button type="button" class="btn sm danger" data-gc="confirm">确认清理 ${escapeHtml(reclaimStr)}</button>`
+        + `<button type="button" class="btn sm" data-gc="cancel">取消</button>`
+        + `</div>`;
+    } else {
+      actionHtml = `<button type="button" class="btn sm" data-gc="ask"${reclaimBytes <= 0 ? ' disabled' : ''}>清空缓存</button>`;
+    }
+
+    cacheEl.innerHTML = `<div class="rd-cache-info">`
+      + `<div class="rd-cache-t">产物缓存</div>`
+      + `<div class="rd-cache-s">${escapeHtml(infoLine)}</div>`
+      + `</div>`
+      + `<div class="rd-cache-right">${actionHtml}</div>`;
+  };
+
+  const renderResources = (res) => {
+    if (!res) return;
+    lastSys = res;
+    if (platEl) {
+      const pName = res.platform === 'Darwin' ? 'macOS' : res.platform;
+      platEl.textContent = `${pName} · ${res.cpu?.cores || 1} 核`;
+    }
+    const swapTotal = Number(res.swap?.total_bytes || 0);
+    const memSub = res.memory?.total_bytes
+      ? `${fmtBytes(res.memory.used_bytes)} / ${fmtBytes(res.memory.total_bytes)}`
+      : '未读取';
+    const swapSub = swapTotal > 0
+      ? `${fmtBytes(res.swap.used_bytes)} / ${fmtBytes(swapTotal)}`
+      : '未启用';
+    const diskSub = res.disk?.total_bytes
+      ? `余 ${fmtBytes(res.disk.free_bytes)}`
+      : '未读取';
+
+    gaugesEl.innerHTML = [
+      renderGauge({
+        label: 'CPU',
+        pct: res.cpu?.percent || 0,
+        sub: `负载 ${Number(res.cpu?.load_1m || 0).toFixed(1)}`,
+      }),
+      renderGauge({
+        label: '内存',
+        pct: res.memory?.percent || 0,
+        sub: memSub,
+      }),
+      renderGauge({
+        label: 'Swap',
+        pct: res.swap?.percent || 0,
+        sub: swapSub,
+        disabled: swapTotal <= 0,
+      }),
+      renderGauge({
+        label: '磁盘',
+        pct: res.disk?.percent || 0,
+        sub: diskSub,
+      }),
+    ].join('');
+    renderCacheBar(res.cache);
+  };
+
+  const refreshResources = async () => {
+    if (!isEnabled() || loadingSys) return;
+    loadingSys = true;
+    try {
+      const res = await api.systemResources();
+      renderResources(res);
+    } catch (err) {
+      if (!lastSys) {
+        if (platEl) platEl.textContent = '监控暂不可用';
+        gaugesEl.innerHTML = `<div class="rd-empty">读取硬件状态失败：${escapeHtml(err?.message || '请稍后重试')}</div>`;
+      }
+    } finally {
+      loadingSys = false;
+    }
+  };
+
+  const renderJobs = (items) => {
+    if (!items || !items.length) {
+      listEl.innerHTML = '<div class="rd-empty">暂无最近作业记录</div>';
+      return;
+    }
+    listEl.innerHTML = items.map((j) => {
+      const [stLabel, stTone] = JOB_STATUS[j.status] || [String(j.status || '未知'), ''];
+      const capLabel = CAPS[j.capability] || j.capability || '任务';
+      const prompt = (j.prompt_snapshot || '').trim() || `#${j.id} · ${j.model_code || '默认模型'}`;
+      return `<button type="button" class="rd-item" data-job-id="${j.id}">`
+        + `<div class="rd-item-top">`
+        + `<span class="pill ${stTone}">${escapeHtml(stLabel)}</span>`
+        + `<span class="rd-cap">${escapeHtml(capLabel)} · #${j.id}</span>`
+        + `</div>`
+        + `<div class="rd-prompt">${escapeHtml(prompt)}</div>`
+        + `</button>`;
+    }).join('');
+  };
+
+  const refreshJobs = async () => {
+    if (!isEnabled() || loadingJobs) return;
+    if (!store.can('job:read')) {
+      listEl.innerHTML = '<div class="rd-empty">当前账号无作业读取权限</div>';
+      return;
+    }
+    loadingJobs = true;
+    try {
+      const { items } = await api.jobs({ limit: 6 });
+      renderJobs(items);
+    } catch (err) {
+      listEl.innerHTML = `<div class="rd-empty">读取队列失败：${escapeHtml(err.message || '')}</div>`;
+    } finally {
+      loadingJobs = false;
+    }
+  };
+
+  const refreshAll = () => {
+    refreshResources();
+    refreshJobs();
+  };
+
+  const onVisibilityChange = () => {
+    if (document.hidden || !dock.classList.contains('open')) return;
+    refreshAll();
+  };
+
+  const stopPoll = () => {
+    clearInterval(pollTimer);
+    pollTimer = 0;
+    if (visBound) {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      visBound = false;
+    }
+  };
+
+  const closeDock = () => {
+    clearTimeout(closeTimer); closeTimer = 0;
+    clearTimeout(idleTimer); idleTimer = 0;
+    stopPoll();
+    confirmClear = false;
+    dock.classList.remove('open');
+    dockHover = false;
+  };
+
+  const bumpIdle = () => {
+    clearTimeout(idleTimer);
+    if (!dock.classList.contains('open')) return;
+    idleTimer = setTimeout(() => {
+      if (!clearing) closeDock();
+    }, 8000);
+  };
+
+  const scheduleClose = (delay = 340) => {
+    clearTimeout(closeTimer);
+    if (clearing || confirmClear) return;
+    closeTimer = setTimeout(() => {
+      if (!dockHover && !clearing && !confirmClear) closeDock();
+    }, delay);
+  };
+
+  const openDock = () => {
+    if (!isEnabled()) return;
+    clearTimeout(closeTimer); closeTimer = 0;
+    const wasOpen = dock.classList.contains('open');
+    if (!wasOpen) {
+      if (!lastSys) {
+        gaugesEl.innerHTML = ['CPU', '内存', 'Swap', '磁盘']
+          .map((label) => renderGauge({ label, pct: 0, sub: '采样中…', disabled: true }))
+          .join('');
+      }
+      if (!listEl.children.length) {
+        listEl.innerHTML = '<div class="rd-empty">正在读取最新队列…</div>';
+      }
+      dock.classList.add('open');
+      refreshAll();
+      stopPoll();
+      pollTimer = setInterval(() => {
+        if (!dock.classList.contains('open') || document.hidden) return;
+        refreshAll();
+      }, 3000);
+      if (!visBound) {
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        visBound = true;
+      }
+    }
+    bumpIdle();
+  };
+
+  cacheEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-gc]');
+    if (!btn || clearing) return;
+    const act = btn.dataset.gc;
+    bumpIdle();
+    if (act === 'ask') {
+      confirmClear = true;
+      renderCacheBar(lastSys?.cache);
+      return;
+    }
+    if (act === 'cancel') {
+      confirmClear = false;
+      renderCacheBar(lastSys?.cache);
+      return;
+    }
+    if (act === 'confirm') {
+      confirmClear = false;
+      clearing = true;
+      renderCacheBar(lastSys?.cache);
+      try {
+        const res = await api.systemGcExecute({});
+        clearFeedback = res.reclaimed_bytes > 0
+          ? `已释放 ${fmtBytes(res.reclaimed_bytes)}`
+          : '没有可删废片';
+        await refreshResources();
+      } catch (err) {
+        clearFeedback = err.message || '清理失败';
+      } finally {
+        clearing = false;
+        renderCacheBar(lastSys?.cache);
+        setTimeout(() => {
+          clearFeedback = '';
+          if (dock.classList.contains('open') && lastSys) renderCacheBar(lastSys.cache);
+        }, 3200);
+      }
+    }
+  });
+
+  document.addEventListener('pointermove', (e) => {
+    if (!isEnabled()) return;
+    const gate = document.getElementById('gate');
+    if (gate && !gate.hidden) return;
+    if (e.clientX >= window.innerWidth - 22) {
+      openDock();
+    } else if (dock.classList.contains('open') && !dockHover && e.clientX < window.innerWidth - 350) {
+      scheduleClose(340);
+    }
+  }, { passive: true });
+
+  edge.addEventListener('pointerenter', () => openDock());
+  edge.addEventListener('mouseenter', () => openDock());
+
+  dock.addEventListener('mouseenter', () => {
+    dockHover = true;
+    clearTimeout(closeTimer); closeTimer = 0;
+    bumpIdle();
+  });
+  dock.addEventListener('mousemove', () => bumpIdle(), { passive: true });
+  dock.addEventListener('mouseleave', (e) => {
+    dockHover = false;
+    if (e.relatedTarget && edge.contains(e.relatedTarget)) return;
+    scheduleClose(340);
+  });
+
+  if (goBtn) {
+    goBtn.addEventListener('click', () => {
+      closeDock();
+      onNavigate('generate');
+    });
+  }
+
+  listEl.addEventListener('click', (e) => {
+    if (e.target.closest('.rd-item')) {
+      closeDock();
+      onNavigate('generate');
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dock.classList.contains('open')) {
+      closeDock();
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth <= 860) closeDock();
+  });
+}

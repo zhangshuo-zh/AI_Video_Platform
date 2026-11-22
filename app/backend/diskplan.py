@@ -20,14 +20,16 @@
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
-import shutil
+import os
+import sqlite3
+import stat
 from pathlib import Path
 
 import jobfiles
 from config import DISK_MIN_FREE_GB
-from paths import within
 from repositories.jobs import jobs as job_repo
 
 # 样本条数上限：估算要的是"这个项目的典型大小"，取最近几条就够，
@@ -132,23 +134,69 @@ def disk_readout(project_id: int, *, shots_missing: int,
     return est
 
 
-def _job_reclaimable_files(job_id: int) -> tuple[int, list[Path]]:
-    """列出某条历史作业 outputs/ 下可安全清理的媒体/临时文件与总字节数（不动 run.log）。"""
-    jdir = jobfiles.job_dir(job_id)
-    outputs_dir = jdir / "outputs"
-    if not outputs_dir.is_dir() or not within(jobfiles.JOBS_DIR, outputs_dir):
-        return 0, []
-    total = 0
-    files: list[Path] = []
-    for p in sorted(outputs_dir.rglob("*")):
-        if not p.is_file() or not within(outputs_dir, p):
-            continue
+@contextmanager
+def _open_job_directory(relative: Path) -> Iterator[int]:
+    """逐段打开内部生成的相对目录，目录被替换为软链接时跳过。"""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(jobfiles.JOBS_DIR, flags)
+    try:
+        for part in relative.parts:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _job_files(relative: Path) -> Iterator[tuple[Path, int]]:
+    """迭代扫描常规文件，每次只打开一个目录，不跟随软链接。"""
+    pending = [relative]
+    while pending:
+        directory = pending.pop()
         try:
-            total += int(p.stat().st_size)
-            files.append(p)
+            with _open_job_directory(directory) as fd, os.scandir(fd) as entries:
+                for entry in entries:
+                    path = directory / entry.name
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(path)
+                        elif entry.is_file(follow_symlinks=False):
+                            info = entry.stat(follow_symlinks=False)
+                            if stat.S_ISREG(info.st_mode):
+                                yield path, info.st_size
+                    except OSError:
+                        continue
         except OSError:
             continue
-    return total, files
+
+
+def cache_usage() -> dict[str, int]:
+    """一次扫盘得到逻辑字节总量及 GC 摘要，无需构造文件明细。"""
+    try:
+        snap = job_repo.gc_reference_snapshot(None)
+        candidates = {str(row["id"]) for row in snap["jobs"]
+                      if row["id"] not in snap["protected_ids"]}
+    except sqlite3.Error:
+        candidates = set()
+    total = reclaimable = 0
+    seen: set[str] = set()
+    for path, size in _job_files(Path(".")):
+        total += size
+        parts = path.parts
+        if len(parts) >= 3 and parts[1] == "outputs" and parts[0] in candidates:
+            reclaimable += size
+            seen.add(parts[0])
+    return {"total_bytes": total, "reclaimable_bytes": reclaimable, "candidate_count": len(seen)}
+
+
+def _job_reclaimable_files(job_id: int) -> tuple[int, list[Path]]:
+    files = []
+    total = 0
+    for relative, size in _job_files(Path(str(job_id)) / "outputs"):
+        total += size
+        files.append(jobfiles.JOBS_DIR / relative)
+    return total, sorted(files)
 
 
 def _gc_scan(project_id: int | None = None) -> tuple[list[dict], int, dict[int, list[Path]]]:
@@ -182,7 +230,7 @@ def _gc_scan(project_id: int | None = None) -> tuple[list[dict], int, dict[int, 
                 rel_files.append(p.name)
         items.append({
             "job_id": jid,
-            "project_id": int(row["project_id"]),
+            "project_id": int(row["project_id"]) if row["project_id"] is not None else None,
             "capability": str(row["capability"]),
             "status": status,
             "created_at": str(row["created_at"]),
@@ -233,11 +281,13 @@ def gc_execute(*, project_id: int | None = None, job_ids: list[int] | None = Non
         job_files = 0
         outputs_dir = jobfiles.job_dir(jid) / "outputs"
         for p in files:
-            if not within(outputs_dir, p):
-                continue
             try:
-                sz = int(p.stat().st_size)
-                p.unlink(missing_ok=True)
+                with _open_job_directory(p.parent.relative_to(jobfiles.JOBS_DIR)) as fd:
+                    info = os.stat(p.name, dir_fd=fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    os.unlink(p.name, dir_fd=fd)
+                sz = info.st_size
                 job_freed += sz
                 job_files += 1
             except OSError:
@@ -247,12 +297,11 @@ def gc_execute(*, project_id: int | None = None, job_ids: list[int] | None = Non
             deleted_files += job_files
             reclaimed_bytes += job_freed
             # 清空已无文件的子目录，但保留 job 目录与 run.log
-            if outputs_dir.is_dir():
-                try:
-                    if not any(outputs_dir.rglob("*")):
-                        shutil.rmtree(outputs_dir, ignore_errors=True)
-                except OSError:
-                    pass
+            try:
+                with _open_job_directory(outputs_dir.parent.relative_to(jobfiles.JOBS_DIR)) as fd:
+                    os.rmdir("outputs", dir_fd=fd)
+            except OSError:
+                pass
     return {
         "deleted_jobs": deleted_jobs,
         "deleted_files": deleted_files,

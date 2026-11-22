@@ -5,7 +5,7 @@ import { bindModalDismiss, escapeHtml, run } from '../util.js';
 import { getParam } from '../navstate.js';
 import { openDetail } from '../router.js';
 import { bindSubChips, subChipRow } from '../util.js';
-import { renderDetail, mountDetail } from './asset-detail.js';
+import { renderDetail, mountDetail, setNewAssetKind } from './asset-detail.js';
 import studio from './asset-studio.js';
 import triage from './asset-triage.js';
 import { WS_LABELS, setStudioTarget, setWsIndex, workerChip, wsIndex } from './asset-workspaces.js';
@@ -322,50 +322,6 @@ export default {
           ${gridHtml(shown, list.length, filtering, canWrite)}
         </div>
       </div>
-
-      <div class="modal" id="na-modal" hidden>
-        <div class="modal-box">
-          <div class="modal-head neutral">新建资产</div>
-          <div class="modal-body">
-            <div class="form-grid">
-              <label for="na-kind">资产类型</label>
-              <select id="na-kind" class="ctl">
-                <option value="character">角色</option>
-                <option value="scene">场景</option>
-                <option value="prop">道具</option>
-              </select>
-
-              <label for="na-name">名称</label>
-              <input id="na-name" class="ctl" maxlength="60" autocomplete="off"
-                     placeholder="例如 掌灯人">
-
-              <label for="na-summary" class="top">简介</label>
-              <textarea id="na-summary" class="ctl" rows="2" maxlength="500"
-                        placeholder="一句话说清这是谁／什么地方／什么东西"></textarea>
-
-              <label for="na-prompt" class="top">一致性提示词</label>
-              <textarea id="na-prompt" class="ctl" rows="3" maxlength="1000"
-                        placeholder="跨镜头必须长一样的那些细节：外形、配色、材质、禁忌"></textarea>
-
-              <label for="na-tags">标签</label>
-              <input id="na-tags" class="ctl" placeholder="逗号分隔，最多 10 个">
-
-              <label for="na-aliases">别名</label>
-              <input id="na-aliases" class="ctl" placeholder="逗号分隔，抽取合并时靠它对上同一个">
-
-              ${store.isManager ? `
-              <span class="pf-label">归属</span>
-              <label class="chk"><input type="checkbox" id="na-global">
-                <span>放进全局资产池（各项目都能引用，不属于当前项目）</span></label>` : ''}
-            </div>
-            <p class="modal-meta pf-hint">同一范围、同一类型里名称唯一；重名说明该合并，不是新建。</p>
-          </div>
-          <div class="modal-actions">
-            <button class="btn" id="na-cancel">取消</button>
-            <button class="btn primary" id="na-save">登记</button>
-          </div>
-        </div>
-      </div>
     </section>`;
   },
 
@@ -429,53 +385,10 @@ export default {
     // 卡片：整块可点，标题是真按钮（键盘停得住）。卡内若有别的控件要记得 stopPropagation
     bindCards(root);
 
-    /* ---------- 新建资产（弹窗，先选类型再填字段） ---------- */
-    const modal = root.querySelector('#na-modal');
-    const nameEl = root.querySelector('#na-name');
-    const saveBtn = root.querySelector('#na-save');
-    const close = () => { modal.hidden = true; saveBtn.disabled = false; };
-
+    /* ---------- 新建资产（直接进入空白详情建档页） ---------- */
     root.querySelector('#btn-new-asset')?.addEventListener('click', () => {
-      nameEl.value = '';
-      root.querySelector('#na-summary').value = '';
-      root.querySelector('#na-prompt').value = '';
-      root.querySelector('#na-tags').value = '';
-      root.querySelector('#na-aliases').value = '';
-      const g = root.querySelector('#na-global'); if (g) g.checked = false;
-      root.querySelector('#na-kind').value = kindCode() || 'character';
-      // 从"角色"那一栏点新建，默认就该是角色；选"全部"时才退回人物
-      modal.hidden = false;
-      nameEl.focus();
-    });
-
-    const split = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
-    const create = async () => {
-      const name = nameEl.value.trim();
-      if (!name) { nameEl.focus(); return; }
-      saveBtn.disabled = true;
-      const globalEl = root.querySelector('#na-global');
-      const ok = await run('登记', () => api.createAsset(store.currentId, {
-        kind: root.querySelector('#na-kind').value,
-        name,
-        summary: root.querySelector('#na-summary').value.trim(),
-        consistency_prompt: root.querySelector('#na-prompt').value.trim(),
-        tags: split(root.querySelector('#na-tags').value),
-        aliases: split(root.querySelector('#na-aliases').value),
-        scope: globalEl?.checked ? 'global' : 'project',
-      }));
-      saveBtn.disabled = false;
-      if (!ok) return;                       // 失败时弹窗留着，用户填的还在
-      close();
-      refresh();
-    };
-    saveBtn?.addEventListener('click', create);
-    root.querySelector('#na-cancel')?.addEventListener('click', close);
-    modal?.addEventListener('click', (e) => { if (e.target === modal) close(); });
-    // Escape 交给 util 那一个实现（绑在弹窗上＝焦点必须在弹窗内才收得到）；
-    // Enter 只在输入框里提交，留着——它要的是"焦点在哪个控件"这个信息。
-    if (modal) bindModalDismiss(modal, close);
-    modal?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && e.target.tagName === 'INPUT') create();
+      setNewAssetKind(kindCode() || 'character');
+      openDetail('assets', 'new');
     });
   },
 };

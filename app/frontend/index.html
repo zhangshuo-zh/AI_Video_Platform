@@ -24,6 +24,9 @@
     : mode;
   document.documentElement.dataset.theme = theme;
   document.documentElement.dataset.themeMode = mode;
+  var sb = null;
+  try { sb = localStorage.getItem('fv.sidebar'); } catch (e) {}
+  document.documentElement.dataset.sidebar = (sb === 'pinned') ? 'pinned' : 'dock';
 })();
 </script>
 <!-- 标签页与收藏栏的图标。不声明这两行，Safari 会去请求 /favicon.ico，404 之后
@@ -138,17 +141,144 @@
     <path d="M12 4v16"/>
     <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>
   </symbol>
+  <symbol id="ic-sidebar-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.5" y="4.2" width="17" height="15.6" rx="2.6"/>
+    <path d="M9.5 4.2v15.6"/>
+    <path d="M16.2 9.4 13.4 12l2.8 2.6"/>
+  </symbol>
+  <!-- 二级菜单独立图标集：统一 24 视窗、1.7 描边 -->
+  <symbol id="ic-sub-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4" width="6.8" height="6.8" rx="1.6"/>
+    <rect x="13.2" y="4" width="6.8" height="6.8" rx="1.6"/>
+    <rect x="4" y="13.2" width="6.8" height="6.8" rx="1.6"/>
+    <rect x="13.2" y="13.2" width="6.8" height="6.8" rx="1.6"/>
+  </symbol>
+  <symbol id="ic-sub-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m12 3.2 1.8 5.2L19 10.2l-5.2 1.8L12 17.2l-1.8-5.2L5 10.2l5.2-1.8z"/>
+    <path d="M18.6 15.8v3.6M16.8 17.6h3.6"/>
+  </symbol>
+  <symbol id="ic-sub-scan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 8V6a2 2 0 0 1 2-2h2M15.5 4h2a2 2 0 0 1 2 2v2M19.5 16v2a2 2 0 0 1-2 2h-2M8.5 20h-2a2 2 0 0 1-2-2v-2"/>
+    <path d="M7.5 12h9M9 9h6M9 15h4.5"/>
+  </symbol>
+  <symbol id="ic-sub-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 4.8A2.2 2.2 0 0 1 7.2 2.6h10.6A1.8 1.8 0 0 1 19.6 4.4v14.8a1.8 1.8 0 0 1-1.8 1.8H7.2A2.2 2.2 0 0 1 5 18.8z"/>
+    <path d="M5 17.4a2.2 2.2 0 0 1 2.2-2.2h12.4M9.2 6.8h6.4"/>
+  </symbol>
+  <symbol id="ic-sub-script" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4.4" y="4.2" width="15.2" height="15.6" rx="2.2"/>
+    <path d="M4.4 9h15.2M8.2 4.2l1.8 4.8M13.8 4.2l1.8 4.8M8.2 13h7.6M8.2 16.4h5"/>
+  </symbol>
+  <symbol id="ic-sub-storyboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.5" y="4.5" width="7.2" height="5.8" rx="1.3"/>
+    <rect x="13.3" y="4.5" width="7.2" height="5.8" rx="1.3"/>
+    <rect x="3.5" y="13.7" width="7.2" height="5.8" rx="1.3"/>
+    <path d="M13.3 15.2h7.2M13.3 18.2h4.8"/>
+  </symbol>
+  <symbol id="ic-sub-queue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 6.8h15M4.5 12h15M4.5 17.2h10"/>
+    <circle cx="17.8" cy="17.2" r="2.2"/>
+  </symbol>
+  <symbol id="ic-sub-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 12h3.6l2.4-5.4 4.2 10.8 2.6-5.4h4.2"/>
+  </symbol>
+  <symbol id="ic-sub-template" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4.2" width="16" height="6.2" rx="1.6"/>
+    <rect x="4" y="13.6" width="7" height="6.2" rx="1.6"/>
+    <rect x="13" y="13.6" width="7" height="6.2" rx="1.6"/>
+  </symbol>
+  <symbol id="ic-sub-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="5.4" width="16" height="14.6" rx="2.2"/>
+    <path d="M8 3.6v3.2M16 3.6v3.2M4 9.8h16M8.5 14h2.5M13 14h2.5M8.5 17.2h2.5"/>
+  </symbol>
+  <symbol id="ic-sub-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.8" y="4.8" width="16.4" height="14.4" rx="2.4"/>
+    <path d="M8 4.8v14.4M16 4.8v14.4M3.8 9.6H8M3.8 14.4H8M16 9.6h4.2M16 14.4h4.2"/>
+  </symbol>
+  <symbol id="ic-sub-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9.2" y="3.8" width="5.6" height="10" rx="2.8"/>
+    <path d="M6.2 11.4a5.8 5.8 0 0 0 11.6 0M12 17.2v3M8.8 20.2h6.4"/>
+  </symbol>
+  <symbol id="ic-sub-music" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.4 17.2V6.4l9-1.8v10.8"/>
+    <circle cx="7" cy="17.2" r="2.4"/>
+    <circle cx="16" cy="15.4" r="2.4"/>
+  </symbol>
+  <symbol id="ic-sub-lips" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.2 12c2.2-2.8 4.8-3.8 7.8-2.4 3-1.4 5.6-.4 7.8 2.4-2.2 3.2-5 4.8-7.8 4.8S6.4 15.2 4.2 12z"/>
+    <path d="M5.6 12h12.8"/>
+  </symbol>
+  <symbol id="ic-sub-sfx" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.4 9.8h3.4l4.4-3.8v12l-4.4-3.8H4.4z"/>
+    <path d="M15.8 8.8a4.6 4.6 0 0 1 0 6.4M18.4 6.4a8 8 0 0 1 0 11.2"/>
+  </symbol>
+  <symbol id="ic-sub-doc-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6.2 3.8h8.2l3.8 3.8v12.6a1.6 1.6 0 0 1-1.6 1.6H6.2a1.6 1.6 0 0 1-1.6-1.6V5.4a1.6 1.6 0 0 1 1.6-1.6z"/>
+    <path d="m8.8 14 2.1 2.1 4.3-4.3"/>
+  </symbol>
+  <symbol id="ic-sub-img-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4.5" width="16" height="15" rx="2.4"/>
+    <path d="m8.4 12.6 2.3 2.3 4.8-4.8"/>
+  </symbol>
+  <symbol id="ic-sub-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.6 18.8 6.4v5.2c0 4.4-2.9 7.6-6.8 8.8-3.9-1.2-6.8-4.4-6.8-8.8V6.4z"/>
+    <path d="m9.1 12.2 2 2 3.8-4"/>
+  </symbol>
+  <symbol id="ic-sub-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.2"/>
+    <path d="M3.8 12h16.4M12 3.8a12 12 0 0 1 0 16.4M12 3.8a12 12 0 0 0 0 16.4"/>
+  </symbol>
+  <symbol id="ic-sub-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.6 4.4h6.8l-1.2 5.4 2.6 2.6v1.6H7.2v-1.6l2.6-2.6z"/>
+    <path d="M12 14v6.2"/>
+  </symbol>
+  <symbol id="ic-sub-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.6 19.4 7.4v9.2L12 20.4l-7.4-3.8V7.4z"/>
+    <path d="M4.6 7.4 12 11.2l7.4-3.8M12 11.2v9.2"/>
+  </symbol>
+  <symbol id="ic-sub-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6.8" y="6.8" width="10.4" height="10.4" rx="2"/>
+    <path d="M10 3.8v3M14 3.8v3M10 17.2v3M14 17.2v3M3.8 10h3M3.8 14h3M17.2 10h3M17.2 14h3"/>
+  </symbol>
+  <symbol id="ic-sub-route" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="6.2" cy="6.4" r="2.2"/>
+    <circle cx="17.8" cy="17.6" r="2.2"/>
+    <path d="M8.4 6.4h5.6a3 3 0 0 1 0 6H10a3 3 0 0 0 0 5.2h5.6"/>
+  </symbol>
+  <symbol id="ic-sub-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 7.2h9.5M18 7.2h1.5M4.5 12h3.5M12 12h7.5M4.5 16.8h6.5M15 16.8h4.5"/>
+    <circle cx="16" cy="7.2" r="2"/>
+    <circle cx="10" cy="12" r="2"/>
+    <circle cx="13" cy="16.8" r="2"/>
+  </symbol>
+  <symbol id="ic-sub-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="9.4" cy="8.4" r="3"/>
+    <path d="M4.4 18.6a5 5 0 0 1 10 0"/>
+    <circle cx="16.2" cy="9.6" r="2.2"/>
+    <path d="M16.2 14.4a4 4 0 0 1 3.6 4.2"/>
+  </symbol>
+  <symbol id="ic-sub-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8.2" cy="12" r="3.4"/>
+    <path d="M11.6 12h8.2v3M16.8 12v2.4"/>
+  </symbol>
 </svg>
 
 <div class="app">
 
+  <!-- 左侧边缘呼出感应条（仅在 Dock 自动隐藏模式下生效） -->
+  <div class="dock-edge" id="dock-edge" aria-hidden="true"><span></span></div>
+
   <!-- 侧栏骨架：导航项由 js/app.js 按 modules.js 生成，改一处即可 -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <span class="brand-mark" role="img" aria-label="平台图标"></span>
       <div class="brand-text">
         <b>视频生产平台</b>
       </div>
+      <button class="sidebar-toggle" id="sidebar-toggle" type="button"
+              aria-label="钉住展开侧栏" title="钉住展开侧栏" aria-expanded="false">
+        <svg aria-hidden="true"><use href="#ic-sidebar-toggle"/></svg>
+      </button>
     </div>
     <!-- 项目切换器挪到顶栏了（v0.33）：这里原来挂一个常驻 <select>，
          而项目名顶栏面包屑本来就显示一遍，等于同一件事摆两处。 -->
@@ -167,6 +297,7 @@
            命令面板本身没有任何入口变化——按 ⌘K / Ctrl+K 仍能唤起。 -->
     </div>
   </aside>
+  <div class="dock-flyout" id="dock-flyout" hidden></div>
 
   <main>
     <header class="topbar">
@@ -223,6 +354,30 @@
     <!-- 视图挂载点：每次切页整体替换 -->
     <div id="view-root"></div>
   </main>
+
+  <!-- 右侧边缘呼出感应条 & X3-UI 系统监控 + 实时队列浮窗 -->
+  <div class="right-dock-edge" id="right-dock-edge" aria-hidden="true"><span></span></div>
+  <aside class="right-dock" id="right-dock" aria-label="系统监控与实时队列">
+    <div class="rd-sys-head">
+      <div class="rd-title">
+        <b>资源监控</b>
+        <span class="rd-wlabel" id="rd-sys-plat">待采样</span>
+      </div>
+    </div>
+    <div class="rd-gauges" id="rd-gauges"></div>
+    <div class="rd-cache" id="rd-cache"></div>
+    <div class="rd-divider"></div>
+    <div class="rd-head">
+      <div class="rd-title">
+        <span class="dot idle" id="rd-worker-dot"></span>
+        <b>实时队列</b>
+        <span class="rd-wlabel" id="rd-worker-label">未接入</span>
+      </div>
+      <button class="btn sm" type="button" id="rd-go-gen">生成中心</button>
+    </div>
+    <div class="rd-stats" id="rd-stats"></div>
+    <div class="rd-list" id="rd-list"></div>
+  </aside>
 </div>
 
 <div class="palette" id="palette" hidden>

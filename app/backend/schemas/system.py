@@ -28,7 +28,7 @@ class ProviderManifestOut(BaseModel):
 
 class GcItemOut(BaseModel):
     job_id: int
-    project_id: int
+    project_id: int | None = None
     capability: str
     status: str
     created_at: str
@@ -55,4 +55,40 @@ class GcExecuteOut(BaseModel):
     deleted_files: int
     reclaimed_bytes: int
     skipped_job_ids: list[int] = []
+
+
+class CpuInfoOut(BaseModel):
+    percent: float
+    cores: int
+    load_1m: float
+
+
+class MemInfoOut(BaseModel):
+    total_bytes: int
+    used_bytes: int
+    percent: float
+
+
+class DiskInfoOut(BaseModel):
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    percent: float
+
+
+class CacheInfoOut(BaseModel):
+    total_bytes: int
+    reclaimable_bytes: int
+    candidate_count: int
+    can_clear: bool
+
+
+class SystemResourcesOut(BaseModel):
+    cpu: CpuInfoOut
+    memory: MemInfoOut
+    swap: MemInfoOut
+    disk: DiskInfoOut
+    cache: CacheInfoOut
+    platform: str
+    observed_at: int
 

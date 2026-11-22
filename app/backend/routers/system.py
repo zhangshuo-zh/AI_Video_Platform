@@ -10,8 +10,9 @@ from fastapi.responses import StreamingResponse
 
 import access
 import diskplan
-from deps import require_permission
-from models import GcExecuteIn, GcExecuteOut, GcPreviewOut, HealthOut
+import sysres
+from deps import require_permission, require_user
+from models import GcExecuteIn, GcExecuteOut, GcPreviewOut, HealthOut, SystemResourcesOut
 from repositories.jobs import jobs as job_repo
 from repositories.pipeline import pipeline_repo
 from repositories.projects import projects as project_repo
@@ -118,6 +119,16 @@ async def events_stream(
     )
 
 
+@router.get("/system/resources", response_model=SystemResourcesOut)
+def system_resources(
+    request: Request,
+    _user=Depends(require_user),
+) -> SystemResourcesOut:
+    """服务器硬件资源与产物缓存水位（所有登录用户只读可见，无敏感路径）。"""
+    granted: set[str] = getattr(request.state, "permissions", set())
+    return SystemResourcesOut(**sysres.snapshot(can_clear=("system:config" in granted)))
+
+
 @router.get("/system/gc-preview", response_model=GcPreviewOut)
 def system_gc_preview(
     project_id: int | None = Query(default=None),
@@ -137,6 +148,6 @@ def system_gc_execute(
     """安全清理未钉住、非最新成功且未签字的历史废片产物。"""
     if payload.project_id is not None:
         access.ensure(user, payload.project_id, "write")
-    return GcExecuteOut(
-        **diskplan.gc_execute(project_id=payload.project_id, job_ids=payload.job_ids)
-    )
+    res = diskplan.gc_execute(project_id=payload.project_id, job_ids=payload.job_ids)
+    sysres.invalidate_cache()
+    return GcExecuteOut(**res)

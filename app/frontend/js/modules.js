@@ -175,3 +175,44 @@ export const MODULES = [
     ents: '系统',
   },
 ];
+
+/**
+ * 二级菜单独立线性图标映射（#ic-sub-* 定义在 index.html）。
+ * 优先按 `moduleId:subLabel` 精确匹配，其次按 `subLabel` 匹配，缺省回退 `ic-sub-grid`。
+ */
+export const SUB_ICONS = {
+  '资产总览': 'ic-sub-grid',
+  '资产创作': 'ic-sub-spark',
+  '文本提取': 'ic-sub-scan',
+  '小说原文': 'ic-sub-book',
+  '剧本改编': 'ic-sub-script',
+  '分镜脚本': 'ic-sub-storyboard',
+  '队列成本': 'ic-sub-queue',
+  '运行监控': 'ic-sub-pulse',
+  '产线模板': 'ic-sub-template',
+  '整季排产': 'ic-sub-calendar',
+  '成片合成': 'ic-sub-film',
+  '配音管理': 'ic-sub-mic',
+  '音乐管理': 'ic-sub-music',
+  '口型对齐': 'ic-sub-lips',
+  '音效管理': 'ic-sub-sfx',
+  '文档审核': 'ic-sub-doc-check',
+  '产物审核': 'ic-sub-img-check',
+  '动作审批': 'ic-sub-shield-check',
+  '世界条目': 'ic-sub-globe',
+  '证据快照': 'ic-sub-pin',
+  '模型仓库': 'ic-sub-box',
+  '引擎管理': 'ic-sub-cpu',
+  '调用策略': 'ic-sub-route',
+  '总览': 'ic-sub-grid',
+  '智能体配置': 'ic-sub-sliders',
+  '任务路由': 'ic-sub-route',
+  '运行与审批': 'ic-sub-shield-check',
+  '用户管理': 'ic-sub-users',
+  '角色管理': 'ic-sub-key',
+  '参数管理': 'ic-sub-sliders',
+};
+
+export function subIcon(moduleId, subLabel) {
+  return SUB_ICONS[`${moduleId}:${subLabel}`] || SUB_ICONS[subLabel] || 'ic-sub-grid';
+}

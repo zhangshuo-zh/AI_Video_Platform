@@ -3,10 +3,10 @@ import { openReferenceUsage } from './asset-reference-usage.js';
 import { referenceActions, bindReferenceActions } from './asset-reference-actions.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
-import { bindModalDismiss, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
-import { jobTone, publicStatus } from '../validation.js';
+import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
+import { HEALTH_LABEL, jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
-import { closeDetail } from '../router.js';
+import { closeDetail, openDetail } from '../router.js';
 import { setStudioTarget, missingOf } from './asset-workspaces.js';
 import { ASSET_KIND_LABELS } from '../enums.js';
 
@@ -25,6 +25,12 @@ import { ASSET_KIND_LABELS } from '../enums.js';
  */
 let cache = null;   // 本次渲染拿到的资产、引用、档案与形态，mount 里复用，不再跑第二趟
 let refs = [];
+let newAssetKind = 'character';
+let pendingImages = [];
+
+export function setNewAssetKind(kind) {
+  newAssetKind = ['character', 'scene', 'prop'].includes(kind) ? kind : 'character';
+}
 
 const split = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
 
@@ -35,12 +41,13 @@ async function load(id) {
   } catch (err) {
     return { error: err.message || '读不到这条资产', status: err.status };
   }
-  const [shotsRes, profileRes, variantsRes, gensRes, impactRes] = await Promise.allSettled([
+  const [shotsRes, profileRes, variantsRes, gensRes, impactRes, optsRes] = await Promise.allSettled([
     api.assetShots(id),
     asset.kind === 'character' ? api.assetProfile(id) : Promise.resolve(null),
     api.assetVariants(id),
     store.currentId ? api.assetGenerations(store.currentId, id) : Promise.resolve([]),
     asset.ref_shot_count > 0 ? api.assetImpact(id) : Promise.resolve(null),
+    store.can('job:submit') ? api.providerOptions() : Promise.resolve([]),
   ]);
   // 读失败不演成"没有镜头引用它"：那会让人以为这条资产可以放心删
   const shots = shotsRes.status === 'fulfilled' ? shotsRes.value : [];
@@ -56,12 +63,34 @@ async function load(id) {
     : [];
   const gensError = gensRes.status === 'rejected' ? (gensRes.reason?.message || String(gensRes.reason)) : '';
   const impact = impactRes.status === 'fulfilled' ? impactRes.value : null;
+  const textOptions = optsRes.status === 'fulfilled'
+    ? (optsRes.value || []).filter((o) => o.capability === 'text')
+    : [];
   return { asset, shots, refsError, profile, profileError, variants, variantsError,
-           gens, gensError, impact };
+           gens, gensError, impact, textOptions };
 }
 
 export async function renderDetail(id) {
-  const data = await load(id);
+  const isNew = id === 'new';
+  if (isNew) {
+    pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+    pendingImages = [];
+  }
+  const newTextOptions = isNew && store.can('job:submit')
+    ? await api.providerOptions().then((rows) => (rows || []).filter((o) => o.capability === 'text')).catch(() => [])
+    : [];
+  const data = isNew ? {
+    isNew: true,
+    asset: {
+      id: null, project_id: store.currentId, kind: newAssetKind,
+      kind_label: ASSET_KIND_LABELS[newAssetKind] || '角色',
+      name: '', summary: '', consistency_prompt: '', tags: [], aliases: [],
+      ref_images: [], ref_shot_count: 0, image_purposes: {}, version: '',
+      created_at: '', updated_at: '',
+    },
+    shots: [], refsError: '', profile: null, profileError: '',
+    variants: [], variantsError: '', gens: [], gensError: '', impact: null, textOptions: newTextOptions,
+  } : await load(id);
   cache = data;
   refs = data.shots || [];
   const variants = data.variants || [];
@@ -85,7 +114,7 @@ export async function renderDetail(id) {
   const impactCounts = data.impact?.counts || null;
   const signedCount = impactShots.filter((item) => item.signed).length;
   // 能不能改：全局要管理员，项目要 asset:write（服务端同样判一遍）
-  const canEdit = store.can('asset:write') && (!isGlobal || store.isManager);
+  const canEdit = isNew ? store.can('asset:write') : (store.can('asset:write') && (!isGlobal || store.isManager));
   // 译名从 enums.js 取（2026-11-10 统一为「角色」）：这里原来又抄了一份，
   // 三处副本迟早会和 `ASSET_KINDS` 分叉。
   const kindOptions = Object.entries(ASSET_KIND_LABELS)
@@ -95,12 +124,14 @@ export async function renderDetail(id) {
     <section class="view on">
       <div class="page-head ad-page-head">
         <h1><button class="crumb" data-back>资产中心</button>
-          <span class="crumb-sep">›</span> ${escapeHtml(a.name)}</h1>
-        <p>${a.kind_label} · ${isGlobal ? '全局资产池（各项目共享引用，不属于单个项目）'
-             : '本项目资产'} · ${a.ref_images.length} 张参考图 · 被 ${a.ref_shot_count} 条镜头引用</p>
+          <span class="crumb-sep">›</span> ${isNew ? '新建资产' : escapeHtml(a.name)}</h1>
+        <p>${isNew
+          ? '填写基本信息并可预先挑选参考图，点击右上角「保存」创建资产'
+          : `${a.kind_label} · ${isGlobal ? '全局资产池（各项目共享引用，不属于单个项目）'
+             : '本项目资产'} · ${a.ref_images.length} 张参考图 · 被 ${a.ref_shot_count} 条镜头引用`}</p>
         <div class="right">
-          ${canEdit ? '<button class="btn primary" id="ad-save">保存</button>' : ''}
-          ${canEdit ? '<button class="btn danger-solid" id="ad-del">删除</button>' : ''}
+          ${canEdit ? `<button class="btn primary" id="ad-save">${isNew ? '保存并创建' : '保存'}</button>` : ''}
+          ${!isNew && canEdit ? '<button class="btn danger-solid" id="ad-del">删除</button>' : ''}
         </div>
       </div>
 
@@ -131,9 +162,38 @@ export async function renderDetail(id) {
                        placeholder="逗号分隔"${canEdit ? '' : ' disabled'}>
 
                 <label for="ad-prompt" class="top">一致性提示词</label>
-                <textarea id="ad-prompt" class="ctl" rows="5" maxlength="1000"
-                          placeholder="跨镜头必须长一样的细节"${canEdit ? '' : ' disabled'}
-                    >${escapeHtml(a.consistency_prompt)}</textarea>
+                <div class="ad-prompt-col">
+                  <textarea id="ad-prompt" class="ctl" rows="5" maxlength="1000"
+                            placeholder="可先写几个关键特征词，再点下方「AI 完善提示词」扩写润色"${canEdit ? '' : ' disabled'}
+                      >${escapeHtml(a.consistency_prompt)}</textarea>
+                  ${canEdit && store.can('job:submit') && store.currentId ? (() => {
+                    const textOpts = data.textOptions || [];
+                    const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
+                    const preferred = textOpts.find((o) => o.backend === 'local' && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                      || textOpts.find((o) => o.backend === 'local' && !isBadHealth(o))
+                      || textOpts.find((o) => o.health_state === 'ok' || o.validation_state === 'ok')
+                      || textOpts[0];
+                    const optHtml = textOpts.map((o, idx) => {
+                      const val = `${o.backend}|${o.provider}|${o.model}`;
+                      const sel = preferred && o === preferred ? ' selected' : (!preferred && idx === 0 ? ' selected' : '');
+                      const tag = o.backend === 'cloud' ? '云端' : '本地';
+                      const warn = isBadHealth(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
+                        : (o.validation_state === 'ok' ? '（已验证）' : '');
+                      return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
+                    }).join('');
+                    return `
+                    <div class="ad-ai-bar">
+                      <select class="ctl sm ad-ai-model" id="ad-ai-model" aria-label="选择文本模型">
+                        ${optHtml || '<option value="">暂无可用文本模型</option>'}
+                      </select>
+                      <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
+                    </div>
+                    <div class="ad-ai-feedback">
+                      <span class="t-dim" id="ad-ai-status" role="status"></span>
+                      <button type="button" class="btn xs ghost" id="ad-ai-undo" hidden>撤销还原</button>
+                    </div>`;
+                  })() : ''}
+                </div>
 
                 <span class="pf-label">归属</span>
                 ${isGlobal
@@ -141,16 +201,16 @@ export async function renderDetail(id) {
                     + '（可能正被多个项目的镜头引用，收回会让引用悬空）</span>'
                   : (store.isManager
                       ? `<label class="chk"><input type="checkbox" id="ad-global">
-                           <span>升为全局资产（id 不变，现有引用照旧有效）</span></label>`
-                      : '<span class="t-dim">本项目资产（升为全局只有管理员能做）</span>')}
+                           <span>${isNew ? '放进全局资产池（各项目都能引用，不属于当前项目）' : '升为全局资产（id 不变，现有引用照旧有效）'}</span></label>`
+                      : '<span class="t-dim">本项目资产（全局资产只有管理员能建）</span>')}
               </div>
-              <p class="modal-meta">创建于 ${a.created_at}　最后修改 ${a.updated_at}
-                ${canEdit ? '' : '　· 你对此资产只读'}</p>
+              ${isNew ? '<p class="modal-meta">同一范围、同一类型里名称唯一；重名说明该合并，不是新建。</p>'
+                : `<p class="modal-meta">创建于 ${a.created_at}　最后修改 ${a.updated_at}${canEdit ? '' : '　· 你对此资产只读'}</p>`}
               ${a.ref_shot_count ? `<p class="note" style="margin-top:8px">当前被 <b>${a.ref_shot_count}</b> 条镜头引用${signedCount ? `（含 <b>${signedCount}</b> 条已签字正式产物）` : ''}${impactCounts?.stale ? `，其中 <b>${impactCounts.stale}</b> 镜源已过期` : ''}；修改一致性提示词或更换封面后，相关镜头产物将标记为源已变。</p>` : ''}
             </div>
           </div>
 
-          ${(() => {
+          ${isNew ? '' : (() => {
             const miss = missingOf(a, data.profile, variants);
             return `<div class="card">
             <div class="card-head"><h2>还缺什么</h2>
@@ -165,9 +225,9 @@ export async function renderDetail(id) {
           </div>`;
           })()}
 
-          ${data.profileError ? `<div class="card"><div class="bar bad">
+          ${!isNew && data.profileError ? `<div class="card"><div class="bar bad">
             人物档案读不到：${escapeHtml(data.profileError)}</div></div>` : ''}
-          ${a.kind === 'character' && !data.profileError ? `
+          ${!isNew && a.kind === 'character' && !data.profileError ? `
           <div class="card">
             <div class="card-head"><h2>人物档案</h2>
               <span class="sub">${data.profile && data.profile.exists ? '最后改于 ' + escapeHtml(data.profile.updated_at) : '还没写过'}</span>
@@ -185,9 +245,9 @@ export async function renderDetail(id) {
                 上面那一格讲"他画出来必须长什么样"。这里只读，改在资产创作。</p>
             </div>
           </div>` : ''}
-          ${data.variantsError ? `<div class="card"><div class="bar bad">
+          ${!isNew && data.variantsError ? `<div class="card"><div class="bar bad">
             形态清单读不到：${escapeHtml(data.variantsError)}</div></div>` : ''}
-          ${!data.variantsError ? `
+          ${!isNew && !data.variantsError ? `
           <div class="card">
             <div class="card-head"><h2>命名形态</h2>
               <span class="sub">${variants.length} 个 · 图跟着形态走</span>
@@ -229,15 +289,16 @@ export async function renderDetail(id) {
             <div class="card-head"><h2>参考图</h2>
               <span class="sub">第一张是封面</span>
               <div class="right">
-                ${a.kind === 'character' && store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
+                ${!isNew && a.kind === 'character' && store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
                   ? '<button class="btn sm" data-appearance-open>角色出镜对照</button>' : ''}
-                ${canEdit ? `<label class="btn sm ad-upload">上传参考图
-                  <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
+                ${canEdit ? `<label class="btn sm ad-upload">${isNew ? '预选参考图' : '上传参考图'}
+                  <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp"${isNew ? ' multiple' : ''} hidden>
                 </label>` : ''}
               </div></div>
             <div class="card-body">
-              <div class="ad-imgs">
-                ${a.ref_images.map((p, i) => `
+              <div class="ad-imgs" data-ad-imgs>
+                ${isNew ? '<p class="t-dim">可先预选参考图（第一张将作为封面），创建资产时一并上传；也可以先建档，稍后在「资产创作」生图或补传。</p>'
+                  : (a.ref_images.map((p, i) => `
                   <figure class="ad-img${i === 0 ? ' cover' : ''}">
                     <img src="${escapeHtml(`/files/${p}`)}" alt="参考图 ${i + 1}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}">
                     <figcaption>
@@ -248,13 +309,13 @@ export async function renderDetail(id) {
                     ${referenceActions(p, a.image_purposes?.[p], canEdit,
                       Boolean(store.currentEpisodeId && store.can('job:submit')))}
                   </figure>`).join('')
-                  || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，第一张自动为封面。</p>'}
+                  || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，第一张自动为封面。</p>')}
               </div>
               ${canEdit ? `<p class="modal-meta">支持 PNG / JPEG / WebP（≤20MB）。</p>` : ''}
             </div>
           </div>
 
-          <div class="card">
+          ${isNew ? '' : `<div class="card">
             <div class="card-head"><h2>最近生成记录</h2>
               <span class="sub">${(data.gens || []).length} 条 · 只读</span>
               <div class="right"><button class="btn sm" data-goto-studio>去生成</button></div></div>
@@ -316,7 +377,7 @@ export async function renderDetail(id) {
                 </div>
               </details>
             </div>
-          </div>
+          </div>`}
         </div>
       </div>
 
@@ -347,8 +408,13 @@ export function mountDetail(root, id) {
   root.querySelectorAll('[data-back]').forEach((el) => el.addEventListener('click', back));
 
   if (!cache || cache.error) return;
+  const isNew = Boolean(cache.isNew);
   const a = cache.asset;
-  bindReferenceActions(root, a);
+  if (isNew) {
+    root.querySelector('#ad-name')?.focus();
+  } else {
+    bindReferenceActions(root, a);
+  }
   root.querySelectorAll('[data-appearance-open]').forEach((btn) => {
     btn.addEventListener('click', () => openCharacterAppearances(a, cache.variants || []));
   });
@@ -393,7 +459,7 @@ export function mountDetail(root, id) {
     const name = root.querySelector('#ad-name').value.trim();
     if (!name) { root.querySelector('#ad-name').focus(); return; }
     const globalEl = root.querySelector('#ad-global');
-    const ok = await run('保存', () => api.updateAsset(id, {
+    const payload = {
       kind: root.querySelector('#ad-kind').value,
       name,
       summary: root.querySelector('#ad-summary').value.trim(),
@@ -401,20 +467,178 @@ export function mountDetail(root, id) {
       tags: split(root.querySelector('#ad-tags').value),
       aliases: split(root.querySelector('#ad-aliases').value),
       scope: globalEl?.checked ? 'global' : 'project',
-      // 带回"我看过的那一版"的令牌：别人在这期间改过就回 409，不把他写的覆盖掉。
-      // 失败时 run() 把服务端的整句话弹出来，其中就写了"这次没有保存、下一步做什么"，
-      // 而弹窗不关、字段里的字都还在。
+    };
+    if (isNew) {
+      let created = null;
+      const ok = await run('创建资产', async () => {
+        created = await api.createAsset(store.currentId, payload);
+        for (const item of pendingImages) {
+          await api.uploadAssetImage(created.id, item.file);
+        }
+      }, { btn: saveBtn });
+      if (!ok || !created) return;
+      pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+      pendingImages = [];
+      openDetail('assets', created.id);
+      return;
+    }
+    const ok = await run('保存', () => api.updateAsset(id, {
+      ...payload,
       seen_version: a.version || '',
     }), { btn: saveBtn });
     if (ok) refresh();
   });
 
+  const aiBtn = root.querySelector('#ad-ai-refine');
+  const aiStatus = root.querySelector('#ad-ai-status');
+  const aiUndo = root.querySelector('#ad-ai-undo');
+  let prevPromptBeforeAi = null;
+  aiUndo?.addEventListener('click', () => {
+    const promptEl = root.querySelector('#ad-prompt');
+    if (promptEl && prevPromptBeforeAi !== null) {
+      promptEl.value = prevPromptBeforeAi;
+      promptEl.focus();
+      prevPromptBeforeAi = null;
+      aiUndo.hidden = true;
+      if (aiStatus) aiStatus.textContent = '已还原为润色前的关键词';
+    }
+  });
+  aiBtn?.addEventListener('click', async () => {
+    const promptEl = root.querySelector('#ad-prompt');
+    const name = root.querySelector('#ad-name')?.value.trim() || '';
+    const summary = root.querySelector('#ad-summary')?.value.trim() || '';
+    const draftPrompt = promptEl?.value.trim() || '';
+    if (!name && !summary && !draftPrompt) {
+      if (aiStatus) aiStatus.textContent = '请先填写名称或几个关键词再试';
+      promptEl?.focus();
+      return;
+    }
+    aiBtn.disabled = true;
+    if (aiStatus) aiStatus.textContent = '正在检查可用文本模型…';
+    try {
+      const options = await api.providerOptions();
+      if (!aiBtn.isConnected) return;
+      const textOpts = (options || []).filter((o) => o.capability === 'text');
+      const modelSel = root.querySelector('#ad-ai-model');
+      const picked = modelSel?.value ? modelSel.value.split('|') : null;
+      const chosen = picked && picked.length === 3
+        ? textOpts.find((o) => o.backend === picked[0] && o.provider === picked[1] && o.model === picked[2])
+        : null;
+      const healthy = textOpts.filter((o) => o.health_state === 'ok');
+      const pool = healthy.length ? healthy : textOpts;
+      const slot = chosen || pool.find((o) => o.backend === 'local') || pool[0];
+      if (!slot) {
+        if (aiStatus) aiStatus.textContent = '暂无可用文本模型，请先到「模型中心」配置文本槽位';
+        return;
+      }
+      if (slot.backend === 'cloud') {
+        const go = await confirmDanger({
+          title: '使用云端文本模型完善提示词',
+          danger: false,
+          okText: '确认提交',
+          body: `<p>当前将使用云端文本模型 <b>${escapeHtml(slot.adapter_label || slot.provider)} / ${escapeHtml(slot.model)}</b> 扩写提示词，可能产生少量云端调用费用。</p>`,
+        });
+        if (!go || !aiBtn.isConnected) {
+          if (aiStatus) aiStatus.textContent = '';
+          return;
+        }
+      }
+      const kind = root.querySelector('#ad-kind')?.value || 'character';
+      const operation = kind === 'scene' ? 'scene_setting' : kind === 'prop' ? 'prop_setting' : 'character_profile';
+      if (aiStatus) aiStatus.textContent = `正在提交给 ${slot.adapter_label || slot.provider} / ${slot.model}…`;
+      const submitted = await api.assetGenerationSubmit(store.currentId, {
+        operation,
+        target_asset_id: isNew ? null : Number(id),
+        text_mode: 'expand',
+        target_field: 'consistency_prompt',
+        instruction: '根据已有关键词、名称与简介，扩写并润色为可直接用于生图的一致性提示词，突出跨镜头固定不变的外形、配色、材质与特征细节，不要包含一次性动作。',
+        draft_name: name,
+        draft_summary: summary,
+        draft_consistency_prompt: draftPrompt,
+        execution_mode: slot.backend,
+        provider_code: slot.provider,
+        model_code: slot.model,
+        user_confirmed_cloud: slot.backend === 'cloud',
+        idempotency_key: `ad-refine-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      });
+      if (!aiBtn.isConnected) return;
+      if (aiStatus) aiStatus.textContent = `排队/生成中（作业 #${submitted.job_id}）…`;
+      for (let i = 0; i < 60; i += 1) {
+        await new Promise((r) => setTimeout(r, 1200));
+        if (!aiBtn.isConnected) return;
+        const res = await api.assetGeneration(store.currentId, submitted.job_id);
+        if (!aiBtn.isConnected) return;
+        if (res.status === 'succeeded') {
+          const raw = String(res.fields?.consistency_prompt || res.raw || '').trim();
+          const cleaned = raw
+            .replace(/^```[\w-]*\n([\s\S]*?)\n```$/m, '$1')
+            .replace(/^#{1,6}\s*一致性提示词[^\n]*\n+/m, '')
+            .trim();
+          if (!cleaned) {
+            if (aiStatus) aiStatus.textContent = res.note || '生成完成但结果为空，可调整关键词重试';
+            return;
+          }
+          if (promptEl) {
+            prevPromptBeforeAi = promptEl.value;
+            promptEl.value = cleaned.slice(0, 1000);
+            promptEl.focus();
+          }
+          if (aiUndo) aiUndo.hidden = false;
+          if (aiStatus) aiStatus.textContent = `已直接填入提示词框（${slot.model}），核对后请点右上角「保存」`;
+          return;
+        }
+        if (!['pending', 'queued', 'running'].includes(res.status)) {
+          if (aiStatus) aiStatus.textContent = res.error_message || res.note || `生成未成功（${res.status_label || res.status}）`;
+          return;
+        }
+      }
+      if (aiStatus) aiStatus.textContent = '生成耗时较长，可稍后在「生成中心」查看进度';
+    } catch (err) {
+      if (aiStatus && aiBtn.isConnected) aiStatus.textContent = `完善失败：${err.message || err}`;
+    } finally {
+      if (aiBtn.isConnected) aiBtn.disabled = false;
+    }
+  });
+
+  const paintPending = () => {
+    const host = root.querySelector('[data-ad-imgs]');
+    if (!host) return;
+    if (!pendingImages.length) {
+      host.innerHTML = '<p class="t-dim">可先预选参考图（第一张将作为封面），创建资产时一并上传；也可以先建档，稍后在「资产创作」生图或补传。</p>';
+      return;
+    }
+    host.innerHTML = pendingImages.map((item, idx) => `
+      <figure class="ad-img${idx === 0 ? ' cover' : ''}">
+        <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}">
+        <figcaption>
+          ${idx === 0 ? '<span class="chip blue">预选封面</span>' : `<span class="t-dim">图 ${idx + 1}</span>`}
+          <button type="button" class="btn xs danger" data-rm-pending="${idx}">移除</button>
+        </figcaption>
+      </figure>`).join('');
+    host.querySelectorAll('[data-rm-pending]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.rmPending);
+        const [removed] = pendingImages.splice(i, 1);
+        if (removed?.url) URL.revokeObjectURL(removed.url);
+        paintPending();
+      });
+    });
+  };
+
   // 注意选择器：这个 input 是 id="ad-upload"（藏在 label 里），
   // 老列表页用的是 data-upload，抄过来会绑到一个不存在的节点上、上传静默失效
   root.querySelector('#ad-upload')?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const ok = await run('上传', () => api.uploadAssetImage(id, file), { btn: e.target });
+    const files = [...(e.target.files || [])];
+    if (!files.length) return;
+    if (isNew) {
+      for (const file of files) {
+        pendingImages.push({ file, url: URL.createObjectURL(file) });
+      }
+      e.target.value = '';
+      paintPending();
+      return;
+    }
+    const ok = await run('上传', () => api.uploadAssetImage(id, files[0]), { btn: e.target });
     e.target.value = '';
     if (ok) refresh();
   });

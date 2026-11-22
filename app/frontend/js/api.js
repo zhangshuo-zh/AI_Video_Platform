@@ -599,6 +599,7 @@ export const api = {
     ...(pid ? { project_id: String(pid) } : {}),
     ...(once ? { once: '1' } : {}),
   }),
+  systemResources: () => get('/api/system/resources'),
   systemGcPreview: (pid) => get('/api/system/gc-preview' + (pid ? `?project_id=${encodeURIComponent(pid)}` : '')),
   systemGcExecute: (body = {}) => send('POST', '/api/system/gc-execute', body),
 };
