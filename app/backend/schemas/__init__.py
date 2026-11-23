@@ -135,7 +135,7 @@ from .pipeline import (
 
 from .production import (
     ProductionEntry, ProductionEpisodeBrief, ProductionAssets, ProductionOverview,
-    ProductionStage, ProductionNextTask, ProductionCounts, ProductionBoard,
+    ProductionStage, ProductionNextTask, ProductionCounts, ProductionBoard, ProductionShotTask,
     ProductionMemory, ProductionDisk, ProductionTeam, ProductionMoney,
     ProductionEstimate, ProductionStats, ProjectProductionOut,
     ContextOut, PrecheckOut, ShotWorkbenchOut
@@ -320,6 +320,7 @@ __all__ = [
     "ProbeState",
     "ProductionAssets",
     "ProductionBoard",
+    "ProductionShotTask",
     "ProductionCounts",
     "ProductionDisk",
     "ProductionEntry",

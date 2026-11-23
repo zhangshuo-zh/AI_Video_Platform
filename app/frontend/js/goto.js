@@ -10,7 +10,7 @@
  * `module`／`sub` 说去哪儿，`shot_id`／`asset_id`／`job_id` 说去了要打开哪一个。
  */
 import { store } from './store.js';
-import { setJobListStatus, setParam, setSub } from './navstate.js';
+import { setJobListStatus, setParam, setSub, setShotEntry } from './navstate.js';
 import { renderView } from './router.js';
 
 /** 认不出的 entry 就什么也不做——按钮点了没反应比跳错地方好。 */
@@ -19,6 +19,9 @@ export function gotoEntry(entry) {
   if (entry.sub !== undefined && entry.sub !== null) setSub(entry.module, Number(entry.sub));
   if (entry.module === 'shot' && entry.shot_id) {
     setParam('shot', Number(entry.shot_id));
+    setShotEntry({ shotId: Number(entry.shot_id), jobId: Number(entry.job_id) || null,
+      focus: entry.focus || (entry.job_id ? 'review' : ''), pendingFocus: Boolean(entry.focus || entry.job_id),
+      reviewReturn: entry.reviewReturn, work: entry.work });
   } else if (entry.module === 'assets' && entry.asset_id) {
     setParam('assets', Number(entry.asset_id));
   } else if (entry.module === 'generate' && entry.job_id) {

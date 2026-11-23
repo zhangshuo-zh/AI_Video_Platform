@@ -2,7 +2,7 @@ import { guardEdit } from './edit-session.js';
 import { store } from './store.js';
 /** 路由：按 id 渲染视图并同步侧栏高亮、地址栏 hash。 */
 import { loadView, hasView } from './views/index.js';
-import { getParam, getSub, setParam, setSub } from './navstate.js';
+import { getParam, getSub, setParam, setSub, setShotEntry } from './navstate.js';
 import { MODULES } from './modules.js';
 import { escapeHtml, announce } from './util.js';
 import { applyPicks } from './pick.js';
@@ -112,7 +112,10 @@ export async function renderView(id) {
 
   // 换模块时把上一个模块的详情参数清掉：从资产详情跳去创作中心再跳回来，
   // 应该回到列表，而不是莫名其妙落在那条旧资产上（它可能已经被删了）。
-  if (currentId && currentId !== id) setParam(currentId, undefined);
+  if (currentId && currentId !== id) {
+    setParam(currentId, undefined);
+    if (currentId === 'shot') setShotEntry(null);
+  }
 
   // 深链可能带着已经不存在的二级页下标（撤掉成本账之后的 #projects/2 就是这种），
   // 在渲染之前钳回第一项，视图和侧栏高亮看到的才是同一个值。

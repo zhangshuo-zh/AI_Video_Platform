@@ -343,3 +343,73 @@ def test_character_appearances_select_signed_job_per_referencing_shot(as_role, c
     _sign(pid, newest["id"], c)
     assert c.get(url).json()[0]["job_id"] == newest["id"]
     assert as_role("outsider").get(url).status_code == 404
+
+
+def test_workbench_rework_submission_keeps_source_on_same_shot(as_role, clean_queue):
+    c = as_role("editor")
+    pid, eid, (sid, other) = _setup(c, n_shots=2)
+    source = _video_job(pid, eid, sid, c)
+    base = {"project_id": pid, "episode_id": eid, "shot_id": sid, "capability": "video",
+            "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1",
+            "prompt": "改过的提示词", "params": {"seconds": 1.0}, "rework_of_job_id": source["id"]}
+    assert c.post("/api/jobs", json={**base, "shot_id": other}).status_code == 422
+    assert c.post("/api/jobs", json={**base, "capability": "image"}).status_code == 422
+    assert not c.get(f"/api/shots/{other}/workbench?job_id={source['id']}").json()["videos"]["jobs"]
+    result = c.post("/api/jobs", json=base)
+    assert result.status_code == 202, result.text
+    new_id = result.json()["id"]
+    detail = c.get(f"/api/jobs/{new_id}").json()
+    assert detail["rework_of_job_id"] == source["id"]
+    assert detail["retry_of_job_id"] is None
+    assert detail["prompt_snapshot"] == base["prompt"]
+    versions = c.get(f"/api/shots/{sid}/workbench?job_id={new_id}").json()["videos"]["jobs"]
+    assert {item["job_id"]: item["rework_of_job_id"] for item in versions}[new_id] == source["id"]
+
+
+def test_episode_shot_tasks_follow_latest_video_and_current_decision(as_role, clean_queue):
+    from repositories.jobs import jobs as job_repo
+
+    c = as_role("editor")
+    pid, eid, (first, second) = _setup(c, n_shots=2)
+    source = _video_job(pid, eid, second, c)
+    asset = c.post(f"/api/projects/{pid}/assets",
+                   json={"name": "待补参考图", "kind": "character"}).json()
+    assert c.put(f"/api/shots/{first}", json={"summary": "一镜", "duration": 5,
+                                             "asset_ids": [asset["id"]]}).status_code == 200
+
+    path = f"/api/projects/{pid}/production?episode_id={eid}&include_shot_tasks=true"
+
+    def tasks():
+        response = c.get(path)
+        assert response.status_code == 200, response.text
+        return response.json()["board"]["shot_tasks"]
+
+    def sign(jid, decision):
+        response = c.post(f"/api/jobs/{jid}/review-sign",
+                          json={"anchor": "artifact", "decision": decision, "note": "核对当前版本"})
+        assert response.status_code == 200, response.text
+
+    assert [(item["group"], item["shot_id"]) for item in tasks()] == [("assets", first), ("review", second)]
+    sign(source["id"], "returned")
+    assert tasks()[1]["group"] == "rework"
+    queued = c.post("/api/jobs", json={
+        "project_id": pid, "episode_id": eid, "shot_id": second, "capability": "video",
+        "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1",
+        "prompt": "返工", "rework_of_job_id": source["id"]})
+    assert queued.status_code == 202, queued.text
+    replacement_id = queued.json()["id"]
+    assert tasks()[1]["note"] == "返工作业进行中"
+
+    import jobfiles
+
+    claimed = job_repo.claim_next("wb-next", 60)
+    assert claimed["id"] == replacement_id
+    _, outputs = jobfiles.ensure_dirs(replacement_id)
+    video = outputs / "new.mp4"
+    video.write_bytes(b"second version")
+    job_repo.succeed(replacement_id, "wb-next", "", [jobfiles.relative(video)], 1)
+    replacement = tasks()[1]
+    assert (replacement["group"], replacement["job_id"], replacement["source_job_id"],
+            replacement["replacement_ready"]) == ("rework", replacement_id, source["id"], True)
+    sign(replacement_id, "approved")
+    assert [item["group"] for item in tasks()] == ["assets"]

@@ -4323,3 +4323,30 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .asset-appearance-videos { display: grid; gap: 8px; }
 .asset-appearance-videos figure { margin: 0; }
 [data-appearance-shots] label { display: block; }
+
+.cp-multitrack { position: relative; }
+.cp-playhead { position: absolute; top: 34px; bottom: 12px; width: 2px; z-index: 3; background: var(--accent); pointer-events: none; }
+.cp-track-seg.cp-timed-segment { padding-inline: 0; min-width: 0; overflow: visible; }
+.cp-timed-segment::after { content: ""; position: absolute; inset: 0 -5px; }
+.sw-review-preview { margin-block: 12px; }
+.sw-review-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sw-other-sections > summary { cursor: pointer; margin-block: 10px; }
+#sw-review-note { width: 100%; }
+.gen-input-review details { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); }
+.gen-input-review summary { cursor: pointer; }
+.gen-input-review dd, .gen-frame { overflow-wrap: anywhere; }
+.gen-input-review dd { white-space: pre-wrap; }
+.gen-frame { display: grid; gap: 4px; margin-bottom: 6px; }
+.gen-frame img { width: 112px; max-width: 100%; border-radius: var(--r-ctl); }
+.cp-timed-segment > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+
+.pb-shot-task-group {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  padding: 8px 12px;
+}
+.pb-shot-task-group > summary { cursor: pointer; font-weight: 600; }
+.pb-shot-task-group[open] > summary { margin-bottom: 8px; }
+.pb-shot-task-group .pb-task-copy, #gen-rework-drafts .pb-task-copy { min-width: 0; overflow-wrap: anywhere; }
+.sw-task-actions { margin-bottom: 12px; flex-wrap: wrap; }

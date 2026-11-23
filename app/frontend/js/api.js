@@ -572,9 +572,10 @@ export const api = {
   // 上下文在服务端，不在 localStorage：顶栏、工作台、预检、成片四入口必须认同一个集
   context: () => get('/api/context'),
   setContext: (projectId, episodeId) => send('PUT', '/api/context', { project_id: projectId ?? null, episode_id: episodeId ?? null }),
-  production: (pid, episodeId) => get(`/api/projects/${pid}/production?`
-    + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}) })),
-  shotWorkbench: (sid) => get(`/api/shots/${sid}/workbench`),
+  production: (pid, episodeId, includeShotTasks = false) => get(`/api/projects/${pid}/production?`
+    + new URLSearchParams({ ...(episodeId ? { episode_id: episodeId } : {}),
+      ...(includeShotTasks ? { include_shot_tasks: true } : {}) })),
+  shotWorkbench: (sid, jobId) => get(`/api/shots/${sid}/workbench${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''}`),
   extractShotFrame: (sid, body = {}) => send('POST', `/api/shots/${sid}/extract-frame`, body),
   assetImpact: (id) => get(`/api/assets/${id}/impact`),
   precheckShot: (sid, params = {}) => get(`/api/precheck/shot/${sid}?` + new URLSearchParams(params)),

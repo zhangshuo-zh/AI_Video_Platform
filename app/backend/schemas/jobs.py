@@ -52,6 +52,7 @@ class JobSubmitIn(BaseModel):
     model_code: str = Field(default="", max_length=120)
     prompt: str = Field(min_length=1, max_length=8000)
     params: dict = {}
+    rework_of_job_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     input_refs: list[str] = Field(default_factory=list, max_length=20)
     idempotency_key: str | None = Field(default=None, max_length=120,
                                          pattern=r"^[A-Za-z0-9._:-]+$")
@@ -87,6 +88,7 @@ class JobOut(BaseModel):
     started_at: str | None
     finished_at: str | None
     elapsed_ms: int | None
+    rework_of_job_id: int | None = None
     retry_of_job_id: int | None
     error_code: str | None
     error_message: str | None
@@ -146,6 +148,7 @@ class JobOut(BaseModel):
             source_version=(row["source_version"] if "source_version" in keys else "") or "",
             queued_at=row["queued_at"], started_at=row["started_at"],
             finished_at=row["finished_at"], elapsed_ms=row["elapsed_ms"],
+            rework_of_job_id=row["rework_of_job_id"] if "rework_of_job_id" in keys else None,
             retry_of_job_id=row["retry_of_job_id"],
             error_code=row["error_code"], error_message=row["error_message"],
             error_label=ERROR_LABELS.get(row["error_code"] or "", row["error_code"] or ""),

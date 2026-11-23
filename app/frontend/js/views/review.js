@@ -13,7 +13,7 @@ import { gotoEntry } from '../goto.js';
 
 
 import { store } from '../store.js';
-import { currentSubTab, getSub, setSub } from '../navstate.js';
+import { currentSubTab, getSub, setSub, takeReviewReturn } from '../navstate.js';
 import { bindSubChips, emptyBox, escapeHtml, errorBox, run, skeleton, subChipRow } from '../util.js';
 import { checklistHtml } from './review-checklist.js';
 import { bindActions, renderActions } from './review-actions.js';
@@ -137,7 +137,7 @@ export default {
         <td class="r">${canSign ? `<input type="checkbox" class="ctl" data-pick="${q.job_id}"
                ${picked.has(q.job_id) ? 'checked' : ''}
                aria-label="选中作业 #${q.job_id} 准备批量签字">` : ''}</td>
-        <td class="r">${q.shot_id ? `<button class="btn xs" data-goto-shot="${q.shot_id}"
+        <td class="r">${q.shot_id ? `<button class="btn xs" data-goto-shot="${q.shot_id}" data-review-version="${q.job_id}"
                ${q.episode_id ? `data-ep="${q.episode_id}"` : ''}
                title="直接打开这一镜的生产工作台，看它的产物、参数与签字">去这一镜</button>` : ''}
           <button class="btn sm primary" data-open-job="${q.job_id}">查看</button></td>
@@ -343,12 +343,26 @@ export default {
         refresh();
       });
     });
+    const returnContext = takeReviewReturn();
+    if (returnContext?.projectId === store.currentId) {
+      requestAnimationFrame(() => {
+        const button = root.querySelector(`[data-review-version="${returnContext.jobId}"]`);
+        if (button) {
+          button.focus({ preventScroll: true });
+          root.scrollTop = returnContext.innerTop;
+          window.scrollTo(0, returnContext.scrollY);
+        }
+      });
+    }
     root.querySelectorAll('[data-goto-shot]').forEach((btn) => {
       btn.addEventListener('click', () => {
         // §12.1「审核页面直接定位镜头」：审核人关心的常常不是这条作业，
         // 而是「这一镜到底怎么回事」——把他直接放到那一镜的工作台上
         gotoEntry({ module: 'shot', sub: 0, shot_id: Number(btn.dataset.gotoShot),
-                    episode_id: btn.dataset.ep ? Number(btn.dataset.ep) : null });
+                    episode_id: btn.dataset.ep ? Number(btn.dataset.ep) : null,
+                    job_id: Number(btn.dataset.reviewVersion),
+                    reviewReturn: { jobId: Number(btn.dataset.reviewVersion),
+                      projectId: store.currentId, scrollY: window.scrollY, innerTop: root.scrollTop } });
       });
     });
     root.querySelectorAll('[data-open-job]').forEach((btn) => {

@@ -202,7 +202,11 @@ def build_export_bundle_zip(composition_id: int) -> tuple[bytes, str]:
         srt_rel = f"subtitles/{ep_tag}.srt"
         sub_list = timeline.get("subtitles") or []
         sub_bytes: bytes | None = None
-        if sub_list:
+        if sub_list and isinstance(sub_list[0].get("text"), str):
+            sub_bytes = sub_list[0]["text"].encode("utf-8")
+            if sub_list[0].get("suffix") == ".vtt":
+                srt_rel = f"subtitles/{ep_tag}.vtt"
+        elif sub_list:
             sp = str(sub_list[0].get("path") or "")
             sub_file = (jobfiles.resolve_subtitle(project_id, sp)
                         if sp.startswith("subtitles/") else jobfiles.resolve_artifact(sp))

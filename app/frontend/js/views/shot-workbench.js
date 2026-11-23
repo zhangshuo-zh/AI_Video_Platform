@@ -1,13 +1,13 @@
+import { openShotTask, readReworkDraft, reworkPrefill, SHOT_TASK_GROUPS, shotTaskFocus, taskAtCursor, taskCursor } from '../episode-work.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { bindModalDismiss, escapeHtml, run } from '../util.js';
-import { getParam, setJobPrefill, setParam, setSub } from '../navstate.js';
+import { getParam, getShotEntry, setJobPrefill, setParam, setReviewReturn, setShotEntry, setSub } from '../navstate.js';
 import { renderView } from '../router.js';
 import { jobLabel, jobTone, publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
 import { checklistHtml } from './review-checklist.js';
-// 这一屏正在审的那条作业；勾清单要写回它
-let swReviewJob = null;
+let reviewDraft = null;
 
 /**
  * 单镜头生产工作台（0037，任务书 §6）。这是本次改造的业务闭环：
@@ -39,16 +39,22 @@ function jobChip(job) {
   return chip(jobTone(job.status), jobLabel(job.status, job.status), job.error_message || '');
 }
 
+function videoArtifactIndex(job) {
+  return job.status === 'succeeded'
+    ? job.artifacts.findIndex((a) => a.exists && /\.(mp4|webm|mov|m4v)$/i.test(a.path)) : -1;
+}
+
 function artifactPreview(job) {
   if (!job || !job.artifacts || !job.artifacts.length) return '<span class="hint">产物不可读或已清理</span>';
-  const first = job.artifacts.find((a) => a.exists) || job.artifacts[0];
-  const name = (first.path || '').split('/').pop() || '';
-  const ext = name.split('.').pop().toLowerCase();
-  if (/^(mp4|webm|mov|m4v)$/.test(ext)) {
-    return `<video controls preload="metadata" class="sw-preview-video" src="${api.jobArtifactUrl(job.job_id, 0)}"></video>`;
+  const index = job.artifacts.findIndex((a) => a.exists && /\.(mp4|webm|mov|m4v|png|jpg|jpeg|webp)$/i.test(a.path));
+  if (index < 0) return '<span class="hint">产物不可预览或已清理</span>';
+  const name = job.artifacts[index].path.split('/').pop() || '';
+  const src = api.jobArtifactUrl(job.job_id, index);
+  if (/\.(mp4|webm|mov|m4v)$/i.test(name)) {
+    return `<video controls playsinline preload="none" class="sw-preview-video" src="${src}"></video>`;
   }
-  if (/^(png|jpg|jpeg|webp)$/.test(ext)) {
-    return `<img src="${api.jobArtifactUrl(job.job_id, 0)}" alt="${escapeHtml(name)}" class="sw-preview-img">`;
+  if (/\.(png|jpg|jpeg|webp)$/i.test(name)) {
+    return `<img loading="lazy" src="${src}" alt="${escapeHtml(name)}" class="sw-preview-img">`;
   }
   return `<span class="hint mono">${escapeHtml(name)}</span>`;
 }
@@ -270,24 +276,40 @@ function audioBlock(d) {
 
 
 /** ⑦ 审核这一段：待签作业、就地签字、以及共用的质量清单面板。 */
-function reviewBlock(d, cl) {
+function reviewBlock(d, target, checklist, missing) {
+  const candidates = [...d.videos.jobs, ...d.keyframes.jobs].filter((job) => job.status === 'succeeded');
+  const note = reviewDraft && reviewDraft.jobId === target?.job_id ? reviewDraft.note : '';
   const canSign = store.can('review:sign');
-  const pending = d.review.pending || [];
-  const summary = `<p class="hint">已签 ${d.review.signs.length} 条；待签 ${pending.length} 条。
-      正式产物只认「最新一条成功且签过通过」的作业，与成片取片同一条口径。</p>`;
-  const rows = pending.length ? `<ul class="hint">${pending.map((j) => `<li>
-      <b>作业 #${j.job_id}</b> ${escapeHtml((j.prompt || '').slice(0, 40))}
-      <span class="t-dim">${escapeHtml(j.finished_at || '')}</span>
-      ${canSign ? `<div class="row" style="gap:6px;display:inline-flex;margin-left:6px">
-        <button class="btn xs${cl && !cl.can_approve ? '' : ' primary'}"
-                data-jsign="approved" data-job="${j.job_id}"
-                ${cl && !cl.can_approve ? 'disabled title="' + escapeHtml(cl.hint) + '"' : ''}>通过</button>
-        <button class="btn xs" data-jsign="returned" data-job="${j.job_id}">退回</button>
-        <button class="btn xs danger" data-jsign="rejected" data-job="${j.job_id}">驳回</button>
-      </div>` : ''}</li>`).join('')}</ul>` : '';
-  return `${summary}${rows}${checklistHtml(cl)}
-    <p class="hint">要看这一项目全部待签的产物，去审核中心·产物审核；
-      但**签字这件事在这一屏就能做完**。</p>`;
+  const sign = target?.sign;
+  const rework = ['returned', 'rejected'].includes(sign?.decision) && store.can('job:submit');
+  const savedDraft = rework && readReworkDraft(d.project_id, d.episode_id, d.shot_id, target.job_id);
+  const sourceUnavailable = target?.rework_of_job_id && target.capability === 'video'
+    && !d.videos.jobs.some((job) => job.job_id === target.rework_of_job_id && videoArtifactIndex(job) >= 0);
+  return `
+    ${missing ? '<p class="bar warn">指定版本已不在该镜头，未选择其他版本。</p>' : ''}
+    ${candidates.length ? `<label>审核版本 <select class="ctl" id="sw-review-version">
+      <option value="" disabled ${target ? '' : 'selected'}>选择一个版本</option>
+      ${candidates.map((j) => `<option value="${j.job_id}" ${target?.job_id === j.job_id ? 'selected' : ''}>
+        #${j.job_id} · ${j.capability === 'image' ? '关键帧' : '视频'} · ${escapeHtml(j.model)}</option>`).join('')}
+    </select></label>` : '<p class="hint">还没有可审核的产物。</p>'}
+    ${target ? `<div id="sw-review-target" data-review-job="${target.job_id}">
+      <div class="sw-review-preview">${artifactPreview(target)}</div>
+      ${sign?.note ? `<p class="sw-review-note">审核意见 · ${escapeHtml(sign.note)}</p>` : ''}
+      ${sourceUnavailable ? '<p class="hint">返工来源视频不可播放，可继续审核新版。</p>' : ''}
+      <div class="actions">
+        ${target.capability === 'video' && d.videos.jobs.filter((j) => videoArtifactIndex(j) >= 0).length > 1 ? '<button type="button" class="btn" id="sw-ab-review">对比这一版</button>' : ''}
+        ${rework ? `<button type="button" class="btn primary" id="sw-rework">${savedDraft ? '继续返工草稿' : '按此意见返工'}</button>` : ''}
+      </div>
+      ${checklistHtml(checklist)}
+      ${canSign ? `<label for="sw-review-note">审核意见</label>
+        <textarea class="ctl" id="sw-review-note" maxlength="500" rows="2">${escapeHtml(note)}</textarea>
+        <div class="actions">
+          ${target.capability === 'video' ? '<button class="btn xs" type="button" id="sw-note-time">插入当前播放时间</button>' : ''}
+          <button class="btn xs primary" data-jsign="approved" ${checklist?.can_approve ? '' : 'disabled'}>通过</button>
+          <button class="btn xs" data-jsign="returned">退回</button>
+          <button class="btn xs danger" data-jsign="rejected">驳回</button>
+        </div>` : ''}
+    </div>` : ''}`;
 }
 
 function readyBlock(d) {
@@ -345,8 +367,26 @@ export default {
         </section>`;
     }
     let d;
+    let entry = getShotEntry()?.shotId === Number(shotId) ? getShotEntry() : null;
+    if (!entry) {
+      const episodeId = store.currentEpisodeId;
+      const cursor = taskCursor(project.id, episodeId);
+      if (cursor?.shot_id === Number(shotId)) {
+        try {
+          const { board } = await api.production(project.id, episodeId, true);
+          if (getParam('shot') === shotId && store.currentId === project.id
+              && store.currentEpisodeId === episodeId && !getShotEntry()) {
+            const current = board?.shot_tasks.find((task) => task.group === cursor.group
+              && task.shot_id === cursor.shot_id);
+            entry = { shotId: Number(shotId), work: cursor, jobId: current?.job_id,
+              focus: current ? shotTaskFocus(current) : '', pendingFocus: true };
+            setShotEntry(entry);
+          }
+        } catch { /* 工作台其余部分独立可读 */ }
+      }
+    }
     try {
-      d = await api.shotWorkbench(shotId);
+      d = await api.shotWorkbench(shotId, entry?.jobId);
     } catch (err) {
       return `<section class="view on"><div class="page-head"><h1>镜头工作台</h1></div>
         <div class="card"><div class="empty"><div class="empty-t">读不到这一镜</div>
@@ -356,10 +396,16 @@ export default {
     // ⑦ 就地审核（任务书 §12.1「视频结果直接提交审核」）：
     // 待签的产物就摆在镜头详情里，不用再跑一趟审核中心。清单读不到时只少一块面板，
     // 不挡住这一镜的其余七段。
-    const reviewTarget = d.review.pending[0] || null;
-    swReviewJob = reviewTarget ? reviewTarget.job_id : null;
+    const work = entry?.work?.episodeId === d.episode_id && entry.work.projectId === d.project_id
+      && d.project_id === store.currentId && d.episode_id === store.currentEpisodeId ? entry.work : null;
+    const wanted = entry?.jobId ?? d.review.pending[0]?.job_id;
+    const reviewTarget = [...d.videos.jobs, ...d.keyframes.jobs]
+      .find((job) => job.job_id === wanted && job.status === 'succeeded');
+    const reviewing = ['review', 'compare'].includes(entry?.focus);
+    const directed = reviewing || entry?.focus === 'assets' || entry?.focus === 'job';
+    const currentJob = entry?.focus === 'job' ? d.videos.jobs.find((job) => job.job_id === entry.jobId) : null;
     let cl = null;
-    if (reviewTarget) {
+    if (reviewTarget && store.can('review:sign')) {
       try { cl = await api.jobChecklist(reviewTarget.job_id); } catch { cl = null; }
     }
 
@@ -367,23 +413,33 @@ export default {
       <h1>第 ${d.setting.seq} 镜</h1>
       <p>${escapeHtml((d.setting.summary || '').slice(0, 80))}</p>
       <div class="right">
-        <button class="btn" id="sw-back">分镜表</button>
+        <button class="btn" id="sw-back">${work ? '返回本集待办' : entry?.reviewReturn ? '返回审核队列' : '分镜表'}</button>
         <button class="btn" id="sw-edit">编辑设定</button>
-        <button class="btn primary" id="sw-generate">提交生成</button>
+        <button class="btn${reviewing ? '' : ' primary'}" id="sw-generate">提交生成</button>
       </div></div>`;
 
     const section = (title, body) => `<div class="card u-mb-12">
       <div class="card-head"><h2>${title}</h2></div>
       <div class="card-body">${body}</div></div>`;
 
-    return `<section class="view on">${head}
-      ${section('① 镜头设定', settingForm(d))}
-      ${section('② 资产引用', refsBlock(d))}
-      ${section(`③ 关键帧（${d.keyframes.jobs.length} 条记录）`, jobRows(d.keyframes.jobs, d.keyframes.formal_job_id)
+    const review = section('审核版本', reviewBlock(d, reviewTarget, cl, entry?.jobId && !reviewTarget));
+    const references = section('资产引用', refsBlock(d));
+    return `<section class="view on" data-shot-project="${d.project_id}" data-shot-episode="${d.episode_id}">${head}
+      ${work ? `<div class="actions sw-task-actions">
+        <strong>${SHOT_TASK_GROUPS[work.group]} · 第 ${work.seq} 镜</strong>
+        <button type="button" class="btn primary" id="sw-next-task">继续下一镜</button>
+        <span role="status" id="sw-task-status"></span></div>` : ''}
+      ${currentJob ? section('当前作业', `<p>#${currentJob.job_id} · ${jobChip(currentJob)}</p>
+        <button type="button" class="btn" data-task-job="${currentJob.job_id}">查看作业与诊断</button>`) : ''}
+      ${reviewing ? review : ''}
+      ${entry?.focus === 'assets' ? references + section('首尾帧与镜头设定', settingForm(d)) : ''}
+      ${directed ? '<details class="sw-other-sections"><summary>展开完整镜头档案</summary>' : ''}
+      ${entry?.focus !== 'assets' ? section('镜头设定', settingForm(d)) + references : ''}
+      ${section(`关键帧（${d.keyframes.jobs.length} 条记录）`, jobRows(d.keyframes.jobs, d.keyframes.formal_job_id)
         + '<p class="hint">「正式」＝最新一条签过通过的关键帧作业。要换正式结果，去审核中心签另一条。</p>')}
-      ${section(`④ 视频（${d.videos.jobs.length} 条记录）`, (() => {
+      ${section(`视频（${d.videos.jobs.length} 条记录）`, (() => {
         const candidates = (d.videos.jobs || []).filter(
-          (j) => j.status === 'succeeded' && (j.artifacts || []).length > 0,
+          (j) => videoArtifactIndex(j) >= 0,
         );
         const abToolbar = candidates.length >= 2
           ? `<div class="actions"><button class="btn sm primary" type="button" id="sw-ab-compare">🎬 同镜 A/B 同步对比（${candidates.length} 候选）</button></div>`
@@ -392,10 +448,11 @@ export default {
           + jobRows(d.videos.jobs, d.videos.formal_job_id)
           + (d.videos.source_stale ? '<p class="modal-err">这一镜的分镜或资产在生成之后改过，最新产物可能已过期。</p>' : '');
       })())}
-      ${section('⑤ 音频', audioBlock(d))}
-      ${section('⑥ 预览与粗剪', previewStageHtml(d))}
-      ${section('⑦ 审核', reviewBlock(d, cl))}
-      ${section('⑧ 生产完成条件', readyBlock(d))}
+      ${section('音频', audioBlock(d))}
+      ${section('预览与粗剪', previewStageHtml(d))}
+      ${!reviewing ? review : ''}
+      ${section('生产完成条件', readyBlock(d))}
+      ${directed ? '</details>' : ''}
       <div class="modal" id="sw-modal" hidden><div class="modal-box">
         <div class="modal-head neutral">编辑镜头设定</div>
         <div class="modal-body"><div class="form-grid">
@@ -436,28 +493,30 @@ export default {
       </div></div>
       ${(() => {
         const candidates = (d.videos.jobs || []).filter(
-          (j) => j.status === 'succeeded' && (j.artifacts || []).length > 0,
+          (j) => videoArtifactIndex(j) >= 0,
         );
         if (candidates.length < 2) return '';
-        const aDef = candidates[0];
-        const bDef = candidates[1];
+        const aDef = candidates.find((job) => job.job_id === reviewTarget?.job_id) || candidates[0];
+        const bDef = candidates.find((job) => job.job_id === aDef.rework_of_job_id)
+          || candidates.find((job) => job.job_id !== aDef.job_id);
         const optHtml = (selId) => candidates.map((j) => {
           const signTxt = j.sign?.decision === 'approved' ? ' · 已通过' : '';
-          return `<option value="${j.job_id}"${j.job_id === selId ? ' selected' : ''}>#${j.job_id} · ${escapeHtml(j.provider)}/${escapeHtml(j.model)}${signTxt}</option>`;
+          return `<option value="${j.job_id}" data-index="${videoArtifactIndex(j)}"${j.job_id === selId ? ' selected' : ''}>#${j.job_id} · ${escapeHtml(j.provider)}/${escapeHtml(j.model)}${signTxt}</option>`;
         }).join('');
-        return `<div class="modal" id="sw-ab-modal" hidden><div class="modal-box wb-ab-box">
+        return `<div class="modal" id="sw-ab-modal"
+          data-compares-source="${Boolean(aDef.rework_of_job_id && bDef.job_id === aDef.rework_of_job_id)}" hidden><div class="modal-box wb-ab-box">
           <div class="modal-head neutral">同镜多候选视频 A/B 同步对比</div>
           <div class="modal-body">
             <div class="wb-ab-grid">
               <div class="wb-ab-pane">
                 <label class="hint" for="sw-ab-sel-a">候选 A</label>
                 <select class="ctl sm" id="sw-ab-sel-a">${optHtml(aDef.job_id)}</select>
-                <video id="sw-ab-vid-a" controls preload="metadata" src="${api.jobArtifactUrl(aDef.job_id, 0)}"></video>
+                <video id="sw-ab-vid-a" controls preload="none" src="${api.jobArtifactUrl(aDef.job_id, videoArtifactIndex(aDef))}"></video>
               </div>
               <div class="wb-ab-pane">
                 <label class="hint" for="sw-ab-sel-b">候选 B</label>
                 <select class="ctl sm" id="sw-ab-sel-b">${optHtml(bDef.job_id)}</select>
-                <video id="sw-ab-vid-b" controls preload="metadata" src="${api.jobArtifactUrl(bDef.job_id, 0)}"></video>
+                <video id="sw-ab-vid-b" controls preload="none" src="${api.jobArtifactUrl(bDef.job_id, videoArtifactIndex(bDef))}"></video>
               </div>
             </div>
             <div class="wb-ab-bar">
@@ -484,26 +543,92 @@ export default {
     const go = (entry) => {
       gotoEntry(entry);
     };
-    root.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', async () => {
-      if (!swReviewJob) return;
-      const ok = await run('记录清单', () => api.saveJobChecklist(swReviewJob, {
+    const entry = getShotEntry();
+    if (entry?.pendingFocus && entry.shotId === Number(getParam('shot'))) {
+      setShotEntry({ ...entry, pendingFocus: false });
+      const page = root.firstElementChild;
+      requestAnimationFrame(() => {
+        if (!page?.isConnected) return;
+        root.scrollTop = 0;
+        window.scrollTo(0, 0);
+      });
+    }
+    const page = root.firstElementChild;
+    const projectId = Number(page?.dataset.shotProject);
+    const episodeId = Number(page?.dataset.shotEpisode);
+    root.querySelector('#sw-next-task')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      const work = getShotEntry()?.work;
+      if (!work || work.projectId !== store.currentId || work.episodeId !== store.currentEpisodeId) return;
+      let board;
+      const ok = await run('刷新本集待办', async () => {
+        ({ board } = await api.production(work.projectId, work.episodeId, true));
+      }, { btn });
+      if (!ok || !btn.isConnected || work.projectId !== store.currentId
+          || work.episodeId !== store.currentEpisodeId) return;
+      const next = taskAtCursor(board.shot_tasks, work, { next: true });
+      if (next) openShotTask(next, work.projectId, work.episodeId);
+      else {
+        root.querySelector('#sw-task-status').textContent = '已到这组末尾，可返回本集待办查看剩余项。';
+      }
+    });
+    root.querySelector('[data-task-job]')?.addEventListener('click', (event) => {
+      go({ module: 'generate', job_id: Number(event.currentTarget.dataset.taskJob) });
+    });
+    const reviewHost = root.querySelector('#sw-review-target');
+    const jobId = Number(reviewHost?.dataset.reviewJob);
+    const note = reviewHost?.querySelector('#sw-review-note');
+    const saveDraft = () => { reviewDraft = { jobId, note: note.value }; };
+    note?.addEventListener('input', saveDraft);
+    root.querySelector('#sw-review-version')?.addEventListener('change', (event) => {
+      if (!event.target.value) return;
+      setShotEntry({ ...getShotEntry(), shotId: Number(getParam('shot')),
+        focus: 'review', jobId: Number(event.target.value) });
+      renderView('shot');
+    });
+    root.querySelector('#sw-note-time')?.addEventListener('click', () => {
+      const video = reviewHost.querySelector('video');
+      if (!video || !note) return;
+      const mark = `[${video.currentTime.toFixed(2)}s] `;
+      note.value = (mark + note.value).slice(0, note.maxLength);
+      saveDraft();
+      note.focus();
+    });
+    reviewHost?.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', async () => {
+      const ok = await run('记录清单', () => api.saveJobChecklist(jobId, {
         items: [{ code: b.dataset.check, state: b.dataset.state, note: '' }],
       }), { btn: b });
-      if (ok) renderView('shot');
+      if (ok && b.isConnected) renderView('shot');
     }));
-    root.querySelectorAll('[data-jsign]').forEach((b) => b.addEventListener('click', async () => {
-      const jobId = Number(b.dataset.job);
+    reviewHost?.querySelectorAll('[data-jsign]').forEach((b) => b.addEventListener('click', async () => {
       const ok = await run('签字', () => api.jobReviewSign(jobId, {
-        anchor: 'artifact', decision: b.dataset.jsign, note: '',
+        anchor: 'artifact', decision: b.dataset.jsign, note: note?.value.trim() || '',
       }), { btn: b });
-      if (ok) renderView('shot');
+      if (ok && b.isConnected) {
+        reviewDraft = null;
+        setShotEntry({ ...getShotEntry(), shotId: Number(getParam('shot')), focus: 'review', jobId });
+        renderView('shot');
+      }
     }));
+    root.querySelector('#sw-rework')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      const shotId = Number(getParam('shot'));
+      let prefill;
+      const ok = await run('打开返工草稿', async () => {
+        prefill = await reworkPrefill(projectId, episodeId, shotId, jobId);
+      }, { btn });
+      if (!ok || !btn.isConnected || Number(getParam('shot')) !== shotId
+          || store.currentId !== projectId) return;
+      setJobPrefill(prefill);
+      renderView('generate');
+    });
     root.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
       let entry;
       try { entry = JSON.parse(b.dataset.goto); } catch { return; }
       go(entry);
     }));
     root.querySelectorAll('[data-open-shot]').forEach((b) => b.addEventListener('click', () => {
+      setShotEntry(null);
       setParam('shot', Number(b.dataset.openShot));
       renderView('shot');
     }));
@@ -513,6 +638,13 @@ export default {
       renderView('assets');
     }));
     root.querySelector('#sw-back')?.addEventListener('click', () => {
+      if (root.querySelector('#sw-next-task')) { renderView('production'); return; }
+      const returnContext = getShotEntry()?.reviewReturn;
+      if (returnContext) {
+        setReviewReturn(returnContext);
+        renderView('review');
+        return;
+      }
       setSub('writing', 2);
       renderView('writing');
     });
@@ -752,6 +884,8 @@ export default {
     }
 
     // M4: 同镜 A/B 双栏同步播放对比弹窗
+    const autoCompare = getShotEntry()?.focus === 'compare';
+    if (autoCompare) setShotEntry({ ...getShotEntry(), focus: 'review' });
     const abModal = root.querySelector('#sw-ab-modal');
     if (abModal) {
       const vidA = root.querySelector('#sw-ab-vid-a');
@@ -781,19 +915,23 @@ export default {
         timeEl.textContent = `${cur.toFixed(1)}s / ${dur.toFixed(1)}s`;
       };
 
-      root.querySelector('#sw-ab-compare')?.addEventListener('click', () => {
+      root.querySelectorAll('#sw-ab-compare, #sw-ab-review').forEach((btn) => btn.addEventListener('click', () => {
         abModal.hidden = false;
         syncUi();
-      });
+      }));
+      if (autoCompare && abModal.dataset.comparesSource === 'true') {
+        abModal.hidden = false;
+        syncUi();
+      }
       root.querySelector('#sw-ab-close')?.addEventListener('click', closeAb);
       abModal.addEventListener('click', (e) => { if (e.target === abModal) closeAb(); });
       bindModalDismiss(abModal, closeAb);
 
-      const loadSide = (vid, jobId) => {
+      const loadSide = (vid, option) => {
         if (!vid) return;
         const wasPlaying = !vidA?.paused;
         stopBoth();
-        vid.src = api.jobArtifactUrl(Number(jobId), 0);
+        vid.src = api.jobArtifactUrl(Number(option.value), Number(option.dataset.index));
         vid.currentTime = 0;
         if (vidB && vid === vidA) vidB.currentTime = 0;
         else if (vidA && vid === vidB) vidA.currentTime = 0;
@@ -803,8 +941,8 @@ export default {
           vidB?.play().catch(() => {});
         }
       };
-      selA?.addEventListener('change', (e) => loadSide(vidA, e.target.value));
-      selB?.addEventListener('change', (e) => loadSide(vidB, e.target.value));
+      selA?.addEventListener('change', (e) => loadSide(vidA, e.target.selectedOptions[0]));
+      selB?.addEventListener('change', (e) => loadSide(vidB, e.target.selectedOptions[0]));
 
       toggleBtn?.addEventListener('click', () => {
         if (!vidA || !vidB) return;

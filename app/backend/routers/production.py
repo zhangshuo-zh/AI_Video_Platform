@@ -12,7 +12,7 @@
    界面上不许再算第二遍——否则"工作台说 3 镜待生成、生成中心说 4 条排队"
    这种事故迟早会来。
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 import access
 import precheck
@@ -73,6 +73,7 @@ def put_context(payload: ContextIn, user=Depends(require_user)) -> dict:
 
 @router.get("/projects/{project_id}/production", response_model=ProjectProductionOut)
 def project_production(project_id: int, episode_id: int | None = None,
+                       include_shot_tasks: bool = False,
                        user=Depends(require_permission("project:read"))
                        ) -> ProjectProductionOut:
     """项目生产总览。`episode_id` 不传时按上下文那一集算，没有上下文就取第一集。"""
@@ -86,7 +87,7 @@ def project_production(project_id: int, episode_id: int | None = None,
     if target is None and eps:
         target = int(eps[0]["id"])
     overview = production.project_overview(project_id, current_episode_id=target)
-    board = (production.episode_board(project_id, int(target))
+    board = (production.episode_board(project_id, int(target), include_shot_tasks=include_shot_tasks)
              if target is not None else {"stages": [], "next_tasks": []})
     # `stats` 挂在这同一条接口上而不是新开一条：项目工作台一次读取就该同时给出
     # 「走到哪」与「跑了多少、花了多少、还要多久」；开两条迟早一处新一处旧。
@@ -152,7 +153,7 @@ def composition_precheck_api(project_id: int, episode_id: int,
 
 
 @router.get("/shots/{shot_id}/workbench", response_model=ShotWorkbenchOut)
-def shot_workbench_api(shot_id: int,
+def shot_workbench_api(shot_id: int, job_id: int | None = Query(default=None, gt=0, le=2**63 - 1),
                        user=Depends(require_permission("project:read"))) -> dict:
     """单镜头生产工作台：八段一屏（设定／引用／关键帧／视频／音频／预览／审核／可合成）。
 
@@ -161,7 +162,7 @@ def shot_workbench_api(shot_id: int,
     （提交要 `job:submit`、签字要 `review:sign`），这里一个写口子都不开。
     """
     access.ensure_by("shot", shot_id, user, "read", "镜头")
-    out = production.shot_workbench(shot_id)
+    out = production.shot_workbench(shot_id, job_id=job_id)
     if out.get("error"):
         raise HTTPException(status_code=404, detail=out["error"])
     return out

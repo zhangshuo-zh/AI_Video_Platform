@@ -127,6 +127,266 @@ def seed(token):
             "bare_shot": bare, "run": run, "template_id": tpl["id"]}
 
 
+def wait_for(cdp, condition, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = P.eval_js(cdp, condition)
+        if result:
+            return result
+        time.sleep(0.1)
+    return False
+
+
+def click_when_ready(cdp, selector):
+    if wait_for(cdp, f"Boolean(document.querySelector({json.dumps(selector)}))"):
+        P.click(cdp, selector)
+
+
+def check_asset_focus(cdp, data):
+    shot = data["shots"][0]["id"]
+    mc.go(cdp, f"{BASE}/#assets")
+    click_when_ready(cdp, "#asset-preparation")
+    click_when_ready(cdp, f'[data-prepare-shot="{shot}"]')
+    check("待备素材的镜号打开资产引用和首尾帧",
+          wait_for(cdp, f"""location.hash.endsWith('a{shot}')
+            && document.querySelector('#view-root .card h2')?.textContent === '资产引用'
+            && document.querySelector('.wb-frame-bridge')?.offsetWidth > 0
+            && document.querySelector('.sw-other-sections')?.open === false"""))
+
+
+def check_review_flow(cdp, token, data):
+    original = data["good_job"]["id"]
+    shot_id = data["shots"][1]["id"]
+    body = {
+        "project_id": data["project"]["id"], "episode_id": data["episode"]["id"],
+        "shot_id": shot_id, "capability": "video", "execution_mode": "local",
+        "provider_code": "mock", "model_code": "mock-1",
+        "prompt": "更晚的候选", "params": {"media": "mp4", "seconds": 1}}
+    mid = api("/api/jobs", token, "POST", body)
+    job = api("/api/jobs", token, "POST", {**body, "rework_of_job_id": original})
+    for _ in range(60):
+        if api(f"/api/jobs/{job['id']}", token)["status"] == "succeeded":
+            break
+        time.sleep(0.25)
+
+    check("中间版本已生成，A/B 不能靠顺序碰巧选中原版",
+          api(f"/api/jobs/{mid['id']}", token)["status"] == "succeeded")
+    mc.go(cdp, f"{BASE}/#review/1")
+    source = f'[data-review-version="{original}"]'
+    click_when_ready(cdp, source)
+    check("审核入口精确选中旧版本，完整档案默认折叠",
+          wait_for(cdp, f"""(() => {{
+            const target = document.querySelector('#sw-review-target');
+            return target?.dataset.reviewJob === '{original}' &&
+              target.querySelector('video')?.getAttribute('src').includes('/jobs/{original}/') &&
+              document.querySelector('.sw-other-sections')?.open === false;
+          }})()"""))
+    click_when_ready(cdp, '#sw-note-time')
+    P.eval_js(cdp, """(() => {
+      const note = document.querySelector('#sw-review-note');
+      note.value += '转头时保持发型';
+      note.dispatchEvent(new Event('input', { bubbles: true }));
+    })()""")
+    click_when_ready(cdp, '[data-jsign="returned"]')
+    wait_for(cdp, "Boolean(document.querySelector('#sw-rework'))")
+    recorded = api(f"/api/jobs/{original}/review", token)["signatures"]
+    check("带播放时间的退回意见写到队列所选旧版",
+          any(sig["decision"] == "returned" and sig["note"] == "[0.00s] 转头时保持发型"
+              for sig in recorded))
+    click_when_ready(cdp, "#sw-back")
+    check("返回审核队列恢复原行焦点",
+          wait_for(cdp, f"document.activeElement?.dataset.reviewVersion === '{original}'"))
+    click_when_ready(cdp, f'[data-review-version="{job["id"]}"]')
+    click_when_ready(cdp, "#sw-ab-review")
+    check("返工候选默认对比来源作业",
+          P.eval_js(cdp, f"""document.querySelector('#sw-ab-modal')?.hidden === false
+            && document.querySelector('#sw-ab-sel-a')?.value === '{job["id"]}'
+            && document.querySelector('#sw-ab-sel-b')?.value === '{original}'"""))
+    click_when_ready(cdp, "#sw-ab-close")
+    click_when_ready(cdp, "#sw-back")
+    click_when_ready(cdp, source)
+    click_when_ready(cdp, "#sw-rework")
+    check("返工草稿带入原提示词和有时间点的意见",
+          wait_for(cdp, """document.querySelector('#job-modal')?.hidden === false
+            && document.querySelector('#jm-prompt')?.value === '这条要成功'
+            && document.querySelector('#jm-rework-context')?.textContent.includes('[0.00s] 转头时保持发型')
+            && document.querySelector('#jm-project')?.disabled === true"""))
+    check("生成预览随提示词输入更新",
+          P.eval_js(cdp, """(() => {
+            const prompt = document.querySelector('#jm-prompt');
+            prompt.value = '换成逆光的提示词';
+            prompt.dispatchEvent(new Event('input', { bubbles: true }));
+            return document.querySelector('#jm-effective')?.textContent.includes('换成逆光的提示词');
+          })()"""))
+
+
+def check_draft_restore(cdp, token, data):
+    draft = "#gen-rework-drafts [data-resume-draft]"
+    close = "#jm-cancel"
+    click_when_ready(cdp, close)
+    # 注入假适配器槽位并跳过本机模型预检，POST 仍走真实队列与幂等逻辑。
+    init = cdp.cmd("Page.addScriptToEvaluateOnNewDocument", source="""(() => {
+      const native = window.fetch;
+      window.fetch = async (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+        if (path === '/api/providers/available') return Response.json([{
+          capability: 'video', backend: 'local', provider: 'mock', model: 'mock-1',
+          health_state: 'ok', models: [{ code: 'mock-1', params: [
+            { name: 'media', type: 'str', default: 'mp4' },
+            { name: 'seconds', type: 'float', default: 1 }
+          ] }]
+        }]);
+        if (path.startsWith('/api/precheck/shot/')) return Response.json({ items: [] });
+        const response = await native(input, init);
+        if (path === '/api/jobs' && init?.method === 'POST' && response.ok
+            && !sessionStorage.getItem('fv-test-accepted-draft')) {
+          const job = await response.clone().json();
+          sessionStorage.setItem('fv-test-accepted-draft', String(job.id));
+          throw new TypeError('synthetic network disconnect after server accepted the job');
+        }
+        return response;
+      };
+    })()""")
+    try:
+        mc.go(cdp, f"{BASE}/#generate")
+        click_when_ready(cdp, draft)
+        check("刷新后可继续编辑返工草稿",
+              wait_for(cdp, """document.querySelector('#job-modal')?.hidden === false
+                && document.querySelector('#jm-prompt')?.value === '换成逆光的提示词'
+                && document.querySelector('#jm-rework-context')?.textContent.includes('保持发型')
+                && document.querySelector('#jm-draft-status')?.textContent.includes('已保存在本机')"""))
+        P.eval_js(cdp, """(() => {
+          const seconds = document.querySelector('#jm-params [data-param="seconds"]');
+          if (!seconds) return false;
+          seconds.value = '1.35';
+          seconds.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        })()""")
+        mc.go(cdp, f"{BASE}/#generate")
+        click_when_ready(cdp, draft)
+        check("刷新后保留修改过的模型参数和路线",
+              wait_for(cdp, """document.querySelector('#jm-mode')?.value === 'local'
+                && document.querySelector('#jm-params [data-param="seconds"]')?.value === '1.35'"""))
+        click_when_ready(cdp, "#jm-submit")
+        check("服务端已入队但连接中断时保留草稿",
+              wait_for(cdp, """document.querySelector('#jm-error')?.textContent.includes('提交结果尚未确认')
+                && Boolean(sessionStorage.getItem('fv-test-accepted-draft'))"""))
+        mc.go(cdp, f"{BASE}/#generate")
+        click_when_ready(cdp, draft)
+        wait_for(cdp, "document.querySelector('#job-modal')?.hidden === false")
+        click_when_ready(cdp, "#jm-submit")
+        check("重新提交定位已有作业并清除草稿",
+              wait_for(cdp, """document.querySelector('#job-modal')?.hidden === true
+                && !document.querySelector('[data-resume-draft]')
+                && document.querySelector('#gen-drawer-title')?.textContent
+                  === '作业 #' + sessionStorage.getItem('fv-test-accepted-draft')"""))
+        jobs = api(f"/api/jobs?shot_id={data['shots'][1]['id']}", token)
+        matching = [job for job in jobs if job["prompt_preview"] == "换成逆光的提示词"]
+        detail = api(f"/api/jobs/{matching[0]['id']}", token) if matching else {}
+        check("跨刷新重试只建立一条返工作业且实参正确",
+              len(matching) == 1 and detail.get("params", {}).get("seconds") == 1.35)
+    finally:
+        cdp.cmd("Page.removeScriptToEvaluateOnNewDocument", identifier=init["identifier"])
+
+
+def check_task_continuation(cdp, token, data):
+    project, episode = data["project"]["id"], data["episode"]["id"]
+    first, second = (shot["id"] for shot in data["shots"][:2])
+    # 两镜都引用同一份缺图资产，方便核对同组前后游标。
+    api(f"/api/shots/{second}", token, "PUT", {
+        "summary": "第 2 镜", "prompt": "崖顶黄昏", "duration": 5,
+        "asset_ids": [data["asset"]["id"]],
+    })
+    api("/api/context", token, "PUT", {"project_id": project, "episode_id": episode})
+    for _ in range(40):
+        rows = api(f"/api/jobs?shot_id={second}", token)
+        newest = rows[0]
+        if newest["status"] == "succeeded":
+            break
+        time.sleep(0.25)
+    mc.go(cdp, f"{BASE}/#production")
+    click_when_ready(cdp, '[data-task-group="rework"] summary')
+    click_when_ready(cdp, f'[data-task-group="rework"] [data-task-shot="{second}"]')
+    check("本集待办直接对比返工新版与来源",
+          wait_for(cdp, f"""document.querySelector('#sw-ab-modal')?.hidden === false
+            && document.querySelector('#sw-ab-sel-a')?.value === '{newest["id"]}'
+            && document.querySelector('#sw-ab-sel-b')?.value === '{data["good_job"]["id"]}'"""))
+    P.click(cdp, '#sw-ab-close')
+    click_when_ready(cdp, '#sw-back')
+    click_when_ready(cdp, '[data-task-group="assets"] summary')
+    click_when_ready(cdp, f'[data-task-group="assets"] [data-task-shot="{first}"]')
+    check("按组处理从第一镜进入，并可继续下一镜",
+          wait_for(cdp, f"location.hash.endsWith('a{first}') && Boolean(document.querySelector('#sw-next-task'))"))
+    click_when_ready(cdp, '#sw-next-task')
+    check("下一镜按同组顺序推进",
+          wait_for(cdp, f"location.hash.endsWith('a{second}') && Boolean(document.querySelector('#sw-next-task'))"))
+    mc.go(cdp, f"{BASE}/#production")
+    check("重载工作台保留同组与当前镜头",
+          wait_for(cdp, """document.querySelector('[data-task-resume]')?.textContent.includes('第 2 镜')
+            && document.querySelector('[data-task-group="assets"]')?.open === true"""))
+    click_when_ready(cdp, '[data-task-resume]')
+    check("继续待办恢复正确镜头",
+          wait_for(cdp, f"location.hash.endsWith('a{second}') && Boolean(document.querySelector('#sw-next-task'))"))
+
+
+def check_timeline_render(cdp, data):
+    """Render fixed cue positions through the real composition list and detail views."""
+    comp_id = 900001
+    ep = data["episode"]["id"]
+    shots = data["shots"]
+    fixture = {
+        "id": comp_id, "episode_id": ep, "version": 1, "episode_seq": 1,
+        "status": "succeeded", "artifact_url": f"/api/jobs/{data['good_job']['id']}/artifacts/0",
+        "total_duration_ms": 3000, "shot_count": 3, "duration_ms": 3000,
+        "timeline": {"shots": [{"shot_id": shot["id"], "seq": index + 1,
+                                "start_ms": index * 1000, "duration_ms": 1000}
+                               for index, shot in enumerate(shots)]},
+        "audio": [{"kind": "dialogue", "speaker": "掌灯人", "start_ms": 250, "duration_ms": 200},
+                  {"kind": "narration", "start_ms": 0}],
+        "subtitles": [{"path": "subtitles/test.srt", "bytes": 40,
+                       "cues": [{"start_ms": 700, "end_ms": 1150, "text": "跨镜台词"}]}],
+    }
+    cdp.cmd("Emulation.setDeviceMetricsOverride", width=390, height=790,
+            deviceScaleFactor=1, mobile=True)
+    mc.go(cdp, f"{BASE}/#composition")
+    P.eval_js(cdp, f"""(() => {{
+      const fetchNative = window.fetch;
+      const fixture = {json.dumps(fixture, ensure_ascii=False)};
+      window.fetch = (input, init) => {{
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const reply = url.pathname === '/api/compositions/{comp_id}' ? fixture
+          : url.pathname === '/api/projects/{data["project"]["id"]}/compositions' ? [fixture] : null;
+        return reply ? Promise.resolve(Response.json(reply)) : fetchNative(input, init);
+      }};
+      window.dispatchEvent(new CustomEvent('app:refresh'));
+    }})()""")
+    time.sleep(0.7)
+    P.click(cdp, f'[data-open-comp="{comp_id}"]')
+    time.sleep(0.7)
+    check("一条跨镜字幕只画一个块，200ms 对白按实际宽度",
+          P.eval_js(cdp, """(() => {
+            const sub = [...document.querySelectorAll('.cp-track-seg.sub')];
+            const voice = [...document.querySelectorAll('.cp-track-seg.voice')];
+            return sub.length === 1 && sub[0].dataset.seekMs === '700' && sub[0].style.width === '15%'
+              && voice.length === 1 && voice[0].style.width === '6.67%'
+              && document.querySelector('.cp-multitrack').textContent.includes('1 条音频时长待确认');
+          })()"""))
+    P.click(cdp, '.cp-track-seg.sub')
+    check("点击字幕从对应位置播放，390px 页面无横向溢出",
+          P.eval_js(cdp, """Math.abs(document.querySelector('.cp-video').currentTime - 0.7) < 0.15
+            && document.documentElement.scrollWidth <= window.innerWidth"""))
+    cdp.cmd("Emulation.clearDeviceMetricsOverride")
+
+
+MUTATIONS = {
+    "goto.js 丢掉审核 job_id": "审核入口精确选中旧版本，完整档案默认折叠",
+    "shot-workbench.js 对比 B 忽略 rework_of_job_id": "返工候选默认对比来源作业",
+    "composition.js 对白强制至少 400ms": "一条跨镜字幕只画一个块，200ms 对白按实际宽度",
+    "generate.js 对每次提交新建幂等键": "跨刷新重试只建立一条返工作业且实参正确",
+    "episode-work.js 忽略已保存的待办游标": "重载工作台保留同组与当前镜头",
+}
+
+
 def main():
     mc.prepare_env()
     token = mc.mint_admin_session()
@@ -159,6 +419,21 @@ def main():
         cdp.cmd("Network.enable")
         cdp.cmd("Network.setCookie", name="fv_session", value=token,
                 url=BASE, path="/", httpOnly=True)
+
+        if "--review-flow-only" in sys.argv:
+            check_asset_focus(cdp, data)
+            check_review_flow(cdp, token, data)
+            check_draft_restore(cdp, token, data)
+            check_task_continuation(cdp, token, data)
+            check_timeline_render(cdp, data)
+            errors = P.eval_js(cdp, "window.__errs || []")
+            check("审核返工没有 JS 异常", not errors, str(errors)[:200])
+            chrome.terminate()
+            passed = sum(ok for _, ok, _ in results)
+            print(f"\n{passed}/{len(results)} 通过")
+            if passed != len(results):
+                sys.exit(1)
+            return
 
         shot_id = data["shots"][0]["id"]
         ep_id = data["episode"]["id"]
@@ -323,7 +598,7 @@ def main():
         check("音频段不给提交入口（只有跳转，没有会失败的按钮）",
               P.eval_js(cdp, """(() => {
                 const card = [...document.querySelectorAll('#view-root .card')]
-                  .find(c => (c.querySelector('h2')?.textContent || '').includes('⑤'));
+                  .find(c => c.querySelector('h2')?.textContent.trim() === '音频');
                 if (!card) return false;
                 return ![...card.querySelectorAll('button')].some(
                   b => /提交|生成|开始/.test(b.textContent)); })()"""))
@@ -522,7 +797,7 @@ def main():
             time.sleep(1.6)
             check("从审核页跳过去确实打开了那一镜的工作台",
                   P.eval_js(cdp, "location.hash").endswith(f"a{rows[0]}")
-                  and "生产完成条件" in (P.text_of(cdp, "#view-root") or ""),
+                  and P.has(cdp, "#sw-review-target") and P.has(cdp, ".sw-other-sections"),
                   f"hash={P.eval_js(cdp, 'location.hash')}")
 
         # ---------- 产线：发起弹窗与节点失败都读同一份 ----
@@ -746,6 +1021,11 @@ def main():
         check("整轮没有 JS 异常", not errs, str(errs)[:200])
         P.eval_js(cdp, "window.__errs = []")
 
+        check_asset_focus(cdp, data)
+        check_review_flow(cdp, token, data)
+        check_draft_restore(cdp, token, data)
+        check_task_continuation(cdp, token, data)
+        check_timeline_render(cdp, data)
         chrome.terminate()
     finally:
         try:

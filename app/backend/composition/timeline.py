@@ -345,6 +345,8 @@ def build(project_id: int, episode_id: int, *,
     audio_rows = clips.list(project_id, None, episode_id)
     audio: list[dict] = []
     starts, total_ms = _shot_timeline_layout(timeline_shots)
+    for item in timeline_shots:
+        item["start_ms"] = starts[item["shot_id"]]
     for row in audio_rows:
         if row["status"] != "ready":
             continue
@@ -377,9 +379,14 @@ def build(project_id: int, episode_id: int, *,
     if subtitle_path:
         # 两个来源：`subtitles/` 开头是成片页上传的字幕（只认本项目那一份），
         # 其余按 Job 产物解析（历史上字幕可能跟着某条作业进来）。
-        target = (jobfiles.resolve_subtitle(project_id, subtitle_path)
-                  if str(subtitle_path).startswith("subtitles/")
-                  else jobfiles.resolve_artifact(subtitle_path))
+        if subtitle_path.startswith("subtitles/"):
+            target = jobfiles.resolve_subtitle(project_id, subtitle_path)
+        else:
+            owner, _, _ = subtitle_path.partition("/")
+            source_id = int(owner) if owner.isascii() and owner.isdecimal() else 0
+            source = job_repo.get(source_id) if 0 < source_id <= 2**63 - 1 else None
+            target = (jobfiles.resolve_artifact(subtitle_path)
+                      if source is not None and source["project_id"] == project_id else None)
         if target is None:
             raise CompositionInvalid(f"字幕文件不在了或不属于这个项目：{subtitle_path}")
         # 先问这台机器能不能烧，再决定要不要排 Job：不带 libass 的 FFmpeg 连
@@ -389,7 +396,11 @@ def build(project_id: int, episode_id: int, *,
                 "这台机器的 FFmpeg 没有 subtitles 滤镜，烧不了字幕；"
                 "要装带 libass 的构建（如 `brew install ffmpeg --with-libass` "
                 "或换 johnvansickle 静态包）后再发起")
-        subtitles.append({"path": subtitle_path, "bytes": target.stat().st_size})
+        from composition import subtitles as subtitle_tools
+        try:
+            subtitles.append(subtitle_tools.snapshot(target, subtitle_path))
+        except subtitle_tools.SubtitleInvalid as exc:
+            raise CompositionInvalid(exc.message) from exc
 
     return {
         "schema": 1,

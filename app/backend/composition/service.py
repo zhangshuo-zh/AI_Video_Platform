@@ -280,9 +280,11 @@ def _view(row, job, status, *, include_timeline: bool) -> dict:
                          if row["job_id"] and row["output_path"] else ""),
     }
     if include_timeline:
-        out["timeline"] = timeline
+        subtitle_items = [{key: value for key, value in item.items() if key != "text"}
+                          for item in timeline.get("subtitles") or []]
+        out["timeline"] = {**timeline, "subtitles": subtitle_items}
         out["audio"] = timeline.get("audio") or []
-        out["subtitles"] = timeline.get("subtitles") or []
+        out["subtitles"] = subtitle_items
     return out
 
 

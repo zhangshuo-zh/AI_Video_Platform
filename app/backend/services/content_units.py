@@ -171,7 +171,7 @@ def asset_preparation(episode_id: int, project_id: int) -> dict:
     asset_rows = assets.get_many(asset_ids, with_image_purposes=True)
     variant_rows = variant_repo.get_many(variant_ids)
     return {
-        "shots": [{"seq": shot.seq, "asset_ids": shot.asset_ids, "variant_ids": shot.variant_ids}
+        "shots": [{"id": shot.id, "seq": shot.seq, "asset_ids": shot.asset_ids, "variant_ids": shot.variant_ids}
                   for shot in shot_rows],
         "missing_purposes": _missing_reference_purposes(shot_rows, asset_rows, variant_rows, project_id),
         "assets": [{

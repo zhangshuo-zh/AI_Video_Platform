@@ -333,7 +333,7 @@ def test_asset_preparation_lists_only_referenced_assets_and_variants(as_role, fr
     assert {row["id"] for row in out["assets"]} == {actor["id"], scene["id"]}
     assert out["variants"] == [{"id": variant["id"], "asset_id": actor["id"],
                                 "name": "雨衣", "image_count": 0}]
-    assert out["shots"] == [{key: shot.json()[key] for key in ("seq", "asset_ids", "variant_ids")}]
+    assert out["shots"] == [{key: shot.json()[key] for key in ("id", "seq", "asset_ids", "variant_ids")}]
 
 
 def test_episode_asset_presets_validate_references_and_handle_deleted_variants(as_role, fresh_project):

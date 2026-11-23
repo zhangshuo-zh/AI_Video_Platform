@@ -35,6 +35,7 @@ def _job_rows(job_rows, signs: dict[int, dict]) -> list[dict]:
             "currency": job["currency"], "billable_status": job["billable_status"],
             "error_code": job["error_code"], "error_message": job["error_message"],
             "attempt": job["attempt"], "retry_of_job_id": job["retry_of_job_id"],
+            "rework_of_job_id": job["rework_of_job_id"],
             "params": job["params_json"], "artifacts": artifacts,
             "sign": signs.get(int(job["id"])),
         })
@@ -42,7 +43,7 @@ def _job_rows(job_rows, signs: dict[int, dict]) -> list[dict]:
 
 
 
-def shot_workbench(shot_id: int) -> dict:
+def shot_workbench(shot_id: int, *, job_id: int | None = None) -> dict:
     """单镜头生产工作台（任务书 §6.1 八段）。
 
     一屏要回答的是"这一镜走到哪、还差什么、能不能进合成"。八段的数据
@@ -71,6 +72,22 @@ def shot_workbench(shot_id: int) -> dict:
                              capability=capability, shot_id=shot_id, limit=50)
 
     image_jobs, video_jobs = _jobs("image"), _jobs("video")
+    by_capability = {"image": image_jobs, "video": video_jobs}
+
+    def include_job(row):
+        if row is None or row["project_id"] != project_id or row["shot_id"] != shot_id:
+            return
+        group = by_capability.get(row["capability"])
+        if group is not None and all(item["id"] != row["id"] for item in group):
+            group.append(row)
+
+    target = job_repo.get(job_id) if job_id is not None else None
+    include_job(target)
+    visible_ids = {int(job["id"]) for jobs in by_capability.values() for job in jobs}
+    sources = {int(job["rework_of_job_id"]) for jobs in by_capability.values() for job in jobs
+               if job["rework_of_job_id"] is not None}
+    for source_id in sorted(sources - visible_ids, reverse=True):
+        include_job(job_repo.get(source_id))
     job_ids = [int(j["id"]) for j in list(image_jobs) + list(video_jobs)]
     sign_rows = reviews.signs_for_jobs(project_id, job_ids) if job_ids and project_id is not None else []
     # 同一作业可能有多条改判记录：`upsert_sign` 保证同锚点只有一行，

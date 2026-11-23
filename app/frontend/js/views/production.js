@@ -1,3 +1,4 @@
+import { episodeDrafts, openShotTask, SHOT_TASK_GROUPS, taskAtCursor, taskCursor } from '../episode-work.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { confirmDanger, escapeHtml, run } from '../util.js';
@@ -88,6 +89,34 @@ function taskList(board) {
       <div class="pb-task-copy"><b>${escapeHtml(t.label)}</b><span>${escapeHtml(t.note || '')}</span></div>
       <button class="btn xs" data-goto="${escapeHtml(JSON.stringify(t.entry))}">进入${escapeHtml(t.label)}</button>
     </li>`).join('')}</ul></div>`;
+}
+
+function shotTaskList(board, projectId) {
+  const tasks = board.shot_tasks || [];
+  const episodeId = board.episode_id;
+  const cursor = taskCursor(projectId, episodeId);
+  const grouped = new Map(Object.keys(SHOT_TASK_GROUPS).map((group) => [group, []]));
+  tasks.forEach((task, index) => grouped.get(task.group)?.push({ task, index }));
+  const resume = taskAtCursor(tasks, cursor);
+  const drafts = store.can('job:submit') ? episodeDrafts(projectId, episodeId) : [];
+  if (!tasks.length && !drafts.length) return '';
+  return `<div class="card-body" id="pb-shot-tasks" data-episode-id="${episodeId}" data-tasks="${escapeHtml(JSON.stringify(tasks))}">
+    ${resume ? `<button type="button" class="btn primary" data-task-resume data-task-index="${tasks.indexOf(resume)}">
+      继续${SHOT_TASK_GROUPS[resume.group]} · 第 ${resume.seq} 镜</button>` : ''}
+    ${drafts.length ? `<button class="btn" id="pb-rework-drafts">返工草稿（${drafts.length}）</button>` : ''}
+    ${Object.entries(SHOT_TASK_GROUPS).map(([group, label]) => {
+      const rows = grouped.get(group);
+      if (!rows.length) return '';
+      return `<details class="pb-shot-task-group" data-task-group="${group}" ${cursor?.group === group ? 'open' : ''}>
+        <summary>${label} · ${rows.length} 镜</summary>
+        <ul class="pb-tasks flush">${rows.map(({ task, index }) => `<li>
+          <div class="pb-task-copy"><b>第 ${task.seq} 镜</b>
+            <span>${escapeHtml(task.note)}${task.job_id ? ` · #${task.job_id}` : ''}</span></div>
+          <button class="btn xs" type="button" data-task-index="${index}" data-task-shot="${task.shot_id}">
+            ${task.replacement_ready ? '对比新版' : '处理这一镜'}</button>
+        </li>`).join('')}</ul></details>`;
+    }).join('')}
+  </div>`;
 }
 
 function episodeTable(ov) {
@@ -288,7 +317,7 @@ export default {
     }
     let data;
     try {
-      data = await api.production(project.id, store.currentEpisodeId);
+      data = await api.production(project.id, store.currentEpisodeId, true);
     } catch (err) {
       return `<section class="view on"><div class="page-head"><h1>项目工作台</h1>
         <p>${escapeHtml(project.name)}</p></div>
@@ -319,6 +348,7 @@ export default {
         <div class="card-head"><h2>下一步</h2>
           <span class="sub">本集待办</span>
           ${retryBtn(board, stats)}</div>
+        ${shotTaskList(board, project.id)}
         ${taskList(board)}
         <div class="card-body" ${retryNotice ? '' : 'hidden'}>
           <p class="bar ${retryTone}" id="pb-retry-out"${retryNotice ? '' : ' hidden'}>`
@@ -350,6 +380,18 @@ export default {
     const go = (entry) => {
       gotoEntry(entry);
     };
+    const taskHost = root.querySelector('#pb-shot-tasks');
+    if (taskHost) {
+      const projectId = store.currentId;
+      const episodeId = Number(taskHost.dataset.episodeId);
+      const tasks = JSON.parse(taskHost.dataset.tasks);
+      taskHost.addEventListener('click', (event) => {
+        if (store.currentId !== projectId) return;
+        const button = event.target.closest('[data-task-index]');
+        if (button) openShotTask(tasks[Number(button.dataset.taskIndex)], projectId, episodeId);
+        if (event.target.closest('#pb-rework-drafts')) go({ module: 'generate', episode_id: episodeId });
+      });
+    }
     root.querySelectorAll('[data-goto]').forEach((btn) => {
       btn.addEventListener('click', () => {
         let entry;

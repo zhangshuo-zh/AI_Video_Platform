@@ -7,6 +7,9 @@
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import jobfiles
 from composition import timeline, validators
 from config import FFMPEG_BIN
@@ -48,6 +51,44 @@ def check(filename: str, content: bytes) -> str:
     if suffix == ".srt" and "-->" not in text:
         raise SubtitleInvalid("SRT 里没有一条时间轴（少了 `-->` 那行）")
     return suffix
+
+
+_TIMESTAMP = r"(?:[0-9]{2,6}:)?[0-5][0-9]:[0-5][0-9][.,][0-9]{3}"
+_CUE_LINE = re.compile(rf"^({_TIMESTAMP})\s+-->\s+({_TIMESTAMP})(?:\s.*)?$")
+
+
+def _timestamp_ms(value: str) -> int:
+    whole, fraction = value.replace(",", ".").split(".")
+    seconds = 0
+    for part in whole.split(":"):
+        seconds = seconds * 60 + int(part)
+    return seconds * 1000 + int(fraction)
+
+
+def snapshot(target: Path, relative_path: str) -> dict:
+    """冻结字幕原文和可导航的时间点，保留 FFmpeg 对字幕文本的解释权。"""
+    try:
+        with target.open("rb") as stream:
+            content = stream.read(MAX_SUBTITLE_BYTES + 1)
+    except OSError as exc:
+        raise SubtitleInvalid("字幕文件暂时读不到") from exc
+    suffix = check(target.name, content)
+    text = content.decode("utf-8-sig")
+    cues = []
+    for block in re.split(r"\n[ \t]*\n", text.replace("\r\n", "\n").replace("\r", "\n")):
+        lines = block.strip().splitlines()
+        if not lines or lines[0].split(maxsplit=1)[0] in {"WEBVTT", "NOTE", "STYLE", "REGION"}:
+            continue
+        for index, line in enumerate(lines[:2]):
+            match = _CUE_LINE.fullmatch(line.strip())
+            if match:
+                start, end = map(_timestamp_ms, match.groups())
+                if end > start:
+                    cues.append({"start_ms": start, "end_ms": end,
+                                 "text": "\n".join(lines[index + 1:])})
+                break
+    return {"path": relative_path, "bytes": len(content), "suffix": suffix,
+            "text": text, "cues": sorted(cues, key=lambda cue: cue["start_ms"])}
 
 
 def availability() -> dict:

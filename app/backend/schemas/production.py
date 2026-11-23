@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -94,6 +96,17 @@ class ProductionCounts(BaseModel):
 
 
 
+class ProductionShotTask(BaseModel):
+    group: Literal["assets", "review", "rework", "failed"]
+    shot_id: int
+    seq: int
+    note: str
+    job_id: int | None = None
+    source_job_id: int | None = None
+    can_review: bool = False
+    replacement_ready: bool = False
+
+
 class ProductionBoard(BaseModel):
     """一集的产线看板。`episode_id` 为 None 时是"还没有集"的空板。"""
     episode_id: int | None = None
@@ -102,6 +115,7 @@ class ProductionBoard(BaseModel):
     shots: int = 0
     stages: list[ProductionStage] = Field(default_factory=list)
     next_tasks: list[ProductionNextTask] = Field(default_factory=list)
+    shot_tasks: list[ProductionShotTask] = Field(default_factory=list)
     counts: ProductionCounts | None = None
 
 

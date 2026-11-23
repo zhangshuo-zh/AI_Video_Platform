@@ -60,3 +60,15 @@ export function takeJobListStatus() {
   jobListStatus = '';
   return value;
 }
+
+// 镜头工作台的来源与当前审核版本。离开工作台时清理。
+let shotEntry = null;
+let reviewReturn = null;
+export function setShotEntry(value) { shotEntry = value; }
+export function getShotEntry() { return shotEntry; }
+export function setReviewReturn(value) { reviewReturn = value; }
+export function takeReviewReturn() {
+  const value = reviewReturn;
+  reviewReturn = null;
+  return value;
+}

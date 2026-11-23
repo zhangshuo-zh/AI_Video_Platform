@@ -105,14 +105,15 @@ function multitrackHtml(d) {
   if (!tlShots.length) return '';
   let cursor = 0;
   let prevDur = 0;
+  const playable = d.status === 'succeeded' && Boolean(d.artifact_url);
   const videoBlocks = tlShots.map((s, idx) => {
     const dur = Math.max(100, Number(s.duration_ms) || 1000);
     if (idx > 0 && s.transition === 'crossfade') {
       const ov = Math.min(500, Math.floor(prevDur * 0.25), Math.floor(dur * 0.25));
       cursor = Math.max(0, cursor - ov);
     }
-    const start = cursor;
-    cursor += dur;
+    const start = s.start_ms ?? cursor;
+    cursor = start + dur;
     prevDur = dur;
     return { shot: s, start, dur };
   });
@@ -130,33 +131,36 @@ function multitrackHtml(d) {
   const allAudio = d.audio || [];
   const voiceClips = allAudio.filter((a) => a.kind !== 'music');
   const bgmClips = allAudio.filter((a) => a.kind === 'music');
-  const voiceSegs = voiceClips.map((a) => {
-    const start = Math.max(0, Number(a.start_ms) || 0);
-    const dur = Math.max(400, Number(a.duration_ms) || 2000);
-    return `<div class="cp-track-seg voice" style="left:${pct(start)};width:${pct(dur)}"
-      title="${escapeHtml((a.speaker || '对白') + ' · ' + fmtDuration(start))}">${escapeHtml(a.speaker || KIND[a.kind] || '对白')}</div>`;
-  }).join('');
-  const bgmSegs = bgmClips.map((a) => {
-    const start = Math.max(0, Number(a.start_ms) || 0);
-    const dur = Math.max(1000, Number(a.duration_ms) || (totalMs - start));
-    return `<div class="cp-track-seg bgm" style="left:${pct(start)};width:${pct(dur)}"
-      title="BGM · 闪避已${d.params?.bgm_ducking !== false ? '开启' : '关闭'}">🎵 BGM${d.params?.bgm_ducking !== false ? ' (Duck)' : ''}</div>`;
-  }).join('');
+  const segment = (label, start, duration, kind) => {
+    const place = `left:${pct(start)};width:${pct(Math.min(duration, totalMs - start))}`;
+    const title = escapeHtml(`${label} · ${fmtDuration(start)} · ${duration} ms`);
+    return playable
+      ? `<button type="button" class="cp-track-seg ${kind} cp-timed-segment"
+          data-seek-ms="${start}" style="${place}" aria-label="${title}" title="${title}"><span>${escapeHtml(label)}</span></button>`
+      : `<span class="cp-track-seg ${kind}" style="${place}" title="${title}">${escapeHtml(label)}</span>`;
+  };
+  const timed = (clips, kind) => clips.filter((clip) => Number(clip.duration_ms) > 0)
+    .map((clip) => segment(clip.speaker || KIND[clip.kind] || '音频',
+      Number(clip.start_ms) || 0, Number(clip.duration_ms), kind)).join('');
+  const voiceSegs = timed(voiceClips, 'voice');
+  const bgmSegs = timed(bgmClips, 'bgm');
   const subs = d.subtitles || [];
-  const subSegs = subs.length
-    ? videoBlocks.map(({ shot, start, dur }) => `<div class="cp-track-seg sub"
-        style="left:${pct(start)};width:${pct(dur)}" title="${escapeHtml(subs[0].path || '')}">字幕 #${shot.seq}</div>`).join('')
-    : '';
+  const subSegs = subs.flatMap((item) => item.cues || [])
+    .filter((cue) => cue.start_ms < totalMs)
+    .map((cue) => segment(cue.text || '字幕', cue.start_ms, cue.end_ms - cue.start_ms, 'sub')).join('');
+  const unknownAudio = allAudio.filter((clip) => !(Number(clip.duration_ms) > 0)).length;
 
   return `<div class="cp-multitrack">
     <div class="cp-track-head">
       <b>四轨可视化时间线</b>
-      <span>模式：${d.params?.mode === 'animatic' ? '动态故事板预演 (Animatic)' : '正式成片'} · 总长 ${fmtDuration(totalMs)} · 点击镜号块直达单镜工作台</span>
+      <span>模式：${d.params?.mode === 'animatic' ? '动态故事板预演 (Animatic)' : '正式成片'} · 总长 ${fmtDuration(totalMs)} · 点击镜号进入工作台，点击音频或字幕定位播放器</span>
     </div>
     <div class="cp-track-row"><span class="cp-track-label">🎬 视频镜号</span><div class="cp-track-lane">${videoSegs}</div></div>
     <div class="cp-track-row"><span class="cp-track-label">🎙️ 对白配音</span><div class="cp-track-lane">${voiceSegs || '<span class="hint u-ml-8">暂无对白轨</span>'}</div></div>
-    <div class="cp-track-row"><span class="cp-track-label">💬 字幕轨</span><div class="cp-track-lane">${subSegs || '<span class="hint u-ml-8">未挂载字幕</span>'}</div></div>
+    <div class="cp-track-row"><span class="cp-track-label">💬 字幕轨</span><div class="cp-track-lane">${subSegs || `<span class="hint u-ml-8">${subs.length ? '这一版没有可定位的字幕时间点' : '未挂载字幕'}</span>`}</div></div>
     <div class="cp-track-row"><span class="cp-track-label">🎵 BGM 音乐</span><div class="cp-track-lane">${bgmSegs || '<span class="hint u-ml-8">未挂载 BGM</span>'}</div></div>
+    ${playable ? '<div class="cp-playhead" aria-hidden="true" hidden></div>' : ''}
+    ${unknownAudio ? `<p class="hint">${unknownAudio} 条音频时长待确认，详见音频清单。</p>` : ''}
   </div>`;
 }
 
@@ -179,7 +183,7 @@ function detailHtml(d) {
   const audio = (d.audio || []).map((a) => `<li class="cp-audio">
       <span class="chip plain">${escapeHtml(KIND[a.kind] || a.kind)}</span>
       <span>${escapeHtml(a.speaker || '')}</span>
-      <span class="t-desc">从 ${fmtDuration(a.start_ms)} 起</span>
+      <span class="t-desc">从 ${fmtDuration(a.start_ms)} 起 · ${Number(a.duration_ms) > 0 ? `${a.duration_ms} ms` : '时长待确认'}</span>
     </li>`).join('');
   const canSubmit = store.can('job:submit');
   return `<div class="card cp-detail">
@@ -393,6 +397,27 @@ export default {
         const d = await api.composition(openId);
         if (!host.isConnected) return;
         host.innerHTML = detailHtml(d);
+        const video = host.querySelector('.cp-video');
+        const playhead = host.querySelector('.cp-playhead');
+        if (video && playhead) {
+          const updatePlayhead = () => {
+            const lane = host.querySelector('.cp-track-lane');
+            const ratio = Math.min(1, video.currentTime * 1000 / Math.max(1, d.total_duration_ms));
+            playhead.style.left = `${lane.offsetLeft + ratio * lane.offsetWidth}px`;
+            playhead.hidden = false;
+          };
+          video.addEventListener('loadedmetadata', updatePlayhead);
+          video.addEventListener('timeupdate', updatePlayhead);
+          const tracks = playhead.parentElement;
+          new ResizeObserver((_, observer) => {
+            if (tracks.isConnected) updatePlayhead();
+            else observer.disconnect();
+          }).observe(tracks);
+          host.querySelectorAll('[data-seek-ms]').forEach((button) => button.addEventListener('click', () => {
+            video.currentTime = Number(button.dataset.seekMs) / 1000;
+            video.play().catch(() => {});
+          }));
+        }
         host.querySelectorAll('[data-go-job]').forEach((b) => b.addEventListener('click', () => {
           goto('generate', 0);
         }));

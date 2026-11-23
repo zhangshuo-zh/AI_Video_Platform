@@ -630,3 +630,45 @@ def test_时间线快照里冻着当次的尺寸档(stage):
     assert frozen["output_size"] == {"width": 640, "height": 360, "clips": 1,
                                      "same_as": 2, "of": 2}, frozen.get("output_size")
     assert frozen["shots"][0]["video"]["width"] == 640
+
+
+def test_subtitle_timing_and_export_are_frozen_at_submission(stage, monkeypatch):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from composition import ffmpeg_runner
+    from composition.exporter import build_export_bundle_zip
+
+    _signed(stage)
+    monkeypatch.setattr(validators, "subtitle_filter_available", lambda: True)
+    pid = stage["project_id"]
+    # 穿过第一镜的切点，只应在时间线上出现一条。
+    original = "1\n00:00:00,500 --> 00:00:01,400\n跨镜台词\n"
+    path = _subtitle(pid, original)
+    comp = composition_service.create(pid, stage["episode_id"], stage["user_id"], subtitle_path=path)
+    jobfiles.resolve_subtitle(pid, path).unlink()
+    detail = composition_service.view(comp["id"])
+    assert detail["subtitles"][0]["cues"] == [
+        {"start_ms": 500, "end_ms": 1400, "text": "跨镜台词"}]
+    assert "text" not in detail["timeline"]["subtitles"][0]
+    assert detail["timeline"]["shots"][1]["start_ms"] == detail["timeline"]["shots"][0]["duration_ms"]
+    job = job_repo.get(comp["job_id"])
+    _, outputs = jobfiles.ensure_dirs(job["id"])
+    spec = ffmpeg_runner.build(job, {"composition_id": comp["id"]}, outputs)
+    snapshot = outputs / f"{job['id']}-frozen-subtitles.srt"
+    assert snapshot.read_text(encoding="utf-8") == original
+    assert str(snapshot) in next(arg for arg in spec.argv if "subtitles=" in arg)
+    bundle, _ = build_export_bundle_zip(comp["id"])
+    with ZipFile(BytesIO(bundle)) as archive:
+        sub = next(name for name in archive.namelist() if name.endswith(".srt"))
+        assert archive.read(sub).decode("utf-8") == original
+
+
+def test_vtt_cue_ids_settings_and_note_blocks(tmp_path):
+    from composition.subtitles import snapshot
+
+    path = tmp_path / "draft.vtt"
+    path.write_text("WEBVTT\n\nNOTE ignore\n00:00.000 --> 00:01.000\n\n"
+                    "cue-a\n00:00.700 --> 00:00.900 align:start\n现在开门\n", encoding="utf-8")
+    assert snapshot(path, "draft.vtt")["cues"] == [
+        {"start_ms": 700, "end_ms": 900, "text": "现在开门"}]

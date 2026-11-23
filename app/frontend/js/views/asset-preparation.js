@@ -1,3 +1,4 @@
+import { gotoEntry } from '../goto.js';
 import { api } from '../api.js';
 import { setParam, setSub } from '../navstate.js';
 import { renderView } from '../router.js';
@@ -79,7 +80,9 @@ export async function openAssetPreparation() {
           const title = [asset?.name, item.variant?.name].filter(Boolean).join(' · ');
           const canPrepare = asset && store.can('asset:write') && (!asset.is_global || store.isManager);
           return `<li><strong>${escapeHtml(title || (item.assetId ? '#' + item.assetId : '形态引用'))}</strong>
-            <span>${escapeHtml(item.issue)} · 镜 ${[...item.seqs].join('、')}</span>
+            <span>${escapeHtml(item.issue)}</span>
+            <span>${scoped.filter((shot) => item.seqs.has(shot.seq)).map((shot) =>
+              `<button type="button" class="btn xs ghost" data-prepare-shot="${shot.id}">第 ${shot.seq} 镜</button>`).join(' ')}</span>
             ${asset ? `<button type="button" class="btn xs" data-prepare-asset="${asset.id}"
               data-prepare-variant="${item.variant?.id ?? ''}" data-prepare-edit="${Boolean(canPrepare)}">${canPrepare ? '去补素材' : '查看资产'}</button>` : ''}</li>`;
         }).join('')}</ul>` : `<p>${!scoped.length ? '没有匹配的分镜。'
@@ -88,8 +91,16 @@ export async function openAssetPreparation() {
     }
     select.addEventListener('change', paint);
     results.addEventListener('click', (event) => {
+      if (projectId !== store.currentId || episodeId !== store.currentEpisodeId) return;
+      const shot = event.target.closest('[data-prepare-shot]');
+      if (shot) {
+        dialog.close();
+        gotoEntry({ module: 'shot', shot_id: Number(shot.dataset.prepareShot),
+          episode_id: episodeId, focus: 'assets' });
+        return;
+      }
       const button = event.target.closest('[data-prepare-asset]');
-      if (!button || projectId !== store.currentId || episodeId !== store.currentEpisodeId) return;
+      if (!button) return;
       const id = Number(button.dataset.prepareAsset);
       if (button.dataset.prepareEdit === 'true' && button.dataset.prepareVariant) {
         setStudioTarget(id, Number(button.dataset.prepareVariant));

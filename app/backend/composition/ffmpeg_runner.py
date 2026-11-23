@@ -218,11 +218,18 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
     sub_target: Path | None = None
     subtitles = timeline.get("subtitles") or []
     if subtitles:
-        sub_path = str(subtitles[0].get("path") or "")
+        subtitle = subtitles[0]
+        frozen_text = subtitle.get("text")
+        suffix = subtitle.get("suffix")
+        sub_path = str(subtitle.get("path") or "")
         # 与 timeline.build 同一套解析规则：`subtitles/` 开头的是成片页上传的，
         # 只认本项目目录；两处写法不一样就会出现"提交时过、跑的时候找不到"
-        sub_target = (resolve_subtitle(int(timeline.get("project_id") or 0), sub_path)
-                      if sub_path.startswith("subtitles/") else resolve_artifact(sub_path))
+        if isinstance(frozen_text, str) and suffix in (".srt", ".vtt"):
+            sub_target = outputs / f"{job['id']}-frozen-subtitles{suffix}"
+            sub_target.write_text(frozen_text, encoding="utf-8")
+        else:
+            sub_target = (resolve_subtitle(int(timeline.get("project_id") or 0), sub_path)
+                          if sub_path.startswith("subtitles/") else resolve_artifact(sub_path))
         if sub_target is None:
             raise CompositionJobInvalid("字幕文件不在了")
 

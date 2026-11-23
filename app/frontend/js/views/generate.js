@@ -1,4 +1,6 @@
-import { submissionIdentity } from '../submission.js';
+import { episodeDrafts, readReworkDraft, reworkDraftKey, reworkPrefill, writeReworkDraft } from '../episode-work.js';
+import { gotoEntry } from '../goto.js';
+import { newSubmissionKey, submissionIdentity } from '../submission.js';
 const jobSubmission = submissionIdentity();
 /**
  * 生成中心：唯一队列 + 成本账的唯一出口。
@@ -359,6 +361,7 @@ export default {
       <div class="asset-stats gen-stats" id="gen-stats"></div>
 
       <div id="gen-alerts"></div>
+      <div id="gen-rework-drafts"></div>
 
       <div class="card">
         <div class="gen-filters">${filtersHtml()}</div>
@@ -423,6 +426,11 @@ export default {
               <div>
                 <div id="jm-params" class="gen-params"></div>
                 <div id="jm-reference-preview" hidden></div>
+                <p class="bar warn" id="jm-rework-context" hidden></p>
+                <p class="hint" id="jm-draft-status" role="status" hidden></p>
+              </div>
+              <div class="gen-input-review" id="jm-effective">
+                <details><summary>本次生成输入</summary><p class="hint"></p><dl></dl></details>
               </div>
               <label class="top" for="jm-prompt">提示词</label>
               <div class="stack">
@@ -872,7 +880,12 @@ export default {
       const artifacts = artifactHtml(arts, artifactError);
 
       return `
-        <div class="drawer-actions">${actions || `<span class="hint">${actionsHint}</span>`}</div>
+        <div class="drawer-actions">${actions || `<span class="hint">${actionsHint}</span>`}
+          ${job.rework_of_job_id && job.capability === 'video' && job.shot_id
+            && job.project_id === store.currentId && job.status === 'succeeded'
+            ? `<button type="button" class="btn" data-compare-rework="${job.id}"
+                data-shot="${job.shot_id}" data-episode="${job.episode_id ?? ''}">对比返工前后</button>` : ''}
+        </div>
         ${err}
         ${attention}
         ${diagnosisHtml(diag)}
@@ -1151,7 +1164,9 @@ export default {
           && o.model === cur.model) || null;
       }
       const opts = optionsFor(cap, mode);
-      const idx = Number(root.querySelector('#jm-route').value);
+      const r = root.querySelector('#jm-route');
+      if (r.value === '') return null;
+      const idx = Number(r.value);
       return Number.isInteger(idx) ? opts[idx] || null : null;
     }
 
@@ -1199,25 +1214,51 @@ export default {
 
     let requireReferenceImage = false;
     let requireLastFrame = false;
+    let rework = null;
+    let draftState = null;
+    let referenceMarkup = null;
 
     function renderReferencePreview() {
       const host = root.querySelector('#jm-reference-preview');
-      host.hidden = !requireReferenceImage;
-      host.replaceChildren();
-      if (!requireReferenceImage) return;
-      const input = root.querySelector('#jm-params [data-param="image"][data-type="image"]');
-      const path = input?.value.trim() || '';
-      const caption = document.createElement('p');
-      caption.className = 'hint';
-      caption.textContent = path ? '本次作业的首帧输入' : '请选择支持首帧的模型并填写首帧。';
-      host.append(caption);
-      if (/^(?:\/files\/)?[0-9]+\/[a-zA-Z0-9._-]+$/.test(path)) {
-        const img = document.createElement('img');
-        img.className = 'asset-reference-preview';
-        img.alt = '本次作业首帧';
-        img.src = path.startsWith('/files/') ? path : `/files/${path}`;
-        host.append(img);
+      const params = readParams();
+      const frames = root.querySelector('#jm-capability').value === 'video' ? [
+        ['首帧', 'image', requireReferenceImage || Boolean(pendingPrefillParams?.image)],
+        ['尾帧', 'last_frame_image', requireLastFrame || Boolean(pendingPrefillParams?.last_frame_image)],
+      ] : [];
+      host.hidden = !frames.some(([, key, expected]) => expected || params[key]);
+      const markup = frames.filter(([, key, expected]) => expected || params[key])
+        .map(([label, key]) => {
+          const path = params[key];
+          const supported = Boolean(root.querySelector(`#jm-params [data-param="${key}"][data-type="image"]`));
+          const relative = String(path || '').replace(/^\/files\//, '');
+          const thumbnail = /^(?:[0-9]+|shots\/[0-9]+)\/[a-zA-Z0-9._-]+$/.test(relative)
+            && relative.split('/').every((part) => part !== '.' && part !== '..');
+          const msg = !supported ? '当前模型未开放此输入' : path ? '随作业提交' : '尚未填写';
+          return `<div class="gen-frame"><span>${label} · ${msg}</span>
+            ${supported && thumbnail ? `<img alt="${label}" src="/files/${escapeHtml(relative)}">` : ''}
+            ${path || (!supported && pendingPrefillParams?.[key]) ? `<span class="hint">${escapeHtml(path || pendingPrefillParams[key])}</span>` : ''}</div>`;
+        }).join('');
+      if (markup !== referenceMarkup) {
+        host.innerHTML = markup;
+        referenceMarkup = markup;
       }
+
+      const option = selectedOption();
+      const prompt = root.querySelector('#jm-prompt').value.trim();
+      const mode = root.querySelector('#jm-mode').value;
+      const route = option ? `${option.provider} / ${option.model}` : '尚未选定';
+      const dimensions = Object.entries(params)
+        .filter(([name]) => /^(duration(_seconds|_sec|_s|_ms)?|seconds|length|frames|num_frames|fps|ratio|aspect_ratio|aspect|resolution|width|height)$/.test(name));
+      const summary = root.querySelector('#jm-effective');
+      summary.querySelector('summary').textContent = `本次生成输入 · ${route}`;
+      summary.querySelector('p').textContent = mode === 'default'
+        ? '默认轨以服务端接单时的配置为准。' : '使用所选模型与下列表单输入。';
+      summary.querySelector('dl').innerHTML = `<dt>提交提示词</dt><dd>${escapeHtml(prompt || '尚未填写')}</dd>
+        ${params.negative_prompt ? `<dt>负面提示词</dt><dd>${escapeHtml(params.negative_prompt)}</dd>` : ''}
+        ${dimensions.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}
+        ${rework?.inputRefs?.length ? `<dt>沿用原作业引用</dt><dd>${escapeHtml(rework.inputRefs.join('、'))}</dd>` : ''}
+        ${linked?.shotId ? '<dt>分镜备注</dt><dd>景别、运镜与分镜风格存于镜头设定。模型参数以此表单为准。</dd>' : ''}
+        `;
     }
 
     function renderParams(values) {
@@ -1328,6 +1369,7 @@ export default {
       refreshModeSelect();
       if (p.provider_code && p.model_code) {
         const option = state.options.find((o) => o.capability === p.capability
+          && (!p.execution_mode || o.backend === p.execution_mode)
           && o.provider === p.provider_code && o.model === p.model_code);
         if (option) {
           root.querySelector('#jm-mode').value = option.backend;
@@ -1423,6 +1465,8 @@ export default {
         }
       }
       syncAffixPillStates();
+      renderReferencePreview();
+      saveDraft();
     }
 
     async function loadModalAffixes(pid) {
@@ -1444,9 +1488,87 @@ export default {
       }
     }
 
+    const draftsHost = root.querySelector('#gen-rework-drafts');
+    function paintDrafts() {
+      if (!draftsHost.isConnected || !store.can('job:submit')) return;
+      const projectId = store.currentId;
+      const episodeId = store.currentEpisodeId;
+      const drafts = episodeDrafts(projectId, episodeId);
+      draftsHost.innerHTML = drafts.length ? `<div class="card mb-card">
+        <div class="card-head"><h2>本集返工草稿</h2></div>
+        <div class="card-body"><ul class="pb-tasks flush">
+          ${drafts.map(({ draft }, i) => `<li>
+            <div class="pb-task-copy"><b>作业 #${Number(draft.jobId)}</b>
+              <span>${escapeHtml((draft.prompt || '').slice(0, 80))}</span></div>
+            <div class="actions">
+              <button type="button" class="btn xs" data-resume-draft="${i}">继续编辑</button>
+              <button type="button" class="btn xs ghost" data-remove-draft="${i}">删除草稿</button>
+            </div></li>`).join('')}
+        </ul></div></div>` : '';
+      draftsHost.onclick = async (event) => {
+        if (store.currentId !== projectId || store.currentEpisodeId !== episodeId) return;
+        const resume = event.target.closest('[data-resume-draft]');
+        const remove = event.target.closest('[data-remove-draft]');
+        if (resume) {
+          const { draft } = drafts[Number(resume.dataset.resumeDraft)];
+          let prefill;
+          const ok = await run('读取返工来源', async () => {
+            prefill = await reworkPrefill(projectId, episodeId, draft.shotId, draft.jobId);
+          }, { btn: resume });
+          if (ok && resume.isConnected && jobModal.hidden
+              && store.currentId === projectId && store.currentEpisodeId === episodeId) {
+            await openJobModal(prefill);
+          }
+        }
+        if (remove) {
+          const { key } = drafts[Number(remove.dataset.removeDraft)];
+          if (await confirmDanger({ title: '删除返工草稿？',
+            body: '会清除本机保存的编辑内容。', okText: '删除草稿', danger: true })) {
+            writeReworkDraft(key, null);
+            paintDrafts();
+          }
+        }
+      };
+    }
+
+    function saveDraft() {
+      if (!draftState || jobModal.hidden) return;
+      const params = { ...pendingPrefillParams, ...readParams({ rawValues: true }) };
+      pendingPrefillParams = params;
+      const option = selectedOption();
+      const mode = root.querySelector('#jm-mode').value;
+      const data = draftState.data;
+      Object.assign(data, {
+        updatedAt: Date.now(),
+        prompt: root.querySelector('#jm-prompt').value,
+        params,
+      });
+      if (!rework.needsRoute) {
+        data.route = { execution_mode: mode, provider_code: option?.provider || '',
+          model_code: option?.model || '' };
+      }
+      const stored = writeReworkDraft(draftState.key, data);
+      draftState.status.textContent = stored ? '返工草稿已保存在本机浏览器' : '存储不可用，本次页面内可继续编辑';
+    }
+
     async function openJobModal(prefill) {
       jobModal.hidden = false;
       root.querySelector('#jm-error').textContent = '';
+      rework = prefill?.rework ? { ...prefill.rework } : null;
+      const draftStatus = root.querySelector('#jm-draft-status');
+      draftStatus.hidden = !rework;
+      draftState = null;
+      if (rework) {
+        const { projectId, episodeId, shotId } = prefill;
+        const key = reworkDraftKey(projectId, episodeId, shotId, rework.id);
+        const saved = readReworkDraft(projectId, episodeId, shotId, rework.id);
+        const data = saved || { shotId, jobId: rework.id, attemptKey: newSubmissionKey() };
+        draftState = { key, data, status: draftStatus };
+        if (saved) {
+          prefill = { ...prefill, prompt: saved.prompt, params: saved.params,
+            template: { ...prefill.template, ...saved.route, params: saved.params } };
+        }
+      }
       requireReferenceImage = Boolean(prefill?.requireReferenceImage);
       requireLastFrame = Boolean(prefill?.requireLastFrame);
       pendingPrefillParams = prefill?.params ? { ...prefill.params } : null;
@@ -1456,7 +1578,11 @@ export default {
       linkEl.textContent = linked
         ? `关联：${linked.episodeId ? `集 ${linked.episodeId}` : ''}${linked.episodeId && linked.shotId ? ' · ' : ''}${linked.shotId ? `镜 ${linked.shotId}` : ''}（提交后不改镜头内容）`
         : '';
+      const context = root.querySelector('#jm-rework-context');
+      context.hidden = !rework;
+      context.textContent = rework ? `返工作业 #${rework.id}${rework.note ? ` · ${rework.note}` : ''}` : '';
       const projectSel = root.querySelector('#jm-project');
+      projectSel.disabled = Boolean(rework);
       const preferred = prefill?.projectId || state.projectId || store.currentId || '';
       projectSel.innerHTML = store.projects.map((p) =>
         `<option value="${p.id}" ${String(p.id) === String(preferred) ? 'selected' : ''}>${escapeHtml(p.name)}${p.status === 'archived' ? '（已归档）' : ''}</option>`).join('');
@@ -1465,6 +1591,10 @@ export default {
       }
       root.querySelector('#jm-capability').innerHTML = Object.entries(CAPS)
         .map(([v, l]) => `<option value="${v}" ${v === (prefill?.capability || 'video') ? 'selected' : ''}>${l}</option>`).join('');
+      root.querySelector('#jm-capability').disabled = Boolean(rework);
+      root.querySelector('#jm-template').disabled = Boolean(rework);
+      root.querySelector('#jm-scene').disabled = Boolean(rework);
+      root.querySelector('#jm-cancel').textContent = rework ? '关闭并保留草稿' : '取消';
       root.querySelector('#jm-prompt').value = '';
       root.querySelector('#jm-hint').textContent = '';
       refreshModeSelect();
@@ -1472,16 +1602,42 @@ export default {
       // 场景预填与模板预填撞车时**模板赢**（调用方给得更具体），
       // 所以带模板时直接关掉自动预填；不带模板时 allowAuto 生效，
       // 撤销的 before 也会落在模板之后的那一格上。
-      if (prefill?.template) applyProfile(prefill.template);
+      if (prefill?.template?.execution_mode === 'default') {
+        root.querySelector('#jm-mode').value = 'default';
+        refreshRouteSelect();
+      } else if (prefill?.template) applyProfile(prefill.template);
       if (prefill?.prompt) root.querySelector('#jm-prompt').value = prefill.prompt;
+      if (rework && prefill.template.execution_mode !== 'default'
+          && (selectedOption()?.provider !== prefill.template.provider_code
+          || selectedOption()?.model !== prefill.template.model_code
+          || root.querySelector('#jm-mode').value !== prefill.template.execution_mode)) {
+        root.querySelector('#jm-mode').value = optionsFor(prefill.capability, prefill.template.execution_mode).length
+          ? prefill.template.execution_mode : 'default';
+        refreshRouteSelect();
+        const route = root.querySelector('#jm-route');
+        route.selectedIndex = -1;
+        renderParams();
+        context.textContent += ' · 原模型已不可用，请手动选择执行路线和模型。';
+        draftState.data.route ??= {
+          execution_mode: prefill.template.execution_mode, provider_code: prefill.template.provider_code,
+          model_code: prefill.template.model_code,
+        };
+        rework.needsRoute = true;
+      }
+      renderReferencePreview();
       // 场景由调用方带过来（分镜点「生成」＝分镜生成），没有就停在"不按场景"。
       refreshSceneSelect(prefill?.sceneKey || '', !prefill?.template);
+      saveDraft();
+      paintDrafts();
       try {
-        state.profiles = await api.generationProfiles(projectSel.value || undefined);
+        const profiles = await api.generationProfiles(projectSel.value || undefined);
+        if (!alive() || jobModal.hidden) return;
+        state.profiles = profiles;
         refreshTemplateSelect();
       } catch { /* 模板读不到不影响提交 */ }
+      if (!alive() || jobModal.hidden) return;
       void loadModalAffixes(projectSel.value);
-      root.querySelector('#jm-project').focus();
+      root.querySelector(rework ? '#jm-prompt' : '#jm-project').focus();
     }
 
     /* ---------- 任务场景：候选、挡路原因，以及"按场景预填" ---------- */
@@ -1687,12 +1843,13 @@ export default {
       root.querySelector('#jm-link').textContent = '';
     }
 
-    function readParams() {
+    function readParams({ rawValues = false } = {}) {
       const out = {};
       root.querySelectorAll('#jm-params [data-param]').forEach((el) => {
         const name = el.dataset.param;
         const type = el.dataset.type;
         if (type === 'bool') { out[name] = el.checked; return; }
+        if (rawValues) { out[name] = el.value; return; }
         const raw = el.value.trim();
         if (raw === '' && type !== 'str' && type !== 'image') return;
         if (type === 'int') out[name] = parseInt(raw, 10);
@@ -1743,8 +1900,12 @@ export default {
         }
         const body = {
           project_id: projectId, capability, prompt,
-          params, input_refs: [],
+          params, input_refs: rework?.inputRefs || [],
         };
+        if (rework) {
+          if (rework.needsRoute) { errEl.textContent = '请选择返工的执行路线和模型。'; return; }
+          body.rework_of_job_id = rework.id;
+        }
         if (linked?.episodeId) body.episode_id = linked.episodeId;
         if (linked?.shotId) body.shot_id = linked.shotId;
         if (mode !== 'default') {
@@ -1822,10 +1983,15 @@ export default {
 
         // 按钮在这里**已经**灰了（入口处），不必再 disabled 一次。
         try {
-          body.idempotency_key = jobSubmission.key(body);
+          const submittingDraft = draftState;
+          body.idempotency_key = submittingDraft?.data.attemptKey || jobSubmission.key(body);
           const job = await api.submitJob(body);
           jobSubmission.clear();
+          if (submittingDraft) writeReworkDraft(submittingDraft.key, null);
+          if (!alive()) return;
           closeJobModal();
+          draftState = null;
+          paintDrafts();
           await refresh();
           openDrawer(job.id);
         } catch (err) {
@@ -2133,6 +2299,13 @@ export default {
       if (e.target === drawer) closeDrawer();
     });
     drawerBody.addEventListener('click', (e) => {
+      const compare = e.target.closest('[data-compare-rework]');
+      if (compare) {
+        gotoEntry({ module: 'shot', shot_id: Number(compare.dataset.shot),
+          episode_id: Number(compare.dataset.episode), job_id: Number(compare.dataset.compareRework),
+          focus: 'compare' });
+        return;
+      }
       const artifactsRetry = e.target.closest('[data-artifacts-retry]');
       if (artifactsRetry) {
         const id = openJobId;
@@ -2167,8 +2340,8 @@ export default {
           && reconcileModal.hidden) closeDrawer();
     });
 
-    root.querySelector('#gen-new')?.addEventListener('click', () => openJobModal());
-    root.querySelector('#jm-cancel').addEventListener('click', closeJobModal);
+    root.querySelector('#gen-new')?.addEventListener('click', () => { if (!submitBusy) openJobModal(); });
+    root.querySelector('#jm-cancel').addEventListener('click', () => { if (!submitBusy) closeJobModal(); });
     root.querySelector('#jm-submit').addEventListener('click', submitJob);
     root.querySelector('#jm-capability').addEventListener('change', () => {
       refreshModeSelect();
@@ -2211,10 +2384,12 @@ export default {
     root.querySelector('#jm-mode').addEventListener('change', () => {
       // 人自己动了这两个下拉＝他接管了，撤销信息作废（下一笔预填重新记 before）。
       clearScenePrefillTrace();
+      if (rework) rework.needsRoute = false;
       refreshRouteSelect();
     });
     root.querySelector('#jm-route').addEventListener('change', () => {
       clearScenePrefillTrace();
+      if (rework) rework.needsRoute = false;
       renderParams();
       renderCostSection();
     });
@@ -2245,7 +2420,10 @@ export default {
         modalAffixes.filter((a) => a.is_default).forEach((a) => applySingleAffix(a, true));
       }
     });
-    root.querySelector('#jm-prompt').addEventListener('input', syncAffixPillStates);
+    root.querySelector('#jm-prompt').addEventListener('input', () => {
+      syncAffixPillStates();
+      renderReferencePreview();
+    });
 
     root.querySelector('#gen-profiles').addEventListener('click', openProfiles);
     root.querySelector('#pf-close').addEventListener('click', closeProfiles);
@@ -2283,7 +2461,14 @@ export default {
       }
     });
 
-    bindModalDismiss(jobModal, closeJobModal);
+    jobModal.addEventListener('input', (event) => {
+      if (event.target.matches('#jm-prompt, [data-param]')) saveDraft();
+    });
+    jobModal.addEventListener('change', (event) => {
+      if (event.target.matches('#jm-mode, #jm-route, [data-param]')) saveDraft();
+    });
+    paintDrafts();
+    bindModalDismiss(jobModal, () => { if (!submitBusy) closeJobModal(); });
     bindModalDismiss(profileModal, closeProfiles);
     root.querySelector('#rc-cancel').addEventListener('click', closeReconcile);
     root.querySelector('#rc-submit').addEventListener('click', submitReconcile);

@@ -14,7 +14,7 @@ from .state import _stage
 
 
 
-def episode_board(project_id: int, episode_id: int) -> dict:
+def episode_board(project_id: int, episode_id: int, *, include_shot_tasks: bool = False) -> dict:
     """一集的生产总览：九阶段 ＋ 阻塞 ＋ 下一步。"""
     episode = episodes.get(episode_id)
     if episode is None or int(episode["project_id"]) != int(project_id):
@@ -156,12 +156,80 @@ def episode_board(project_id: int, episode_id: int) -> dict:
             "episode_title": episode["title"] or "",
             "shots": total_shots, "stages": stages,
             "next_tasks": next_tasks(stages),
+            "shot_tasks": _shot_tasks(project_id, episode_id) if include_shot_tasks else [],
             "counts": {"documents": doc_total, "extraction_pending": runs["pending"],
                        "assets_referenced": gaps_assets["total"],
                        "videos_succeeded": succeeded, "videos_failed": failed,
                        "unsigned": review_pending, "attention": attention,
                        "composition_versions": comp["versions"]}}
 
+
+
+def _shot_tasks(project_id: int, episode_id: int) -> list[dict]:
+    """按分镜顺序给出可连续处理的素材、视频审核、返工和掉队作业。"""
+    import jobfiles
+    from repositories.jobs import jobs as job_repo
+    from repositories.reviews import reviews
+    from services.artifact_review import artifact_version_of_manifest
+    from services.content_units import asset_preparation
+
+    prep = asset_preparation(episode_id, project_id)
+    asset_images = {a["id"]: a["image_count"] for a in prep["assets"]}
+    variants = {v["id"]: v for v in prep["variants"]}
+    missing_purposes = {item["seq"] for item in prep["missing_purposes"]}
+    latest = {sid: job for sid, job in job_repo.latest_jobs_by_shot(episode_id).items()
+              if job["project_id"] == project_id}
+    succeeded = [job for job in latest.values() if job["status"] == "succeeded"]
+    manifests = dict(zip((job["id"] for job in succeeded),
+                         jobfiles.artifacts_many([job["result_paths_json"] for job in succeeded]),
+                         strict=True))
+    signatures = reviews.signs_by_targets(reviews.JOB, set(manifests))
+    tasks: list[dict] = []
+    for shot in prep["shots"]:
+        base = {"shot_id": shot["id"], "seq": shot["seq"]}
+        selected = [variants[vid] for vid in shot["variant_ids"] if vid in variants]
+        selected_parents = {v["asset_id"] for v in selected}
+        missing_asset = (len(selected) < len(shot["variant_ids"])
+                         or any(aid not in asset_images for aid in shot["asset_ids"]))
+        missing_image = (any(not v["image_count"] for v in selected)
+                         or any(not asset_images.get(aid) for aid in shot["asset_ids"]
+                                if aid not in selected_parents))
+        if missing_asset or missing_image or shot["seq"] in missing_purposes:
+            note = "引用资产或形态不可用" if missing_asset else (
+                "缺指定用途的参考图" if shot["seq"] in missing_purposes else "缺参考图")
+            tasks.append({**base, "group": "assets", "note": note})
+
+        job = latest.get(shot["id"])
+        if job is None:
+            continue
+        status = job["status"]
+        jid = job["id"]
+        source = job["rework_of_job_id"]
+        payload = {**base, "job_id": jid, "source_job_id": source}
+        if status in ("failed", "cancelled", "needs_attention"):
+            note = {"failed": "最新生成失败", "cancelled": "最新生成已取消",
+                    "needs_attention": "最新作业待人工核对"}[status]
+            tasks.append({**payload, "group": "failed", "note": note})
+        elif status == "succeeded":
+            manifest = manifests[jid]
+            if not any(item["exists"] for item in manifest):
+                tasks.append({**payload, "group": "failed", "note": "最新作业产物不可读"})
+                continue
+            version = artifact_version_of_manifest(manifest)
+            decisions = {sig["decision"] for sig in signatures.get(jid, [])
+                         if sig["base_version"] == version}
+            if "approved" in decisions:
+                continue
+            if decisions & {"returned", "rejected"}:
+                tasks.append({**payload, "group": "rework", "note": "版本待返工", "can_review": True})
+            elif source is not None:
+                tasks.append({**payload, "group": "rework", "note": "返工新版待审",
+                              "can_review": True, "replacement_ready": True})
+            else:
+                tasks.append({**payload, "group": "review", "note": "最新视频待审", "can_review": True})
+        elif source is not None:
+            tasks.append({**payload, "group": "rework", "note": "返工作业进行中"})
+    return tasks
 
 
 def next_tasks(stages: list[dict]) -> list[dict]:

@@ -31,7 +31,7 @@ def _intent_of(payload) -> dict:
     fields = (
         "project_id", "episode_id", "shot_id", "capability", "execution_mode",
         "provider_code", "model_code", "prompt", "params", "input_refs", "priority",
-        "estimate", "user_confirmed_cloud",
+        "estimate", "user_confirmed_cloud", "rework_of_job_id",
     )
     return deepcopy({name: getattr(payload, name, None) for name in fields})
 
@@ -134,6 +134,17 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
             if existing["project_id"] != payload.project_id:
                 raise JobInvalid("这个幂等键已被别的作业占用")
             return PreparedJob(_intent_of(payload), {}, created_by, existing)
+
+    rework_id = getattr(payload, "rework_of_job_id", None)
+    if rework_id is not None:
+        source = job_repo.get(rework_id)
+        if (source is None or payload.shot_id is None
+                or payload.capability not in ("image", "video")
+                or source["status"] != "succeeded"
+                or source["project_id"] != payload.project_id
+                or source["shot_id"] != payload.shot_id
+                or source["capability"] != payload.capability):
+            raise JobInvalid("返工来源必须是同一镜头、同一能力的成功作业")
 
     capability = payload.capability
     mode = payload.execution_mode
@@ -240,6 +251,7 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
         "prompt_snapshot": payload.prompt,
         "params": payload.params,
         "input_refs": payload.input_refs,
+        "rework_of_job_id": rework_id,
         "priority": payload.priority,
         "idempotency_key": payload.idempotency_key,
         "user_confirmed_cloud": payload.user_confirmed_cloud,
