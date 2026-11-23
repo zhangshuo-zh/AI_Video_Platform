@@ -322,15 +322,40 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
     }
   });
 
+  let lastX = 0;
+  let lastDx = 0;
+
   document.addEventListener('pointermove', (e) => {
     if (!isEnabled()) return;
     const gate = document.getElementById('gate');
     if (gate && !gate.hidden) return;
-    if (e.clientX >= window.innerWidth - 22) {
+    lastDx = e.clientX - lastX;
+    lastX = e.clientX;
+    const docW = document.documentElement.clientWidth || window.innerWidth;
+    if (e.clientX >= docW - 24) {
       openDock();
-    } else if (dock.classList.contains('open') && !dockHover && e.clientX < window.innerWidth - 350) {
-      scheduleClose(340);
+    } else if (dock.classList.contains('open') && !dockHover && e.clientX < docW - 340) {
+      scheduleClose(320);
     }
+  }, { passive: true });
+
+  // 快速往右甩进原生滚动条或甩出右边缘时（含高速向右冲出预测）同样直接呼出
+  document.documentElement.addEventListener('mouseleave', (e) => {
+    if (!isEnabled()) return;
+    const gate = document.getElementById('gate');
+    if (gate && !gate.hidden) return;
+    const docW = document.documentElement.clientWidth || window.innerWidth;
+    const nearRight = e.clientX >= docW - 60;
+    const fastRight = lastDx > 8 && lastX >= docW - 140 && e.clientX >= docW - 140;
+    if ((nearRight || fastRight) && e.clientY >= 0 && e.clientY <= window.innerHeight) {
+      openDock();
+    }
+  });
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!isEnabled() || !dock.classList.contains('open') || clearing || confirmClear) return;
+    if (dock.contains(e.target) || edge.contains(e.target)) return;
+    closeDock();
   }, { passive: true });
 
   edge.addEventListener('pointerenter', () => openDock());

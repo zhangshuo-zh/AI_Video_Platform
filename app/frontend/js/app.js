@@ -724,6 +724,7 @@ function setupDockSidebar() {
   const hideFlyout = () => {
     clearTimeout(subDelayTimer); subDelayTimer = 0;
     activeItem = null;
+    flyoutHover = false;
     flyout.hidden = true;
     flyout.classList.remove('open', 'is-label');
     flyout.innerHTML = '';
@@ -788,19 +789,35 @@ function setupDockSidebar() {
     syncModeBtn();
   });
 
-  // 左边缘靠近呼出（0..12px），远离左侧 Dock 区且未悬停时自动安排收起
-  document.addEventListener('mousemove', (e) => {
+  // 左边缘靠近或快速左甩出界呼出，远离或点击浮窗外屏幕即收起
+  document.addEventListener('pointermove', (e) => {
     if (!isDockMode()) return;
     const gate = document.getElementById('gate');
     if (gate && !gate.hidden) return;
-    if (e.clientX <= 12) {
+    if (e.clientX <= 16) {
       openDock();
-    } else if (sidebar.classList.contains('dock-open') && !sidebarHover && !flyoutHover && e.clientX > 110) {
-      scheduleClose(340);
+    } else if (sidebar.classList.contains('dock-open') && !sidebarHover && !flyoutHover && e.clientX > 84) {
+      scheduleClose(320);
     }
   }, { passive: true });
 
+  document.addEventListener('mouseleave', (e) => {
+    if (!isDockMode()) return;
+    const gate = document.getElementById('gate');
+    if (gate && !gate.hidden) return;
+    if (e.clientX <= 24 && e.clientY >= 0 && e.clientY <= window.innerHeight) {
+      openDock();
+    }
+  });
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!isDockMode() || !sidebar.classList.contains('dock-open')) return;
+    if (sidebar.contains(e.target) || flyout.contains(e.target) || (edge && edge.contains(e.target))) return;
+    closeDock();
+  }, { passive: true });
+
   if (edge) {
+    edge.addEventListener('pointerenter', () => openDock());
     edge.addEventListener('mouseenter', () => openDock());
   }
 
