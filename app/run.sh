@@ -162,6 +162,8 @@ import sys
 host, port = sys.argv[1], int(sys.argv[2])
 sock = socket.socket()
 try:
+    # 与 Uvicorn 使用相同的端口复用选项，允许服务退出后立即重启。
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
 except OSError as exc:
     print(f"端口 {port} 已被占用（{exc}）；换一个 FASTVIDEO_PORT 再试", file=sys.stderr)
