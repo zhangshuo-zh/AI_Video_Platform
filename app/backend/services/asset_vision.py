@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from urllib.parse import urlsplit
 
 import chatgpt_plan
@@ -23,7 +23,7 @@ _DASHSCOPE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/complet
 _VISION_MODEL = re.compile(r"(?:qwen[\w.]*-?vl|vision|llava|minicpm-v|gemma3(?!n)|pixtral|internvl|moondream)", re.I)
 _SLOTS_BY_KIND = {
     "character": ("封面定妆", "三视图", "面部特写", "背面细节"),
-    "scene": ("全景定调", "机位结构", "材质细节", "光影时段"),
+    "scene": ("全景定调", "机位结构", "光影时段", "材质细节"),
     "prop": ("正面全貌", "材质细节", "比例对照", "展开状态"),
 }
 _SLOT_FOCUS = {
@@ -59,6 +59,9 @@ _MAX_PROMPT = 1000
 _MAX_RAW_PROMPT = 32_000
 _MAX_REQUESTS = BoundedSemaphore(4)
 _TOTAL_SECONDS = 125.0
+_OLLAMA_DOWN_TTL = 20.0
+_ollama_down: dict[str, float] = {}
+_ollama_lock = Lock()
 
 
 def _select_images(ref_images: list[str], purposes: dict[str, str],
@@ -142,23 +145,58 @@ def _finalize(text: str, language: str) -> str:
 
     if language == "bilingual":
         zh, en = values("zh"), values("en")
-        if len(zh) != len(en):
-            raise _VisionError(502, "双语提示词条目未对齐，请重试")
         parts: tuple[list[str], list[str]] = ([], [])
-        seen: set[tuple[str, str]] = set()
         length = 1
-        for a, b in zip(zh, en):
-            pair = (a.casefold(), b.casefold())
-            if pair in seen or not _valid_tag(a, "zh") or not _valid_tag(b, "en"):
-                continue
-            added = len(a) + len(b) + (4 if parts[0] else 0)
-            if length + added > _MAX_PROMPT:
-                break
-            seen.add(pair)
-            parts[0].append(a)
-            parts[1].append(b)
-            length += added
-        if parts[0] and _CJK.search("".join(parts[0])):
+        if len(zh) == len(en):
+            seen: set[tuple[str, str]] = set()
+            for a, b in zip(zh, en):
+                pair = (a.casefold(), b.casefold())
+                if pair in seen or not _valid_tag(a, "zh") or not _valid_tag(b, "en"):
+                    continue
+                added = len(a) + len(b) + (4 if parts[0] else 0)
+                if length + added > _MAX_PROMPT:
+                    break
+                seen.add(pair)
+                parts[0].append(a)
+                parts[1].append(b)
+                length += added
+        else:
+            zh_clean: list[str] = []
+            en_clean: list[str] = []
+            seen_zh: set[str] = set()
+            seen_en: set[str] = set()
+            for a in zh:
+                key = a.casefold()
+                if key not in seen_zh and _valid_tag(a, "zh"):
+                    seen_zh.add(key)
+                    zh_clean.append(a)
+            for b in en:
+                key = b.casefold()
+                if key not in seen_en and _valid_tag(b, "en"):
+                    seen_en.add(key)
+                    en_clean.append(b)
+            iz = ie = 0
+            while iz < len(zh_clean) or ie < len(en_clean):
+                progressed = False
+                if iz < len(zh_clean):
+                    a = zh_clean[iz]
+                    added = len(a) + (2 if parts[0] else 0)
+                    if length + added <= _MAX_PROMPT:
+                        parts[0].append(a)
+                        length += added
+                        progressed = True
+                    iz += 1
+                if ie < len(en_clean):
+                    b = en_clean[ie]
+                    added = len(b) + (2 if parts[1] else 0)
+                    if length + added <= _MAX_PROMPT:
+                        parts[1].append(b)
+                        length += added
+                        progressed = True
+                    ie += 1
+                if not progressed:
+                    break
+        if parts[0] and parts[1] and _CJK.search("".join(parts[0])):
             return ", ".join(parts[0]) + "\n" + ", ".join(parts[1])
     else:
         tags: list[str] = []
@@ -179,8 +217,9 @@ def _finalize(text: str, language: str) -> str:
     raise _VisionError(502, "看图通道未返回符合所选语言的可用提示词")
 
 
-def _ollama_model(model: str | None, deadline: float) -> tuple[str, str]:
+def _ollama_model(model: str | None, deadline: float, *, allow_cached_skip: bool = False) -> tuple[str, str]:
     inspected = 0
+    now = time.monotonic()
     for inst in engine_instances.instances():
         if inst["engine_code"] != "ollama" or not inst["enabled"]:
             continue
@@ -193,19 +232,22 @@ def _ollama_model(model: str | None, deadline: float) -> tuple[str, str]:
                 continue
         except ValueError:
             continue
+        if allow_cached_skip:
+            with _ollama_lock:
+                if _ollama_down.get(endpoint, 0.0) > now:
+                    continue
         inspected += 1
         if inspected > 3:
             break
         try:
-            try:
-                result = _request(endpoint + "/api/tags", label="Ollama", deadline=deadline, idle=2)
-            except _VisionError as exc:
-                if not exc.unavailable:
-                    raise
-                # Discovery is read-only. Retry once on an unavailable service.
-                result = _request(endpoint + "/api/tags", label="Ollama", deadline=deadline, idle=2)
-        except _VisionError:
+            result = _request(endpoint + "/api/tags", label="Ollama", deadline=deadline, idle=1.5)
+        except _VisionError as exc:
+            if exc.unavailable:
+                with _ollama_lock:
+                    _ollama_down[endpoint] = time.monotonic() + _OLLAMA_DOWN_TTL
             continue
+        with _ollama_lock:
+            _ollama_down.pop(endpoint, None)
         records = result.get("models") if isinstance(result, dict) else None
         if not isinstance(records, list):
             continue
@@ -238,11 +280,14 @@ def _message_text(value: object) -> str:
     return ""
 
 
-def _run_ollama(images: list[str], instruction: str, model: str | None, deadline: float) -> tuple[str, str]:
-    endpoint, chosen = _ollama_model(model, min(deadline, time.monotonic() + 8))
+def _run_ollama(images: list[str], instruction: str, model: str | None, deadline: float,
+                *, allow_cached_skip: bool = False) -> tuple[str, str]:
+    endpoint, chosen = _ollama_model(model, min(deadline, time.monotonic() + 8),
+                                     allow_cached_skip=allow_cached_skip)
     result = _request(endpoint + "/api/chat", label="Ollama", deadline=deadline, idle=50, body={
         "model": chosen, "messages": [{"role": "user", "content": instruction, "images": images}],
-        "format": "json", "stream": False, "options": {"temperature": 0.15, "num_predict": 1800},
+        "format": "json", "think": False, "stream": False,
+        "options": {"temperature": 0.15, "num_predict": 1800},
     })
     if not isinstance(result, dict) or result.get("done") is False or result.get("done_reason") == "length":
         raise _VisionError(502, "Ollama 返回未完成，请更换模型或减少参考图")
@@ -260,9 +305,24 @@ def _chatgpt_token(user_id: int, deadline: float) -> str:
         raise _VisionError(424, "ChatGPT 授权不可用，请重新连接后重试", unavailable=True) from None
 
 
-def _run_chatgpt(token: str, images: list[str], instruction: str,
+def _pick_chatgpt_model(user_id: int, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    try:
+        listed = chatgpt_plan.models(user_id)
+        ids = [item["id"] for item in listed if isinstance(item, dict) and isinstance(item.get("id"), str)]
+        for pref in ("gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o"):
+            hit = next((mid for mid in ids if mid == pref or pref in mid), None)
+            if hit:
+                return hit
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return _DEFAULT_CHATGPT_MODEL
+
+
+def _run_chatgpt(user_id: int, token: str, images: list[str], instruction: str,
                  model: str | None, deadline: float) -> tuple[str, str]:
-    chosen = model or _DEFAULT_CHATGPT_MODEL
+    chosen = _pick_chatgpt_model(user_id, model)
     result = _request(f"{chatgpt_plan.RESOURCE}/responses", label="ChatGPT", deadline=deadline,
                      idle=45, responses=True, token=token, body={
         "model": chosen, "store": False, "stream": True, "max_output_tokens": 2400,
@@ -329,7 +389,8 @@ def _reverse_prompt(asset_id: int, user_id: int, payload: AssetReversePromptIn,
     local_error: _VisionError | None = None
     if provider in ("auto", "ollama"):
         try:
-            return draft(_run_ollama(images, instruction, model, min(deadline, time.monotonic() + 55)), "ollama")
+            return draft(_run_ollama(images, instruction, model, min(deadline, time.monotonic() + 55),
+                                     allow_cached_skip=(provider == "auto")), "ollama")
         except _VisionError as exc:
             if provider == "ollama":
                 raise
@@ -343,7 +404,7 @@ def _reverse_prompt(asset_id: int, user_id: int, payload: AssetReversePromptIn,
                 raise
         else:
             # A submitted cloud request might have been charged even if its response was lost.
-            return draft(_run_chatgpt(token, images, instruction, model, deadline), "chatgpt")
+            return draft(_run_chatgpt(user_id, token, images, instruction, model, deadline), "chatgpt")
 
     key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if key:

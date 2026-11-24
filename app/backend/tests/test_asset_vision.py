@@ -281,3 +281,105 @@ def test_auto_uses_dashscope_when_chatgpt_authorization_is_unavailable(as_role, 
     assert resp.status_code == 200
     assert resp.json()["provider"] == "dashscope"
     assert resp.json()["prompt"] == "黑发, 蓝瞳"
+
+
+def test_ollama_disables_thinking_in_json_mode(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setattr(
+        av.engine_instances,
+        "instances",
+        lambda: [{"engine_code": "ollama", "endpoint": "http://127.0.0.1:11434", "enabled": 1}],
+    )
+    captured = {}
+
+    def open_response(req, *, timeout):
+        if req.full_url.endswith("/api/tags"):
+            return _Response(json.dumps({"models": [{"name": "qwen3-vl:8b"}]}).encode())
+        captured["body"] = json.loads(req.data)
+        return _Response(json.dumps({
+            "done": True,
+            "message": {"content": '{"zh":["银发双马尾","赛博猫耳"]}'},
+        }).encode())
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "ollama", "language": "zh"})
+    assert resp.status_code == 200
+    assert captured["body"]["format"] == "json"
+    assert captured["body"]["think"] is False
+    assert resp.json()["prompt"] == "银发双马尾, 赛博猫耳"
+
+
+def test_bilingual_allows_unequal_tag_counts_and_respects_budget():
+    prompt = av._finalize(json.dumps({
+        "zh": ["色卡条", "银白短发", "发光机械猫耳"],
+        "en": ["FRONT / SIDE / BACK", "silver short hair", "glowing cyber cat ears", "blue neon accents", "blue neon accents"],
+    }), "bilingual")
+    zh_line, en_line = prompt.splitlines()
+    assert zh_line == "银白短发, 发光机械猫耳"
+    assert en_line == "silver short hair, glowing cyber cat ears, blue neon accents"
+    assert len(prompt) <= av._MAX_PROMPT
+
+
+def test_chatgpt_picks_available_vision_model_from_account_list(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setattr(av.engine_instances, "instances", lambda: [])
+    monkeypatch.setattr(av.chatgpt_plan, "access_token", lambda uid, **kw: "tok-live")
+    monkeypatch.setattr(av.chatgpt_plan, "models", lambda uid: [
+        {"id": "o3-mini", "name": "o3-mini"},
+        {"id": "gpt-4o", "name": "GPT-4o"},
+    ])
+    captured = {}
+
+    def open_response(req, *, timeout):
+        captured["body"] = json.loads(req.data)
+        return _sse(
+            {"type": "response.output_text.delta", "delta": '{"en":["cyber catgirl","amber eyes"]}'},
+            {"type": "response.completed"},
+        )
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "chatgpt", "language": "en"})
+    assert resp.status_code == 200
+    assert captured["body"]["model"] == "gpt-4o"
+    assert resp.json()["model"] == "gpt-4o"
+    assert resp.json()["prompt"] == "cyber catgirl, amber eyes"
+
+
+def test_ollama_negative_cache_skips_dead_endpoint_in_auto_but_probes_explicit(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    av._ollama_down.clear()
+    monkeypatch.setattr(
+        av.engine_instances,
+        "instances",
+        lambda: [{"engine_code": "ollama", "endpoint": "http://127.0.0.1:11434", "enabled": 1}],
+    )
+    monkeypatch.setattr(av.chatgpt_plan, "access_token", lambda uid, **kw: "tok-live")
+    monkeypatch.setattr(av.chatgpt_plan, "models", lambda uid: [{"id": "gpt-5.1", "name": "GPT-5.1"}])
+    tag_hits = 0
+
+    def open_response(req, *, timeout):
+        nonlocal tag_hits
+        if req.full_url.endswith("/api/tags"):
+            tag_hits += 1
+            raise transport.URLError("connection refused")
+        return _sse(
+            {"type": "response.output_text.delta", "delta": '{"zh":["黑发少女"]}'},
+            {"type": "response.completed"},
+        )
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    r1 = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "auto", "language": "zh"})
+    r2 = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "auto", "language": "zh"})
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert tag_hits == 1
+    r3 = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "ollama", "language": "zh"})
+    assert r3.status_code == 503
+    assert tag_hits == 2
+    av._ollama_down.clear()
+
+
+def test_scene_slots_order_matches_frontend():
+    assert av._SLOTS_BY_KIND["scene"] == ("全景定调", "机位结构", "光影时段", "材质细节")

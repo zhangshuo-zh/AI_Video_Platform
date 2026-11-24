@@ -106,6 +106,7 @@ async function request(url, init, opts) {
 
 const send = (method, url, body, opts) => {
   const init = { method };
+  if (opts?.signal) init.signal = opts.signal;
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(body);
@@ -519,7 +520,7 @@ export const api = {
   // 同一个字段不留第二个编辑入口，所以没有"只改标签"这种半截接口
   updateAsset: (id, body) => send('PUT', `/api/assets/${id}`, body),
   setAssetImagePurpose: (id, body) => send('PUT', `/api/assets/${id}/image-purpose`, body),
-  reverseAssetPrompt: (id, body) => send('POST', `/api/assets/${id}/reverse-prompt`, body, { timeoutMs: 180_000 }),
+  reverseAssetPrompt: (id, body, opts = {}) => send('POST', `/api/assets/${id}/reverse-prompt`, body, { timeoutMs: 180_000, ...opts }),
   setAssetCover: (id, path) => send('PUT', `/api/assets/${id}/cover`, { path }),
   assetReferenceUsage: (pid, aid) => get(`/api/projects/${pid}/assets/${aid}/reference-usage`),
   replaceAssetReferences: (pid, aid, body) => send('POST', `/api/projects/${pid}/assets/${aid}/reference-usage`, body),

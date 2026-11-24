@@ -191,6 +191,12 @@ export async function renderDetail(id) {
                         <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
                       </div>
                       <div class="ad-ai-group">
+                        <select class="ctl sm ad-vision-provider" id="ad-vision-provider" aria-label="看图反推通道">
+                          <option value="auto">自动通道（本地优先）</option>
+                          <option value="ollama">本地 Ollama</option>
+                          <option value="chatgpt">ChatGPT 套餐</option>
+                          <option value="dashscope">通义千问 VL</option>
+                        </select>
                         <select class="ctl sm ad-vision-lang" id="ad-vision-lang" aria-label="看图反推语言">
                           <option value="zh">中文提示词</option>
                           <option value="en">英文 Tag</option>
@@ -201,6 +207,7 @@ export async function renderDetail(id) {
                     </div>
                     <div class="ad-ai-feedback">
                       <span class="t-dim" id="ad-ai-status" role="status"></span>
+                      <button type="button" class="btn xs ghost" id="ad-ai-cancel" hidden>取消反推</button>
                       <button type="button" class="btn xs ghost" id="ad-ai-undo" hidden>撤销还原</button>
                     </div>`;
                   })() : ''}
@@ -646,19 +653,33 @@ export function mountDetail(root, id) {
   });
 
   const revBtn = root.querySelector('#ad-ai-reverse');
+  const revCancel = root.querySelector('#ad-ai-cancel');
+  let revAbort = null;
+  revCancel?.addEventListener('click', () => {
+    if (revAbort) revAbort.abort();
+  });
   const runReversePrompt = async (imagePaths, triggerEl) => {
     if (isNew || !a.ref_images.length) {
       if (aiStatus) aiStatus.textContent = '请先保存资产并上传至少一张参考图';
       return;
     }
+    if (revAbort) revAbort.abort();
+    const ctl = new AbortController();
+    revAbort = ctl;
     const promptEl = root.querySelector('#ad-prompt');
     const lang = root.querySelector('#ad-vision-lang')?.value || 'zh';
+    const provider = root.querySelector('#ad-vision-provider')?.value || 'auto';
     if (triggerEl) triggerEl.disabled = true;
     if (revBtn && revBtn !== triggerEl) revBtn.disabled = true;
+    if (revCancel) revCancel.hidden = false;
     if (aiStatus) aiStatus.textContent = imagePaths.length ? '正在分析指定参考图…' : '正在综合参考图反推提示词…';
     try {
-      const res = await api.reverseAssetPrompt(a.id, { image_paths: imagePaths, provider: 'auto', language: lang });
-      if (!root.isConnected) return;
+      const res = await api.reverseAssetPrompt(
+        a.id,
+        { image_paths: imagePaths, provider, language: lang },
+        { signal: ctl.signal },
+      );
+      if (!root.isConnected || ctl.signal.aborted) return;
       const existing = promptEl?.value.trim() || '';
       const choice = await askReversePromptApply(res, Boolean(existing));
       if (!choice || !root.isConnected || !choice.text) {
@@ -675,8 +696,14 @@ export function mountDetail(root, id) {
       if (aiUndo) aiUndo.hidden = false;
       if (aiStatus) aiStatus.textContent = `已反推提示词（${res.provider} / ${res.model}），核对后请点右上角「保存」`;
     } catch (err) {
+      if (ctl.signal.aborted || err?.name === 'AbortError') {
+        if (aiStatus && root.isConnected) aiStatus.textContent = '已取消本次看图反推';
+        return;
+      }
       if (aiStatus && root.isConnected) aiStatus.textContent = `反推失败：${err.message || err}`;
     } finally {
+      if (revAbort === ctl) revAbort = null;
+      if (revCancel?.isConnected) revCancel.hidden = true;
       if (triggerEl?.isConnected) triggerEl.disabled = false;
       if (revBtn?.isConnected) revBtn.disabled = isNew || !a.ref_images.length;
     }

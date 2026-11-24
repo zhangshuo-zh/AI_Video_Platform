@@ -80,29 +80,32 @@ export function readImageSize(file) {
   });
 }
 
+function computeCropBox(w, h, targetRatio) {
+  const curRatio = w / h;
+  let sx = 0;
+  let sy = 0;
+  let sw = w;
+  let sh = h;
+  if (curRatio > targetRatio) {
+    sw = Math.round(h * targetRatio);
+    sx = Math.round((w - sw) / 2);
+  } else {
+    sh = Math.round(w / targetRatio);
+    sy = Math.round((h - sh) / 2);
+  }
+  return { sx, sy, sw: Math.max(1, sw), sh: Math.max(1, sh) };
+}
+
 function centerCropFile(file, targetRatio) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       try {
-        const w = img.naturalWidth;
-        const h = img.naturalHeight;
-        const curRatio = w / h;
-        let sx = 0;
-        let sy = 0;
-        let sw = w;
-        let sh = h;
-        if (curRatio > targetRatio) {
-          sw = Math.round(h * targetRatio);
-          sx = Math.round((w - sw) / 2);
-        } else {
-          sh = Math.round(w / targetRatio);
-          sy = Math.round((h - sh) / 2);
-        }
+        const { sx, sy, sw, sh } = computeCropBox(img.naturalWidth, img.naturalHeight, targetRatio);
         const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, sw);
-        canvas.height = Math.max(1, sh);
+        canvas.width = sw;
+        canvas.height = sh;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
         const outType = file.type === 'image/webp' ? 'image/webp'
@@ -179,15 +182,19 @@ function askCropChoice(file, dims, slot) {
     const dlg = document.createElement('dialog');
     dlg.className = 'asset-reference-dialog';
     const previewUrl = URL.createObjectURL(file);
+    const crop = computeCropBox(dims.width, dims.height, slot.ratio);
+    const cropTooSmall = Math.min(crop.sw, crop.sh) < MIN_SHORT_SIDE;
     dlg.innerHTML = `<div class="stack">
       <h2>「${escapeHtml(slot.label)}」比例建议</h2>
       <img class="asset-reference-preview" src="${previewUrl}" alt="待传预览">
-      <p>当前尺寸 <b>${dims.width}×${dims.height}</b>，该槽位推荐规格为 <b>${escapeHtml(slot.spec)}</b>。</p>
-      <p class="hint">居中裁剪可保证三视图/定妆照构图统一；若原图已包含完整结构，也可保持原比例上传。</p>
+      <p>当前尺寸 <b>${dims.width}×${dims.height}</b>，该槽位推荐规格为 <b>${escapeHtml(slot.spec)}</b>（居中裁剪后约 <b>${crop.sw}×${crop.sh}</b>）。</p>
+      <p class="hint">${cropTooSmall
+        ? `提示：居中裁剪后短边将低于 ${MIN_SHORT_SIDE}px，建议优先保持原比例上传以保留清晰度。`
+        : '居中裁剪可保证三视图/定妆照构图统一；若原图已包含完整结构，也可保持原比例上传。'}</p>
       <div class="row ad-slot-acts">
         <button class="btn" type="button" data-act="cancel">取消</button>
-        <button class="btn" type="button" data-act="raw">原比例上传</button>
-        <button class="btn primary" type="button" data-act="crop">按推荐比例居中裁剪</button>
+        <button class="btn${cropTooSmall ? ' primary' : ''}" type="button" data-act="raw">原比例上传</button>
+        <button class="btn${cropTooSmall ? '' : ' primary'}" type="button" data-act="crop">按推荐比例居中裁剪</button>
       </div>
     </div>`;
     let settled = false;
