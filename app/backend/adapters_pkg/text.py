@@ -115,6 +115,18 @@ _GEMINI_PARAMS = (
           note="对 Gemini 4：关＝low、开＝high；对 Gemini 3：关＝minimal、开＝high"),
 )
 
+_GEMINI_PRICES = (
+    Price(
+        label="AI Studio 免费层参考（百万 token）",
+        unit="million_token",
+        currency="USD",
+        amount_micros=0,
+        default_quantity=0.002,
+        source="Google AI Studio Free Tier：实际计费以供应商控制台账单为准",
+        note="免费层默认 0 费率；若绑定付费结算账号，请在控制台核对实际消耗。",
+    ),
+)
+
 _GEMINI = Adapter(
     code="gemini",
     label="Google Gemini（官方 API）",
@@ -132,6 +144,7 @@ _GEMINI = Adapter(
             structured_output=True,
             vision_inputs=True,
             params=_GEMINI_PARAMS,
+            prices=_GEMINI_PRICES,
             note="实测支持免费层 Key 与多模态看图；支持 thinkingLevel=low/medium/high。",
         ),
         ModelSpec(
@@ -140,6 +153,7 @@ _GEMINI = Adapter(
             structured_output=True,
             vision_inputs=True,
             params=_GEMINI_PARAMS,
+            prices=_GEMINI_PRICES,
             note="Gemini 4 均衡旗舰档；免费层可能报 429 额度受限，需高配额或付费计划。",
         ),
         ModelSpec(
@@ -148,6 +162,7 @@ _GEMINI = Adapter(
             structured_output=True,
             vision_inputs=True,
             params=_GEMINI_PARAMS,
+            prices=_GEMINI_PRICES,
             note="Gemini 4 强推理档；免费层可能报 429 额度受限，需高配额或付费计划。",
         ),
         ModelSpec(
@@ -156,6 +171,7 @@ _GEMINI = Adapter(
             structured_output=True,
             vision_inputs=True,
             params=_GEMINI_PARAMS,
+            prices=_GEMINI_PRICES,
             note="Gemini 4 轻量高并发档；免费层可能报 429 额度受限，需高配额或付费计划。",
         ),
         ModelSpec(
@@ -164,6 +180,7 @@ _GEMINI = Adapter(
             structured_output=True,
             vision_inputs=True,
             params=_GEMINI_PARAMS,
+            prices=_GEMINI_PRICES,
             note="实测免费层高可用、低延迟，作为 4 系列高负载或额度受限时的默认稳定兜底。",
         ),
     ),

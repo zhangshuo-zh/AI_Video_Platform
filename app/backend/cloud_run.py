@@ -58,8 +58,9 @@ def _redact(text: str, secret: str) -> str:
     text = str(text or "")
     if secret:
         text = text.replace(secret, "***")
-    # 常见的 sk- 前缀也一并打码，哪怕这次用的不是这个形状的密钥
-    return re.sub(r"(?i)sk-[a-z0-9_-]{8,}", "sk-***", text)[:1200]
+    # 常见的 sk- 与 Google AIza 前缀也一并打码，哪怕这次用的不是这个形状的密钥
+    text = re.sub(r"(?i)sk-[a-z0-9_-]{8,}", "sk-***", text)
+    return re.sub(r"AIza[0-9A-Za-z_-]{20,}", "AIza***", text)[:1200]
 
 
 def _error_code(status: int | None, kind: str = "") -> str:
@@ -276,6 +277,37 @@ def _deepseek(request: dict, result: dict) -> int:
     return 0
 
 
+_GEMINI_BLOCKED_REASONS = ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "MAX_TOKENS")
+
+
+def gemini_thinking_config(model: str, *, thinking: bool = False) -> dict | None:
+    """按 Gemini 代际返回合法的 thinkingConfig；不认的型号不强传。"""
+    if model.startswith("gemini-4"):
+        return {"thinkingLevel": "high" if thinking else "low"}
+    if model.startswith("gemini-3"):
+        return {"thinkingLevel": "high" if thinking else "minimal"}
+    if "2.5-flash" in model and "lite" not in model and not thinking:
+        return {"thinkingBudget": 0}
+    return None
+
+
+def gemini_extract_text(data: object) -> tuple[str, str | None, str | None]:
+    """解析 generateContent 响应，过滤 thought 片段并返回 (text, finish_reason, returned_model)。"""
+    candidates = data.get("candidates") if isinstance(data, dict) else None
+    first = candidates[0] if isinstance(candidates, list) and candidates else None
+    if not isinstance(first, dict):
+        return "", None, None
+    reason = first.get("finishReason")
+    content = first.get("content") if isinstance(first.get("content"), dict) else {}
+    parts = content.get("parts") or []
+    text = "".join(
+        p["text"] for p in parts
+        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str)
+    )
+    returned_model = data.get("modelVersion") if isinstance(data, dict) else None
+    return text, reason, returned_model
+
+
 def _gemini(request: dict, result: dict) -> int:
     """文本：调用 Google Gemini generateContent，把正文写进 output。"""
     model = str(request.get("model") or "")
@@ -288,12 +320,9 @@ def _gemini(request: dict, result: dict) -> int:
         gen_cfg["maxOutputTokens"] = int(params["max_tokens"])
     if params.get("temperature") is not None:
         gen_cfg["temperature"] = float(params["temperature"])
-    if model.startswith("gemini-4"):
-        gen_cfg["thinkingConfig"] = {"thinkingLevel": "high" if params.get("thinking") else "low"}
-    elif model.startswith("gemini-3"):
-        gen_cfg["thinkingConfig"] = {"thinkingLevel": "high" if params.get("thinking") else "minimal"}
-    elif "2.5-flash" in model and "lite" not in model and not params.get("thinking"):
-        gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+    tcfg = gemini_thinking_config(model, thinking=bool(params.get("thinking")))
+    if tcfg:
+        gen_cfg["thinkingConfig"] = tcfg
     if request.get("format") is not None:
         gen_cfg["responseMimeType"] = "application/json"
 
@@ -324,21 +353,16 @@ def _gemini(request: dict, result: dict) -> int:
             )
             if isinstance(meta.get(src), (int, float))
         }
-    candidates = data.get("candidates") or []
-    first = candidates[0] if candidates else None
-    if not isinstance(first, dict):
-        raise _ProviderError(_error_code(status), "Gemini 没有返回 candidates")
-    content = first.get("content") if isinstance(first.get("content"), dict) else {}
-    parts = content.get("parts") or []
-    text = "".join(
-        p["text"] for p in parts
-        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str)
-    )
+    text, reason, returned_model = gemini_extract_text(data)
+    if reason in _GEMINI_BLOCKED_REASONS and not text:
+        raise _ProviderError(_error_code(status), f"Gemini 未返回完整正文（{reason}）")
+    if reason == "MAX_TOKENS" and not text:
+        raise _ProviderError("empty_response", "Gemini 输出被截断且正文为空")
     if not text:
         raise _ProviderError("empty_response", "Gemini 返回了空正文")
     result["response_meta"] = {
-        "finish_reason": first.get("finishReason"),
-        "returned_model": data.get("modelVersion") or model,
+        "finish_reason": reason,
+        "returned_model": returned_model or model,
     }
     out = Path(request["output"])
     out.parent.mkdir(parents=True, exist_ok=True)

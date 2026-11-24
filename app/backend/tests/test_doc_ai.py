@@ -456,3 +456,37 @@ def test_报价必须随带估算口径(as_role, text_ai, fresh_project):
             f"就变成了一句没有限定的断言")
     assert o1["estimate_note"] == o2["estimate_note"], (
         "两处报价的估算口径不一致，同一用户在两个弹窗里会看到两种可信度")
+
+
+def test_gemini_可走通文档AI路由与计价报价(
+        as_role, provider_state, fresh_project, monkeypatch):
+    """text 能力切到 Gemini 后，文档 AI 路由与报价接口都能正常返回 USD 0 元口径。"""
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyDocAiTestKey1234567890")
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE provider_config SET is_default = 0 "
+            "WHERE capability = 'text' AND backend = 'local'"
+        )
+        conn.execute(
+            """UPDATE provider_config
+                  SET provider = 'gemini',
+                      model = 'gemini-3-flash-preview',
+                      enabled = 1,
+                      is_default = 1,
+                      key_env = 'GEMINI_API_KEY'
+                WHERE capability = 'text' AND backend = 'cloud'"""
+        )
+
+    row, _ = _make_doc(fresh_project)
+    client = as_role("editor")
+    r = client.get(f"/api/documents/{row['id']}/ai-options",
+                   params={"operation": "polish", "scope": "document"})
+    assert r.status_code == 200, r.text
+    opt = r.json()
+    assert opt["provider"] == "gemini"
+    assert opt["model"] == "gemini-3-flash-preview"
+    assert opt["unit"] == "million_token"
+    assert opt["currency"] == "USD"
+    assert opt["unit_price_micros"] == 0
+    assert opt["health_state"] == "ok"
+

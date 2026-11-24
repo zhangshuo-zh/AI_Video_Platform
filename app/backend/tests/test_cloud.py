@@ -668,3 +668,5 @@ def test_cloud_run_gemini_成功并过滤思考写回执(tmp_path, monkeypatch, 
     assert receipt["usage"] == {"input_tokens": 18, "output_tokens": 9, "total_tokens": 27}
     assert SECRET not in res_path.read_text(encoding="utf-8")
     assert mock_api.calls[-1][3]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    assert "AIza***" in cloud_run._redact("bad key AIzaSyABCDEFGHIJKLMNOPQRSTUVWX123", "")
+    assert "AIzaSy" not in cloud_run._redact("bad key AIzaSyABCDEFGHIJKLMNOPQRSTUVWX123", "")

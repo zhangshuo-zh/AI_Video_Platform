@@ -391,27 +391,17 @@ def _run_gemini(key: str, images: list[str], instruction: str,
         "maxOutputTokens": 1800,
         "responseMimeType": "application/json",
     }
-    if chosen.startswith("gemini-4"):
-        gen_config["thinkingConfig"] = {"thinkingLevel": "low"}
-    elif chosen.startswith("gemini-3"):
-        gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
-    elif "2.5-flash" in chosen and "lite" not in chosen:
-        gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+    tcfg = cloud_run.gemini_thinking_config(chosen, thinking=False)
+    if tcfg:
+        gen_config["thinkingConfig"] = tcfg
     result = _request(url, label="Gemini", deadline=deadline, idle=75,
                      extra_headers={"x-goog-api-key": key}, body={
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": gen_config,
     })
-    candidates = result.get("candidates") if isinstance(result, dict) else None
-    first = candidates[0] if isinstance(candidates, list) and candidates else None
-    if not isinstance(first, dict) or first.get("finishReason") in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "MAX_TOKENS"):
+    text, reason, _ = cloud_run.gemini_extract_text(result)
+    if reason in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "MAX_TOKENS"):
         raise _VisionError(502, "Gemini 未返回完整提示词")
-    content = first.get("content")
-    out_parts = content.get("parts") if isinstance(content, dict) else None
-    text = "\n".join(
-        p["text"] for p in (out_parts or [])
-        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str)
-    )
     return text if key not in text else "", chosen
 
 
