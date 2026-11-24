@@ -492,6 +492,19 @@ def main():
         check("Escape 能关发起弹窗",
               P.eval_js(cdp, "document.querySelector('#ag-modal')?.hidden !== false"))
 
+        # ---------- P3：从项目工作台一键唤起智能体巡检并预填上下文 ----------
+        go(cdp, f"{BASE}/#production")
+        P.eval_js(cdp, "document.querySelector('#pb-agent-audit')?.click()")
+        time.sleep(2.2)
+        p3_hash = P.eval_js(cdp, "location.hash")
+        p3_goal = P.eval_js(cdp, "document.querySelector('#ag-modal:not([hidden]) #ag-goal')?.value || ''")
+        check("项目工作台点「智能体巡检」直达智能体中心并自动弹出预填弹窗",
+              str(p3_hash).startswith("#agents/3") and "异常镜头" in (p3_goal or ""),
+              f"hash={p3_hash}｜goal={(p3_goal or '')[:26]}")
+        cdp.cmd("Input.dispatchKeyEvent", type="keyDown", key="Escape",
+                code="Escape", windowsVirtualKeyCode=27)
+        time.sleep(0.4)
+
         # ---------- 窄屏与整页无异常 ----------
         go(cdp, f"{BASE}/#agents/0")
         P.eval_js(cdp, "(() => { const s = document.createElement('style');"

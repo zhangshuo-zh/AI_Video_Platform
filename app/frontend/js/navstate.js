@@ -72,3 +72,13 @@ export function takeReviewReturn() {
   reviewReturn = null;
   return value;
 }
+
+// 业务页（项目工作台／音频中心／设定中心）点「智能体巡检」时的一次性交棒。
+// 同 jobPrefill：不进地址栏 hash，进入智能体中心后只消费一次。
+let agentPrefill = null;
+export function setAgentPrefill(value) { agentPrefill = value || null; }
+export function takeAgentPrefill() {
+  const value = agentPrefill;
+  agentPrefill = null;
+  return value;
+}

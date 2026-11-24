@@ -20,7 +20,7 @@ import { submissionIdentity } from '../submission.js';
 import { api } from '../api.js';
 import { gotoEntry } from '../goto.js';
 import { store } from '../store.js';
-import { getParam, getSub, setParam, setSub } from '../navstate.js';
+import { getParam, getSub, setParam, setSub, takeAgentPrefill } from '../navstate.js';
 import {
   agoText, bindModalDismiss, bindSubChips, escapeHtml, errorBox, run, skeleton, subChipRow,
 } from '../util.js';
@@ -601,7 +601,7 @@ export default {
         refresh();
       });
     });
-    const openCreateModal = (presetGoal = '') => run('准备发起', async () => {
+    const openCreateModal = (presetGoal = '', presetEpisodeId = null) => run('准备发起', async () => {
       const [episodes, policies] = await Promise.all([
         api.episodes(store.current.id),
         store.can('system:config') ? api.modelPolicies() : Promise.resolve({ items: [] }),
@@ -610,13 +610,20 @@ export default {
       // 直接把一条写死的 24 小时塞进弹窗。现在档位表与默认档都由服务端说。
       const qs = new URLSearchParams({
         project_id: String(store.current.id), goal: presetGoal, scene_key: '',
-      }).toString();
-      const opts = await api.agentPlanOptions(qs);
+      });
+      if (presetEpisodeId) qs.set('episode_id', String(presetEpisodeId));
+      const opts = await api.agentPlanOptions(qs.toString());
       const slot = root.querySelector('#ag-modal-slot');
       if (!slot) return;
       slot.innerHTML = createModal(episodes, policies.items || [], opts || {});
       const modal = slot.querySelector('#ag-modal');
       if (presetGoal) modal.querySelector('#ag-goal').value = presetGoal;
+      if (presetEpisodeId) {
+        const epSel = modal.querySelector('#ag-ep');
+        if (epSel && [...epSel.options].some((o) => Number(o.value) === Number(presetEpisodeId))) {
+          epSel.value = String(presetEpisodeId);
+        }
+      }
       modal.hidden = false;
       bindModal(modal, () => {
         if (currentSub() !== 3) setSub('agents', 3);
@@ -625,14 +632,18 @@ export default {
       bindModalDismiss(modal, () => { modal.hidden = true; });
     });
     root.querySelectorAll('[data-ag-new]').forEach((btn) => {
-      btn.addEventListener('click', () => openCreateModal(''));
+      btn.addEventListener('click', () => openCreateModal('', store.currentEpisodeId || null));
     });
     root.querySelectorAll('[data-ag-tpl]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const tpl = QUICK_TEMPLATES.find((t) => t.id === btn.dataset.agTpl);
-        if (tpl) openCreateModal(tpl.goal);
+        if (tpl) openCreateModal(tpl.goal, store.currentEpisodeId || null);
       });
     });
+    const prefill = takeAgentPrefill();
+    if (prefill && store.can('job:submit')) {
+      openCreateModal(prefill.goal || '', prefill.episode_id || null);
+    }
     if (openRunId) await renderDetail(root);
   },
 };

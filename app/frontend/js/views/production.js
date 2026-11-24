@@ -2,7 +2,7 @@ import { episodeDrafts, openShotTask, SHOT_TASK_GROUPS, taskAtCursor, taskCursor
 import { api } from '../api.js';
 import { store } from '../store.js';
 import { confirmDanger, escapeHtml, run } from '../util.js';
-import { setSub } from '../navstate.js';
+import { setAgentPrefill, setSub } from '../navstate.js';
 import { renderView } from '../router.js';
 import { gotoEntry } from '../goto.js';
 import { CAPS } from '../enums.js';
@@ -342,6 +342,7 @@ export default {
           </select>
           <button class="btn" id="pb-refine">精细制作</button>
           <button class="btn" id="pb-pipeline">产线生产</button>
+          ${store.can('job:submit') ? '<button class="btn" id="pb-agent-audit" title="带着当前集上下文前往智能体中心发起巡检">智能体巡检</button>' : ''}
         </div>
       </div>
       <div class="card mb-card" >
@@ -409,6 +410,14 @@ export default {
     });
     root.querySelector('#pb-refine')?.addEventListener('click', () => go({ module: 'writing', sub: 2 }));
     root.querySelector('#pb-pipeline')?.addEventListener('click', () => go({ module: 'pipeline', sub: 0 }));
+    root.querySelector('#pb-agent-audit')?.addEventListener('click', () => {
+      const eid = Number(root.querySelector('#pb-episode')?.value) || store.currentEpisodeId || null;
+      setAgentPrefill({
+        goal: '巡检当前集的分镜生产进度，汇总缺参考图、生成失败与待返工的异常镜头清单。',
+        episode_id: eid,
+      });
+      go({ module: 'agents', sub: 3 });
+    });
     root.querySelector('#pb-retry-failed')?.addEventListener('click', async () => {
       const eid = Number(root.querySelector('#pb-episode')?.value) || store.currentEpisodeId;
       if (!eid) return;

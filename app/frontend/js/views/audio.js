@@ -6,7 +6,8 @@
  * 真实 VoxCPM2 / ACE-Step 运行时不在本机时，提交会明确说缺什么，不假装出音频。
  */
 import { api } from '../api.js';
-import { currentSubTab, getSub, setSub } from '../navstate.js';
+import { gotoEntry } from '../goto.js';
+import { currentSubTab, getSub, setAgentPrefill, setSub } from '../navstate.js';
 import { store } from '../store.js';
 import { bindSubChips, confirmDanger, escapeHtml, errorBox, run, subChipRow } from '../util.js';
 import { jobLabel } from '../validation.js';
@@ -124,7 +125,9 @@ export default {
         <h1>音频中心</h1>
         <p>${escapeHtml(audioCaps?.note
           || '配音 VoxCPM2 · 音乐 ACE-Step · 口型与音效按能力表逐条判')}</p>
-        <div class="right">${subRow}</div>
+        <div class="right">${subRow}${store.can('job:submit')
+          ? '<button class="btn sm" id="au-agent-audit" title="带着当前集前往智能体中心巡检台词与配音缺口">智能体查配音缺口</button>'
+          : ''}</div>
       </div>
       ${err ? `<div class="card">${errorBox('音频素材', err)}</div>` : ''}
       ${audioNotice ? `<div class="card"><div class="bar bad">${escapeHtml(audioNotice)}</div></div>` : ''}
@@ -317,6 +320,13 @@ export default {
           api.deleteAudioClip(Number(btn.dataset.audioDel)));
         if (ok) refresh();
       });
+    });
+    root.querySelector('#au-agent-audit')?.addEventListener('click', () => {
+      setAgentPrefill({
+        goal: '巡检当前集所有带台词的分镜，列出尚未建立或生成配音的对白缺口与音频状态统计。',
+        episode_id: store.currentEpisodeId || null,
+      });
+      gotoEntry({ module: 'agents', sub: 3 });
     });
   },
 };
