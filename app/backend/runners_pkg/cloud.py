@@ -28,7 +28,7 @@ def _secret_envs(request: dict) -> tuple[str, ...]:
         if name and name not in names:
             names.append(name)
     # 基址覆盖也是子进程要用的非密钥配置（`cloud_run` 里读）
-    for key in ("DEEPSEEK_BASE_URL", "ALIYUN_WAN_BASE_URL"):
+    for key in ("DEEPSEEK_BASE_URL", "GEMINI_BASE_URL", "ALIYUN_WAN_BASE_URL"):
         if os.environ.get(key):
             names.append(key)
     return tuple(names)

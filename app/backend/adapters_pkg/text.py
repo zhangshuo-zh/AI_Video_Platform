@@ -105,9 +105,75 @@ _DEEPSEEK = Adapter(
 )
 
 
+# ---------- 文本 / 云端 · Google Gemini（2026-11-24 核验并实测） ----------
+_GEMINI_PARAMS = (
+    Param("max_tokens", "int", 2048, 1, 65536,
+          note="映射为 generationConfig.maxOutputTokens"),
+    Param("temperature", "float", None, 0, 2,
+          note="不填＝供应商默认"),
+    Param("thinking", "bool", False,
+          note="对 Gemini 4：关＝low、开＝high；对 Gemini 3：关＝minimal、开＝high"),
+)
+
+_GEMINI = Adapter(
+    code="gemini",
+    label="Google Gemini（官方 API）",
+    capability="text",
+    backend="cloud",
+    aliases=("google-gemini", "gemini-api"),
+    key_env="GEMINI_API_KEY",
+    source="Google Gemini API 文档（2026-11-24 本机实测 /v1beta/models）：https://ai.google.dev/gemini-api/docs",
+    params_source="generateContent 官方请求参数表（maxOutputTokens / temperature / thinkingConfig）",
+    note="支持文本生成、结构化输出与多模态图像理解；密钥可通过「参数管理 → 供应商密钥」密文配置或环境变量注入。",
+    models=(
+        ModelSpec(
+            code="gemini-4-hydrogen",
+            label="Gemini 4 Hydrogen（新一代多模态）",
+            structured_output=True,
+            vision_inputs=True,
+            params=_GEMINI_PARAMS,
+            note="实测支持免费层 Key 与多模态看图；支持 thinkingLevel=low/medium/high。",
+        ),
+        ModelSpec(
+            code="gemini-4-neon",
+            label="Gemini 4 Neon（均衡旗舰）",
+            structured_output=True,
+            vision_inputs=True,
+            params=_GEMINI_PARAMS,
+            note="Gemini 4 均衡旗舰档；免费层可能报 429 额度受限，需高配额或付费计划。",
+        ),
+        ModelSpec(
+            code="gemini-4-argon",
+            label="Gemini 4 Argon（高推理档）",
+            structured_output=True,
+            vision_inputs=True,
+            params=_GEMINI_PARAMS,
+            note="Gemini 4 强推理档；免费层可能报 429 额度受限，需高配额或付费计划。",
+        ),
+        ModelSpec(
+            code="gemini-4-carbon",
+            label="Gemini 4 Carbon（轻量高并发）",
+            structured_output=True,
+            vision_inputs=True,
+            params=_GEMINI_PARAMS,
+            note="Gemini 4 轻量高并发档；免费层可能报 429 额度受限，需高配额或付费计划。",
+        ),
+        ModelSpec(
+            code="gemini-3-flash-preview",
+            label="Gemini 3 Flash Preview（快响稳定兜底）",
+            structured_output=True,
+            vision_inputs=True,
+            params=_GEMINI_PARAMS,
+            note="实测免费层高可用、低延迟，作为 4 系列高负载或额度受限时的默认稳定兜底。",
+        ),
+    ),
+)
+
+
 # 火山方舟与 MiniMax 仍只登记名字：没有拿到同一口径的模型名/价格，不猜。
 _TEXT_CLOUD = (
     _DEEPSEEK,
+    _GEMINI,
     Adapter(code="volc", label="火山方舟", capability="text", backend="cloud",
             aliases=("volces", "ark", "volcengine"),
             key_env="FV_KEY_VOLC", source="设计稿 §7.3（建议供应商）",

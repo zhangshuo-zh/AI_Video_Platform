@@ -4277,6 +4277,8 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 }
 
 .asset-reference-dialog {
+  margin: auto;
+  inset: 0;
   width: min(760px, calc(100% - 32px));
   max-height: calc(100% - 32px);
   overflow: auto;
@@ -4288,6 +4290,15 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 }
 .asset-reference-dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .asset-reference-dialog select { max-width: 100%; }
+#mc-secret-values .table{table-layout:fixed;width:100%}
+#mc-secret-values th:nth-child(1),#mc-secret-values td:nth-child(1){width:26%}
+#mc-secret-values th:nth-child(2),#mc-secret-values td:nth-child(2){width:28%}
+#mc-secret-values th:nth-child(3),#mc-secret-values td:nth-child(3){width:26%}
+#mc-secret-values th:nth-child(4),#mc-secret-values td:nth-child(4){width:20%}
+.sv-acts-cell{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sv-dialog{width:min(480px,calc(100% - 32px))}
+.sv-modal-input{width:100%}
+.sv-dialog-acts{justify-content:flex-end;gap:8px}
 
 /* 资产中心交互与上下文优化（2026-11-21） */
 .asset-head-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}

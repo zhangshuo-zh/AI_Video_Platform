@@ -76,6 +76,12 @@ _PROBES: dict[str, dict] = {
         "base_default": cloud_run.DEFAULT_DEEPSEEK_BASE,
         "path": "/models",
     },
+    "gemini": {
+        "base_env": "GEMINI_BASE_URL",
+        "base_default": cloud_run.DEFAULT_GEMINI_BASE,
+        "path": "/v1beta/models",
+        "header_name": "x-goog-api-key",
+    },
     "wan": {
         # 执行链明确要求 ALIYUN_WAN_BASE_URL（带 Workspace 前缀），
         # 平台不猜地址——没配就是没得探，这一档和"配了但连不上"不同。
@@ -132,6 +138,18 @@ def probe_one(adapter, *, fresh: bool = False) -> dict:
     env_name = adapters.resolved_key_env(adapter.code, adapter.capability, "cloud")
     base["key_env"] = env_name or ""
     secret = os.environ.get(env_name, "") if env_name else ""
+    if not secret and env_name:
+        try:
+            import secret_store
+            from cryptography.exceptions import InvalidTag
+            try:
+                secret, _ = secret_store.resolve(env_name)
+            except (secret_store.SecretStoreUnavailable, InvalidTag, ValueError, TypeError) as exc:
+                return {**base, "has_key": adapters.key_present(env_name),
+                        "state": "auth_rejected",
+                        "detail": f"{env_name} 已登记在密文库但当前无法解密（{type(exc).__name__}）"}
+        except ImportError:
+            pass
     base["has_key"] = bool(secret)
 
     base_url = (os.environ.get(spec["base_env"]) or spec["base_default"]).strip().rstrip("/")
@@ -153,13 +171,13 @@ def probe_one(adapter, *, fresh: bool = False) -> dict:
         hit = _CACHE.get(key)
         if hit is not None and now - hit[0] < engines.PROBE_TTL_SECONDS:
             return hit[1]
-    result = _probe_now(url, secret, base)
+    result = _probe_now(url, secret, base, header_name=spec.get("header_name", ""))
     if result["cached"]:
         _CACHE[key] = (now, result)
     return result
 
 
-def _probe_now(url: str, secret: str, base: dict) -> dict:
+def _probe_now(url: str, secret: str, base: dict, *, header_name: str = "") -> dict:
     try:
         safenet.check_url(url)
     except safenet.UnsafeTarget as exc:
@@ -169,7 +187,10 @@ def _probe_now(url: str, secret: str, base: dict) -> dict:
                     f"地址未通过平台安全边界，没有发出请求：{exc}", secret)}
     try:
         request = Request(url, method="GET")
-        request.add_header("Authorization", f"Bearer {secret}")
+        if header_name:
+            request.add_header(header_name, secret)
+        else:
+            request.add_header("Authorization", f"Bearer {secret}")
         opener = safenet.opener_without_redirects()
         with opener.open(request, timeout=PROBE_TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", None) or response.getcode()

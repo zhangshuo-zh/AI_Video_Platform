@@ -433,15 +433,15 @@ def test_gemini_vision_reverse_prompt(as_role, fresh_project, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["provider"] == "gemini"
-    assert data["model"] == "gemini-2.5-flash"
+    assert data["model"] == "gemini-3-flash-preview"
     assert data["prompt"] == "紫发猫耳少女, 星空裙摆"
-    assert "gemini-2.5-flash:generateContent" in captured["url"]
+    assert "gemini-3-flash-preview:generateContent" in captured["url"]
     assert "AIza-fake-gemini-key" not in captured["url"]
     assert captured["headers"].get("x-goog-api-key") == "AIza-fake-gemini-key"
     parts = captured["body"]["contents"][0]["parts"]
     assert parts[1]["inline_data"]["mime_type"] == "image/jpeg"
     assert captured["body"]["generationConfig"]["responseMimeType"] == "application/json"
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
 
 
 def test_gemini_missing_key_returns_424(as_role, fresh_project, monkeypatch):
@@ -478,3 +478,72 @@ def test_gemini_reads_encrypted_secret_from_platform_db(as_role, fresh_project, 
         assert resp.json()["prompt"] == "数据库密钥猫娘"
     finally:
         secret_value.forget("GEMINI_API_KEY")
+
+
+def test_gemini_picks_registered_model_from_model_center(as_role, fresh_project, monkeypatch):
+    import model_center
+    from repositories.model_center import model_center as mc_repo
+
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-registered-model-key")
+    # 登记并启用 gemini-4-hydrogen，使看图反推优先选用模型中心配置
+    created = client.post("/api/models", json={
+        "capability": "text",
+        "backend": "cloud",
+        "provider": "gemini",
+        "model_code": "gemini-4-hydrogen",
+        "enabled": True,
+    })
+    assert created.status_code == 201, created.text
+    rid = created.json()["id"]
+    captured = {}
+
+    def open_response(req, *, timeout):
+        captured["url"] = req.full_url
+        result = {"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": '{"zh":["高精度猫娘"]}'}]},
+        }]}
+        return _Response(json.dumps(result).encode())
+
+    try:
+        monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+        resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "gemini", "language": "zh"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "gemini-4-hydrogen"
+        assert "gemini-4-hydrogen:generateContent" in captured["url"]
+        tags = {t["tag"] for row in model_center.catalog()
+                if row["provider"] == "gemini" and row["model_code"] == "gemini-4-hydrogen"
+                for t in row["tags"]}
+        assert {"文本生成", "结构化输出", "图像理解"} <= tags
+    finally:
+        mc_repo.delete(rid)
+
+
+def test_gemini_4_uses_low_thinking_level_instead_of_minimal(as_role, fresh_project, monkeypatch):
+    import model_center
+
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-gem4-key")
+    captured = {}
+
+    def open_response(req, *, timeout):
+        captured["body"] = json.loads(req.data)
+        result = {"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": '{"zh":["Gemini4测试角色"]}'}]},
+        }]}
+        return _Response(json.dumps(result).encode())
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    resp = client.post(
+        f"/api/assets/{aid}/reverse-prompt",
+        json={"provider": "gemini", "model": "gemini-4-hydrogen", "language": "zh"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["prompt"] == "Gemini4测试角色"
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    gem4_codes = {r["model_code"] for r in model_center.catalog() if r["provider"] == "gemini" and r["model_code"].startswith("gemini-4-")}
+    assert gem4_codes == {"gemini-4-hydrogen", "gemini-4-neon", "gemini-4-argon", "gemini-4-carbon"}

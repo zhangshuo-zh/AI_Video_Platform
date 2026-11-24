@@ -85,6 +85,7 @@ class ModelSpec:
     # 云端 `cloud_run.py` 至今没有 response_format 分支，所以云端那几档一律不勾。
     # 勾了就等于对提交路径承诺"这一档能出 JSON"，而那件事要在执行器里真的成立。
     structured_output: bool = False
+    vision_inputs: bool = False
 
     def as_dict(self) -> dict:
         return {"code": self.code, "label": self.label,
@@ -96,6 +97,7 @@ class ModelSpec:
                 # 资产中心的图像面板据此老实说"这一档不接收参考图，一致性靠提示词文字"。
                 "image_inputs": [p.name for p in self.params if p.type == "image"],
                 "structured_output": bool(self.structured_output),
+                "vision_inputs": bool(self.vision_inputs),
                 "note": self.note}
 
 

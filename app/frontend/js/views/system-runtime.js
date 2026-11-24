@@ -30,26 +30,19 @@ export function secretValuesCard() {
     const tone = !it.present ? 'gray' : it.source === 'env' ? 'blue' : 'green';
     const srcText = !it.present ? '未配置'
       : it.source === 'env' ? '来自环境变量'
-        : '来自这里保存的密文';
+        : '来自页面保存';
     return `<tr data-sv="${escapeHtml(it.env_name)}">
       <td><b>${escapeHtml(it.env_name)}</b></td>
       <td>${it.present
         ? `<code class="u-fs-11">${escapeHtml(it.preview || '')}</code>
-           <div class="t-desc u-fs-11">${it.length} 字符 · ${escapeHtml(srcText)}</div>`
+           <div class="t-desc u-fs-11">${it.length} 字符</div>`
         : '<span class="t-dim">—</span>'}</td>
       <td><span class="chip ${tone}">${escapeHtml(srcText)}</span></td>
-      <td>
+      <td><div class="sv-acts-cell">
         <button class="btn xs" data-sv-edit="${escapeHtml(it.env_name)}">${it.present ? '更换' : '设置'}</button>
         ${it.source === 'db'
           ? `<button class="btn xs ghost" data-sv-del="${escapeHtml(it.env_name)}">删除</button>` : ''}
-        <div data-sv-form="${escapeHtml(it.env_name)}" hidden class="u-mt-6">
-          <input class="ctl sm u-maxw-260" type="password" autocomplete="new-password"
-                 data-sv-input="${escapeHtml(it.env_name)}"
-                 placeholder="粘贴密钥（保存后不再显示）">
-          <button class="btn xs" data-sv-save="${escapeHtml(it.env_name)}">保存</button>
-          <button class="btn xs ghost" data-sv-cancel="${escapeHtml(it.env_name)}">取消</button>
-        </div>
-      </td>
+      </div></td>
     </tr>`;
   }).join('');
 
@@ -92,20 +85,71 @@ export function mountSecretValues(root) {
     if (fresh) mountSecretValues(root);
   };
 
+  const openSecretModal = (envName) => {
+    const data = cache.secretValues || { items: [], kek_ready: false, kek_env: '' };
+    const item = (data.items || []).find((x) => x.env_name === envName);
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'asset-reference-dialog sv-dialog';
+    const envTip = item?.source === 'env'
+      ? `<p class="hint">当前正使用进程环境变量中的 <code>${escapeHtml(envName)}</code>（环境优先）；此处保存的密文会留作库内备用。</p>`
+      : '<p class="hint">保存后以下一次执行作业生效（密文采用 AES-256-GCM 落库，页面永不回显明文）。</p>';
+    const kekTip = data.kek_ready ? ''
+      : `<p class="t-bad">未配置环境变量 <code>${escapeHtml(data.kek_env || 'PLATFORM_SECRET_KEK')}</code>，当前无法加密保存。</p>`;
+    dlg.innerHTML = `<form class="stack" method="dialog">
+      <h2>${item?.present ? '更换' : '设置'}供应商密钥 · <code>${escapeHtml(envName)}</code></h2>
+      ${kekTip}${envTip}
+      <input class="ctl sv-modal-input" type="password" autocomplete="new-password"
+             data-sv-input="${escapeHtml(envName)}"
+             placeholder="粘贴新密钥（保存后立即清空，不再显示）"${data.kek_ready ? '' : ' disabled'}>
+      <div class="row sv-dialog-acts">
+        <button class="btn" type="button" data-act="cancel">取消</button>
+        <button class="btn primary" type="submit" data-act="save"${data.kek_ready ? '' : ' disabled'}>保存密文</button>
+      </div>
+    </form>`;
+    const input = dlg.querySelector('[data-sv-input]');
+    const saveBtn = dlg.querySelector('[data-act="save"]');
+    const close = () => {
+      if (input) input.value = '';
+      dlg.close();
+      dlg.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+    dlg.addEventListener('click', (ev) => { if (ev.target === dlg) close(); });
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); close(); });
+    dlg.querySelector('[data-act="cancel"]').addEventListener('click', close);
+    dlg.querySelector('form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const value = input ? input.value.trim() : '';
+      if (!value) {
+        alertNotify('密钥不能为空', 'err');
+        input?.focus();
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        await api.saveSecretValue(envName, value);
+        // **明文只在这里存在一次**：保存成功立刻清空并关闭销毁。
+        if (input) input.value = '';
+        close();
+        await repaint();
+        alertNotify(`已保存 ${envName}（密文）。下一单生效。`);
+      } catch (err) {
+        saveBtn.disabled = false;
+        alertNotify(`保存失败：${err.message}`, 'err');
+      }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    if (data.kek_ready) input?.focus();
+  };
+
   card.addEventListener('click', async (e) => {
     const edit = e.target.closest('[data-sv-edit]');
-    const cancel = e.target.closest('[data-sv-cancel]');
-    const save = e.target.closest('[data-sv-save]');
     const del = e.target.closest('[data-sv-del]');
 
-    if (edit || cancel) {
-      const name = (edit || cancel).dataset.svEdit || (edit || cancel).dataset.svCancel;
-      const form = card.querySelector(`[data-sv-form="${name}"]`);
-      if (form) form.hidden = cancel ? true : !form.hidden;
-      if (edit) {
-        const input = card.querySelector(`[data-sv-input="${name}"]`);
-        if (input) input.focus();
-      }
+    if (edit) {
+      openSecretModal(edit.dataset.svEdit);
       return;
     }
 
@@ -125,26 +169,6 @@ export function mountSecretValues(root) {
       } catch (err) {
         del.disabled = false;
         alertNotify(`删除失败：${err.message}`, 'err');
-      }
-      return;
-    }
-
-    if (save) {
-      const name = save.dataset.svSave;
-      const input = card.querySelector(`[data-sv-input="${name}"]`);
-      const value = input ? input.value.trim() : '';
-      if (!value) { alertNotify('密钥不能为空', 'err'); return; }
-      save.disabled = true;
-      try {
-        await api.saveSecretValue(name, value);
-        // **明文只在这里存在一次**：保存成功立刻清空，连变量也置空，
-        // 让这块内存尽早被回收（JS 无法强制擦除字符串，但能缩小窗口）。
-        if (input) input.value = '';
-        await repaint();
-        alertNotify(`已保存 ${name}（密文）。下一单生效。`);
-      } catch (err) {
-        save.disabled = false;
-        alertNotify(`保存失败：${err.message}`, 'err');
       }
     }
   });

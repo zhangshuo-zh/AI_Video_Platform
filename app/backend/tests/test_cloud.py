@@ -68,6 +68,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps("45ac7f13-cancel-ok").encode("utf-8"))
             return
 
+        if "/v1beta/models/" in self.path and self.path.endswith(":generateContent"):
+            api_key = self.headers.get("x-goog-api-key", "")
+            if api_key != SECRET:
+                self._json(401, {"error": {"message": "bad key " + SECRET, "status": "UNAUTHENTICATED"}})
+                return
+            self._json(200, {
+                "responseId": "gem-resp-1",
+                "modelVersion": "gemini-3-flash-preview",
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [
+                        {"thought": True, "text": "内部推理不进正文"},
+                        {"text": "赛博猫娘的剧本大纲。"},
+                    ]},
+                }],
+                "usageMetadata": {"promptTokenCount": 18, "candidatesTokenCount": 9, "totalTokenCount": 27},
+            })
+            return
+
         if self.path.endswith("/chat/completions"):
             if scenario == "deepseek_ok":
                 if auth != f"Bearer {SECRET}":
@@ -620,3 +639,32 @@ def test_取消_对同步的_deepseek_说没有这回事(monkeypatch):
     out = cloud_run.cancel_task(provider="deepseek", request_id="whatever")
     assert out["cancelled"] is False
     assert out["reason"] == "unsupported_provider", out
+
+
+def test_cloud_run_gemini_成功并过滤思考写回执(tmp_path, monkeypatch, mock_api):
+    """Gemini 文本作业：走 x-goog-api-key、过滤 thought 片段并记 token 用量。"""
+    import cloud_run
+    monkeypatch.setenv("GEMINI_BASE_URL", _base(mock_api))
+    monkeypatch.setenv("GEMINI_API_KEY", SECRET)
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    req_path = tmp_path / "req-gemini.json"
+    res_path = tmp_path / "res-gemini.json"
+    out_path = tmp_path / "out-gemini.md"
+    req_path.write_text(json.dumps({
+        "provider": "gemini",
+        "capability": "text",
+        "model": "gemini-3-flash-preview",
+        "prompt": "写一段开场白",
+        "params": {"max_tokens": 512, "temperature": 0.3, "thinking": False},
+        "key_env": "GEMINI_API_KEY",
+        "output": str(out_path),
+        "result": str(res_path),
+    }), encoding="utf-8")
+    rc = cloud_run.run(req_path)
+    assert rc == 0
+    assert out_path.read_text(encoding="utf-8") == "赛博猫娘的剧本大纲。"
+    receipt = json.loads(res_path.read_text(encoding="utf-8"))
+    assert receipt["ok"] is True
+    assert receipt["usage"] == {"input_tokens": 18, "output_tokens": 9, "total_tokens": 27}
+    assert SECRET not in res_path.read_text(encoding="utf-8")
+    assert mock_api.calls[-1][3]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}

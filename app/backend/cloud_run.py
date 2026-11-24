@@ -32,6 +32,7 @@ from pathlib import Path
 import safenet
 
 DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
+DEFAULT_GEMINI_BASE = "https://generativelanguage.googleapis.com"
 DEFAULT_WAN_KEY_ENV = "DASHSCOPE_API_KEY"
 
 # 供应商 task_id 的合法形状：字母数字下划线连字符，1..128。
@@ -275,6 +276,77 @@ def _deepseek(request: dict, result: dict) -> int:
     return 0
 
 
+def _gemini(request: dict, result: dict) -> int:
+    """文本：调用 Google Gemini generateContent，把正文写进 output。"""
+    model = str(request.get("model") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", model):
+        raise _ProviderError("invalid_request", f"Gemini 模型名称格式无效：{model}")
+    params = request.get("params") or {}
+    base = (os.environ.get("GEMINI_BASE_URL") or DEFAULT_GEMINI_BASE).rstrip("/")
+    gen_cfg: dict = {}
+    if params.get("max_tokens") is not None:
+        gen_cfg["maxOutputTokens"] = int(params["max_tokens"])
+    if params.get("temperature") is not None:
+        gen_cfg["temperature"] = float(params["temperature"])
+    if model.startswith("gemini-4"):
+        gen_cfg["thinkingConfig"] = {"thinkingLevel": "high" if params.get("thinking") else "low"}
+    elif model.startswith("gemini-3"):
+        gen_cfg["thinkingConfig"] = {"thinkingLevel": "high" if params.get("thinking") else "minimal"}
+    elif "2.5-flash" in model and "lite" not in model and not params.get("thinking"):
+        gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+    if request.get("format") is not None:
+        gen_cfg["responseMimeType"] = "application/json"
+
+    body = {"contents": [{"role": "user", "parts": [{"text": request["prompt"]}]}]}
+    if gen_cfg:
+        body["generationConfig"] = gen_cfg
+
+    secret = os.environ.get(request.get("key_env") or "", "")
+    headers = {"x-goog-api-key": secret}
+    started = _now_ms()
+    status, _raw_headers, data = _post_json(
+        f"{base}/v1beta/models/{model}:generateContent",
+        body,
+        headers,
+        float(request.get("http_timeout") or 120),
+    )
+    result["http_status"] = status
+    result["latency_ms"] = _now_ms() - started
+    result["request_id"] = str(data.get("responseId") or "")
+    meta = data.get("usageMetadata") or {}
+    if isinstance(meta, dict):
+        result["usage"] = {
+            k: int(meta[src])
+            for k, src in (
+                ("input_tokens", "promptTokenCount"),
+                ("output_tokens", "candidatesTokenCount"),
+                ("total_tokens", "totalTokenCount"),
+            )
+            if isinstance(meta.get(src), (int, float))
+        }
+    candidates = data.get("candidates") or []
+    first = candidates[0] if candidates else None
+    if not isinstance(first, dict):
+        raise _ProviderError(_error_code(status), "Gemini 没有返回 candidates")
+    content = first.get("content") if isinstance(first.get("content"), dict) else {}
+    parts = content.get("parts") or []
+    text = "".join(
+        p["text"] for p in parts
+        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str)
+    )
+    if not text:
+        raise _ProviderError("empty_response", "Gemini 返回了空正文")
+    result["response_meta"] = {
+        "finish_reason": first.get("finishReason"),
+        "returned_model": data.get("modelVersion") or model,
+    }
+    out = Path(request["output"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    result["bytes"] = out.stat().st_size
+    return 0
+
+
 def _wan_usage(data: dict, params: dict) -> dict:
     """Wan 的用量在轮询响应的顶层 `usage`（不在 output 里），
     旧文档/网关也有塞进 output 的写法；两处都看，别把实际时长丢了。"""
@@ -476,6 +548,8 @@ def run(request_path: Path) -> int:
     try:
         if provider == "deepseek":
             code = _deepseek(request, result)
+        elif provider == "gemini":
+            code = _gemini(request, result)
         elif provider == "wan":
             code = _wan(request, result)
         else:

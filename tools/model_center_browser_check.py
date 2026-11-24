@@ -1405,7 +1405,7 @@ def main():
                 const el = document.querySelector('#mc-secret-values');
                 if (!el) return false;
                 const t = el.innerText;
-                return /…[0-9a-f]{8}/.test(t) && /环境变量|这里保存/.test(t);
+                return /…[0-9a-f]{8}/.test(t) && /环境变量|页面保存/.test(t);
               })()"""),
               "有指纹且有来源标注")
         check("密钥输入框是 password 且默认空",

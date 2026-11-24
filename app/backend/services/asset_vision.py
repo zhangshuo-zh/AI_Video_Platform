@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from threading import BoundedSemaphore, Lock
@@ -10,9 +11,12 @@ from urllib.parse import urlsplit
 from cryptography.exceptions import InvalidTag
 
 import chatgpt_plan
+import cloud_run
 import secret_store
 from repositories.content import _images_of, assets
 from repositories.engine_instances import engine_instances
+from repositories.model_center import model_center
+from repositories.providers import providers as provider_repo
 from schemas.assets import AssetReversePromptIn, AssetReversePromptOut, _image_purposes_of
 
 from .asset_vision_images import _prepare_reference
@@ -20,9 +24,8 @@ from .asset_vision_transport import _VisionError, _remaining, _request
 from .content_operations import ContentOperationError
 
 _DEFAULT_CHATGPT_MODEL = "gpt-5.1"
-_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+_DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 _DEFAULT_DASHSCOPE_MODEL = "qwen-vl-max-latest"
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _DASHSCOPE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 _VISION_MODEL = re.compile(r"(?:qwen[\w.]*-?vl|vision|llava|minicpm-v|gemma3(?!n)|pixtral|internvl|moondream)", re.I)
 _SLOTS_BY_KIND = {
@@ -356,23 +359,45 @@ def _run_dashscope(token: str, images: list[str], instruction: str,
     return value if token not in value else "", chosen
 
 
+def _configured_gemini_model(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    slot = provider_repo.slot("text", "cloud")
+    if slot is not None and (slot["provider"] or "").strip() == "gemini" and slot["enabled"]:
+        slot_model = (slot["model"] or "").strip()
+        if slot_model:
+            return slot_model
+    for reg in model_center.registrations():
+        if (reg["capability"] == "text" and reg["backend"] == "cloud"
+                and (reg["provider"] or "").strip() == "gemini" and reg["enabled"]):
+            code = (reg["model_code"] or "").strip()
+            if code:
+                return code
+    return _DEFAULT_GEMINI_MODEL
+
+
 def _run_gemini(key: str, images: list[str], instruction: str,
                 model: str | None, deadline: float) -> tuple[str, str]:
-    chosen = model or _DEFAULT_GEMINI_MODEL
+    chosen = _configured_gemini_model(model)
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", chosen):
         raise _VisionError(422, "Gemini 模型名称格式无效")
     parts: list[dict] = [{"text": instruction}]
     for b64 in images:
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
-    url = _GEMINI_URL.format(model=chosen)
+    base = (os.environ.get("GEMINI_BASE_URL") or cloud_run.DEFAULT_GEMINI_BASE).rstrip("/")
+    url = f"{base}/v1beta/models/{chosen}:generateContent"
     gen_config: dict = {
         "temperature": 0.15,
         "maxOutputTokens": 1800,
         "responseMimeType": "application/json",
     }
-    if "2.5-flash" in chosen:
+    if chosen.startswith("gemini-4"):
+        gen_config["thinkingConfig"] = {"thinkingLevel": "low"}
+    elif chosen.startswith("gemini-3"):
+        gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+    elif "2.5-flash" in chosen and "lite" not in chosen:
         gen_config["thinkingConfig"] = {"thinkingBudget": 0}
-    result = _request(url, label="Gemini", deadline=deadline, idle=45,
+    result = _request(url, label="Gemini", deadline=deadline, idle=75,
                      extra_headers={"x-goog-api-key": key}, body={
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": gen_config,

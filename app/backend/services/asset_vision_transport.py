@@ -146,7 +146,9 @@ def _http_error(exc: HTTPError, label: str) -> _VisionError:
         return _VisionError(424, f"{label}授权失效或无权访问该模型")
     if code in (408, 504):
         return _VisionError(504, f"{label}推理超时，请减少参考图或更换通道")
-    if code in (400, 404, 413, 415, 422):
+    if code == 404:
+        return _VisionError(422, f"{label}所选模型不存在或已停用，请检查或更换模型")
+    if code in (400, 413, 415, 422):
         return _VisionError(422, f"{label}不接受所选模型或图片，请检查模型及参考图")
     if code >= 500:
         return _VisionError(503, f"{label}暂时不可用，请稍后重试", unavailable=True)

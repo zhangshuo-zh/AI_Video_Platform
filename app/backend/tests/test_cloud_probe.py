@@ -31,8 +31,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         auth = self.headers.get("Authorization") or ""
-        self.server.calls.append((self.path, auth))
+        goog = self.headers.get("x-goog-api-key") or ""
+        self.server.calls.append((self.path, auth, goog))
         scenario = self.server.scenario
+        if self.path.startswith("/v1beta/models"):
+            if scenario == "ok" and goog == SECRET and not auth:
+                self._send(200, json.dumps({"models": [{"name": "models/gemini-3-flash-preview"}]}).encode())
+                return
+            self._send(401, json.dumps({"error": {"message": "API key not valid."}}).encode())
+            return
         if self.path.endswith("/models"):
             if scenario == "ok" and auth == f"Bearer {SECRET}":
                 self._send(200, json.dumps({"data": [{"id": "deepseek-flash"}]}).encode())
@@ -193,3 +200,26 @@ def test_probe_registered_只探登记过的云端轨(server, monkeypatch):
     out = cloud_probe.probe_registered(rows, fresh=True)
     assert [r["provider"] for r in out] == ["deepseek"], "同家去重、本地轨跳过"
     assert len(server.calls) == 1
+
+
+def test_gemini_探活使用_x_goog_api_key_并读库内密文(app, server, monkeypatch):
+    import base64
+    import secret_store
+    from repositories import secret_value
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_BASE_URL", _base(server))
+    monkeypatch.setenv(secret_store.KEK_ENV, base64.b64encode(b"g" * 32).decode())
+    secret_value.save("GEMINI_API_KEY", SECRET)
+    server.scenario = "ok"
+    try:
+        row = cloud_probe.probe_one(find("text", "cloud", "gemini"), fresh=True)
+        assert row["state"] == "ok", row
+        assert row["has_key"] is True
+        assert row["key_env"] == "GEMINI_API_KEY"
+        path, seen_auth, seen_goog = server.calls[-1]
+        assert path == "/v1beta/models"
+        assert seen_goog == SECRET and seen_auth == ""
+        assert SECRET not in row["detail"]
+    finally:
+        secret_value.forget("GEMINI_API_KEY")

@@ -42,6 +42,8 @@ def derived_tags(capability: str, spec: dict) -> list[str]:
         tags.append(base)
     if spec.get("structured_output"):
         tags.append("结构化输出")
+    if spec.get("vision_inputs"):
+        tags.append("图像理解")
     if spec.get("image_inputs"):
         tags.append("参考图")
         extra = IMAGE_TAG.get(capability)
