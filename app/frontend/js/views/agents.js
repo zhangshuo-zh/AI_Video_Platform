@@ -94,34 +94,6 @@ function legsHtml(configs) {
     <div class="card-foot"><p class="modal-meta">${escapeHtml(configs.caliber || '')}</p></div>`;
 }
 
-const HEALTH_LABEL = {
-  ok: '可用', missing: '不可用', unknown: '未检查', unconfigured: '未配置',
-  unregistered: '未登记',
-};
-
-/**
- * 总览只放一行健康小条（方案 A，2026-11-24）。
- *
- * 原来总览与「智能体配置」各画一张一模一样的两条腿表，同一件事两处显示；
- * 详细的配置·健康·驻留·端点仍只在配置页那一张表里，这里只回答"现在能不能用"，
- * 完整说明放在 title 里，点按钮去配置页看全。
- */
-function legsStrip(configs) {
-  const cards = (configs && configs.cards) || [];
-  if (!cards.length) return '';
-  const items = cards.map((c) => `<span class="ag-leg" data-leg="${escapeHtml(c.backend)}"
-      title="${escapeHtml(c.health_detail || '未检查')}">
-      <b>${escapeHtml(c.backend_label)}</b>
-      <span class="t-desc">${c.configured
-        ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / ')) : '槽位还没填'}</span>
-      ${chip(HEALTH_TONE[c.health_state] || 'gray', HEALTH_LABEL[c.health_state] || '未检查')}
-    </span>`).join('');
-  return `<div class="card mb-card ag-legs-strip">
-    <div class="card-head"><h2>两条腿</h2>${items}
-      <div class="right"><button class="btn sm" data-goto-sub="1">看配置详情</button></div>
-    </div></div>`;
-}
-
 /**
  * 运行表。`inlineDetail` 为真时（运行与审批页），被点开那一行下面紧跟一行详情；
  * 总览没有详情位，按钮直接把人带到「运行与审批」并展开那一条——
@@ -339,9 +311,7 @@ export default {
     let overview = null;
     try {
       if (store.can('system:config')) {
-        [overview, cache.configs, cache.tools] = await Promise.all([
-          api.agentOverview(), api.agentConfigs(), api.agentTools(),
-        ]);
+        overview = await api.agentOverview();
       } else {
         // 制作角色看不到配置面。概览那一条也需要 system:config，
         // 所以这一屏改读"这个项目的运行"——少一个数就少显示一个，不编
@@ -365,7 +335,6 @@ export default {
             !!counts.awaiting_approval)}
           ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用配置')}
         </div></div>` : ''}
-      ${legsStrip(cache.configs)}
       <div class="card">
         <div class="card-head"><h2>最近的运行</h2>
           <span class="sub">点「详情 →」去运行与审批看步骤与事件；这一页没有签字按钮，是有意的</span></div>
@@ -529,9 +498,6 @@ export default {
         gotoEntry({ module: 'models',
                     sub: btn.dataset.gotoModels === 'policy' ? 2 : 1 });
       });
-    });
-    root.querySelectorAll('[data-goto-sub]').forEach((btn) => {
-      btn.addEventListener('click', () => { setSub('agents', Number(btn.dataset.gotoSub)); refresh(); });
     });
     root.querySelectorAll('[data-goto-review]').forEach((btn) => {
       btn.addEventListener('click', () => {

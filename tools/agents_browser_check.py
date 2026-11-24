@@ -292,8 +292,9 @@ def main():
         check("口径那句话和接口给的是同一句",
               api_overview["caliber"][:12] in (caliber_text or ""),
               (caliber_text or "")[:44])
-        legs = P.eval_js(cdp, "document.querySelectorAll('.view.on .ag-legs-strip .ag-leg').length")
-        check("总览两条腿健康小条两项（本地／云端）", legs == 2, f"{legs} 项")
+        has_legs_strip = P.eval_js(cdp, "!!document.querySelector('.view.on .ag-legs-strip') || "
+                                        "(document.querySelector('.view.on')?.innerText || '').includes('两条腿')")
+        check("总览不再重复渲染两条腿", has_legs_strip is False, f"has_legs={has_legs_strip}")
         run_rows = P.eval_js(cdp, "[...document.querySelectorAll('[data-open-run]')].length")
         check("造出来的运行出现在列表里", isinstance(run_rows, int) and run_rows >= 1,
               f"{run_rows} 行")

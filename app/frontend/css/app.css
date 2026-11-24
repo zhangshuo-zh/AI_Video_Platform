@@ -3858,11 +3858,6 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 .cg-fold>summary:hover{background:var(--row-hover)}
 .cg-fold-hint::after{content:'展开 ▾';font-size:var(--fs-aux);color:var(--ink-3)}
 .cg-fold[open] .cg-fold-hint::after{content:'收起 ▴'}
-/* 总览的两条腿小条：一行念完「哪条腿·配的档·能不能用」，细节在配置页 */
-.ag-legs-strip>.card-head{flex-wrap:wrap;border-bottom:0}
-.ag-leg{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
-  border:1px solid var(--line);border-radius:999px;min-width:0}
-.ag-leg .t-desc{overflow-wrap:anywhere}
 /* 运行详情贴着被点那一行展开：外层行不跟随悬停变色，内嵌卡片不再额外留外边距 */
 tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)}
 .ag-detail-row>td{padding:4px 12px 14px}
