@@ -72,25 +72,88 @@ const stat = (value, label, warn = false) =>
   `<div class="stat ${warn ? 'warn' : ''}"><span class="stat-n">${value}</span>
    <span class="stat-l">${escapeHtml(label)}</span></div>`;
 
-/** 两条腿摘要：配置·健康·驻留·端点四件事分开念（说明书 §2「状态概念不混淆」）。 */
+/**
+ * 面向漫剧生产的快捷编排任务模板（P1 专业化升级，2026-11-24）。
+ * 每条模板严格对应当前后端工具白名单里已落地的能力，点击直接打开「新建编排任务」
+ * 并预填目标，实时展示将走的推理通道与计价口径，不绕过任何人工确认。
+ */
+const QUICK_TEMPLATES = [
+  {
+    id: 'preflight',
+    title: '单集备料与缺口巡检',
+    badge: '只读预检 · 零费用',
+    tone: 'green',
+    desc: '盘点指定集缺失的角色、场景、道具及产线阻塞项，生成生产准备报告。',
+    goal: '盘点当前集缺少哪些角色、场景与道具资产，列出所有会阻塞产线的准备项。',
+  },
+  {
+    id: 'asset-register',
+    title: '缺口角色识别与资产建档',
+    badge: '正式写入 · 需审批',
+    tone: 'amber',
+    desc: '检查单集分镜缺口，为缺失角色起草正式资产登记单并送审入库。',
+    goal: '盘点当前集缺失的角色资产，并为缺失角色起草正式资产登记单等待审核中心批准。',
+  },
+  {
+    id: 'doc-audit',
+    title: '剧本文档结构健康体检',
+    badge: '只读解析 · 零费用',
+    tone: 'green',
+    desc: '解析项目剧本文档的标题、段落数、字数与版本读数（不外发正文内容）。',
+    goal: '读取当前项目剧本文档的结构读数，核查章节结构完整性与篇幅分布情况。',
+  },
+  {
+    id: 'char-bio',
+    title: '缺口角色履历与设定扩写',
+    badge: '文本作业 · 需确认',
+    tone: 'blue',
+    desc: '结合单集备料缺口，提交文本生成作业起草角色人物小传与一致性描述。',
+    goal: '盘点当前集缺哪些角色资产，并提交文本生成作业为缺失角色起草人物履历与视觉设定描述。',
+  },
+];
+
+function quickTemplatesHtml() {
+  const canSubmit = store.can('job:submit');
+  return `<div class="card mb-card ag-tpl-card">
+    <div class="card-head">
+      <h2>快捷制片任务</h2>
+      <span class="sub">按漫剧常用场景预置目标，点击即可带入编排弹窗预览路线与计价</span>
+      ${canSubmit ? '<div class="right"><button class="btn primary sm" data-ag-new>新建编排任务</button></div>' : ''}
+    </div>
+    <div class="card-body">
+      <div class="ag-tpl-grid">
+        ${QUICK_TEMPLATES.map((t) => `<button type="button" class="ag-tpl-item"
+          data-ag-tpl="${escapeHtml(t.id)}"${canSubmit ? '' : ' disabled title="需要作业提交权限（job:submit）"'}>
+          <div class="ag-tpl-head">
+            <b>${escapeHtml(t.title)}</b>
+            ${chip(t.tone, t.badge)}
+          </div>
+          <p class="t-desc">${escapeHtml(t.desc)}</p>
+        </button>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+/** 规划推理通道摘要：配置·健康·驻留·端点四件事分开念（说明书 §2「状态概念不混淆」）。 */
 function legsHtml(configs) {
   if (!configs || !configs.cards) {
-    return '<p class="hint">两条腿的详细状态需要配置权限；这里只显示运行。</p>';
+    return '<p class="hint">推理通道详细状态需要系统配置权限；当前角色可查看自己的任务记录。</p>';
   }
   const rows = configs.cards.map((c) => `<tr>
     <td><b>${escapeHtml(c.backend_label)}</b></td>
     <td>${c.configured ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / '))
-      : '<span class="t-desc">槽位还没填</span>'}</td>
+      : '<span class="t-desc">未配置默认模型</span>'}</td>
     <td>${chip(HEALTH_TONE[c.health_state] || 'gray',
       c.health_detail || '未检查')}</td>
-    <td><span class="t-desc">${escapeHtml(c.endpoint || '（这一档不是本机服务型）')}</span></td>
+    <td><span class="t-desc">${escapeHtml(c.endpoint || '（非本机服务型通道）')}</span></td>
     <td><span class="t-desc">${escapeHtml(c.resident || '—')}</span></td>
     <td class="r"><button class="btn sm" data-goto-models="${escapeHtml(c.backend)}"
-      >去模型中心</button></td>
+      >前往模型中心</button></td>
   </tr>`).join('');
   return `<div class="table-wrap"><table>
-    <thead><tr><th>哪条腿</th><th>配的档</th><th>现在能不能用</th><th>端点</th>
-      <th>驻留</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <thead><tr><th>推理通道</th><th>已配置模型</th><th>健康状态</th><th>服务端点</th>
+      <th>驻留状态</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="card-foot"><p class="modal-meta">${escapeHtml(configs.caliber || '')}</p></div>`;
 }
 
@@ -101,14 +164,14 @@ function legsHtml(configs) {
  */
 function runsTable(runs, { inlineDetail = false } = {}) {
   if (!runs || !runs.length) {
-    return `<div class="empty"><div class="empty-t">还没有智能体运行</div>
-      <p>发起一次：写一句目标，平台先算计划（这一步就是一条普通文本作业）；
-        计划回来后按风险档决定"直接做"还是"停下来等你批"。</p>
-      <p class="hint">有配置权限的人才在这一页发起；制作角色可以在这里看自己发起的运行。</p></div>`;
+    return `<div class="empty"><div class="empty-t">暂无编排任务记录</div>
+      <p>可点击「新建编排任务」或选择上方快捷制片模板：系统将先规划执行步骤，
+        只读步骤自动完成，涉及付费调用或正式业务写入的步骤将自动暂停等待审核中心签字。</p>
+      <p class="hint">具提交权限的成员可在此发起任务，项目成员可随时追踪任务进度与审批状态。</p></div>`;
   }
   return `<div class="table-wrap"><table>
-    <thead><tr><th class="num">#</th><th>目标</th><th>状态</th><th class="num">步骤</th>
-      <th>走哪条轨</th><th class="num">发起于</th><th class="r"></th></tr></thead>
+    <thead><tr><th class="num">#</th><th>任务目标</th><th>状态</th><th class="num">步骤进度</th>
+      <th>推理通道</th><th class="num">发起时间</th><th class="r"></th></tr></thead>
     <tbody>${runs.map((r) => {
       const snap = r.model_snapshot || {};
       const done = r.steps.filter((s) => s.status === 'succeeded').length;
@@ -234,39 +297,39 @@ function createModal(episodes, policies, options) {
           <span class="t-desc" id="ag-cloud-cost"></span>
           平台不会替你勾这一格，也不会因为本地失败就自己换到云端。</span></label></span>`;
   return `<div class="modal" id="ag-modal" hidden role="dialog" aria-modal="true"
-    aria-label="发起一次智能体运行">
+    aria-label="新建编排任务">
     <div class="modal-box">
-      <div class="modal-head">发起一次智能体运行</div>
+      <div class="modal-head">新建编排任务</div>
       <div class="modal-body">
-        <label class="modal-label" for="ag-goal">要它做什么（一句话说清）</label>
+        <label class="modal-label" for="ag-goal">任务目标（请简明描述要完成的制片工作）</label>
         <textarea class="ctl" id="ag-goal" rows="3"
           placeholder="例：盘点第 1 集缺哪些资产，并为每个缺的角色生成一段人物履历"></textarea>
-        <label class="modal-label u-mt-12" for="ag-ep">哪一集（可留空＝整个项目）</label>
+        <label class="modal-label u-mt-12" for="ag-ep">作用范围（集，留空则作用于整个项目）</label>
         <select class="ctl" id="ag-ep">
-          <option value="">（不指定集）</option>
+          <option value="">（整个项目）</option>
           ${episodes.map((e) => `<option value="${e.id}">第 ${e.seq} 集${
             e.title ? ' · ' + escapeHtml(e.title) : ''}</option>`).join('')}
         </select>
-        <label class="modal-label u-mt-12" for="ag-scene">按哪个任务场景</label>
+        <label class="modal-label u-mt-12" for="ag-scene">匹配生产场景</label>
         <select class="ctl" id="ag-scene">
-          <option value="">（不按场景：走文本能力的默认轨）</option>
+          <option value="">（不指定场景：使用文本能力默认推理通道）</option>
           ${policies.map((p) => `<option value="${escapeHtml(p.scene_key)}">${
             escapeHtml(p.scene_label)}${p.enabled ? '' : '（待配置）'}</option>`).join('')}
         </select>
-        <label class="modal-label u-mt-12" for="ag-valid">批准的有效期</label>
+        <label class="modal-label u-mt-12" for="ag-valid">审批有效期</label>
         <select class="ctl" id="ag-valid">
           ${choices.map((c) => `<option value="${c.seconds}"${
             c.seconds === defaultValid ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
         </select>
-        <p class="modal-meta" id="ag-route">正在读路线与计价…</p>
+        <p class="modal-meta" id="ag-route">正在读取推理通道与计价口径…</p>
         ${confirmLine}
-        <p class="modal-meta">发起后先排一条<b>算计划的文本作业</b>（就进生成中心那一个队列）。
-          计划回来后：只读的步骤当场做完；要花钱或改正式业务事实的会停下来等你批。</p>
+        <p class="modal-meta">提交后将先创建一条<b>任务规划文本作业</b>（统一进入生成中心队列）。
+          计划生成后：只读步骤自动执行；涉及付费调用或正式业务写入的步骤将自动暂停，等待审核中心签字放行。</p>
         <p class="bar bad" id="ag-modal-err" hidden></p>
       </div>
       <div class="modal-actions">
         <button class="btn" data-ag-close>取消</button>
-        <button class="btn primary" data-ag-submit>发起</button>
+        <button class="btn primary" data-ag-submit>发起任务</button>
       </div>
     </div>
   </div>`;
@@ -299,13 +362,13 @@ export default {
             api.agentConfigs(), api.agentTools(),
           ]);
         } catch (e) {
-          return `<section class="view on">${head('配置与工具白名单')}${errorBox('读配置', e)}</section>`;
+          return `<section class="view on">${head('推理通道状态与授权工具能力目录')}${errorBox('读配置', e)}</section>`;
         }
       }
-      return `<section class="view on">${head('配置与工具白名单')}${this.configPane()}</section>`;
+      return `<section class="view on">${head('推理通道状态与授权工具能力目录')}${this.configPane()}</section>`;
     }
-    if (sub === 2) return `<section class="view on">${head('任务路由：九个场景现在配到哪了')}${await this.routingPane()}</section>`;
-    if (sub === 3) return `<section class="view on">${head('运行与审批')}${await this.runsPane(project)}</section>`;
+    if (sub === 2) return `<section class="view on">${head('九类漫剧生产场景的模型映射与安全路由策略')}${await this.routingPane()}</section>`;
+    if (sub === 3) return `<section class="view on">${head('项目编排任务执行、步骤时间线与待审批追踪')}${await this.runsPane(project)}</section>`;
 
     let err = null;
     let overview = null;
@@ -323,23 +386,25 @@ export default {
 
     const counts = (overview && overview.counts) || {};
     return `<section class="view on">
-      ${head('谁替人做决定、决定到哪一步了')}
+      ${head('跨模块任务规划、自动化执行与人工审批调度')}
       ${err ? `<div class="card">${errorBox('读概览', err)}</div>` : ''}
       ${counts.runs !== undefined ? `<div class="card mb-card" >
-        <div class="card-head"><h2>四个数</h2>
+        <div class="card-head"><h2>运行概况</h2>
           <span class="sub">${escapeHtml((overview && overview.caliber) || '')}</span></div>
         <div class="proj-stats">
-          ${stat(counts.runs ?? '—', '运行')}
-          ${stat(counts.active ?? '—', '进行中')}
-          ${stat(counts.awaiting_approval ?? '—', '等你审批（步骤）',
+          ${stat(counts.runs ?? '—', '累计任务')}
+          ${stat(counts.active ?? '—', '执行中')}
+          ${stat(counts.awaiting_approval ?? '—', '待人工审批',
             !!counts.awaiting_approval)}
-          ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用配置')}
+          ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用推理通道')}
         </div></div>` : ''}
+      ${quickTemplatesHtml()}
       <div class="card">
-        <div class="card-head"><h2>最近的运行</h2>
-          <span class="sub">点「详情 →」去运行与审批看步骤与事件；这一页没有签字按钮，是有意的</span></div>
+        <div class="card-head"><h2>近期编排任务</h2>
+          <span class="sub">点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字</span></div>
         ${runsTable(overview ? overview.runs : [])}
       </div>
+      <div id="ag-modal-slot"></div>
     </section>`;
   },
 
@@ -347,31 +412,31 @@ export default {
   configPane() {
     if (!store.can('system:config')) {
       return `<div class="card"><div class="empty">
-        <div class="empty-t">这一栏需要配置权限</div>
-        <p>智能体的配置就是模型中心的配置：谁能改默认轨，谁就能改这里看到的两行。</p>
-        <p class="hint">你仍然可以在「运行与审批」里看自己发起的运行。</p></div></div>`;
+        <div class="empty-t">此页面需要系统配置权限</div>
+        <p>智能体推理通道直接引用「模型中心」的默认轨配置，无独立副本。</p>
+        <p class="hint">你仍可在「运行与审批」中查看和追踪自己发起的任务。</p></div></div>`;
     }
     const cards = (cache.configs && cache.configs.cards) || [];
     const tools = Object.entries((cache.tools && cache.tools.items) || {});
     return `
       <div class="card mb-card" >
-        <div class="card-head"><h2>本地与云端两条腿</h2>
-          <span class="sub">要改的是模型中心那三张表；这一页只读，每次进来现查一次健康</span></div>
+        <div class="card-head"><h2>规划推理通道（本地 / 云端）</h2>
+          <span class="sub">统一引用模型中心配置；本页只读，进入时实时检查通道健康</span></div>
         ${legsHtml(cache.configs)}
         <div class="card-foot">
           ${cards.map((c) => `<p class="modal-meta"><b>${escapeHtml(c.backend_label)}</b>：
             密钥 ${c.key_env
-              ? `${escapeHtml(c.key_env)}·${c.secret_present ? '环境里有值' : '环境里没值'}`
-              : '本机服务不需要密钥'}（值从不入库、不进出参）；
+              ? `${escapeHtml(c.key_env)}·${c.secret_present ? '已配置' : '未配置'}`
+              : '本机服务无需密钥'}（密钥值不入库、不回显）；
             计价 ${escapeHtml(c.cost_note || '—')}</p>`).join('')}
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>工具白名单</h2>
-          <span class="sub">智能体能做的事就这几行；加一个是改代码，不是加一个按钮</span></div>
+        <div class="card-head"><h2>授权工具能力目录</h2>
+          <span class="sub">智能体仅允许调用下列白名单工具，按风险等级自动执行或拦截送审</span></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>工具码</th><th>能做什么</th><th>风险档</th><th>往外送什么</th>
-            <th>怎么验收</th></tr></thead>
+          <thead><tr><th>工具标识</th><th>能力说明</th><th>风险等级</th><th>往外送什么</th>
+            <th>验收标准</th></tr></thead>
           <tbody>${tools.map(([code, t]) => `<tr>
             <td><code>${escapeHtml(code)}</code></td>
             <td>${escapeHtml(t.label)}</td>
@@ -382,7 +447,7 @@ export default {
         <div class="card-foot">
           <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.note) || '')}</p>
           <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
-            ｜一次计划上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
+            ｜单次任务步骤上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
         </div>
       </div>`;
   },
@@ -390,8 +455,8 @@ export default {
   /** 任务路由：只读九场景 ＋ 一句"改在模型中心"。 */
   async routingPane() {
     if (!store.can('system:config')) {
-      return `<div class="card"><div class="empty"><div class="empty-t">这一栏需要配置权限</div>
-        <p>路由策略就是模型中心「调用策略」那一页的九行；这里不再给一份可编辑的表。</p>
+      return `<div class="card"><div class="empty"><div class="empty-t">此页面需要系统配置权限</div>
+        <p>生产场景路由策略统一在「模型中心 · 调用策略」中维护，本页仅提供只读视图。</p>
         </div></div>`;
     }
     let data = null;
@@ -401,7 +466,7 @@ export default {
         <span class="t-desc">${escapeHtml(p.scene_key)}</span></td>
       <td>${escapeHtml(p.capability_label)}</td>
       <td>${(p.required || []).map((r) => chip('gray', r)).join(' ') || '—'}</td>
-      <td><span class="t-desc">${escapeHtml(p.slot_provider ? `${p.slot_provider}/${p.slot_model}` : '未配')}</span></td>
+      <td><span class="t-desc">${escapeHtml(p.slot_provider ? `${p.slot_provider}/${p.slot_model}` : '未配置')}</span></td>
       <td>${chip('gray', p.preference_label || p.preference)}</td>
       <td><span class="t-desc">${escapeHtml(p.fallback_provider
         ? `${p.fallback_provider}/${p.fallback_model}` : '—')}</span></td>
@@ -409,24 +474,24 @@ export default {
     </tr>`).join('');
     return `
       <div class="card">
-        <div class="card-head"><h2>九个任务场景</h2>
-          <span class="sub">这一页只读：要改建议轨与偏好，去模型中心·调用策略</span></div>
+        <div class="card-head"><h2>生产场景路由策略（只读）</h2>
+          <span class="sub">如需调整建议模型或启用状态，请前往「模型中心 · 调用策略」</span></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>场景</th><th>要的能力</th><th>必需标签</th><th>建议轨</th>
-            <th>偏好</th><th>备用轨</th><th>状态</th></tr></thead>
+          <thead><tr><th>生产场景</th><th>所需能力</th><th>必需特性</th><th>建议模型</th>
+            <th>偏好</th><th>备用模型</th><th>状态</th></tr></thead>
           <tbody>${rows}</tbody></table></div>
         <!-- 表格卡片的下半段统一坐进 .card-foot：卡片本身 padding 是 0（表格要铺满），
              所以表外那几行（提示条、脚注、动作按钮）必须自己带内距。
              原来这里三样都直接挂在 .card 下，按钮行离卡片下沿只有 1px，贴着边框。 -->
         <div class="card-foot">
           <p class="bar">${data.no_auto_fallback
-            ? '<b>备用轨不会自动顶上。</b>默认轨的唯一来源仍是「引擎管理」里打勾那一行；'
-              + '智能体也一样：它只按人确认过的轨提交，本地失败不静默换云端。'
-            : '清单说允许自动兜底——这条与智能体的授权要求冲突，需要人先看一眼策略。'}</p>
-          <p class="modal-meta">智能体发起时读的就是这张表的场景那一行；
-            「建议轨」显示给人看，最终走哪条仍由默认轨与人的确认决定。</p>
+            ? '<b>备用轨不会自动顶上。</b>默认推理通道唯一来源仍是「模型中心 · 引擎管理」；'
+              + '智能体严格按人工确认通道提交，本地失败绝不静默切换至云端。'
+            : '清单声明允许自动兜底——与智能体安全授权策略冲突，请先复核路由配置。'}</p>
+          <p class="modal-meta">新建编排任务时读取本表对应场景；
+            「建议模型」仅作参考提示，实际执行通道由默认配置与人工确认共同决定。</p>
           <div class="row u-mt-12">
-            <button class="btn" data-goto-models="policy">去模型中心·调用策略改这些行</button></div>
+            <button class="btn" data-goto-models="policy">前往模型中心 · 调用策略</button></div>
         </div>
       </div>`;
   },
@@ -447,16 +512,16 @@ export default {
       ${chatgptPlanCard()}
       ${err ? `<div class="card mb-card" >${errorBox('读运行列表', err)}</div>` : ''}
       <div class="card mb-card" >
-        <div class="card-head"><h2>这个项目的运行</h2>
-          <span class="sub">计划、步骤、事件都在这；签字在审核中心</span>
-          <div class="right"><button class="btn primary sm" data-ag-new>发起一次运行</button></div></div>
+        <div class="card-head"><h2>项目编排任务列表</h2>
+          <span class="sub">查看任务计划、步骤与事件流；高风险动作请在审核中心签字</span>
+          <div class="right"><button class="btn primary sm" data-ag-new>新建编排任务</button></div></div>
         ${runsTable(runs, { inlineDetail: true })}
       </div>
       ${orphanDetail ? '<div id="ag-run-detail" class="card mb-card"><div class="card-body">'
         + skeleton(3, 'text') + '</div></div>' : ''}
       ${waiting.length ? `<div class="card mb-card" >
-        <div class="card-head"><h2>等你批 ${waiting.length} 步</h2>
-          <span class="sub">只显示状态——签字那一步在审核中心</span></div>
+        <div class="card-head"><h2>待人工审批动作（${waiting.length} 步）</h2>
+          <span class="sub">仅展示审批队列状态，批准与驳回统一在审核中心执行</span></div>
         <div class="table-wrap"><table>
           <thead><tr><th class="num">步</th><th>工具</th><th>目标</th><th>风险</th>
             <th class="num">有效期到</th><th class="r"></th></tr></thead>
@@ -520,27 +585,38 @@ export default {
         refresh();
       });
     });
-    const newBtn = root.querySelector('[data-ag-new]');
-    if (newBtn) {
-      newBtn.addEventListener('click', () => run('准备发起', async () => {
-        const [episodes, policies] = await Promise.all([
-          api.episodes(store.current.id),
-          store.can('system:config') ? api.modelPolicies() : Promise.resolve({ items: [] }),
-        ]);
-        // 有效期档位也得先从接口取：这一步原来完全没调 plan-options，
-        // 直接把一条写死的 24 小时塞进弹窗。现在档位表与默认档都由服务端说。
-        const qs = new URLSearchParams({
-          project_id: String(store.current.id), goal: '', scene_key: '',
-        }).toString();
-        const opts = await api.agentPlanOptions(qs);
-        const slot = root.querySelector('#ag-modal-slot');
-        slot.innerHTML = createModal(episodes, policies.items || [], opts || {});
-        const modal = slot.querySelector('#ag-modal');
-        modal.hidden = false;
-        bindModal(modal, refresh, policies.items || []);
-        bindModalDismiss(modal, () => { modal.hidden = true; });
-      }));
-    }
+    const openCreateModal = (presetGoal = '') => run('准备发起', async () => {
+      const [episodes, policies] = await Promise.all([
+        api.episodes(store.current.id),
+        store.can('system:config') ? api.modelPolicies() : Promise.resolve({ items: [] }),
+      ]);
+      // 有效期档位也得先从接口取：这一步原来完全没调 plan-options，
+      // 直接把一条写死的 24 小时塞进弹窗。现在档位表与默认档都由服务端说。
+      const qs = new URLSearchParams({
+        project_id: String(store.current.id), goal: presetGoal, scene_key: '',
+      }).toString();
+      const opts = await api.agentPlanOptions(qs);
+      const slot = root.querySelector('#ag-modal-slot');
+      if (!slot) return;
+      slot.innerHTML = createModal(episodes, policies.items || [], opts || {});
+      const modal = slot.querySelector('#ag-modal');
+      if (presetGoal) modal.querySelector('#ag-goal').value = presetGoal;
+      modal.hidden = false;
+      bindModal(modal, () => {
+        if (currentSub() !== 3) setSub('agents', 3);
+        refresh();
+      }, policies.items || []);
+      bindModalDismiss(modal, () => { modal.hidden = true; });
+    });
+    root.querySelectorAll('[data-ag-new]').forEach((btn) => {
+      btn.addEventListener('click', () => openCreateModal(''));
+    });
+    root.querySelectorAll('[data-ag-tpl]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tpl = QUICK_TEMPLATES.find((t) => t.id === btn.dataset.agTpl);
+        if (tpl) openCreateModal(tpl.goal);
+      });
+    });
     if (openRunId) await renderDetail(root);
   },
 };

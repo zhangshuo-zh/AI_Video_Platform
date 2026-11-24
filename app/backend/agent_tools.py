@@ -81,7 +81,7 @@ class ToolExecutionError(RuntimeError):
 # 留到审批时再让程序去猜，就得到一个会说谎的隐私提示。
 TOOLS: dict[str, dict] = {
     "episode_preflight": {
-        "label": "盘点这一集缺什么、什么会拦",
+        "label": "单集生产备料预检",
         "risk": "read",
         "perms": ("project:read",),
         "args": {"episode_id": {"type": "int", "required": True}},
@@ -89,7 +89,7 @@ TOOLS: dict[str, dict] = {
         "verify": "读到的就是产线发起弹窗将要显示的同一份清单（同一个函数、同一份判据）",
     },
     "document_outline": {
-        "label": "读一篇文档的结构读数",
+        "label": "剧本文档结构解析",
         "risk": "read",
         "perms": ("doc:read",),
         "args": {"document_id": {"type": "int", "required": True}},
@@ -100,7 +100,7 @@ TOOLS: dict[str, dict] = {
         "verify": "版本令牌就是 document.version 那一列，正文一改读数就跟着变",
     },
     "text_job_submit": {
-        "label": "提交一条文本生成作业",
+        "label": "提交文本生成作业",
         # 按最严的一档登记：今天文本只有云端一条轨（deepseek），要花钱、要出本机。
         # 等本地文本腿（ollama）实测通过，档位仍留 paid 也不亏——
         # 参数里带的是正文素材，"不花钱"不等于"可以不给人看"。
@@ -117,7 +117,7 @@ TOOLS: dict[str, dict] = {
         "verify": "作业终态为成功、且产物清单里有一个能读的文本文件才算成",
     },
     "asset_register": {
-        "label": "登记一条正式资产",
+        "label": "创建项目正式资产",
         "risk": "formal",       # 写进业务事实，下游（分镜引用、成片一致性）跟着变
         "perms": ("asset:write",),
         "args": {
