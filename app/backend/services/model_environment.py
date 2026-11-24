@@ -110,6 +110,9 @@ def _cloud_key_items() -> list[dict]:
         env_name = adapters.resolved_key_env(adapter.code, adapter.capability, "cloud")
         out.append({"env_name": env_name or "", "provider": adapter.code,
                     "label": adapter.label})
+    if all(it["env_name"] != "GEMINI_API_KEY" for it in out):
+        out.append({"env_name": "GEMINI_API_KEY", "provider": "gemini",
+                    "label": "Google Gemini（看图反推）"})
     return out
 
 

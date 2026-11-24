@@ -151,7 +151,7 @@ def test_环境变量优先于库里(kek, clean, monkeypatch):
 def test_白名单与迁移的CHECK必须一致(kek, clean):
     """两处都写是刻意的冗余；这里钉住"它们必须一样"，免得改一处忘另一处。"""
     from pathlib import Path
-    mig_path = Path(__file__).resolve().parents[1] / "migrations/0052_secret_value.sql"
+    mig_path = Path(__file__).resolve().parents[1] / "migrations/0064_secret_value_gemini.sql"
     sql = mig_path.read_text(encoding="utf-8")
     for name in secret_value.ALLOWED_ENV:
         assert f"'{name}'" in sql, f"{name} 在迁移的 CHECK 白名单里缺席"

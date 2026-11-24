@@ -27,6 +27,7 @@ from db import get_conn
 ALLOWED_ENV: tuple[str, ...] = (
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
+    "GEMINI_API_KEY",
     "FV_KEY_JIMENG",
     "FV_KEY_KLING",
     "FV_KEY_MINIMAX",

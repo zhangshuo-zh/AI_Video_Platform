@@ -155,6 +155,7 @@ def _http_error(exc: HTTPError, label: str) -> _VisionError:
 
 def _request(url: str, *, label: str, deadline: float, idle: float,
             body: dict | None = None, token: str | None = None,
+            extra_headers: dict[str, str] | None = None,
             responses: bool = False) -> dict | str:
     headers = {"Accept": "text/event-stream, application/json" if responses else "application/json"}
     data = None
@@ -163,6 +164,8 @@ def _request(url: str, *, label: str, deadline: float, idle: float,
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         # safe_urlopen blocks redirects; explicit validation protects configured engine targets.
         safenet.check_url(url)

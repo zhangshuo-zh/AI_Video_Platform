@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from threading import BoundedSemaphore, Lock
 from urllib.parse import urlsplit
 
+from cryptography.exceptions import InvalidTag
+
 import chatgpt_plan
+import secret_store
 from repositories.content import _images_of, assets
 from repositories.engine_instances import engine_instances
 from schemas.assets import AssetReversePromptIn, AssetReversePromptOut, _image_purposes_of
@@ -18,7 +20,9 @@ from .asset_vision_transport import _VisionError, _remaining, _request
 from .content_operations import ContentOperationError
 
 _DEFAULT_CHATGPT_MODEL = "gpt-5.1"
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _DEFAULT_DASHSCOPE_MODEL = "qwen-vl-max-latest"
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _DASHSCOPE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 _VISION_MODEL = re.compile(r"(?:qwen[\w.]*-?vl|vision|llava|minicpm-v|gemma3(?!n)|pixtral|internvl|moondream)", re.I)
 _SLOTS_BY_KIND = {
@@ -352,6 +356,48 @@ def _run_dashscope(token: str, images: list[str], instruction: str,
     return value if token not in value else "", chosen
 
 
+def _run_gemini(key: str, images: list[str], instruction: str,
+                model: str | None, deadline: float) -> tuple[str, str]:
+    chosen = model or _DEFAULT_GEMINI_MODEL
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", chosen):
+        raise _VisionError(422, "Gemini 模型名称格式无效")
+    parts: list[dict] = [{"text": instruction}]
+    for b64 in images:
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+    url = _GEMINI_URL.format(model=chosen)
+    gen_config: dict = {
+        "temperature": 0.15,
+        "maxOutputTokens": 1800,
+        "responseMimeType": "application/json",
+    }
+    if "2.5-flash" in chosen:
+        gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+    result = _request(url, label="Gemini", deadline=deadline, idle=45,
+                     extra_headers={"x-goog-api-key": key}, body={
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": gen_config,
+    })
+    candidates = result.get("candidates") if isinstance(result, dict) else None
+    first = candidates[0] if isinstance(candidates, list) and candidates else None
+    if not isinstance(first, dict) or first.get("finishReason") in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "MAX_TOKENS"):
+        raise _VisionError(502, "Gemini 未返回完整提示词")
+    content = first.get("content")
+    out_parts = content.get("parts") if isinstance(content, dict) else None
+    text = "\n".join(
+        p["text"] for p in (out_parts or [])
+        if isinstance(p, dict) and not p.get("thought") and isinstance(p.get("text"), str)
+    )
+    return text if key not in text else "", chosen
+
+
+def _resolve_secret(env_name: str) -> str:
+    try:
+        value, _ = secret_store.resolve(env_name)
+        return value.strip()
+    except (secret_store.SecretStoreUnavailable, InvalidTag, ValueError, TypeError):
+        raise _VisionError(424, f"{env_name} 已登记但无法解密，请检查 {secret_store.KEK_ENV}") from None
+
+
 def reverse_prompt(asset_id: int, user_id: int, payload: AssetReversePromptIn) -> AssetReversePromptOut:
     if not _MAX_REQUESTS.acquire(blocking=False):
         raise ContentOperationError(503, "当前看图任务较多，请稍后重试")
@@ -409,11 +455,18 @@ def _reverse_prompt(asset_id: int, user_id: int, payload: AssetReversePromptIn,
             # A submitted cloud request might have been charged even if its response was lost.
             return draft(_run_chatgpt(user_id, token, images, instruction, model, deadline), "chatgpt")
 
-    key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if provider in ("auto", "gemini"):
+        gemini_key = _resolve_secret("GEMINI_API_KEY")
+        if gemini_key:
+            return draft(_run_gemini(gemini_key, images, instruction, model, deadline), "gemini")
+        if provider == "gemini":
+            raise _VisionError(424, "未配置 GEMINI_API_KEY，请在参数管理「供应商密钥」或环境变量中配置")
+
+    key = _resolve_secret("DASHSCOPE_API_KEY")
     if key:
         return draft(_run_dashscope(key, images, instruction, model, deadline), "dashscope")
     if provider == "dashscope":
-        raise _VisionError(424, "未配置 DASHSCOPE_API_KEY")
+        raise _VisionError(424, "未配置 DASHSCOPE_API_KEY，请在参数管理「供应商密钥」或环境变量中配置")
     if local_error is not None and not local_error.unavailable:
         raise local_error
-    raise _VisionError(503, "暂无可用的看图模型通道，请检查 Ollama、ChatGPT 授权或通义千问配置")
+    raise _VisionError(503, "暂无可用的看图模型通道，请检查 Ollama、ChatGPT 授权、Gemini 或通义千问配置")

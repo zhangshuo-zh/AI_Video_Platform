@@ -195,6 +195,7 @@ export async function renderDetail(id) {
                           <option value="auto">自动通道（本地优先）</option>
                           <option value="ollama">本地 Ollama</option>
                           <option value="chatgpt">ChatGPT 套餐</option>
+                          <option value="gemini">Google Gemini</option>
                           <option value="dashscope">通义千问 VL</option>
                         </select>
                         <select class="ctl sm ad-vision-lang" id="ad-vision-lang" aria-label="看图反推语言">

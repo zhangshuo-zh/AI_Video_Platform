@@ -143,6 +143,7 @@ def test_reverse_prompt_returns_503_when_no_provider_available(as_role, fresh_pr
         raise av.chatgpt_plan.ChatGPTError("未连接")
 
     monkeypatch.setattr(av.chatgpt_plan, "access_token", _no_token)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
     resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={})
@@ -406,3 +407,74 @@ def test_chatgpt_handles_text_plain_sse_content_type(as_role, fresh_project, mon
     assert resp.status_code == 200
     assert resp.json()["model"] == "gpt-6.2-sol"
     assert resp.json()["prompt"] == "银发猫娘"
+
+
+def test_gemini_vision_reverse_prompt(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-fake-gemini-key")
+    captured = {}
+
+    def open_response(req, *, timeout):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        captured["body"] = json.loads(req.data)
+        result = {"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [
+                {"thought": True, "text": "内部推理不应进入最终提示词"},
+                {"text": '{"zh":["紫发猫耳少女","星空裙摆"]}'},
+            ]},
+        }]}
+        return _Response(json.dumps(result).encode())
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "gemini", "language": "zh"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "gemini"
+    assert data["model"] == "gemini-2.5-flash"
+    assert data["prompt"] == "紫发猫耳少女, 星空裙摆"
+    assert "gemini-2.5-flash:generateContent" in captured["url"]
+    assert "AIza-fake-gemini-key" not in captured["url"]
+    assert captured["headers"].get("x-goog-api-key") == "AIza-fake-gemini-key"
+    parts = captured["body"]["contents"][0]["parts"]
+    assert parts[1]["inline_data"]["mime_type"] == "image/jpeg"
+    assert captured["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+
+
+def test_gemini_missing_key_returns_424(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "gemini", "language": "zh"})
+    assert resp.status_code == 424
+    assert "GEMINI_API_KEY" in resp.json()["detail"]
+
+
+def test_gemini_reads_encrypted_secret_from_platform_db(as_role, fresh_project, monkeypatch):
+    import base64
+    import secret_store
+    from repositories import secret_value
+
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv(secret_store.KEK_ENV, base64.b64encode(b"k" * 32).decode())
+    secret_value.save("GEMINI_API_KEY", "AIza-db-stored-key")
+    try:
+        def open_response(req, *, timeout):
+            assert dict(req.header_items()).get("X-goog-api-key") == "AIza-db-stored-key"
+            result = {"candidates": [{
+                "finishReason": "STOP",
+                "content": {"parts": [{"text": '{"zh":["数据库密钥猫娘"]}'}]},
+            }]}
+            return _Response(json.dumps(result).encode())
+
+        monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+        resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "gemini", "language": "zh"})
+        assert resp.status_code == 200
+        assert resp.json()["prompt"] == "数据库密钥猫娘"
+    finally:
+        secret_value.forget("GEMINI_API_KEY")
