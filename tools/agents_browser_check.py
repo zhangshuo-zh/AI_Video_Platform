@@ -296,7 +296,7 @@ def main():
                                         "(document.querySelector('.view.on')?.innerText || '').includes('两条腿')")
         check("总览不再重复渲染两条腿", has_legs_strip is False, f"has_legs={has_legs_strip}")
         tpl_count = P.eval_js(cdp, "document.querySelectorAll('.view.on [data-ag-tpl]').length")
-        check("总览渲染四张快捷制片任务模板卡", tpl_count == 4, f"{tpl_count} 张")
+        check("总览渲染六张快捷制片任务模板卡", tpl_count == 6, f"{tpl_count} 张")
         P.eval_js(cdp, "document.querySelector('.view.on [data-ag-tpl]')?.click()")
         time.sleep(1.8)
         tpl_goal = P.eval_js(cdp, "document.querySelector('#ag-modal:not([hidden]) #ag-goal')?.value || ''")

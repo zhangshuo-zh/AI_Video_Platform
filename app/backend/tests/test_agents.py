@@ -915,3 +915,48 @@ def test_智能体成功产物核验保留路径类型(clean_queue, ag_scene):
     assert result["verified"] is True
     assert result["artifact"] == jobfiles.relative(artifact)
     assert result["bytes"] == artifact.stat().st_size
+
+
+def test_p2_新增单集分镜与音频巡检工具可执行(as_role, ag_scene):
+    """P2 新增的两条只读巡检工具复用工作台与音频中心同一套判据。"""
+    from repositories.content import shots as shots_repo
+
+    c = as_role("admin")
+    me = c.get("/api/auth/me").json()["user"]
+    ep_id = ag_scene["episode_id"]
+    proj_id = ag_scene["project_id"]
+
+    # 造一个带明确台词但尚未配音的分镜，验证音频缺口巡检能抓到
+    created_shot = shots_repo.create(ep_id, "阿明：「大家快退后，有危险！」", "", 5.0, [])
+
+    assert agent_tools.risk_of("episode_shot_audit") == "read"
+    assert agent_tools.risk_of("episode_audio_audit") == "read"
+
+    ctx = {"project_id": proj_id, "run_id": 1, "seq": 1, "actor_id": me["id"]}
+    shot_out = agent_tools.execute("episode_shot_audit", {"episode_id": ep_id}, ctx)
+    assert shot_out["episode_id"] == ep_id
+    assert isinstance(shot_out["stages"], list) and len(shot_out["stages"]) >= 1
+    assert shot_out["locate"] == {"module": "production", "sub": 0}
+
+    audio_out = agent_tools.execute("episode_audio_audit", {"episode_id": ep_id}, ctx)
+    assert audio_out["episode_id"] == ep_id
+    assert audio_out["dialogue_shots"] >= 1
+    assert audio_out["missing_tts_count"] >= 1
+    assert any(s["seq"] == created_shot["seq"] and s["speaker"] == "阿明"
+               for s in audio_out["missing_tts_shots"])
+    assert audio_out["locate"] == {"module": "audio", "sub": 0}
+
+
+def test_p2_设定矛盾扫描工具为写风险且可落库审阅表(as_role, ag_scene):
+    """consistency_scan 会写入设定中心审阅表，必须登记为 write 档走人工审批。"""
+    c = as_role("admin")
+    me = c.get("/api/auth/me").json()["user"]
+    proj_id = ag_scene["project_id"]
+
+    assert agent_tools.risk_of("consistency_scan") == "write"
+    ctx = {"project_id": proj_id, "run_id": 1, "seq": 2, "actor_id": me["id"]}
+    out = agent_tools.execute("consistency_scan", {}, ctx)
+    assert out["project_id"] == proj_id
+    assert "scanned_shots" in out and "open_count" in out
+    assert out["locate"] == {"module": "knowledge", "sub": 1}
+

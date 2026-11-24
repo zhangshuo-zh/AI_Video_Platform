@@ -130,6 +130,30 @@ TOOLS: dict[str, dict] = {
         "data_out": "只写库，不外发任何内容",
         "verify": "回读那一行：名称与类型必须与批准时逐字一致",
     },
+    "episode_shot_audit": {
+        "label": "单集分镜进度与异常镜头巡检",
+        "risk": "read",
+        "perms": ("project:read",),
+        "args": {"episode_id": {"type": "int", "required": True}},
+        "data_out": "只读库里分镜阶段状态与异常镜头编号；不外发任何正文或提示词",
+        "verify": "与项目工作台单集看板调同一个函数（episode_board），结论完全一致",
+    },
+    "episode_audio_audit": {
+        "label": "单集对白与配音缺口巡检",
+        "risk": "read",
+        "perms": ("audio:read",),
+        "args": {"episode_id": {"type": "int", "required": True}},
+        "data_out": "只读库里分镜台词存在性与音频片段状态统计；不外发台词正文",
+        "verify": "复用音频中心同一套台词识别与状态同步函数，与音频中心列表口径一致",
+    },
+    "consistency_scan": {
+        "label": "项目设定与资产矛盾扫描",
+        "risk": "write",
+        "perms": ("doc:write",),
+        "args": {},
+        "data_out": "只在本地扫描并写入设定中心审阅列表，不外发任何项目内容",
+        "verify": "扫描结果写入设定中心矛盾审阅表，回读 open_count 与审阅列表一致",
+    },
 }
 
 # 有限枚举：写在这里是为了界面与测试都有一处可问，而不是各自硬写四个字符串。
@@ -456,12 +480,126 @@ def _asset_register(args: dict, ctx: dict) -> dict:
     }
 
 
+def _episode_shot_audit(args: dict, ctx: dict) -> dict:
+    """单集分镜与异常镜头巡检：直接复用 `production_pkg.board.episode_board()`。"""
+    from production_pkg.board import episode_board
+
+    row = episodes_repo.get(args["episode_id"])
+    if row is None:
+        raise ToolExecutionError(f"没有这一集：#{args['episode_id']}", code="not_found")
+    project_id = int(row["project_id"])
+    _require(_actor(ctx), TOOLS["episode_shot_audit"]["perms"], project_id, "read")
+    board = episode_board(project_id, int(args["episode_id"]), include_shot_tasks=True)
+    tasks = list(board.get("shot_tasks") or [])
+    by_group: dict[str, int] = {}
+    for t in tasks:
+        grp = str(t.get("group") or "other")
+        by_group[grp] = by_group.get(grp, 0) + 1
+    stages = [
+        {"key": s.get("key"), "label": s.get("label"),
+         "status": s.get("status"), "summary": s.get("summary")}
+        for s in (board.get("stages") or [])
+    ]
+    return {
+        "episode_id": int(args["episode_id"]),
+        "seq": row["seq"],
+        "stages": stages,
+        "issue_counts": by_group,
+        "total_issues": len(tasks),
+        "sample_issues": [
+            {"shot_id": t.get("shot_id"), "seq": t.get("seq"),
+             "group": t.get("group"), "note": t.get("note")}
+            for t in tasks[:30]
+        ],
+        "locate": {"module": "production", "sub": 0},
+        "note": "与项目工作台调用同一份看板函数，平台没有第二套异常镜头统计",
+    }
+
+
+def _episode_audio_audit(args: dict, ctx: dict) -> dict:
+    """单集对白与配音缺口巡检：复用 `services.audio` 同一套台词识别与状态同步。"""
+    from repositories.audio import clips
+    from repositories.content import shots
+    from services.audio import _character_index, _extract_shot_dialogue, audio_sync
+
+    row = episodes_repo.get(args["episode_id"])
+    if row is None:
+        raise ToolExecutionError(f"没有这一集：#{args['episode_id']}", code="not_found")
+    project_id = int(row["project_id"])
+    _require(_actor(ctx), TOOLS["episode_audio_audit"]["perms"], project_id, "read")
+
+    ep_id = int(args["episode_id"])
+    by_name, by_id = _character_index(project_id)
+    ep_shots = shots.list_by_episode(ep_id)
+    ep_clips = [audio_sync(c) for c in clips.list(project_id, None, ep_id)]
+    voice_clips = [c for c in ep_clips if c["kind"] in ("dialogue", "narration")]
+    shots_with_audio = {int(c["shot_id"]) for c in voice_clips if c["shot_id"] is not None}
+
+    dialogue_shots = 0
+    missing_tts: list[dict] = []
+    for shot in ep_shots:
+        parsed = _extract_shot_dialogue(shot, by_id, by_name)
+        if parsed is None:
+            continue
+        dialogue_shots += 1
+        sid = int(shot["id"])
+        if sid not in shots_with_audio:
+            speaker, _text = parsed
+            missing_tts.append({"shot_id": sid, "seq": shot["seq"], "speaker": speaker})
+
+    status_counts: dict[str, int] = {}
+    for c in ep_clips:
+        st = str(c["status"] or "draft")
+        status_counts[st] = status_counts.get(st, 0) + 1
+
+    return {
+        "episode_id": ep_id,
+        "seq": row["seq"],
+        "total_shots": len(ep_shots),
+        "dialogue_shots": dialogue_shots,
+        "clips_total": len(ep_clips),
+        "clip_status_counts": status_counts,
+        "missing_tts_count": len(missing_tts),
+        "missing_tts_shots": missing_tts[:30],
+        "locate": {"module": "audio", "sub": 0},
+        "note": "复用音频中心同一套台词识别与状态同步逻辑，不外发台词正文",
+    }
+
+
+def _consistency_scan(args: dict, ctx: dict) -> dict:
+    """项目设定与资产矛盾扫描：复用 `services.knowledge.scan_consistency()`。"""
+    from services.knowledge import scan_consistency
+
+    project_id = int(ctx["project_id"])
+    _require(_actor(ctx), TOOLS["consistency_scan"]["perms"], project_id, "write")
+    result = scan_consistency(project_id)
+    open_issues = [it for it in (result.get("issues") or []) if it.get("status") == "open"]
+    return {
+        "project_id": project_id,
+        "scanned_shots": int(result.get("scanned_shots") or 0),
+        "scanned_assets": int(result.get("scanned_assets") or 0),
+        "scanned_docs": int(result.get("scanned_docs") or 0),
+        "new_count": int(result.get("new_count") or 0),
+        "reopened_count": int(result.get("reopened_count") or 0),
+        "open_count": int(result.get("open_count") or 0),
+        "sample_open_issues": [
+            {"id": it.get("id"), "kind": it.get("issue_kind"), "title": it.get("title")}
+            for it in open_issues[:20]
+        ],
+        "locate": {"module": "knowledge", "sub": 1},
+        "note": "扫描结果已写入设定中心矛盾审阅列表，请前往「设定中心 → 矛盾审阅」逐条处理",
+    }
+
+
 # handler 与声明分开装配，是为了让上面那张表能一口气读完——
 # 读代码的人最想知道的是"允许哪些事"，不是每个函数体。
 TOOLS["episode_preflight"]["handler"] = _episode_preflight
 TOOLS["document_outline"]["handler"] = _document_outline
 TOOLS["text_job_submit"]["handler"] = _text_job_submit
 TOOLS["asset_register"]["handler"] = _asset_register
+TOOLS["episode_shot_audit"]["handler"] = _episode_shot_audit
+TOOLS["episode_audio_audit"]["handler"] = _episode_audio_audit
+TOOLS["consistency_scan"]["handler"] = _consistency_scan
 
 
 def execute(tool_code: str, args: dict, ctx: dict) -> dict:

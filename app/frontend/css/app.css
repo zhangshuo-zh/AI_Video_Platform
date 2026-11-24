@@ -3862,8 +3862,8 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)}
 .ag-detail-row>td{padding:4px 12px 14px}
 .ag-detail-row>td>.card{margin:0}
-/* 智能体中心 · 总览快捷制片任务网格（P1 专业化升级） */
-.ag-tpl-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+/* 智能体中心 · 总览快捷制片任务网格（P1/P2 专业化升级） */
+.ag-tpl-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 .ag-tpl-item{display:grid;gap:6px;padding:12px 14px;text-align:left;cursor:pointer;
   background:var(--surface-2,var(--hover-soft));border:1px solid var(--line);
   border-radius:10px;color:var(--ink);transition:border-color var(--fast),background var(--fast)}
@@ -3872,6 +3872,7 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 .ag-tpl-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .ag-tpl-head b{font-size:13px;font-weight:600}
 .ag-tpl-item p{margin:0;line-height:1.5}
+@media(max-width:1080px){.ag-tpl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){.ag-tpl-grid{grid-template-columns:minmax(0,1fr)}}
 /* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
    账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
