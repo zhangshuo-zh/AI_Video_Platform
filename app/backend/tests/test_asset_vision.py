@@ -383,3 +383,26 @@ def test_ollama_negative_cache_skips_dead_endpoint_in_auto_but_probes_explicit(a
 
 def test_scene_slots_order_matches_frontend():
     assert av._SLOTS_BY_KIND["scene"] == ("全景定调", "机位结构", "光影时段", "材质细节")
+
+
+def test_chatgpt_handles_text_plain_sse_content_type(as_role, fresh_project, monkeypatch):
+    client = as_role("admin")
+    aid = _create_asset_with_images(client, fresh_project())
+    monkeypatch.setattr(av.engine_instances, "instances", lambda: [])
+    monkeypatch.setattr(av.chatgpt_plan, "access_token", lambda uid, **kw: "tok-live")
+    monkeypatch.setattr(av.chatgpt_plan, "models", lambda uid: [{"id": "gpt-6.2-sol", "name": "GPT-6.2 Sol"}])
+
+    def open_response(req, *, timeout):
+        raw = b"".join([
+            b'event: response.output_text.delta\n',
+            b'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\\"zh\\":[\\"\xe9\x93\xb6\xe5\x8f\x91\xe7\x8c\xab\xe5\xa8\x98\\"]}"}\n\n',
+            b'event: response.completed\n',
+            b'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+        ])
+        return _Response(raw, "text/plain; charset=utf-8")
+
+    monkeypatch.setattr(transport.safenet, "safe_urlopen", open_response)
+    resp = client.post(f"/api/assets/{aid}/reverse-prompt", json={"provider": "chatgpt", "language": "zh"})
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "gpt-6.2-sol"
+    assert resp.json()["prompt"] == "银发猫娘"

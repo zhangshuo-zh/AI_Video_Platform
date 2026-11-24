@@ -168,7 +168,9 @@ def _request(url: str, *, label: str, deadline: float, idle: float,
         safenet.check_url(url)
         req = Request(url, data=data, headers=headers)
         with safenet.safe_urlopen(req, timeout=_remaining(deadline, idle)) as response:
-            if responses and response.headers.get_content_type() == "text/event-stream":
+            ctype = response.headers.get_content_type()
+            is_stream = bool(isinstance(body, dict) and body.get("stream"))
+            if responses and (ctype == "text/event-stream" or (is_stream and ctype != "application/json")):
                 return _read_responses(response, deadline)
             result = _json_object(b"".join(_chunks(response, deadline)))
             return _responses_text(result) if responses else result

@@ -311,10 +311,12 @@ def _pick_chatgpt_model(user_id: int, explicit: str | None) -> str:
     try:
         listed = chatgpt_plan.models(user_id)
         ids = [item["id"] for item in listed if isinstance(item, dict) and isinstance(item.get("id"), str)]
-        for pref in ("gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o"):
+        for pref in ("gpt-6.2", "gpt-6.1", "gpt-6", "gpt-5.6", "gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o"):
             hit = next((mid for mid in ids if mid == pref or pref in mid), None)
             if hit:
                 return hit
+        if ids:
+            return ids[0]
     except (OSError, ValueError, TypeError, KeyError):
         pass
     return _DEFAULT_CHATGPT_MODEL
@@ -325,7 +327,8 @@ def _run_chatgpt(user_id: int, token: str, images: list[str], instruction: str,
     chosen = _pick_chatgpt_model(user_id, model)
     result = _request(f"{chatgpt_plan.RESOURCE}/responses", label="ChatGPT", deadline=deadline,
                      idle=45, responses=True, token=token, body={
-        "model": chosen, "store": False, "stream": True, "max_output_tokens": 2400,
+        "model": chosen, "store": False, "stream": True,
+        "instructions": "根据参考图生成跨镜头可复用的一致性提示词，只输出严格 JSON。",
         "input": [{"role": "user", "content": [
             {"type": "input_text", "text": instruction}, *_image_parts(images, responses=True)]}],
     })
