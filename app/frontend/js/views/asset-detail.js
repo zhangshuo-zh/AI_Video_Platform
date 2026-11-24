@@ -1,6 +1,7 @@
 import { openCharacterAppearances } from './asset-appearances.js';
 import { openReferenceUsage } from './asset-reference-usage.js';
 import { referenceActions, bindReferenceActions } from './asset-reference-actions.js';
+import { askReversePromptApply, assignReferenceSlots, prepareSlotUpload, slotsForKind } from './asset-reference-slots.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
@@ -183,10 +184,20 @@ export async function renderDetail(id) {
                     }).join('');
                     return `
                     <div class="ad-ai-bar">
-                      <select class="ctl sm ad-ai-model" id="ad-ai-model" aria-label="选择文本模型">
-                        ${optHtml || '<option value="">暂无可用文本模型</option>'}
-                      </select>
-                      <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
+                      <div class="ad-ai-group ad-ai-group-grow">
+                        <select class="ctl sm ad-ai-model" id="ad-ai-model" aria-label="选择文本模型">
+                          ${optHtml || '<option value="">暂无可用文本模型</option>'}
+                        </select>
+                        <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
+                      </div>
+                      <div class="ad-ai-group">
+                        <select class="ctl sm ad-vision-lang" id="ad-vision-lang" aria-label="看图反推语言">
+                          <option value="zh">中文提示词</option>
+                          <option value="en">英文 Tag</option>
+                          <option value="bilingual">中英双语</option>
+                        </select>
+                        <button type="button" class="btn sm" id="ad-ai-reverse"${isNew || !a.ref_images.length ? ' disabled' : ''} title="${isNew ? '请先保存资产并上传参考图' : (!a.ref_images.length ? '请先在右侧上传参考图' : '综合封面与三视图反向生成一致性提示词')}">📷 看图反推</button>
+                      </div>
                     </div>
                     <div class="ad-ai-feedback">
                       <span class="t-dim" id="ad-ai-status" role="status"></span>
@@ -296,22 +307,46 @@ export async function renderDetail(id) {
                 </label>` : ''}
               </div></div>
             <div class="card-body">
-              <div class="ad-imgs" data-ad-imgs>
-                ${isNew ? '<p class="t-dim">可先预选参考图（第一张将作为封面），创建资产时一并上传；也可以先建档，稍后在「资产创作」生图或补传。</p>'
-                  : (a.ref_images.map((p, i) => `
-                  <figure class="ad-img${i === 0 ? ' cover' : ''}">
-                    <img src="${escapeHtml(`/files/${p}`)}" alt="参考图 ${i + 1}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}">
+              ${isNew ? '<div class="ad-slots" data-ad-slots></div><div class="ad-imgs" data-ad-imgs></div>' : (() => {
+                const { slots, extra } = assignReferenceSlots(a.kind, a.ref_images, a.image_purposes);
+                const canUse = Boolean(store.currentEpisodeId && store.can('job:submit'));
+                const coverPath = a.ref_images[0] || '';
+                const renderCard = (p, slotMeta = null) => {
+                  const isCover = p === coverPath;
+                  return `<figure class="ad-img${isCover ? ' cover' : ''}">
+                    ${slotMeta ? `<div class="ad-slot-bar"><b class="ad-slot-title">${escapeHtml(slotMeta.label)}</b><span class="ad-slot-ratio">${escapeHtml(slotMeta.spec)}</span></div>` : ''}
+                    <div class="ad-img-wrap">
+                      <img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(slotMeta ? slotMeta.label : '参考图')}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}">
+                      <span class="ad-dim-badge" data-dim-badge hidden></span>
+                    </div>
                     <figcaption>
-                      ${i === 0 ? '<span class="chip blue">封面</span>'
+                      ${isCover ? '<span class="chip blue">封面</span>'
                         : (canEdit ? `<button class="btn xs" data-cover="${escapeHtml(p)}">设为封面</button>` : '')}
+                      ${canEdit && !isNew ? `<button type="button" class="btn xs" data-reverse-img="${escapeHtml(p)}" title="仅用这张图反推一致性提示词">反推</button>` : ''}
                       ${canEdit ? `<button class="btn xs danger" data-rm-img="${escapeHtml(p)}">删除</button>` : ''}
                     </figcaption>
-                    ${referenceActions(p, a.image_purposes?.[p], canEdit,
-                      Boolean(store.currentEpisodeId && store.can('job:submit')))}
-                  </figure>`).join('')
-                  || '<p class="t-dim">还没有参考图。定妆图、侧面、服装都可以传，第一张自动为封面。</p>')}
-              </div>
-              ${canEdit ? `<p class="modal-meta">支持 PNG / JPEG / WebP（≤20MB）。</p>` : ''}
+                    ${referenceActions(p, a.image_purposes?.[p], canEdit, canUse)}
+                  </figure>`;
+                };
+                const slotsHtml = slots.map((s) => (s.path ? renderCard(s.path, s) : `
+                  <div class="ad-slot-empty">
+                    <div class="ad-slot-bar">
+                      <b class="ad-slot-title">${escapeHtml(s.label)}</b>
+                      <span class="ad-slot-ratio">${escapeHtml(s.spec)}</span>
+                    </div>
+                    <div class="ad-slot-drop">
+                      <p class="ad-slot-hint">${escapeHtml(s.hint)}</p>
+                      ${canEdit ? `<label class="btn xs primary ad-slot-upload">上传到此槽
+                        <input type="file" data-slot-upload="${escapeHtml(s.key)}" accept="image/png,image/jpeg,image/webp" hidden>
+                      </label>` : '<span class="t-dim">待补</span>'}
+                    </div>
+                  </div>`)).join('');
+                const extraHtml = extra.length ? `
+                  <div class="ad-extra-head">补充参考图（${extra.length}）</div>
+                  <div class="ad-imgs" data-ad-imgs>${extra.map((p) => renderCard(p, null)).join('')}</div>` : '';
+                return `<div class="ad-slots">${slotsHtml}</div>${extraHtml}`;
+              })()}
+              ${canEdit ? `<p class="modal-meta">短边 ≥ 512px，支持 PNG / JPEG / WebP（≤20MB），按槽位上传可对齐推荐比例。</p>` : ''}
             </div>
           </div>
 
@@ -472,8 +507,18 @@ export function mountDetail(root, id) {
       let created = null;
       const ok = await run('创建资产', async () => {
         created = await api.createAsset(store.currentId, payload);
+        let known = new Set(created.ref_images || []);
         for (const item of pendingImages) {
-          await api.uploadAssetImage(created.id, item.file);
+          const updated = await api.uploadAssetImage(created.id, item.file);
+          const added = (updated?.ref_images || []).find((p) => !known.has(p));
+          if (added) {
+            known.add(added);
+            if (item.slotKey) {
+              await api.setAssetImagePurpose(created.id, {
+                path: added, variant_id: null, purpose: item.slotKey,
+              });
+            }
+          }
         }
       }, { btn: saveBtn });
       if (!ok || !created) return;
@@ -600,22 +645,157 @@ export function mountDetail(root, id) {
     }
   });
 
-  const paintPending = () => {
-    const host = root.querySelector('[data-ad-imgs]');
-    if (!host) return;
-    if (!pendingImages.length) {
-      host.innerHTML = '<p class="t-dim">可先预选参考图（第一张将作为封面），创建资产时一并上传；也可以先建档，稍后在「资产创作」生图或补传。</p>';
+  const revBtn = root.querySelector('#ad-ai-reverse');
+  const runReversePrompt = async (imagePaths, triggerEl) => {
+    if (isNew || !a.ref_images.length) {
+      if (aiStatus) aiStatus.textContent = '请先保存资产并上传至少一张参考图';
       return;
     }
-    host.innerHTML = pendingImages.map((item, idx) => `
+    const promptEl = root.querySelector('#ad-prompt');
+    const lang = root.querySelector('#ad-vision-lang')?.value || 'zh';
+    if (triggerEl) triggerEl.disabled = true;
+    if (revBtn && revBtn !== triggerEl) revBtn.disabled = true;
+    if (aiStatus) aiStatus.textContent = imagePaths.length ? '正在分析指定参考图…' : '正在综合参考图反推提示词…';
+    try {
+      const res = await api.reverseAssetPrompt(a.id, { image_paths: imagePaths, provider: 'auto', language: lang });
+      if (!root.isConnected) return;
+      const existing = promptEl?.value.trim() || '';
+      const choice = await askReversePromptApply(res, Boolean(existing));
+      if (!choice || !root.isConnected || !choice.text) {
+        if (aiStatus) aiStatus.textContent = '已取消应用反推结果';
+        return;
+      }
+      if (promptEl) {
+        prevPromptBeforeAi = promptEl.value;
+        promptEl.value = (choice.mode === 'append' && existing
+          ? `${existing}\n${choice.text}`
+          : choice.text).slice(0, 1000);
+        promptEl.focus();
+      }
+      if (aiUndo) aiUndo.hidden = false;
+      if (aiStatus) aiStatus.textContent = `已反推提示词（${res.provider} / ${res.model}），核对后请点右上角「保存」`;
+    } catch (err) {
+      if (aiStatus && root.isConnected) aiStatus.textContent = `反推失败：${err.message || err}`;
+    } finally {
+      if (triggerEl?.isConnected) triggerEl.disabled = false;
+      if (revBtn?.isConnected) revBtn.disabled = isNew || !a.ref_images.length;
+    }
+  };
+  revBtn?.addEventListener('click', () => runReversePrompt([], revBtn));
+  root.querySelectorAll('[data-reverse-img]').forEach((btn) => {
+    btn.addEventListener('click', () => runReversePrompt([btn.dataset.reverseImg], btn));
+  });
+
+  const bindDimBadges = (scopeEl) => {
+    scopeEl.querySelectorAll('.ad-img img').forEach((img) => {
+      const fill = () => {
+        const b = img.parentElement?.querySelector('[data-dim-badge]');
+        if (b && img.naturalWidth > 0) {
+          b.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+          b.hidden = false;
+        }
+      };
+      if (img.complete) fill();
+      else img.addEventListener('load', fill, { once: true });
+    });
+  };
+  bindDimBadges(root);
+
+  const uploadOneFile = async (file, slot = null, triggerEl = null) => {
+    const prepared = await prepareSlotUpload(file, slot);
+    if (!prepared) return;
+    if (isNew) {
+      if (slot) {
+        const existingIdx = pendingImages.findIndex((p) => p.slotKey === slot.key);
+        if (existingIdx >= 0) {
+          const [old] = pendingImages.splice(existingIdx, 1);
+          if (old?.url) URL.revokeObjectURL(old.url);
+        }
+      }
+      const entry = { file: prepared.file, url: URL.createObjectURL(prepared.file), slotKey: slot?.key || null };
+      if (slot?.isCover) pendingImages.unshift(entry);
+      else pendingImages.push(entry);
+      paintPending();
+      return;
+    }
+    const prevSet = new Set(a.ref_images || []);
+    let uploadedPath = '';
+    const ok = await run('上传', async () => {
+      const updated = await api.uploadAssetImage(id, prepared.file);
+      uploadedPath = (updated?.ref_images || []).find((p) => !prevSet.has(p))
+        || (updated?.ref_images || [])[(updated?.ref_images?.length || 1) - 1]
+        || '';
+      if (uploadedPath && slot?.key) {
+        await api.setAssetImagePurpose(id, { path: uploadedPath, variant_id: null, purpose: slot.key });
+      }
+      if (uploadedPath && slot?.isCover && (a.ref_images || []).length > 0) {
+        await api.setAssetCover(id, uploadedPath);
+      }
+    }, { btn: triggerEl });
+    if (ok) refresh();
+  };
+
+  const paintPending = () => {
+    const slotsHost = root.querySelector('[data-ad-slots]');
+    const host = root.querySelector('[data-ad-imgs]');
+    if (!host || !slotsHost) return;
+    const curKind = root.querySelector('#ad-kind')?.value || a.kind;
+    const slots = slotsForKind(curKind);
+    const byKey = new Map();
+    const extra = [];
+    pendingImages.forEach((item, idx) => {
+      if (item.slotKey && !byKey.has(item.slotKey)) byKey.set(item.slotKey, { item, idx });
+      else extra.push({ item, idx });
+    });
+
+    const pendingCard = ({ item, idx }, slotMeta = null) => `
       <figure class="ad-img${idx === 0 ? ' cover' : ''}">
-        <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}">
+        ${slotMeta ? `<div class="ad-slot-bar"><b class="ad-slot-title">${escapeHtml(slotMeta.label)}</b><span class="ad-slot-ratio">${escapeHtml(slotMeta.spec)}</span></div>` : ''}
+        <div class="ad-img-wrap">
+          <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}">
+          <span class="ad-dim-badge" data-dim-badge hidden></span>
+        </div>
         <figcaption>
           ${idx === 0 ? '<span class="chip blue">预选封面</span>' : `<span class="t-dim">图 ${idx + 1}</span>`}
           <button type="button" class="btn xs danger" data-rm-pending="${idx}">移除</button>
         </figcaption>
-      </figure>`).join('');
-    host.querySelectorAll('[data-rm-pending]').forEach((btn) => {
+      </figure>`;
+
+    slotsHost.innerHTML = slots.map((s) => {
+      const hit = byKey.get(s.key);
+      if (hit) return pendingCard(hit, s);
+      return `<div class="ad-slot-empty">
+        <div class="ad-slot-bar">
+          <b class="ad-slot-title">${escapeHtml(s.label)}</b>
+          <span class="ad-slot-ratio">${escapeHtml(s.spec)}</span>
+        </div>
+        <div class="ad-slot-drop">
+          <p class="ad-slot-hint">${escapeHtml(s.hint)}</p>
+          <label class="btn xs primary ad-slot-upload">预选到此槽
+            <input type="file" data-slot-upload="${escapeHtml(s.key)}" accept="image/png,image/jpeg,image/webp" hidden>
+          </label>
+        </div>
+      </div>`;
+    }).join('');
+
+    host.innerHTML = extra.length
+      ? extra.map((entry) => pendingCard(entry, null)).join('')
+      : '';
+
+    const container = root.querySelector('[data-ad-slots]')?.parentElement;
+    if (container) bindDimBadges(container);
+
+    slotsHost.querySelectorAll('[data-slot-upload]').forEach((inp) => {
+      inp.addEventListener('change', async (e) => {
+        const f = e.target.files?.[0];
+        e.target.value = '';
+        if (!f) return;
+        const slot = slots.find((s) => s.key === inp.dataset.slotUpload) || null;
+        await uploadOneFile(f, slot, inp);
+      });
+    });
+
+    container?.querySelectorAll('[data-rm-pending]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const i = Number(btn.dataset.rmPending);
         const [removed] = pendingImages.splice(i, 1);
@@ -625,22 +805,34 @@ export function mountDetail(root, id) {
     });
   };
 
+  if (isNew) {
+    paintPending();
+    root.querySelector('#ad-kind')?.addEventListener('change', paintPending);
+  } else {
+    root.querySelectorAll('[data-slot-upload]').forEach((inp) => {
+      inp.addEventListener('change', async (e) => {
+        const f = e.target.files?.[0];
+        e.target.value = '';
+        if (!f) return;
+        const slot = slotsForKind(a.kind).find((s) => s.key === inp.dataset.slotUpload) || null;
+        await uploadOneFile(f, slot, inp);
+      });
+    });
+  }
+
   // 注意选择器：这个 input 是 id="ad-upload"（藏在 label 里），
   // 老列表页用的是 data-upload，抄过来会绑到一个不存在的节点上、上传静默失效
   root.querySelector('#ad-upload')?.addEventListener('change', async (e) => {
     const files = [...(e.target.files || [])];
+    e.target.value = '';
     if (!files.length) return;
     if (isNew) {
       for (const file of files) {
-        pendingImages.push({ file, url: URL.createObjectURL(file) });
+        await uploadOneFile(file, null, e.target);
       }
-      e.target.value = '';
-      paintPending();
       return;
     }
-    const ok = await run('上传', () => api.uploadAssetImage(id, files[0]), { btn: e.target });
-    e.target.value = '';
-    if (ok) refresh();
+    await uploadOneFile(files[0], null, e.target);
   });
 
   root.querySelectorAll('[data-cover]').forEach((btn) => {

@@ -29,6 +29,7 @@
     content_operations 分镜引用校验、表单字段与视频截帧
     content_units   创作单元、分镜与资产元数据、档案保存
     asset_media     图片上传、摘除与文件清理
+    asset_vision    参考图一致性提示词草案
 
 ## 分层（依赖方向，无环）
 
@@ -165,6 +166,8 @@ from .asset_media import (
 
 from .asset_candidates import asset_candidate_review, update_asset_candidate_review, import_asset_candidates
 
+from .asset_vision import reverse_prompt
+
 __all__ = [
     'create_model',
     'patch_model',
@@ -223,6 +226,7 @@ __all__ = [
     'upload_variant_image',
     'delete_variant_image',
     'set_image_purpose',
+    'reverse_prompt',
     "prepare_job", "PreparedJob",
     "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
     "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",

@@ -368,12 +368,15 @@
     <div class="rd-cache" id="rd-cache"></div>
     <div class="rd-divider"></div>
     <div class="rd-head">
-      <div class="rd-title">
-        <span class="dot idle" id="rd-worker-dot"></span>
-        <b>实时队列</b>
-        <span class="rd-wlabel" id="rd-worker-label">未接入</span>
+      <div class="rd-tabs" id="rd-tabs" role="tablist" aria-label="监工视图">
+        <button type="button" class="rd-tab on" data-rd-tab="jobs" role="tab" aria-selected="true">队列</button>
+        <button type="button" class="rd-tab" data-rd-tab="procs" role="tab" aria-selected="false">进程</button>
       </div>
-      <button class="btn sm" type="button" id="rd-go-gen">生成中心</button>
+      <div class="rd-head-right">
+        <span class="dot idle" id="rd-worker-dot"></span>
+        <span class="rd-wlabel" id="rd-worker-label">未接入</span>
+        <button class="btn sm" type="button" id="rd-go-gen">生成中心</button>
+      </div>
     </div>
     <div class="rd-stats" id="rd-stats"></div>
     <div class="rd-list" id="rd-list"></div>

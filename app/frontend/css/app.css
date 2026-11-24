@@ -458,9 +458,10 @@ body{
   .rd-ring svg{width:40px;height:40px;transform:rotate(-90deg);display:block}
   .rd-ring-bg{fill:none;stroke:var(--line-strong);stroke-width:4}
   .rd-ring-fg{
-    fill:none;stroke:var(--accent);stroke-width:4;stroke-linecap:round;
+    fill:none;stroke:var(--ok);stroke-width:4;stroke-linecap:round;
     transition:stroke-dashoffset 240ms var(--ease),stroke var(--fast);
   }
+  .rd-gauge.tone-ok .rd-ring-fg{stroke:var(--ok)}
   .rd-gauge.tone-warn .rd-ring-fg{stroke:var(--warn)}
   .rd-gauge.tone-danger .rd-ring-fg{stroke:var(--bad)}
   .rd-gauge.tone-muted .rd-ring-fg{stroke:var(--ink-3);opacity:.35}
@@ -493,6 +494,22 @@ body{
   .rd-cache-ro{font-size:10.5px;color:var(--ink-3);white-space:nowrap}
   .rd-divider{height:1px;background:var(--line);margin:2px 0}
   .rd-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .rd-tabs{
+    display:inline-flex;align-items:center;gap:2px;padding:2px;
+    border-radius:8px;border:1px solid var(--line);background:var(--panel-2);
+  }
+  .rd-tab{
+    border:none;background:transparent;color:var(--ink-2);
+    font-size:12px;font-weight:600;padding:3px 9px;border-radius:6px;cursor:pointer;
+    transition:background var(--fast),color var(--fast);
+  }
+  .rd-tab:hover{color:var(--ink)}
+  .rd-tab.on{background:var(--nav-on);color:var(--accent)}
+  .rd-head-right{display:flex;align-items:center;gap:6px;min-width:0}
+  .rd-alert{
+    padding:7px 9px;border-radius:9px;border:1px solid var(--bad-line);
+    background:var(--bad-soft);color:var(--bad);font-size:11.5px;line-height:1.35;
+  }
   .rd-title{display:flex;align-items:center;gap:6px;min-width:0}
   .rd-title b{font-size:13.5px;font-weight:650;white-space:nowrap}
   .rd-wlabel{font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -973,9 +990,12 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
 .page-head.ad-page-head p{flex-basis:100%;order:3;margin:2px 0 0}
 .ad-miss-list{display:flex;flex-wrap:wrap;gap:8px}
 .ad-prompt-col{display:flex;flex-direction:column;gap:8px;min-width:0}
-.ad-ai-bar{display:flex;align-items:center;gap:8px;width:100%}
-.ad-ai-model{flex:1 1 0;min-width:0;max-width:none;height:34px}
-.ad-ai-bar #ad-ai-refine{flex:0 0 auto;height:34px;display:inline-flex;align-items:center;padding:0 14px;font-size:12.5px}
+.ad-ai-bar{display:flex;flex-direction:column;align-items:stretch;gap:8px;width:100%}
+.ad-ai-group{display:flex;align-items:center;gap:8px;width:100%}
+.ad-ai-group-grow{flex:0 0 auto;min-width:0}
+.ad-ai-model,.ad-vision-lang{flex:1 1 0;min-width:0;max-width:none;height:34px}
+.ad-ai-bar #ad-ai-refine,.ad-ai-bar #ad-ai-reverse{flex:0 0 auto;min-width:132px;height:34px;display:inline-flex;
+  align-items:center;justify-content:center;gap:5px;padding:0 14px;font-size:12.5px;white-space:nowrap}
 .ad-ai-feedback{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .ad-ai-feedback:has(span:empty):has(button[hidden]){display:none}
 .ad-ai-preview{border:1px solid var(--accent-line,var(--accent));background:var(--hover-soft);border-radius:var(--r-ctl);padding:10px 12px;animation:assetFadeIn .18s ease}
@@ -1588,6 +1608,14 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 .asset-filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line)}
 .asset-filters .note{margin:0 2px 0 12px}
 .asset-filters .note:first-child{margin-left:0}
+.asset-filters .fv-pick{width:auto;min-width:108px;flex:none}
+.asset-filters > select.ctl.sm,
+.asset-filters .fv-pick-btn{
+  width:auto;min-width:108px;height:28px;min-height:28px;
+  padding:0 26px 0 10px;font-size:12px;line-height:26px;
+  display:inline-flex;align-items:center;
+}
+.asset-filters .fv-pick-btn::after{top:50%;transform:translateY(-65%) rotate(45deg)}
 
 /* 列宽 232—340 之间自适应、靠左排：写成 1fr 的话，只有一条资产时
    卡片会被拉到整行宽，指令 §3.1-D 要的"每行 3～4 张"就没了形状 */
@@ -1627,10 +1655,30 @@ td.mono{font-family:var(--mono);font-size:11.5px}
 @media (max-width:1080px){.ad-grid{grid-template-columns:minmax(0,1fr)}}
 .ad-imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:10px}
 .ad-img{margin:0;border:1px solid var(--line-strong);border-radius:var(--r-ctl);
-  overflow:hidden;background:var(--field)}
+  overflow:hidden;background:var(--field);display:flex;flex-direction:column}
 .ad-img img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;cursor:zoom-in}
-.ad-img figcaption{display:flex;gap:6px;align-items:center;justify-content:center;padding:6px;border-top:1px solid var(--line)}
+.ad-img figcaption{display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap;padding:6px;border-top:1px solid var(--line)}
 .ad-img.cover{border-color:var(--accent-line)}
+.ad-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
+@media (max-width:640px){.ad-slots{grid-template-columns:minmax(0,1fr)}}
+.ad-slots .ad-img,.ad-slots .ad-slot-empty{height:100%}
+.ad-slot-empty{border:1px dashed var(--line-strong);border-radius:var(--r-ctl);
+  background:var(--field);overflow:hidden;display:flex;flex-direction:column}
+.ad-slot-head,.ad-slot-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;
+  padding:7px 10px;border-bottom:1px solid var(--line);background:var(--panel);min-height:34px}
+.ad-slot-title{font-size:12px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ad-slot-ratio{font-size:10.5px;color:var(--ink-3);background:var(--field);
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:1px 6px;flex-shrink:0}
+.ad-slot-drop{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;gap:10px;padding:16px 12px;min-height:140px}
+.ad-slot-hint{font-size:11.5px;color:var(--ink-2);line-height:1.45;margin:0}
+.ad-img-wrap{position:relative;overflow:hidden}
+.ad-dim-badge{position:absolute;right:6px;bottom:6px;font-size:10.5px;line-height:1.2;
+  padding:2px 6px;border-radius:var(--r-ctl);background:var(--pop);color:var(--ink);
+  border:1px solid var(--line-strong);box-shadow:var(--sh-1);pointer-events:none}
+.ad-extra-head{margin-top:14px;margin-bottom:8px;font-size:12px;color:var(--ink-2);font-weight:600}
+.ad-slot-acts{display:flex;gap:8px;flex-wrap:wrap}
+.ad-rev-preview{width:100%;min-height:110px;resize:vertical}
 .ad-upload{display:inline-flex;margin-top:10px}
 .ad-ref{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
 .ad-ref:last-child{border-bottom:0}
@@ -2468,7 +2516,7 @@ table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(4){width:18%}
    两个控件——用户还得挑一个点。窄屏侧栏收起时才靠它兜底，所以方向必须是
    min-width，不能反过来写成 max-width。 */
 @media (min-width:861px){
-  html[data-sidebar="pinned"] .sub-chip{display:none}
+  .sub-chip{display:none}
 }
 
 /* 系统设置里偏好"减少动态效果"的人不少，这条得听 */

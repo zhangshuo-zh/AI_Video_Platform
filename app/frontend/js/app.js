@@ -85,8 +85,9 @@ function paintWorker() {
   const busy = (q.queued + q.running) > 0;
   if (rEdge) rEdge.dataset.busy = busy ? 'true' : 'false';
   if (rdDot) rdDot.className = 'dot ' + (online ? 'live' : 'idle');
-  if (rdLabel) rdLabel.textContent = online ? '本地 worker 在线' : '未接入';
-  if (rdStats) {
+  if (rdLabel) rdLabel.textContent = online ? '在线' : '离线';
+  const procsActive = document.querySelector('#rd-tabs [data-rd-tab="procs"].on');
+  if (rdStats && !procsActive) {
     rdStats.innerHTML = busy
       ? `<span class="pill blue">运行中 ${q.running}</span><span class="pill">排队 ${q.queued}</span>`
       : `<span class="pill">队列空闲</span>`;

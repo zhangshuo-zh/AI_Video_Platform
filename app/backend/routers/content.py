@@ -8,7 +8,7 @@ from functools import wraps
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
                      status as http_status)
 
-from services import asset_candidates, content_operations, content_units, asset_media
+from services import asset_candidates, content_operations, content_units, asset_media, asset_vision
 
 import asset_studio
 import asset_import_recovery
@@ -19,7 +19,8 @@ from deps import actor_name, require_permission
 from models import (AssetCandidateReviewIn, AssetImageBatchIn, AssetReferenceReplacementIn, EpisodeAssetPresetIn, AssetCoverIn, AssetGenIn, AssetGenOut,
                     AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut, AssetImagePurposeIn,
                     AssetImpactOut, AssetIn, AssetOut, AssetProfileIn, AssetProfileOut,
-                    AssetShotOut, EpisodeIn, EpisodeOut, EpisodeStatusIn, ShotExtractFrameIn, ShotExtractFrameOut, ShotIn, ShotOut,
+                    AssetReversePromptIn, AssetReversePromptOut, AssetShotOut, EpisodeIn, EpisodeOut,
+                    EpisodeStatusIn, ShotExtractFrameIn, ShotExtractFrameOut, ShotIn, ShotOut,
                     VariantIn, VariantOut, VariantUpdateIn)
 from repositories.content import variants as variant_repo
 from services import (JobInvalid, NoRoute)
@@ -258,6 +259,13 @@ def set_asset_image_purpose(asset_id: int, payload: AssetImagePurposeIn,
                             user=Depends(require_permission("asset:write"))) -> None:
     ensure_asset(asset_id, user, "write")
     _content_call(asset_media.set_image_purpose, asset_id, payload)
+
+
+@router.post("/assets/{asset_id}/reverse-prompt", response_model=AssetReversePromptOut)
+def reverse_asset_prompt(asset_id: int, payload: AssetReversePromptIn,
+                         user=Depends(require_permission("asset:write"))) -> AssetReversePromptOut:
+    ensure_asset(asset_id, user, "write")
+    return _content_call(asset_vision.reverse_prompt, asset_id, int(user["id"]), payload)
 
 
 @router.get("/assets/{asset_id}/shots", response_model=list[AssetShotOut])

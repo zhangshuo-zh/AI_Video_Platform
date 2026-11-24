@@ -57,7 +57,16 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
   const platEl = document.getElementById('rd-sys-plat');
   const listEl = document.getElementById('rd-list');
   const goBtn = document.getElementById('rd-go-gen');
+  const tabsEl = document.getElementById('rd-tabs');
+  const statsEl = document.getElementById('rd-stats');
   if (!edge || !dock || !listEl || !gaugesEl || !cacheEl) return;
+
+  const TAB_KEY = 'fv.rdTab';
+  let activeTab = 'jobs';
+  try {
+    const saved = localStorage.getItem(TAB_KEY);
+    if (saved === 'procs' || saved === 'jobs') activeTab = saved;
+  } catch { /* ignore */ }
 
   let closeTimer = 0;
   let idleTimer = 0;
@@ -65,6 +74,7 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
   let visBound = false;
   let dockHover = false;
   let loadingJobs = false;
+  let loadingProcs = false;
   let loadingSys = false;
   let confirmClear = false;
   let clearing = false;
@@ -123,12 +133,19 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
       const pName = res.platform === 'Darwin' ? 'macOS' : res.platform;
       platEl.textContent = `${pName} · ${res.cpu?.cores || 1} 核`;
     }
+    const fmtPair = (used, total) => {
+      const a = fmtBytes(used);
+      const b = fmtBytes(total);
+      const [va, ua] = a.split(' ');
+      const [vb, ub] = b.split(' ');
+      return ua === ub ? `${va}/${vb} ${ub}` : `${a}/${b}`;
+    };
     const swapTotal = Number(res.swap?.total_bytes || 0);
     const memSub = res.memory?.total_bytes
-      ? `${fmtBytes(res.memory.used_bytes)} / ${fmtBytes(res.memory.total_bytes)}`
+      ? fmtPair(res.memory.used_bytes, res.memory.total_bytes)
       : '未读取';
     const swapSub = swapTotal > 0
-      ? `${fmtBytes(res.swap.used_bytes)} / ${fmtBytes(swapTotal)}`
+      ? fmtPair(res.swap.used_bytes, swapTotal)
       : '未启用';
     const diskSub = res.disk?.total_bytes
       ? `余 ${fmtBytes(res.disk.free_bytes)}`
@@ -197,6 +214,7 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
 
   const refreshJobs = async () => {
     if (!isEnabled() || loadingJobs) return;
+    if (activeTab !== 'jobs') return;
     if (!store.can('job:read')) {
       listEl.innerHTML = '<div class="rd-empty">当前账号无作业读取权限</div>';
       return;
@@ -204,17 +222,99 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
     loadingJobs = true;
     try {
       const { items } = await api.jobs({ limit: 6 });
-      renderJobs(items);
+      if (activeTab === 'jobs') renderJobs(items);
     } catch (err) {
-      listEl.innerHTML = `<div class="rd-empty">读取队列失败：${escapeHtml(err.message || '')}</div>`;
+      if (activeTab === 'jobs') {
+        listEl.innerHTML = `<div class="rd-empty">读取队列失败：${escapeHtml(err.message || '')}</div>`;
+      }
     } finally {
       loadingJobs = false;
     }
   };
 
+  const renderProcesses = (w) => {
+    if (activeTab !== 'procs') return;
+    if (!w) {
+      listEl.innerHTML = `<div class="rd-empty">${escapeHtml(store.workerError || '暂未获取到进程状态')}</div>`;
+      return;
+    }
+    const workers = Array.isArray(w.workers) ? w.workers : [];
+    const liveList = workers.filter((x) => x.online);
+    const liveCount = Number(w.live_count ?? liveList.length);
+    const histCount = Number(w.history_count || 0);
+    const alerts = Array.isArray(w.alerts) ? w.alerts : [];
+    if (statsEl) {
+      const pills = [`<span class="pill ${liveCount > 0 ? 'green' : 'red'}">在线 ${liveCount}</span>`];
+      if (histCount > 0) pills.push(`<span class="pill">离线记录 ${histCount}</span>`);
+      if (alerts.length > 0) pills.push(`<span class="pill red">告警 ${alerts.length}</span>`);
+      statsEl.innerHTML = pills.join('');
+    }
+    const blocks = [];
+    alerts.slice(0, 2).forEach((al) => {
+      const msg = al.message || al.title || al.code || '队列状态告警';
+      blocks.push(`<div class="rd-alert">${escapeHtml(msg)}</div>`);
+    });
+    if (!liveList.length) {
+      blocks.push('<div class="rd-empty">暂无在线 Worker 进程（排队作业不会自动执行）</div>');
+    } else {
+      liveList.forEach((node) => {
+        const pidTxt = node.pid ? `PID ${node.pid}` : (node.worker_id || 'Worker');
+        const busyJob = node.current_job_id;
+        const badgeCls = busyJob ? 'blue' : 'green';
+        const badgeTxt = busyJob ? `运行 #${busyJob}` : '待命中';
+        const ageTxt = node.age_seconds != null ? `心跳 ${node.age_seconds}s 前` : '在线';
+        const widTxt = node.worker_id && node.pid ? `${node.worker_id} · ${ageTxt}` : ageTxt;
+        blocks.push(
+          `<button type="button" class="rd-item" data-proc-id="${escapeHtml(node.worker_id || '')}">`
+          + `<div class="rd-item-top">`
+          + `<span class="pill ${badgeCls}">${escapeHtml(badgeTxt)}</span>`
+          + `<span class="rd-cap">${escapeHtml(pidTxt)}</span>`
+          + `</div>`
+          + `<div class="rd-prompt">${escapeHtml(widTxt)}</div>`
+          + `</button>`,
+        );
+      });
+    }
+    listEl.innerHTML = blocks.join('');
+  };
+
+  const refreshProcesses = async () => {
+    if (!isEnabled() || loadingProcs || activeTab !== 'procs') return;
+    loadingProcs = true;
+    try {
+      await store.loadWorker();
+      renderProcesses(store.worker);
+    } finally {
+      loadingProcs = false;
+    }
+  };
+
+  const syncTabs = () => {
+    if (tabsEl) {
+      tabsEl.querySelectorAll('[data-rd-tab]').forEach((b) => {
+        const on = b.dataset.rdTab === activeTab;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    }
+    if (goBtn) {
+      goBtn.textContent = (activeTab === 'procs' && store.can('system:config')) ? '运行监控' : '生成中心';
+    }
+    if (activeTab === 'jobs' && statsEl) {
+      const q = store.worker?.queue || { queued: 0, running: 0 };
+      const busy = (q.queued + q.running) > 0;
+      statsEl.innerHTML = busy
+        ? `<span class="pill blue">运行中 ${q.running}</span><span class="pill">排队 ${q.queued}</span>`
+        : '<span class="pill">队列空闲</span>';
+    }
+  };
+
+  syncTabs();
+
   const refreshAll = () => {
     refreshResources();
-    refreshJobs();
+    if (activeTab === 'procs') refreshProcesses();
+    else refreshJobs();
   };
 
   const onVisibilityChange = () => {
@@ -267,8 +367,9 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
           .join('');
       }
       if (!listEl.children.length) {
-        listEl.innerHTML = '<div class="rd-empty">正在读取最新队列…</div>';
+        listEl.innerHTML = `<div class="rd-empty">${activeTab === 'procs' ? '正在读取进程状态…' : '正在读取最新队列…'}</div>`;
       }
+      syncTabs();
       dock.classList.add('open');
       refreshAll();
       stopPoll();
@@ -373,17 +474,39 @@ export function setupRightQueueDock({ isReady, onNavigate }) {
     scheduleClose(340);
   });
 
+  const targetView = () => ((activeTab === 'procs' && store.can('system:config')) ? 'models' : 'generate');
+
+  if (tabsEl) {
+    tabsEl.addEventListener('click', (e) => {
+      const tabBtn = e.target.closest('[data-rd-tab]');
+      if (!tabBtn) return;
+      const next = tabBtn.dataset.rdTab;
+      if (next !== 'jobs' && next !== 'procs') return;
+      if (next === activeTab) return;
+      activeTab = next;
+      try { localStorage.setItem(TAB_KEY, activeTab); } catch { /* ignore */ }
+      bumpIdle();
+      syncTabs();
+      listEl.innerHTML = `<div class="rd-empty">${activeTab === 'procs' ? '正在读取进程状态…' : '正在读取最新队列…'}</div>`;
+      if (activeTab === 'procs') refreshProcesses();
+      else refreshJobs();
+    });
+  }
+
   if (goBtn) {
     goBtn.addEventListener('click', () => {
+      const dest = targetView();
       closeDock();
-      onNavigate('generate');
+      onNavigate(dest);
     });
   }
 
   listEl.addEventListener('click', (e) => {
-    if (e.target.closest('.rd-item')) {
+    const item = e.target.closest('.rd-item');
+    if (item) {
+      const dest = item.dataset.procId && store.can('system:config') ? 'models' : 'generate';
       closeDock();
-      onNavigate('generate');
+      onNavigate(dest);
     }
   });
 

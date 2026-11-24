@@ -70,6 +70,7 @@ ROUTES = [
     ("POST", "/api/assets/{a}/generated-images/batch", {"job_id": "{j}", "indexes": [0]}, 404),
     ("GET", "/api/projects/{p}/assets/{a}/appearances", None, 404),
     ("PUT", "/api/assets/{a}/image-purpose", {"path": "1/x.png", "purpose": "正脸"}, 404),
+    ("POST", "/api/assets/{a}/reverse-prompt", {}, 404),
     ("GET", "/api/assets/{a}/shots", None, 404),
     ("DELETE", "/api/assets/{a}", None, 404),
     ("POST", "/api/assets/{a}/images", "FILE", 404),

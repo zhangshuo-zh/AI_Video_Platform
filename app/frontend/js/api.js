@@ -63,15 +63,15 @@ async function toJson(res) {
 const TIMEOUT_MS = 15_000;
 
 /** 给一次请求挂上超时；调用方自己传了 signal 就以调用方为准（它可能还要取消）。 */
-function withTimeout(init = {}) {
+function withTimeout(init = {}, timeoutMs = TIMEOUT_MS) {
   if (init.signal) return init;
   if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-    return { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) };
+    return { ...init, signal: AbortSignal.timeout(timeoutMs) };
   }
   // 老内核没有 AbortSignal.timeout：降级成手搓的 AbortController。
   // 不求优雅，只求「一定会 settle」这一条性质在所有浏览器上都成立。
   const ctl = new AbortController();
-  setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  setTimeout(() => ctl.abort(), timeoutMs);
   return { ...init, signal: ctl.signal };
 }
 
@@ -87,11 +87,11 @@ async function request(url, init, opts) {
   const callerSignal = !!(init && init.signal);
   let res;
   try {
-    res = await fetch(url, withTimeout(init));
+    res = await fetch(url, withTimeout(init, opts?.timeoutMs));
   } catch (err) {
     if (!callerSignal && err
         && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      const out = new Error('请求超时（15 秒没有响应），后端可能卡住了');
+      const out = new Error(`请求超时（${(opts?.timeoutMs ?? TIMEOUT_MS) / 1000} 秒没有响应），后端可能仍在处理`);
       out.status = 0;
       out.outcomeUnknown = !!(init?.method && !['GET', 'HEAD'].includes(init.method));
       throw out;
@@ -519,6 +519,7 @@ export const api = {
   // 同一个字段不留第二个编辑入口，所以没有"只改标签"这种半截接口
   updateAsset: (id, body) => send('PUT', `/api/assets/${id}`, body),
   setAssetImagePurpose: (id, body) => send('PUT', `/api/assets/${id}/image-purpose`, body),
+  reverseAssetPrompt: (id, body) => send('POST', `/api/assets/${id}/reverse-prompt`, body, { timeoutMs: 180_000 }),
   setAssetCover: (id, path) => send('PUT', `/api/assets/${id}/cover`, { path }),
   assetReferenceUsage: (pid, aid) => get(`/api/projects/${pid}/assets/${aid}/reference-usage`),
   replaceAssetReferences: (pid, aid, body) => send('POST', `/api/projects/${pid}/assets/${aid}/reference-usage`, body),

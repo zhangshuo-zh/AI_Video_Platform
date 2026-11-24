@@ -242,3 +242,18 @@ class AssetImageImportOut(BaseModel):
     ref_images: list[str] = []
     image_count: int = 0
     source_job_id: int | None = None
+
+
+class AssetReversePromptIn(BaseModel):
+    """基于资产参考图反向生成一致性提示词的请求参数。"""
+    image_paths: list[str] = Field(default_factory=list, max_length=4)
+    provider: Literal["auto", "ollama", "chatgpt", "dashscope"] = "auto"
+    model: str | None = Field(default=None, max_length=120)
+    language: Literal["zh", "en", "bilingual"] = "zh"
+
+
+class AssetReversePromptOut(BaseModel):
+    prompt: str
+    provider: str
+    model: str
+    used_images: list[str] = []

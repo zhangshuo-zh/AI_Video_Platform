@@ -29,3 +29,6 @@ pydantic>=2.9,<3
 cryptography>=42,<47
 # ChatGPT 登录回调的签名、issuer、audience 和 nonce 校验。
 PyJWT[crypto]>=2.10,<3
+
+# 资产看图反推：校验解码与有界缩放。
+Pillow>=13,<14

@@ -13,7 +13,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TypedDict, NotRequired
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from safenet import safe_urlopen as urlopen
 
 from config import DB_PATH
 
@@ -35,11 +37,23 @@ def _directory():
 
 
 @contextmanager
-def _lock(name):
+def _lock(name, timeout=None):
     # flock 同时覆盖 Web 线程和多个后端进程。普通状态更新只短暂持锁。
     fd = os.open(_directory() / (name + '.lock'), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if timeout is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            end = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    left = end - time.monotonic()
+                    if left <= 0:
+                        raise ChatGPTError('授权刷新繁忙，请稍后重试') from None
+                    time.sleep(min(left, 0.05))
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -65,7 +79,7 @@ def _write(name, value):
         temp.unlink(missing_ok=True)
 
 
-def _json_request(url, data=None, token=None, form=False):
+def _json_request(url, data=None, token=None, form=False, timeout=25):
     headers = {'Accept': 'application/json'}
     body = None
     if data is not None:
@@ -74,7 +88,7 @@ def _json_request(url, data=None, token=None, form=False):
     if token:
         headers['Authorization'] = 'Bearer ' + token
     try:
-        with urlopen(Request(url, body, headers), timeout=25) as response:
+        with urlopen(Request(url, body, headers), timeout=timeout) as response:
             raw = response.read(2_000_001)
             if len(raw) > 2_000_000:
                 raise ChatGPTError('授权服务返回内容过大')
@@ -248,18 +262,23 @@ def finish_login(user_id, query):
         raise
 
 
-def access_token(user_id):
+def access_token(user_id, *, timeout=None):
+    deadline = time.monotonic() + timeout if timeout is not None else None
     name = _account(user_id)
     # 旋转 refresh token 必须串行到新凭据落盘，跨进程锁覆盖这一次网络交换。
-    with _lock(name):
+    with _lock(name, timeout):
         data = _read(name)
         if not data.get('access_token') or 'chatgpt.tokens.use.direct' not in data.get('scope', '').split():
             raise ChatGPTError('请先连接 ChatGPT 并授权使用套餐')
         if data.get('expires_at', 0) < time.time() + 60:
             if not data.get('refresh_token'):
                 raise ChatGPTError('登录已过期，请重新授权')
+            seconds = min(25, deadline - time.monotonic()) if deadline is not None else 25
+            if seconds <= 0:
+                raise ChatGPTError('授权刷新超时，请稍后重试')
+            options = {"timeout": seconds} if deadline is not None else {}
             tokens = _json_request(TOKEN_URL, dict(grant_type='refresh_token', client_id=data['client_id'],
-                refresh_token=data['refresh_token'], resource=RESOURCE), form=True)
+                refresh_token=data['refresh_token'], resource=RESOURCE), form=True, **options)
             if not tokens.get('access_token') or not tokens.get('refresh_token'):
                 raise ChatGPTError('授权刷新未完成，请重新连接')
             data.update(tokens)
