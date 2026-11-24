@@ -94,7 +94,40 @@ function legsHtml(configs) {
     <div class="card-foot"><p class="modal-meta">${escapeHtml(configs.caliber || '')}</p></div>`;
 }
 
-function runsTable(runs) {
+const HEALTH_LABEL = {
+  ok: '可用', missing: '不可用', unknown: '未检查', unconfigured: '未配置',
+  unregistered: '未登记',
+};
+
+/**
+ * 总览只放一行健康小条（方案 A，2026-11-24）。
+ *
+ * 原来总览与「智能体配置」各画一张一模一样的两条腿表，同一件事两处显示；
+ * 详细的配置·健康·驻留·端点仍只在配置页那一张表里，这里只回答"现在能不能用"，
+ * 完整说明放在 title 里，点按钮去配置页看全。
+ */
+function legsStrip(configs) {
+  const cards = (configs && configs.cards) || [];
+  if (!cards.length) return '';
+  const items = cards.map((c) => `<span class="ag-leg" data-leg="${escapeHtml(c.backend)}"
+      title="${escapeHtml(c.health_detail || '未检查')}">
+      <b>${escapeHtml(c.backend_label)}</b>
+      <span class="t-desc">${c.configured
+        ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / ')) : '槽位还没填'}</span>
+      ${chip(HEALTH_TONE[c.health_state] || 'gray', HEALTH_LABEL[c.health_state] || '未检查')}
+    </span>`).join('');
+  return `<div class="card mb-card ag-legs-strip">
+    <div class="card-head"><h2>两条腿</h2>${items}
+      <div class="right"><button class="btn sm" data-goto-sub="1">看配置详情</button></div>
+    </div></div>`;
+}
+
+/**
+ * 运行表。`inlineDetail` 为真时（运行与审批页），被点开那一行下面紧跟一行详情；
+ * 总览没有详情位，按钮直接把人带到「运行与审批」并展开那一条——
+ * 原来总览也画「详情」按钮却没有 `#ag-run-detail` 容器，点了只会把字变成「收起」。
+ */
+function runsTable(runs, { inlineDetail = false } = {}) {
   if (!runs || !runs.length) {
     return `<div class="empty"><div class="empty-t">还没有智能体运行</div>
       <p>发起一次：写一句目标，平台先算计划（这一步就是一条普通文本作业）；
@@ -109,7 +142,8 @@ function runsTable(runs) {
       const done = r.steps.filter((s) => s.status === 'succeeded').length;
       const waiting = r.step_counts.awaiting_approval || 0;
       const stamp = (r.created_at || '').replace(' ', 'T');
-      return `<tr class="${r.id === openRunId ? 'sel' : ''}">
+      const open = inlineDetail && r.id === openRunId;
+      return `<tr class="${open ? 'sel' : ''}">
         <td class="num">${r.id}</td>
         <td><b>${escapeHtml(r.goal)}</b>
           ${r.episode_id ? `<span class="t-desc">集 #${r.episode_id}</span>` : ''}</td>
@@ -120,9 +154,11 @@ function runsTable(runs) {
           .filter(Boolean).join(' / ') || '—')}</span></td>
         <td class="num"><span class="t-desc">${stamp ? escapeHtml(agoText(Math.round(
           Date.now() / 1000 - new Date(stamp).getTime() / 1000))) : '—'}</span></td>
-        <td class="r"><button class="btn sm ${r.id === openRunId ? '' : 'primary'}"
-          data-open-run="${r.id}">${r.id === openRunId ? '收起' : '详情'}</button></td>
-      </tr>`;
+        <td class="r"><button class="btn sm ${open ? '' : 'primary'}"
+          data-open-run="${r.id}">${inlineDetail ? (open ? '收起' : '详情') : '详情 →'}</button></td>
+      </tr>${open ? `<tr class="ag-detail-row"><td colspan="7">
+        <div id="ag-run-detail" class="card"><div class="card-body">${skeleton(3, 'text')}</div></div>
+      </td></tr>` : ''}`;
     }).join('')}</tbody></table>`;
 }
 
@@ -329,13 +365,10 @@ export default {
             !!counts.awaiting_approval)}
           ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用配置')}
         </div></div>` : ''}
-      ${cache.configs ? `<div class="card mb-card" >
-        <div class="card-head"><h2>两条腿</h2>
-          <span class="sub">配置·健康·驻留·运行是四件事，分开显示</span></div>
-        ${legsHtml(cache.configs)}</div>` : ''}
+      ${legsStrip(cache.configs)}
       <div class="card">
         <div class="card-head"><h2>最近的运行</h2>
-          <span class="sub">点一行看步骤与事件；这一页没有签字按钮，是有意的</span></div>
+          <span class="sub">点「详情 →」去运行与审批看步骤与事件；这一页没有签字按钮，是有意的</span></div>
         ${runsTable(overview ? overview.runs : [])}
       </div>
     </section>`;
@@ -438,6 +471,9 @@ export default {
       waiting = store.can('review:read') ? ((await api.agentPending()).items || []) : [];
     } catch (e) { err = e; }
     if (openRunId && !runs.some((r) => r.id === openRunId)) openRunId = getParam('agents') ? openRunId : null;
+    // 打开的那条不在本项目列表里（从总览或别人发来的深链进来）时，
+    // 没有可以"贴着展开"的那一行，退回到列表下面单独一张详情卡。
+    const orphanDetail = openRunId && !runs.some((r) => r.id === openRunId);
     return `
       ${chatgptPlanCard()}
       ${err ? `<div class="card mb-card" >${errorBox('读运行列表', err)}</div>` : ''}
@@ -445,8 +481,10 @@ export default {
         <div class="card-head"><h2>这个项目的运行</h2>
           <span class="sub">计划、步骤、事件都在这；签字在审核中心</span>
           <div class="right"><button class="btn primary sm" data-ag-new>发起一次运行</button></div></div>
-        ${runsTable(runs)}
+        ${runsTable(runs, { inlineDetail: true })}
       </div>
+      ${orphanDetail ? '<div id="ag-run-detail" class="card mb-card"><div class="card-body">'
+        + skeleton(3, 'text') + '</div></div>' : ''}
       ${waiting.length ? `<div class="card mb-card" >
         <div class="card-head"><h2>等你批 ${waiting.length} 步</h2>
           <span class="sub">只显示状态——签字那一步在审核中心</span></div>
@@ -460,8 +498,6 @@ export default {
             <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
             <td class="r"><button class="btn sm primary" data-goto-review="2">去审核中心</button></td>
           </tr>`).join('')}</tbody></table></div></div>` : ''}
-      ${openRunId ? '<div id="ag-run-detail" class="card"><div class="card-body">'
-        + skeleton(3, 'text') + '</div></div>' : ''}
       <div id="ag-modal-slot"></div>`;
   },
 
@@ -490,11 +526,12 @@ export default {
       btn.addEventListener('click', () => {
         // 跳哪一个二级页由模型中心自己的 SUBS 决定，这里只按语义给下标：
         // 1＝引擎管理（默认轨与端点），2＝调用策略（九场景）
-        // 1＝引擎管理（默认轨与端点），2＝调用策略（九场景）；
-        // 下标由模型中心自己的 SUBS 决定，这里只按语义给
         gotoEntry({ module: 'models',
                     sub: btn.dataset.gotoModels === 'policy' ? 2 : 1 });
       });
+    });
+    root.querySelectorAll('[data-goto-sub]').forEach((btn) => {
+      btn.addEventListener('click', () => { setSub('agents', Number(btn.dataset.gotoSub)); refresh(); });
     });
     root.querySelectorAll('[data-goto-review]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -504,6 +541,14 @@ export default {
     root.querySelectorAll('[data-open-run]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.openRun);
+        if (currentSub() !== 3) {
+          // 总览没有详情位：带着这条运行去「运行与审批」，在那一行下面展开
+          openRunId = id;
+          setParam('agents', id);
+          setSub('agents', 3);
+          refresh();
+          return;
+        }
         openRunId = openRunId === id ? null : id;
         setParam('agents', openRunId || undefined);
         refresh();
@@ -557,8 +602,11 @@ async function renderDetail(root) {
   // 先把服务端给的事件标签收进缓存，再画：`detailHtml` 里那一栏要用它。
   // 详情没带（老后端）就保留上一次的，仍没有就原样显示事件码。
   if (d.event_labels) cache.eventLabels = d.event_labels;
-  holder.outerHTML = `<div class="card" id="ag-run-detail">${detailHtml(d)}</div>`;
+  // 沿用占位卡的 class：行内详情与列表下的单独详情卡外边距不同
+  holder.outerHTML = `<div class="${escapeHtml(holder.className || 'card')}" id="ag-run-detail">${detailHtml(d)}</div>`;
   const card = document.getElementById('ag-run-detail');
+  // 行内展开后把详情滚进视野（只在看不全时滚，已经看得见就不动）
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   const again = () => window.dispatchEvent(new CustomEvent('app:refresh'));
   card.querySelectorAll('[data-goto-review]').forEach((b) => b.addEventListener('click', () => {
     gotoEntry({ module: 'review', sub: 2 });

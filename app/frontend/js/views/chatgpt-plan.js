@@ -4,13 +4,23 @@ import { store } from '../store.js';
 import { escapeHtml } from '../util.js';
 import { applyPicks } from '../pick.js';
 
+/**
+ * 默认折叠成一行（方案 A，2026-11-24）：这张卡是「发起一次运行」之外的可选起草方式，
+ * 原来整块摊在「运行与审批」最上面，把运行列表与待审批挤到了下面。
+ * 收起时那一行仍念连接状态；有未取回的草案时默认展开，免得人以为结果丢了。
+ */
 export function chatgptPlanCard() {
   if (!store.can('job:submit')) return '';
-  return `<div class="card mb-card" data-chatgpt-plan>
-    <div class="card-head"><h2>ChatGPT 制作计划草案</h2><span class="sub">个人套餐</span></div>
+  let pending = false;
+  try { pending = !!sessionStorage.getItem(`fv.chatgpt.draft.${store.user?.id}.${store.current?.id}`); }
+  catch { /* 读不到就按收起处理 */ }
+  return `<details class="card mb-card cg-fold" data-chatgpt-plan${pending ? ' open' : ''}>
+    <summary class="card-head"><h2>ChatGPT 制作计划草案</h2><span class="sub">个人套餐 · 可选的起草方式</span>
+      <span class="t-desc" data-cg-account role="status">正在读取连接状态…</span>
+      <span class="right cg-fold-hint" aria-hidden="true"></span></summary>
     <div class="card-body chatgpt-plan-body">
       <p>根据制作目标拆解工具与步骤，预览确认后可创建运行。</p>
-      <div class="row chatgpt-plan-conn"><span data-cg-account role="status">正在读取连接状态…</span>
+      <div class="row chatgpt-plan-conn">
         <button class="btn sm" data-cg-connect data-oai-siwc-button>Continue with ChatGPT</button>
         <button class="btn sm" data-cg-switch hidden>更换账号</button>
         <button class="btn sm" data-cg-status>刷新连接</button>
@@ -31,7 +41,7 @@ export function chatgptPlanCard() {
       <div data-cg-result hidden></div>
       <button class="btn sm" data-cg-accept hidden>确认计划，创建暂停的运行</button>
       ${chatgptUsageHtml()}
-    </div></div>`;
+    </div></details>`;
 }
 
 export function mountChatGPTPlan(root, onAccepted) {

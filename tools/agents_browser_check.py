@@ -292,12 +292,19 @@ def main():
         check("口径那句话和接口给的是同一句",
               api_overview["caliber"][:12] in (caliber_text or ""),
               (caliber_text or "")[:44])
-        legs = P.eval_js(cdp, "document.querySelector('.view.on table')?.querySelectorAll("
-                              "'tbody tr').length ?? 0")
-        check("两条腿两行（本地／云端）", legs == 2, f"{legs} 行")
+        legs = P.eval_js(cdp, "document.querySelectorAll('.view.on .ag-legs-strip .ag-leg').length")
+        check("总览两条腿健康小条两项（本地／云端）", legs == 2, f"{legs} 项")
         run_rows = P.eval_js(cdp, "[...document.querySelectorAll('[data-open-run]')].length")
         check("造出来的运行出现在列表里", isinstance(run_rows, int) and run_rows >= 1,
               f"{run_rows} 行")
+        # 方案 A：总览点「详情 →」跳到运行与审批并直接行内展开该条运行
+        P.eval_js(cdp, "document.querySelector('[data-open-run]').click()")
+        time.sleep(2.0)
+        active_chip = P.eval_js(cdp, "document.querySelector('.view.on .sub-chip.blue')?.textContent?.trim() || ''")
+        jumped_detail = P.eval_js(cdp, "document.querySelector('tr.ag-detail-row #ag-run-detail')?.innerText || ''")
+        check("总览点详情跳转到运行与审批并直接在行内展开",
+              active_chip == "运行与审批" and bool(jumped_detail),
+              f"页签={active_chip}｜详情长度 {len(jumped_detail or '')}")
 
         # ---------- 配置页 ----------
         go(cdp, f"{BASE}/#agents/1")
@@ -346,12 +353,16 @@ def main():
         # ---------- 运行与审批：详情与签字 ----------
         go(cdp, f"{BASE}/#agents/3")
         dump("agents/3")
+        cg_folded = P.eval_js(cdp, "(() => { const d = document.querySelector('details[data-chatgpt-plan]');"
+                                   "return d ? !d.open : null; })()")
+        check("ChatGPT 制作计划草案默认折叠成一行",
+              cg_folded is True, f"folded={cg_folded}")
         detail_btns = P.eval_js(cdp, "[...document.querySelectorAll('[data-open-run]')]")
         check("运行列表有详情按钮", isinstance(detail_btns, list) and detail_btns,
               f"{len(detail_btns or [])} 条")
         P.eval_js(cdp, "document.querySelector('[data-open-run]').click()")
         time.sleep(2.0)
-        detail = P.eval_js(cdp, "document.querySelector('#ag-run-detail')?.innerText || ''")
+        detail = P.eval_js(cdp, "document.querySelector('tr.ag-detail-row #ag-run-detail')?.innerText || ''")
         check("详情里第一步显示成功、第二步显示等你审批",
               "成功" in detail and "等你审批" in detail, detail[:60].replace("\n", " "))
         check("待审批那一栏说清了这里不能签",

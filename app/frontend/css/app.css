@@ -3849,6 +3849,24 @@ table.tbl-fixed code{overflow-wrap:anywhere}
 }
 
 .chatgpt-plan-body{display:grid;gap:16px}
+/* 智能体中心方案 A（2026-11-24）：ChatGPT 起草卡默认收成一行。
+   summary 本身就是 card-head（flex 会让 Chrome 去掉默认三角），右侧自画「展开／收起」；
+   收起时没有下边线，一行就是整张卡。 */
+.cg-fold>summary{cursor:pointer;list-style:none}
+.cg-fold>summary::-webkit-details-marker{display:none}
+.cg-fold:not([open])>summary{border-bottom:0}
+.cg-fold>summary:hover{background:var(--row-hover)}
+.cg-fold-hint::after{content:'展开 ▾';font-size:var(--fs-aux);color:var(--ink-3)}
+.cg-fold[open] .cg-fold-hint::after{content:'收起 ▴'}
+/* 总览的两条腿小条：一行念完「哪条腿·配的档·能不能用」，细节在配置页 */
+.ag-legs-strip>.card-head{flex-wrap:wrap;border-bottom:0}
+.ag-leg{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+  border:1px solid var(--line);border-radius:999px;min-width:0}
+.ag-leg .t-desc{overflow-wrap:anywhere}
+/* 运行详情贴着被点那一行展开：外层行不跟随悬停变色，内嵌卡片不再额外留外边距 */
+tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)}
+.ag-detail-row>td{padding:4px 12px 14px}
+.ag-detail-row>td>.card{margin:0}
 /* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
    账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
    与下面的表单分开——它们是两件事：先连上，再填目标。 */
