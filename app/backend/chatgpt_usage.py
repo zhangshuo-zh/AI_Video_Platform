@@ -1,6 +1,8 @@
-"""汇总本人在本平台发起的草案请求。历史缺失的指标保留为空。"""
+"""汇总本人在本平台发起的 ChatGPT 请求（含计划草案与图片反推）。历史缺失的指标保留为空。"""
+import itertools
 import json
 import time
+import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Literal, TypedDict
@@ -37,6 +39,36 @@ def _state(draft, now) -> _UsageState:
     return 'failed'
 
 
+def record(user_id: int, project_id: int | None, model: str, *, state: str,
+           source: str = 'asset_vision', duration_ms: int | None = None,
+           metrics: dict | None = None, created_at: float | None = None) -> None:
+    """记录非草案通道（如图片反推提示词）通过个人 ChatGPT 账号发起的请求用量。"""
+    entry: dict[str, object] = {
+        'project_id': project_id,
+        'created_at': time.time() if created_at is None else created_at,
+        'state': state,
+        'model': model or '未知模型',
+        'source': source,
+    }
+    if duration_ms is not None and duration_ms >= 0:
+        entry['duration_ms'] = duration_ms
+    if metrics:
+        clean_metrics: dict[str, object] = {}
+        if isinstance(metrics.get('response_state'), str):
+            clean_metrics['response_state'] = metrics['response_state']
+        for field in ('input_tokens', 'output_tokens'):
+            value = metrics.get(field)
+            if type(value) is int and value >= 0:
+                clean_metrics[field] = value
+        if clean_metrics:
+            entry['metrics'] = clean_metrics
+    try:
+        chatgpt_plan._write(f'usage-{int(user_id)}-{uuid.uuid4()}', entry)
+    except OSError:
+        # 用量记账失败不应阻断业务推理本身。
+        pass
+
+
 def summarize(user_id, days, project_ids, *, now=None):
     now = time.time() if now is None else now
     today = datetime.fromtimestamp(now, ZONE).date()
@@ -52,8 +84,13 @@ def summarize(user_id, days, project_ids, *, now=None):
     outputs: list[int] = []
     skipped = 0
     total = 0
-    # 文件由草案入口原子替换；本目录不读取账号凭据、不逐条查询项目权限。
-    for path in chatgpt_plan._directory().glob(f'draft-{int(user_id)}-*.json'):
+    # 文件由各通道原子替换；本目录不读取账号凭据、不逐条查询项目权限。
+    base_dir = chatgpt_plan._directory()
+    records = itertools.chain(
+        base_dir.glob(f'draft-{int(user_id)}-*.json'),
+        base_dir.glob(f'usage-{int(user_id)}-*.json'),
+    )
+    for path in records:
         try:
             draft = json.loads(path.read_text())
         except (OSError, ValueError):

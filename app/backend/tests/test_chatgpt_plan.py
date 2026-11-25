@@ -233,3 +233,34 @@ def test_stream_records_only_reported_token_usage(monkeypatch):
     metrics = {}
     assert cg.infer(7, 'test', 'prompt', metrics=metrics) == '[]'
     assert metrics == {'response_state': 'completed', 'input_tokens': 0, 'output_tokens': 42}
+
+
+def test_vision_usage_included_in_platform_summary(as_role, seeded, monkeypatch):
+    import chatgpt_usage
+    from datetime import datetime
+    uid = as_role.id('editor')
+    pid = seeded['project_id']
+    now = datetime(2026, 11, 14, 12, tzinfo=chatgpt_usage.ZONE).timestamp()
+    monkeypatch.setattr(chatgpt_usage.time, 'time', lambda: now)
+    chatgpt_usage.record(
+        uid, pid, 'gpt-5.1', state='ready', source='asset_vision',
+        duration_ms=1500, metrics={'response_state': 'completed', 'input_tokens': 320, 'output_tokens': 45},
+        created_at=now - 30,
+    )
+    chatgpt_usage.record(
+        uid, pid, 'gpt-5.1', state='failed', source='asset_vision',
+        duration_ms=500, metrics={'response_state': 'failed'},
+        created_at=now - 20,
+    )
+    chatgpt_usage.record(
+        uid, pid + 99999, 'gpt-5.1', state='ready', source='asset_vision',
+        duration_ms=500, created_at=now - 10,
+    )
+    with as_role('editor') as c:
+        proj = c.get('/api/agent/chatgpt/usage', params={'days': 7, 'project_id': pid}).json()
+        assert proj['total'] == 2 and proj['succeeded'] == 1 and proj['failed'] == 1
+        assert proj['input_tokens'] == 320 and proj['output_tokens'] == 45
+        assert proj['avg_duration_ms'] == 1000
+        assert proj['models'] == [{'model': 'gpt-5.1', 'total': 2}]
+        all_vis = c.get('/api/agent/chatgpt/usage', params={'days': 7}).json()
+        assert all_vis['total'] == 2 and all_vis['succeeded'] == 1 and all_vis['failed'] == 1

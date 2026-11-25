@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from cryptography.exceptions import InvalidTag
 
 import chatgpt_plan
+import chatgpt_usage
 import cloud_run
 import secret_store
 from repositories.content import _images_of, assets
@@ -330,16 +331,29 @@ def _pick_chatgpt_model(user_id: int, explicit: str | None) -> str:
 
 
 def _run_chatgpt(user_id: int, token: str, images: list[str], instruction: str,
-                 model: str | None, deadline: float) -> tuple[str, str]:
+                 model: str | None, deadline: float, *, project_id: int | None = None) -> tuple[str, str]:
     chosen = _pick_chatgpt_model(user_id, model)
-    result = _request(f"{chatgpt_plan.RESOURCE}/responses", label="ChatGPT", deadline=deadline,
-                     idle=45, responses=True, token=token, body={
-        "model": chosen, "store": False, "stream": True,
-        "instructions": "根据参考图生成跨镜头可复用的一致性提示词，只输出严格 JSON。",
-        "input": [{"role": "user", "content": [
-            {"type": "input_text", "text": instruction}, *_image_parts(images, responses=True)]}],
-    })
-    return result if isinstance(result, str) and token not in result else "", chosen
+    metrics: dict = {}
+    started = time.monotonic()
+    state = "failed"
+    try:
+        result = _request(f"{chatgpt_plan.RESOURCE}/responses", label="ChatGPT", deadline=deadline,
+                         idle=45, responses=True, token=token, metrics=metrics, body={
+            "model": chosen, "store": False, "stream": True,
+            "instructions": "根据参考图生成跨镜头可复用的一致性提示词，只输出严格 JSON。",
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": instruction}, *_image_parts(images, responses=True)]}],
+        })
+        state = "ready"
+        return result if isinstance(result, str) and token not in result else "", chosen
+    finally:
+        chatgpt_usage.record(
+            user_id, project_id, chosen,
+            state=state,
+            source="asset_vision",
+            duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+            metrics=metrics,
+        )
 
 
 def _run_dashscope(token: str, images: list[str], instruction: str,
@@ -468,7 +482,8 @@ def _reverse_prompt(asset_id: int, user_id: int, payload: AssetReversePromptIn,
                 raise
         else:
             # A submitted cloud request might have been charged even if its response was lost.
-            return draft(_run_chatgpt(user_id, token, images, instruction, model, deadline), "chatgpt")
+            return draft(_run_chatgpt(user_id, token, images, instruction, model, deadline,
+                                      project_id=row["project_id"]), "chatgpt")
 
     if provider in ("auto", "gemini"):
         gemini_key = _resolve_secret("GEMINI_API_KEY")

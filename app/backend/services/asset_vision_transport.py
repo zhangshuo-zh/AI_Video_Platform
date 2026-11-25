@@ -106,18 +106,38 @@ def _responses_text(result: dict) -> str:
     return "\n".join(text) or (direct if isinstance(direct, str) else "")
 
 
-def _read_responses(response: _ReadableResponse, deadline: float) -> str:
+def _collect_usage(result: object, metrics: dict | None) -> None:
+    if metrics is None or not isinstance(result, dict):
+        return
+    usage = result.get("usage")
+    if not isinstance(usage, dict):
+        return
+    for field in ("input_tokens", "output_tokens"):
+        value = usage.get(field)
+        if type(value) is int and value >= 0:
+            metrics[field] = value
+
+
+def _read_responses(response: _ReadableResponse, deadline: float,
+                    metrics: dict | None = None) -> str:
     deltas: dict[tuple[int, int], list[str]] = {}
     done: dict[tuple[int, int], str] = {}
     size = 0
     for event in _events(response, deadline):
         kind = event.get("type")
         if kind in ("response.failed", "response.incomplete", "error"):
+            if metrics is not None:
+                metrics["response_state"] = "failed"
             raise _VisionError(502, "ChatGPT 推理未完成，请检查通道状态、额度或输入")
         if kind in ("response.refusal.delta", "response.refusal.done"):
+            if metrics is not None:
+                metrics["response_state"] = "failed"
             raise _VisionError(422, "ChatGPT 未接受此图片或提示")
         if kind == "response.completed":
             result = event.get("response")
+            _collect_usage(result, metrics)
+            if metrics is not None:
+                metrics["response_state"] = "completed"
             final = _responses_text(result) if isinstance(result, dict) else ""
             return final or "\n".join(done[key] if key in done else "".join(deltas[key])
                                       for key in sorted(done.keys() | deltas.keys()))
@@ -158,7 +178,7 @@ def _http_error(exc: HTTPError, label: str) -> _VisionError:
 def _request(url: str, *, label: str, deadline: float, idle: float,
             body: dict | None = None, token: str | None = None,
             extra_headers: dict[str, str] | None = None,
-            responses: bool = False) -> dict | str:
+            responses: bool = False, metrics: dict | None = None) -> dict | str:
     headers = {"Accept": "text/event-stream, application/json" if responses else "application/json"}
     data = None
     if body is not None:
@@ -168,6 +188,8 @@ def _request(url: str, *, label: str, deadline: float, idle: float,
         headers["Authorization"] = f"Bearer {token}"
     if extra_headers:
         headers.update(extra_headers)
+    if metrics is not None:
+        metrics["response_state"] = "unconfirmed"
     try:
         # safe_urlopen blocks redirects; explicit validation protects configured engine targets.
         safenet.check_url(url)
@@ -176,15 +198,24 @@ def _request(url: str, *, label: str, deadline: float, idle: float,
             ctype = response.headers.get_content_type()
             is_stream = bool(isinstance(body, dict) and body.get("stream"))
             if responses and (ctype == "text/event-stream" or (is_stream and ctype != "application/json")):
-                return _read_responses(response, deadline)
+                return _read_responses(response, deadline, metrics)
             result = _json_object(b"".join(_chunks(response, deadline)))
-            return _responses_text(result) if responses else result
+            if responses:
+                _collect_usage(result, metrics)
+                if metrics is not None:
+                    metrics["response_state"] = "completed"
+                return _responses_text(result)
+            return result
     except HTTPError as exc:
+        if metrics is not None:
+            metrics["response_state"] = "failed"
         try:
             raise _http_error(exc, label) from None
         finally:
             exc.close()
     except safenet.UnsafeTarget:
+        if metrics is not None:
+            metrics["response_state"] = "failed"
         raise _VisionError(424, f"{label}服务地址未通过安全检查") from None
     except TimeoutError:
         raise _VisionError(504, f"{label}推理超时，请减少参考图或更换通道") from None
