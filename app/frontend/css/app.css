@@ -3874,6 +3874,10 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 .ag-tpl-item p{margin:0;line-height:1.5}
 @media(max-width:1080px){.ag-tpl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){.ag-tpl-grid{grid-template-columns:minmax(0,1fr)}}
+/* 智能体中心 · 运行概况四栏均匀铺满整行，与下方快捷任务网格左右对齐 */
+.ag-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0;padding:16px 18px}
+.ag-stats .stat{justify-content:space-between;padding:12px 16px}
+@media(max-width:720px){.ag-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
    账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
    与下面的表单分开——它们是两件事：先连上，再填目标。 */

@@ -407,7 +407,7 @@ export default {
       ${counts.runs !== undefined ? `<div class="card mb-card" >
         <div class="card-head"><h2>运行概况</h2>
           <span class="sub">${escapeHtml((overview && overview.caliber) || '')}</span></div>
-        <div class="proj-stats">
+        <div class="proj-stats ag-stats">
           ${stat(counts.runs ?? '—', '累计任务')}
           ${stat(counts.active ?? '—', '执行中')}
           ${stat(counts.awaiting_approval ?? '—', '待人工审批',
