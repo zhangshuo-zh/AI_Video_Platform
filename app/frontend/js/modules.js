@@ -153,10 +153,10 @@ export const MODULES = [
     // 制作角色要能发起、要看自己那批待办；配置那一档（本地／云端两张卡、
     // 工具白名单）在页内按 store.can('system:config') 决定显不显示。
     id: 'agents', label: '智能体中心', icon: 'ic-agents',
-    subs: ['总览', '智能体配置', '任务路由', '运行与审批'], utility: true,
+    subs: ['总览', '智能体配置', '运行与审批'], utility: true,
     perms: ['project:read'],
     group: 'platform', group_label: G.platform,
-    desc: '智能体配置、任务路由、运行记录与待审批动作的统一入口。'
+    desc: '智能体配置、运行记录与待审批动作的统一入口。'
       + '它只负责规划与调用白名单工具；排队、成本、产物仍归生成中心，签字仍归审核中心。',
     ents: 'AgentRun · AgentStep · AgentEvent（配置与模型一律引用模型中心，不另存一份）',
   },

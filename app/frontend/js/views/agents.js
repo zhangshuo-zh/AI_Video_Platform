@@ -1,11 +1,10 @@
 import { chatgptPlanCard, mountChatGPTPlan } from './chatgpt-plan.js';
 import { submissionIdentity } from '../submission.js';
 /**
- * 智能体中心（0041／《智能体管理中心》说明书）。四个工作区：
- *   0 总览        四个数 ＋ 两条腿摘要 ＋ 运行列表
- *   1 智能体配置  本地／云端两条腿现在是什么状态 ＋ 工具白名单表
- *   2 任务路由    九个任务场景配到哪了——只读，改在模型中心
- *   3 运行与审批  一条运行的步骤、事件、暂停／恢复／取消，以及"等你审批几步"
+ * 智能体中心（0041／《智能体管理中心》说明书）。三个工作区：
+ *   0 总览        运行概况 ＋ 快捷制片任务 ＋ 近期编排任务
+ *   1 智能体配置  本地／云端规划推理通道 ＋ 授权工具能力目录（附场景调用策略直达）
+ *   2 运行与审批  项目编排任务列表、行内步骤详情、事件时间线及待审批追踪
  *
  * 三条边界，都是为了让这一页不长成第二个模型中心、第二个审核中心：
  *
@@ -25,7 +24,7 @@ import {
   agoText, bindModalDismiss, bindSubChips, escapeHtml, errorBox, run, skeleton, subChipRow,
 } from '../util.js';
 
-const SUBS = ['总览', '智能体配置', '任务路由', '运行与审批'];
+const SUBS = ['总览', '智能体配置', '运行与审批'];
 const currentSub = () => {
   const raw = getSub('agents') ?? 0;
   return raw >= 0 && raw < SUBS.length ? raw : 0;
@@ -437,8 +436,7 @@ export default {
       }
       return `<section class="view on">${head('推理通道状态与授权工具能力目录')}${this.configPane()}</section>`;
     }
-    if (sub === 2) return `<section class="view on">${head('九类漫剧生产场景的模型映射与安全路由策略')}${await this.routingPane()}</section>`;
-    if (sub === 3) return `<section class="view on">${head('项目编排任务执行、步骤时间线与待审批追踪')}${await this.runsPane(project)}</section>`;
+    if (sub === 2) return `<section class="view on">${head('项目编排任务执行、步骤时间线与待审批追踪')}${await this.runsPane(project)}</section>`;
 
     let err = null;
     let overview = null;
@@ -504,7 +502,9 @@ export default {
               escapeHtml((cache.configs && cache.configs.caliber) || ''),
               '<b>凭据安全</b>：密钥仅从系统环境变量或加密密钥库读取，永不入库、不回显。',
             ].filter(Boolean),
-          )}</div>
+          )}
+          <div class="right"><button class="btn sm" data-goto-models="policy">场景调用策略 →</button></div>
+        </div>
         ${legsHtml(cache.configs)}
       </div>
       <div class="card">
@@ -530,50 +530,6 @@ export default {
         <div class="card-foot">
           <p class="modal-meta">安全基线：${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
             ｜单次任务步骤上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
-        </div>
-      </div>`;
-  },
-
-  /** 任务路由：只读九场景 ＋ 一句"改在模型中心"。 */
-  async routingPane() {
-    if (!store.can('system:config')) {
-      return `<div class="card"><div class="empty"><div class="empty-t">此页面需要系统配置权限</div>
-        <p>生产场景路由策略统一在「模型中心 · 调用策略」中维护，本页仅提供只读视图。</p>
-        </div></div>`;
-    }
-    let data = null;
-    try { data = await api.modelPolicies(); } catch (e) { return errorBox('读任务策略', e); }
-    const rows = (data.items || []).map((p) => `<tr>
-      <td><b>${escapeHtml(p.scene_label || p.scene_key)}</b>
-        <span class="t-desc">${escapeHtml(p.scene_key)}</span></td>
-      <td>${escapeHtml(p.capability_label)}</td>
-      <td>${(p.required || []).map((r) => chip('gray', r)).join(' ') || '—'}</td>
-      <td><span class="t-desc">${escapeHtml(p.slot_provider ? `${p.slot_provider}/${p.slot_model}` : '未配置')}</span></td>
-      <td>${chip('gray', p.preference_label || p.preference)}</td>
-      <td><span class="t-desc">${escapeHtml(p.fallback_provider
-        ? `${p.fallback_provider}/${p.fallback_model}` : '—')}</span></td>
-      <td>${p.enabled ? chip('green', '已启用') : chip('gray', '待配置')}</td>
-    </tr>`).join('');
-    return `
-      <div class="card">
-        <div class="card-head"><h2>生产场景路由策略（只读）</h2>
-          <span class="sub">如需调整建议模型或启用状态，请前往「模型中心 · 调用策略」</span></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>生产场景</th><th>所需能力</th><th>必需特性</th><th>建议模型</th>
-            <th>偏好</th><th>备用模型</th><th>状态</th></tr></thead>
-          <tbody>${rows}</tbody></table></div>
-        <!-- 表格卡片的下半段统一坐进 .card-foot：卡片本身 padding 是 0（表格要铺满），
-             所以表外那几行（提示条、脚注、动作按钮）必须自己带内距。
-             原来这里三样都直接挂在 .card 下，按钮行离卡片下沿只有 1px，贴着边框。 -->
-        <div class="card-foot">
-          <p class="bar">${data.no_auto_fallback
-            ? '<b>备用轨不会自动顶上。</b>默认推理通道唯一来源仍是「模型中心 · 引擎管理」；'
-              + '智能体严格按人工确认通道提交，本地失败绝不静默切换至云端。'
-            : '清单声明允许自动兜底——与智能体安全授权策略冲突，请先复核路由配置。'}</p>
-          <p class="modal-meta">新建编排任务时读取本表对应场景；
-            「建议模型」仅作参考提示，实际执行通道由默认配置与人工确认共同决定。</p>
-          <div class="row u-mt-12">
-            <button class="btn" data-goto-models="policy">前往模型中心 · 调用策略</button></div>
         </div>
       </div>`;
   },
@@ -654,11 +610,11 @@ export default {
     root.querySelectorAll('[data-open-run]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.openRun);
-        if (currentSub() !== 3) {
+        if (currentSub() !== 2) {
           // 总览没有详情位：带着这条运行去「运行与审批」，在那一行下面展开
           openRunId = id;
           setParam('agents', id);
-          setSub('agents', 3);
+          setSub('agents', 2);
           refresh();
           return;
         }
@@ -692,7 +648,7 @@ export default {
       }
       modal.hidden = false;
       bindModal(modal, () => {
-        if (currentSub() !== 3) setSub('agents', 3);
+        if (currentSub() !== 2) setSub('agents', 2);
         refresh();
       }, policies.items || []);
       bindModalDismiss(modal, () => { modal.hidden = true; });

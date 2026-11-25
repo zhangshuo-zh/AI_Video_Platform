@@ -416,7 +416,7 @@ export default {
         goal: '巡检当前集的分镜生产进度，汇总缺参考图、生成失败与待返工的异常镜头清单。',
         episode_id: eid,
       });
-      go({ module: 'agents', sub: 3 });
+      go({ module: 'agents', sub: 2 });
     });
     root.querySelector('#pb-retry-failed')?.addEventListener('click', async () => {
       const eid = Number(root.querySelector('#pb-episode')?.value) || store.currentEpisodeId;

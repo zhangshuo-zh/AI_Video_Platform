@@ -326,7 +326,7 @@ export default {
         goal: '巡检当前集所有带台词的分镜，列出尚未建立或生成配音的对白缺口与音频状态统计。',
         episode_id: store.currentEpisodeId || null,
       });
-      gotoEntry({ module: 'agents', sub: 3 });
+      gotoEntry({ module: 'agents', sub: 2 });
     });
   },
 };

@@ -337,7 +337,7 @@ export default {
         goal: '对当前项目执行设定与资产一致性矛盾扫描，并将新发现的矛盾项写入设定中心审阅列表。',
         episode_id: null,
       });
-      gotoEntry({ module: 'agents', sub: 3 });
+      gotoEntry({ module: 'agents', sub: 2 });
     });
     return () => { knAlive = false; };
   },

@@ -275,8 +275,8 @@ def main():
               P.text_of(cdp, ".page-head h1"))
         chips = P.eval_js(cdp, "[...document.querySelectorAll('.view.on .sub-chip')]"
                                 ".map(e => e.textContent.trim())")
-        check("四个工作区切换器齐名",
-              chips == ["总览", "智能体配置", "任务路由", "运行与审批"], str(chips))
+        check("三个工作区切换器齐名",
+              chips == ["总览", "智能体配置", "运行与审批"], str(chips))
 
         # ---------- 总览 ----------
         stats = P.eval_js(cdp, "[...document.querySelectorAll('.view.on .stat')]")
@@ -341,29 +341,15 @@ def main():
               "驻留" in body)
         check("有「去模型中心」的跳转而不是第二个配置表单",
               P.has(cdp, "[data-goto-models]") and "新建智能体" not in body)
-
-        # ---------- 任务路由页：只读＋跳转 ----------
-        go(cdp, f"{BASE}/#agents/2")
-        pol = api_get("/api/model-policies", token)
-        scene_rows = P.eval_js(cdp, "document.querySelectorAll('.view.on tbody tr').length")
-        check("九个场景都在（读的是模型中心那张表，没另建一份）",
-              scene_rows == len(pol["items"]) == 9,
-              f"页面 {scene_rows}｜接口 {len(pol['items'])}")
-        route_body = P.eval_js(cdp, "document.querySelector('.view.on').innerText") or ""
-        check("备用轨不会自动顶上这句话由清单驱动显示在页面上",
-              "备用轨不会自动顶上" in route_body)
-        check("策略这一页没有第二个「保存」按钮（改在模型中心）",
-              P.eval_js(cdp, "[...document.querySelectorAll('.view.on button')]"
-                             ".filter(b => /保存/.test(b.textContent)).length") == 0)
-        P.click(cdp, "[data-goto-models]")
+        P.click(cdp, "[data-goto-models='policy']")
         time.sleep(0.8)
         hash_after = P.eval_js(cdp, "location.hash")
-        check("点「去模型中心·调用策略」真的落到那一页",
+        check("点「场景调用策略 →」真的落到模型中心·调用策略页",
               hash_after == "#models/2", str(hash_after))
 
         # ---------- 运行与审批：详情与签字 ----------
-        go(cdp, f"{BASE}/#agents/3")
-        dump("agents/3")
+        go(cdp, f"{BASE}/#agents/2")
+        dump("agents/2")
         cg_folded = P.eval_js(cdp, "(() => { const d = document.querySelector('details[data-chatgpt-plan]');"
                                    "return d ? !d.open : null; })()")
         check("ChatGPT 制作计划草案默认折叠成一行",
@@ -429,7 +415,7 @@ def main():
         # 由脚本进程调一次 tick（与 worker 调的是同一个函数），再看页面
         import agents
         agents.tick()
-        go(cdp, f"{BASE}/#agents/3")
+        go(cdp, f"{BASE}/#agents/2")
         P.eval_js(cdp, "document.querySelector('[data-open-run]').click()")
         time.sleep(2.0)
         after = P.eval_js(cdp, "document.querySelector('#ag-run-detail')?.innerText || ''")
@@ -443,7 +429,7 @@ def main():
               "浏览器验收登记的角色" in names, str(names)[:60])
 
         # ---------- 发起弹窗：只测提交前的读与拒 ----------
-        go(cdp, f"{BASE}/#agents/3")
+        go(cdp, f"{BASE}/#agents/2")
         P.eval_js(cdp, "document.querySelector('[data-ag-new]')?.click()")
         time.sleep(1.6)
         check("发起弹窗能打开", P.has(cdp, "#ag-modal:not([hidden])"))
@@ -499,7 +485,7 @@ def main():
         p3_hash = P.eval_js(cdp, "location.hash")
         p3_goal = P.eval_js(cdp, "document.querySelector('#ag-modal:not([hidden]) #ag-goal')?.value || ''")
         check("项目工作台点「智能体巡检」直达智能体中心并自动弹出预填弹窗",
-              str(p3_hash).startswith("#agents/3") and "异常镜头" in (p3_goal or ""),
+              str(p3_hash).startswith("#agents/2") and "异常镜头" in (p3_goal or ""),
               f"hash={p3_hash}｜goal={(p3_goal or '')[:26]}")
         cdp.cmd("Input.dispatchKeyEvent", type="keyDown", key="Escape",
                 code="Escape", windowsVirtualKeyCode=27)
