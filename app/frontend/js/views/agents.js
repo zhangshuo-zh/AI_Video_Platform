@@ -206,13 +206,13 @@ function legsHtml(configs) {
       <td><span class="t-desc" title="${escapeHtml(c.resident || '')}">${escapeHtml(shortResident(c.resident))}</span></td>
       <td><div class="ag-cred">${escapeHtml(secretText)}</div>
         <div class="t-desc" title="${escapeHtml(c.cost_note || '')}">${escapeHtml(costShort)}</div></td>
-      <td class="r ag-act-col"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
+      <td class="ag-act-col"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
         >前往模型中心</button></td>
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table class="ag-legs-table">
     <thead><tr><th>推理通道</th><th>已配置模型</th><th>健康状态</th><th>服务端点</th>
-      <th>驻留状态</th><th>密钥与计价</th><th class="r ag-act-col">操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      <th>驻留状态</th><th>密钥与计价</th><th class="ag-act-col">操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /**
