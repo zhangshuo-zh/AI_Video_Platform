@@ -72,6 +72,21 @@ const stat = (value, label, warn = false) =>
   `<div class="stat ${warn ? 'warn' : ''}"><span class="stat-n">${value}</span>
    <span class="stat-l">${escapeHtml(label)}</span></div>`;
 
+/** 与模型中心同款的问号悬浮提示，把长口径与操作说明收进气泡，保持标题栏清爽。 */
+function helpTip(title, desc, bullets = [], lg = false) {
+  const list = bullets.length
+    ? `<ul class="tip-list">${bullets.map((b) => `<li>${b}</li>`).join('')}</ul>`
+    : '';
+  return `<span class="help-tip${lg ? ' lg' : ''}">
+    <span class="help-icon">?</span>
+    <span class="tip-pop tip-right">
+      <span class="tip-title">${escapeHtml(title)}</span>
+      ${desc ? `<div class="tip-desc">${escapeHtml(desc)}</div>` : ''}
+      ${list}
+    </span>
+  </span>`;
+}
+
 /**
  * 面向漫剧生产的快捷编排任务模板（P1 专业化升级，2026-11-24）。
  * 每条模板严格对应当前后端工具白名单里已落地的能力，点击直接打开「新建编排任务」
@@ -133,7 +148,15 @@ function quickTemplatesHtml() {
   return `<div class="card mb-card ag-tpl-card">
     <div class="card-head">
       <h2>快捷制片任务</h2>
-      <span class="sub">按漫剧常用场景预置目标，点击即可带入编排弹窗预览路线与计价</span>
+      ${helpTip(
+        '快捷制片任务说明',
+        '按漫剧常用场景预置目标，点击即可带入编排弹窗预览路线与计价。',
+        [
+          '<b>绿色只读</b>：不改业务库、不产生文本生成费用，计划生成后自动执行。',
+          '<b>黄色写入</b>：写库或扫描入库前自动暂停，须在「审核中心 → 动作审批」签字放行。',
+          '<b>蓝色作业</b>：提交文本生成作业进生成中心队列，走云端时需人工勾选计费确认。',
+        ],
+      )}
       ${canSubmit ? '<div class="right"><button class="btn primary sm" data-ag-new>新建编排任务</button></div>' : ''}
     </div>
     <div class="card-body">
@@ -359,7 +382,19 @@ export default {
     this.subIndex = sub;
     const project = store.current;
     const head = (line) => `<div class="page-head">
-        <h1>智能体中心</h1><p>${escapeHtml(line)}</p>
+        <div class="page-title-wrap">
+          <h1>智能体中心</h1>
+          ${helpTip(
+            '智能体中心定位与安全边界',
+            line,
+            [
+              '<b>配置只引用不复制</b>：推理通道与模型唯一出处在「模型中心」，本页只读引用。',
+              '<b>白名单工具与审批护栏</b>：只读步骤自动完成；写库或付费动作一律暂停并送「审核中心」签字。',
+              '<b>跨模块联动</b>：支持从总览快捷卡，或项目工作台 / 音频中心 / 设定中心一键带入上下文发起。',
+            ],
+            true,
+          )}
+        </div>
         <div class="row u-gap-6">${subChipRow(SUBS, sub)}</div>
       </div>`;
 
@@ -406,7 +441,7 @@ export default {
       ${err ? `<div class="card">${errorBox('读概览', err)}</div>` : ''}
       ${counts.runs !== undefined ? `<div class="card mb-card" >
         <div class="card-head"><h2>运行概况</h2>
-          <span class="sub">${escapeHtml((overview && overview.caliber) || '')}</span></div>
+          ${helpTip('统计口径说明', (overview && overview.caliber) || '')}</div>
         <div class="proj-stats ag-stats">
           ${stat(counts.runs ?? '—', '累计任务')}
           ${stat(counts.active ?? '—', '执行中')}
@@ -417,7 +452,7 @@ export default {
       ${quickTemplatesHtml()}
       <div class="card">
         <div class="card-head"><h2>近期编排任务</h2>
-          <span class="sub">点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字</span></div>
+          ${helpTip('任务查看与审批规则', '点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字。')}</div>
         ${runsTable(overview ? overview.runs : [])}
       </div>
       <div id="ag-modal-slot"></div>

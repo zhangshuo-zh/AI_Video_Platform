@@ -287,7 +287,7 @@ def main():
         check("第一个数与服务端一致（界面不自己算）",
               str(api_overview["counts"]["runs"]) == str(stat_vals[0]),
               f"页面 {stat_vals[0]}｜接口 {api_overview['counts']['runs']}")
-        caliber_text = P.eval_js(cdp, "document.querySelector('.view.on .card .sub')"
+        caliber_text = P.eval_js(cdp, "document.querySelector('.view.on .card .tip-desc, .view.on .card .sub')"
                                       "?.textContent || ''")
         check("口径那句话和接口给的是同一句",
               api_overview["caliber"][:12] in (caliber_text or ""),
