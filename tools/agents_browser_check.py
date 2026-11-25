@@ -275,8 +275,8 @@ def main():
               P.text_of(cdp, ".page-head h1"))
         chips = P.eval_js(cdp, "[...document.querySelectorAll('.view.on .sub-chip')]"
                                 ".map(e => e.textContent.trim())")
-        check("三个工作区切换器齐名",
-              chips == ["总览", "智能体配置", "运行与审批"], str(chips))
+        check("两个工作区切换器齐名",
+              chips == ["工作台", "智能体配置"], str(chips))
 
         # ---------- 总览 ----------
         stats = P.eval_js(cdp, "[...document.querySelectorAll('.view.on .stat')]")
@@ -308,13 +308,13 @@ def main():
         run_rows = P.eval_js(cdp, "[...document.querySelectorAll('[data-open-run]')].length")
         check("造出来的运行出现在列表里", isinstance(run_rows, int) and run_rows >= 1,
               f"{run_rows} 行")
-        # 方案 A：总览点「详情 →」跳到运行与审批并直接行内展开该条运行
+        # 工作台直接行内展开该条运行，无需跨页跳
         P.eval_js(cdp, "document.querySelector('[data-open-run]').click()")
         time.sleep(2.0)
         active_chip = P.eval_js(cdp, "document.querySelector('.view.on .sub-chip.blue')?.textContent?.trim() || ''")
         jumped_detail = P.eval_js(cdp, "document.querySelector('tr.ag-detail-row #ag-run-detail')?.innerText || ''")
-        check("总览点详情跳转到运行与审批并直接在行内展开",
-              active_chip == "运行与审批" and bool(jumped_detail),
+        check("工作台点详情直接在行内展开",
+              active_chip == "工作台" and bool(jumped_detail),
               f"页签={active_chip}｜详情长度 {len(jumped_detail or '')}")
 
         # ---------- 配置页 ----------
@@ -347,9 +347,9 @@ def main():
         check("点「场景调用策略 →」真的落到模型中心·调用策略页",
               hash_after == "#models/2", str(hash_after))
 
-        # ---------- 运行与审批：详情与签字 ----------
-        go(cdp, f"{BASE}/#agents/2")
-        dump("agents/2")
+        # ---------- 工作台：ChatGPT 折叠、详情与签字 ----------
+        go(cdp, f"{BASE}/#agents")
+        dump("agents/0")
         cg_folded = P.eval_js(cdp, "(() => { const d = document.querySelector('details[data-chatgpt-plan]');"
                                    "return d ? !d.open : null; })()")
         check("ChatGPT 制作计划草案默认折叠成一行",
@@ -415,7 +415,7 @@ def main():
         # 由脚本进程调一次 tick（与 worker 调的是同一个函数），再看页面
         import agents
         agents.tick()
-        go(cdp, f"{BASE}/#agents/2")
+        go(cdp, f"{BASE}/#agents")
         P.eval_js(cdp, "document.querySelector('[data-open-run]').click()")
         time.sleep(2.0)
         after = P.eval_js(cdp, "document.querySelector('#ag-run-detail')?.innerText || ''")
@@ -429,7 +429,7 @@ def main():
               "浏览器验收登记的角色" in names, str(names)[:60])
 
         # ---------- 发起弹窗：只测提交前的读与拒 ----------
-        go(cdp, f"{BASE}/#agents/2")
+        go(cdp, f"{BASE}/#agents")
         P.eval_js(cdp, "document.querySelector('[data-ag-new]')?.click()")
         time.sleep(1.6)
         check("发起弹窗能打开", P.has(cdp, "#ag-modal:not([hidden])"))
@@ -484,8 +484,8 @@ def main():
         time.sleep(2.2)
         p3_hash = P.eval_js(cdp, "location.hash")
         p3_goal = P.eval_js(cdp, "document.querySelector('#ag-modal:not([hidden]) #ag-goal')?.value || ''")
-        check("项目工作台点「智能体巡检」直达智能体中心并自动弹出预填弹窗",
-              str(p3_hash).startswith("#agents/2") and "异常镜头" in (p3_goal or ""),
+        check("项目工作台点「智能体巡检」直达智能体中心工作台并自动弹出预填弹窗",
+              str(p3_hash).startswith("#agents") and "异常镜头" in (p3_goal or ""),
               f"hash={p3_hash}｜goal={(p3_goal or '')[:26]}")
         cdp.cmd("Input.dispatchKeyEvent", type="keyDown", key="Escape",
                 code="Escape", windowsVirtualKeyCode=27)

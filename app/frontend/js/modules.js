@@ -153,7 +153,7 @@ export const MODULES = [
     // 制作角色要能发起、要看自己那批待办；配置那一档（本地／云端两张卡、
     // 工具白名单）在页内按 store.can('system:config') 决定显不显示。
     id: 'agents', label: '智能体中心', icon: 'ic-agents',
-    subs: ['总览', '智能体配置', '运行与审批'], utility: true,
+    subs: ['工作台', '智能体配置'], utility: true,
     perms: ['project:read'],
     group: 'platform', group_label: G.platform,
     desc: '智能体配置、运行记录与待审批动作的统一入口。'
@@ -205,6 +205,7 @@ export const SUB_ICONS = {
   '引擎管理': 'ic-sub-cpu',
   '调用策略': 'ic-sub-route',
   '总览': 'ic-sub-grid',
+  'agents:工作台': 'ic-sub-grid',
   '智能体配置': 'ic-sub-sliders',
   '任务路由': 'ic-sub-route',
   '运行与审批': 'ic-sub-shield-check',

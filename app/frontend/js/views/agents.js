@@ -1,10 +1,9 @@
 import { chatgptPlanCard, mountChatGPTPlan } from './chatgpt-plan.js';
 import { submissionIdentity } from '../submission.js';
 /**
- * 智能体中心（0041／《智能体管理中心》说明书）。三个工作区：
- *   0 总览        运行概况 ＋ 快捷制片任务 ＋ 近期编排任务
+ * 智能体中心（0041／《智能体管理中心》说明书）。两个工作区：
+ *   0 工作台      运行概况 ＋ 快捷制片任务 ＋ ChatGPT 草案 ＋ 项目编排任务列表（行内展开）＋ 待审批
  *   1 智能体配置  本地／云端规划推理通道 ＋ 授权工具能力目录（附场景调用策略直达）
- *   2 运行与审批  项目编排任务列表、行内步骤详情、事件时间线及待审批追踪
  *
  * 三条边界，都是为了让这一页不长成第二个模型中心、第二个审核中心：
  *
@@ -24,7 +23,7 @@ import {
   agoText, bindModalDismiss, bindSubChips, escapeHtml, errorBox, run, skeleton, subChipRow,
 } from '../util.js';
 
-const SUBS = ['总览', '智能体配置', '运行与审批'];
+const SUBS = ['工作台', '智能体配置'];
 const currentSub = () => {
   const raw = getSub('agents') ?? 0;
   return raw >= 0 && raw < SUBS.length ? raw : 0;
@@ -423,7 +422,7 @@ export default {
     }
 
     if (sub === 1) {
-      // 直接进 #agents/1（深链、刷新、别人发的地址）时不能指望"总览那一屏已经读过数据"：
+      // 直接进 #agents/1（深链、刷新、别人发的地址）时不能指望工作台那一屏已经读过配置：
       // 缓存是空的，页面就会老实显示 0 行——验收当场抓到过一次。
       if (!cache.configs || !cache.tools) {
         try {
@@ -436,26 +435,32 @@ export default {
       }
       return `<section class="view on">${head('推理通道状态与授权工具能力目录')}${this.configPane()}</section>`;
     }
-    if (sub === 2) return `<section class="view on">${head('项目编排任务执行、步骤时间线与待审批追踪')}${await this.runsPane(project)}</section>`;
 
     let err = null;
     let overview = null;
+    let runs = [];
+    let waiting = [];
     try {
-      if (store.can('system:config')) {
-        overview = await api.agentOverview();
-      } else {
-        // 制作角色看不到配置面。概览那一条也需要 system:config，
-        // 所以这一屏改读"这个项目的运行"——少一个数就少显示一个，不编
+      const [ovRes, runsRes, waitRes] = await Promise.all([
+        store.can('system:config') ? api.agentOverview() : Promise.resolve(null),
+        api.agentRuns(project.id),
+        store.can('review:read') ? api.agentPending() : Promise.resolve({ items: [] }),
+      ]);
+      overview = ovRes;
+      runs = (runsRes && runsRes.items) || [];
+      waiting = (waitRes && waitRes.items) || [];
+      if (!store.can('system:config')) {
         cache.configs = null; cache.tools = null;
-        overview = { runs: (await api.agentRuns(project.id)).items, counts: null };
       }
-      cache.overview = overview;
+      cache.overview = overview || { runs, counts: null };
     } catch (e) { err = e; }
 
+    if (openRunId && !runs.some((r) => r.id === openRunId)) openRunId = getParam('agents') ? openRunId : null;
+    const orphanDetail = openRunId && !runs.some((r) => r.id === openRunId);
     const counts = (overview && overview.counts) || {};
     return `<section class="view on">
       ${head('跨模块任务规划、自动化执行与人工审批调度')}
-      ${err ? `<div class="card">${errorBox('读概览', err)}</div>` : ''}
+      ${err ? `<div class="card mb-card">${errorBox('读工作台数据', err)}</div>` : ''}
       ${counts.runs !== undefined ? `<div class="card mb-card" >
         <div class="card-head"><h2>运行概况</h2>
           ${helpTip('统计口径说明', (overview && overview.caliber) || '')}</div>
@@ -467,18 +472,34 @@ export default {
           ${stat(`${counts.usable_configs ?? '—'}/${counts.total_configs ?? '—'}`, '可用推理通道')}
         </div></div>` : ''}
       ${quickTemplatesHtml()}
-      <div class="card">
-        <div class="card-head"><h2>近期编排任务</h2>
+      ${chatgptPlanCard()}
+      <div class="card mb-card">
+        <div class="card-head"><h2>项目编排任务列表</h2>
           ${helpTip(
             '任务执行与审批规则',
-            '点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字。',
+            '点击「详情」直接在本行下方展开步骤、关联作业与事件时间线；所有写操作均须经审核中心签字。',
             [
               '<b>自动与人工分工</b>：提交后先规划步骤，只读步骤自动执行；付费调用或正式写库步骤自动暂停等待审核中心签字。',
               '<b>成员权限范围</b>：具作业提交权限（<code>job:submit</code>）的成员可发起任务，项目成员均可追踪进度与审批状态。',
             ],
           )}</div>
-        ${runsTable(overview ? overview.runs : [])}
+        ${runsTable(runs, { inlineDetail: true })}
       </div>
+      ${orphanDetail ? '<div id="ag-run-detail" class="card mb-card"><div class="card-body">'
+        + skeleton(3, 'text') + '</div></div>' : ''}
+      ${waiting.length ? `<div class="card mb-card" >
+        <div class="card-head"><h2>待人工审批动作（${waiting.length} 步）</h2>
+          ${helpTip('审批说明', '智能体中心仅展示审批队列状态，批准与驳回统一在审核中心执行。')}</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th class="num">步</th><th>工具</th><th>目标</th><th>风险</th>
+            <th class="num">有效期到</th><th class="r"></th></tr></thead>
+          <tbody>${waiting.map((s) => `<tr>
+            <td class="num">${s.seq}</td><td>${escapeHtml(s.tool_label)}</td>
+            <td><span class="t-desc">${escapeHtml(s.goal)}</span></td>
+            <td>${chip('gray', s.risk_label)}</td>
+            <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
+            <td class="r"><button class="btn sm bridge" data-goto-review="2">去审核中心 <span class="bridge-arrow" aria-hidden="true">→</span></button></td>
+          </tr>`).join('')}</tbody></table></div></div>` : ''}
       <div id="ag-modal-slot"></div>
     </section>`;
   },
@@ -534,45 +555,6 @@ export default {
       </div>`;
   },
 
-  async runsPane(project) {
-    let runs = [];
-    let waiting = [];
-    let err = null;
-    try {
-      runs = (await api.agentRuns(project.id)).items || [];
-      waiting = store.can('review:read') ? ((await api.agentPending()).items || []) : [];
-    } catch (e) { err = e; }
-    if (openRunId && !runs.some((r) => r.id === openRunId)) openRunId = getParam('agents') ? openRunId : null;
-    // 打开的那条不在本项目列表里（从总览或别人发来的深链进来）时，
-    // 没有可以"贴着展开"的那一行，退回到列表下面单独一张详情卡。
-    const orphanDetail = openRunId && !runs.some((r) => r.id === openRunId);
-    return `
-      ${chatgptPlanCard()}
-      ${err ? `<div class="card mb-card" >${errorBox('读运行列表', err)}</div>` : ''}
-      <div class="card mb-card" >
-        <div class="card-head"><h2>项目编排任务列表</h2>
-          <span class="sub">查看任务计划、步骤与事件流；高风险动作请在审核中心签字</span>
-          <div class="right"><button class="btn primary sm" data-ag-new>新建编排任务</button></div></div>
-        ${runsTable(runs, { inlineDetail: true })}
-      </div>
-      ${orphanDetail ? '<div id="ag-run-detail" class="card mb-card"><div class="card-body">'
-        + skeleton(3, 'text') + '</div></div>' : ''}
-      ${waiting.length ? `<div class="card mb-card" >
-        <div class="card-head"><h2>待人工审批动作（${waiting.length} 步）</h2>
-          <span class="sub">仅展示审批队列状态，批准与驳回统一在审核中心执行</span></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th class="num">步</th><th>工具</th><th>目标</th><th>风险</th>
-            <th class="num">有效期到</th><th class="r"></th></tr></thead>
-          <tbody>${waiting.map((s) => `<tr>
-            <td class="num">${s.seq}</td><td>${escapeHtml(s.tool_label)}</td>
-            <td><span class="t-desc">${escapeHtml(s.goal)}</span></td>
-            <td>${chip('gray', s.risk_label)}</td>
-            <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
-            <td class="r"><button class="btn sm bridge" data-goto-review="2">去审核中心 <span class="bridge-arrow" aria-hidden="true">→</span></button></td>
-          </tr>`).join('')}</tbody></table></div></div>` : ''}
-      <div id="ag-modal-slot"></div>`;
-  },
-
   async mount(root) {
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
     mountChatGPTPlan(root, (id) => {
@@ -610,14 +592,6 @@ export default {
     root.querySelectorAll('[data-open-run]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = Number(btn.dataset.openRun);
-        if (currentSub() !== 2) {
-          // 总览没有详情位：带着这条运行去「运行与审批」，在那一行下面展开
-          openRunId = id;
-          setParam('agents', id);
-          setSub('agents', 2);
-          refresh();
-          return;
-        }
         openRunId = openRunId === id ? null : id;
         setParam('agents', openRunId || undefined);
         refresh();
@@ -647,10 +621,7 @@ export default {
         }
       }
       modal.hidden = false;
-      bindModal(modal, () => {
-        if (currentSub() !== 2) setSub('agents', 2);
-        refresh();
-      }, policies.items || []);
+      bindModal(modal, refresh, policies.items || []);
       bindModalDismiss(modal, () => { modal.hidden = true; });
     });
     root.querySelectorAll('[data-ag-new]').forEach((btn) => {
