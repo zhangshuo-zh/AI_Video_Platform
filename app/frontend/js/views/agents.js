@@ -204,9 +204,9 @@ function legsHtml(configs) {
 function runsTable(runs, { inlineDetail = false } = {}) {
   if (!runs || !runs.length) {
     return `<div class="empty"><div class="empty-t">暂无编排任务记录</div>
-      <p>可点击「新建编排任务」或选择上方快捷制片模板：系统将先规划执行步骤，
-        只读步骤自动完成，涉及付费调用或正式业务写入的步骤将自动暂停等待审核中心签字。</p>
-      <p class="hint">具提交权限的成员可在此发起任务，项目成员可随时追踪任务进度与审批状态。</p></div>`;
+      <p class="hint">${inlineDetail
+        ? '点击右上角「新建编排任务」或展开上方 ChatGPT 草案即可发起'
+        : '选择上方快捷制片模板或点击「新建编排任务」即可发起'}</p></div>`;
   }
   return `<div class="table-wrap"><table>
     <thead><tr><th class="num">#</th><th>任务目标</th><th>状态</th><th class="num">步骤进度</th>
@@ -452,7 +452,14 @@ export default {
       ${quickTemplatesHtml()}
       <div class="card">
         <div class="card-head"><h2>近期编排任务</h2>
-          ${helpTip('任务查看与审批规则', '点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字。')}</div>
+          ${helpTip(
+            '任务执行与审批规则',
+            '点击「详情 →」前往运行与审批查看步骤与事件；所有写操作均须经审核中心签字。',
+            [
+              '<b>自动与人工分工</b>：提交后先规划步骤，只读步骤自动执行；付费调用或正式写库步骤自动暂停等待审核中心签字。',
+              '<b>成员权限范围</b>：具作业提交权限（<code>job:submit</code>）的成员可发起任务，项目成员均可追踪进度与审批状态。',
+            ],
+          )}</div>
         ${runsTable(overview ? overview.runs : [])}
       </div>
       <div id="ag-modal-slot"></div>
