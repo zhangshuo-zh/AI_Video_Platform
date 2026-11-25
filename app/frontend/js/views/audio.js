@@ -126,7 +126,7 @@ export default {
         <p>${escapeHtml(audioCaps?.note
           || '配音 VoxCPM2 · 音乐 ACE-Step · 口型与音效按能力表逐条判')}</p>
         <div class="right">${subRow}${store.can('job:submit')
-          ? '<button class="btn sm" id="au-agent-audit" title="带着当前集前往智能体中心巡检台词与配音缺口">智能体查配音缺口</button>'
+          ? '<button class="btn bridge sm" id="au-agent-audit" title="带着当前集前往智能体中心巡检台词与配音缺口">智能体查配音缺口 <span class="bridge-arrow" aria-hidden="true">→</span></button>'
           : ''}</div>
       </div>
       ${err ? `<div class="card">${errorBox('音频素材', err)}</div>` : ''}

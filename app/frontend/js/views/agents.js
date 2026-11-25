@@ -205,8 +205,8 @@ function legsHtml(configs) {
       <td><span class="t-desc" title="${escapeHtml(c.resident || '')}">${escapeHtml(shortResident(c.resident))}</span></td>
       <td><div class="ag-cred">${escapeHtml(secretText)}</div>
         <div class="t-desc" title="${escapeHtml(c.cost_note || '')}">${escapeHtml(costShort)}</div></td>
-      <td class="ag-act-col"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
-        >前往模型中心</button></td>
+      <td class="ag-act-col"><button class="btn bridge sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
+        >前往模型中心 <span class="bridge-arrow" aria-hidden="true">→</span></button></td>
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table class="ag-legs-table">
@@ -323,8 +323,8 @@ function detailHtml(d) {
           : '没有步骤。'}</p>`}
       ${d.steps.some((s) => s.status === 'awaiting_approval')
         ? `<p class="bar">有步骤在等人批。<b>这一页不能签</b>——批准与驳回只落在审核中心。
-          <button class="btn sm ${canSign ? 'primary' : ''}" data-goto-review="2"
-            ${canSign ? '' : 'disabled title="需要 review:sign"'}>去审核中心</button></p>` : ''}
+          <button class="btn sm ${canSign ? 'bridge' : ''}" data-goto-review="2"
+            ${canSign ? '' : 'disabled title="需要 review:sign"'}>去审核中心 <span class="bridge-arrow" aria-hidden="true">→</span></button></p>` : ''}
       <div class="row u-gap-8 u-mt-12">
         ${canCancel && !d.cancelled ? `<button class="btn sm" data-run-pause="${d.id}"
           ${d.paused ? 'disabled' : ''}>暂停</button>
@@ -385,7 +385,7 @@ function createModal(episodes, policies, options) {
         <p class="bar bad" id="ag-modal-err" hidden></p>
       </div>
       <div class="modal-actions">
-        <button class="btn" data-ag-close>取消</button>
+        <button class="btn ghost" data-ag-close>取消</button>
         <button class="btn primary" data-ag-submit>发起任务</button>
       </div>
     </div>
@@ -503,7 +503,7 @@ export default {
               '<b>凭据安全</b>：密钥仅从系统环境变量或加密密钥库读取，永不入库、不回显。',
             ].filter(Boolean),
           )}
-          <div class="right"><button class="btn" data-goto-models="policy">场景调用策略 →</button></div>
+          <div class="right"><button class="btn bridge" data-goto-models="policy">场景调用策略 <span class="bridge-arrow" aria-hidden="true">→</span></button></div>
         </div>
         ${legsHtml(cache.configs)}
       </div>
@@ -568,7 +568,7 @@ export default {
             <td><span class="t-desc">${escapeHtml(s.goal)}</span></td>
             <td>${chip('gray', s.risk_label)}</td>
             <td class="num"><span class="t-desc">${escapeHtml(s.approval_expires_at || '—')}</span></td>
-            <td class="r"><button class="btn sm primary" data-goto-review="2">去审核中心</button></td>
+            <td class="r"><button class="btn sm bridge" data-goto-review="2">去审核中心 <span class="bridge-arrow" aria-hidden="true">→</span></button></td>
           </tr>`).join('')}</tbody></table></div></div>` : ''}
       <div id="ag-modal-slot"></div>`;
   },

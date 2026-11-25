@@ -24,7 +24,7 @@ export function chatgptPlanCard() {
         <button class="btn sm" data-cg-connect data-oai-siwc-button>Continue with ChatGPT</button>
         <button class="btn sm" data-cg-switch hidden>更换账号</button>
         <button class="btn sm" data-cg-status>刷新连接</button>
-        <button class="btn sm" data-cg-disconnect hidden>断开连接</button></div>
+        <button class="btn ghost sm" data-cg-disconnect hidden>断开连接</button></div>
       <a data-cg-authorize target="_blank" rel="noopener noreferrer" hidden>打开 ChatGPT 授权页面 →</a>
       <div class="chatgpt-plan-fields">
         <label>模型<select class="ctl" data-cg-model aria-label="ChatGPT 模型"><option value="">连接后选择</option></select></label>
@@ -35,7 +35,7 @@ export function chatgptPlanCard() {
       <label class="chatgpt-plan-consent"><input type="checkbox" data-cg-consent>
         <span>同意发送目标、集号、镜头数和平台工具清单给 OpenAI，并使用个人 ChatGPT 套餐额度。</span></label>
       <div class="chatgpt-plan-actions"><button class="btn primary sm" data-cg-generate disabled>生成计划草案</button>
-        <button class="btn sm" data-cg-recover hidden>查询上次结果</button>
+        <button class="btn ghost sm" data-cg-recover hidden>查询上次结果</button>
         <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">查看套餐用量 ↗</a></div>
       <p class="note" data-cg-notice role="status"></p>
       <div data-cg-result hidden></div>

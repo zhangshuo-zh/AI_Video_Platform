@@ -342,7 +342,7 @@ export default {
           </select>
           <button class="btn" id="pb-refine">精细制作</button>
           <button class="btn" id="pb-pipeline">产线生产</button>
-          ${store.can('job:submit') ? '<button class="btn" id="pb-agent-audit" title="带着当前集上下文前往智能体中心发起巡检">智能体巡检</button>' : ''}
+          ${store.can('job:submit') ? '<button class="btn bridge" id="pb-agent-audit" title="带着当前集上下文前往智能体中心发起巡检">智能体巡检 <span class="bridge-arrow" aria-hidden="true">→</span></button>' : ''}
         </div>
       </div>
       <div class="card mb-card" >

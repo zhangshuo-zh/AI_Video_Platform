@@ -133,7 +133,7 @@ export default {
         <div class="right">
           <span class="chip blue">词缀 ${affixes.length}</span>
           <span class="chip ${openCount ? 'yellow' : 'green'}">当前视图 ${issues.length} 条</span>
-          ${store.can('job:submit') ? '<button class="btn sm" id="kn-agent-audit" title="前往智能体中心发起全项目设定与资产矛盾扫描">智能体扫描矛盾</button>' : ''}
+          ${store.can('job:submit') ? '<button class="btn bridge sm" id="kn-agent-audit" title="前往智能体中心发起全项目设定与资产矛盾扫描">智能体扫描矛盾 <span class="bridge-arrow" aria-hidden="true">→</span></button>' : ''}
         </div>
       </div>
       ${err ? `<div class="card">${errorBox('设定中心', err)}</div>` : ''}
