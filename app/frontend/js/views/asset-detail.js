@@ -131,8 +131,8 @@ export async function renderDetail(id) {
           : `${a.kind_label} · ${isGlobal ? '全局资产池（各项目共享引用，不属于单个项目）'
              : '本项目资产'} · ${a.ref_images.length} 张参考图 · 被 ${a.ref_shot_count} 条镜头引用`}</p>
         <div class="right">
+          ${!isNew && canEdit ? '<button class="btn danger" id="ad-del">删除</button>' : ''}
           ${canEdit ? `<button class="btn primary" id="ad-save">${isNew ? '保存并创建' : '保存'}</button>` : ''}
-          ${!isNew && canEdit ? '<button class="btn danger-solid" id="ad-del">删除</button>' : ''}
         </div>
       </div>
 
