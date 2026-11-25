@@ -251,13 +251,11 @@ def config_cards() -> dict:
             }
         adapter = adapters.find("text", backend, row["provider"])
         if adapter is None:
-            card["resident"] = "清单里没有这一档适配器：参数不猜、驻留也不猜"
+            card["resident"] = "未登记适配器"
         elif adapter.code in engines.SERVICE_ENGINES:
-            card["resident"] = ("常驻服务型：平台只打它的端点，"
-                                "模型加载与卸载由该服务自己决定，空闲后是否驻留不归平台管")
+            card["resident"] = "常驻服务型（模型加载由外部服务托管）"
         else:
-            card["resident"] = ("子进程型：每次调用起一个进程、跑完就退，"
-                                "所以「驻留策略」对这一档没有意义（不存在常驻）")
+            card["resident"] = "按次调用型（无常驻内存状态）"
         for instance in engine_instances.instances():
             if instance["engine_code"] == (adapter.code if adapter else ""):
                 card["engines"].append({
@@ -271,9 +269,8 @@ def config_cards() -> dict:
         cards.append(card)
     return {
         "cards": cards,
-        "caliber": ("配置状态＝provider_config 那行填没填；健康＝每次现查（不落库）；"
-                    "驻留＝执行形状的一句说明；运行＝agent_run 的数。"
-                    "这四件事互不等价，界面分开显示"),
+        "caliber": ("配置状态反映模型槽位是否填报；健康状态为进入页面时的实时探活结果（不落库）；"
+                    "驻留状态说明执行形态；运行统计来自实际编排任务记录，四项指标互不等价。"),
         "manifest_version": adapters.MANIFEST_VERSION,
     }
 

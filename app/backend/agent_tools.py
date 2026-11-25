@@ -85,25 +85,19 @@ TOOLS: dict[str, dict] = {
         "risk": "read",
         "perms": ("project:read",),
         "args": {"episode_id": {"type": "int", "required": True}},
-        "data_out": "只读库里已有的数字与句子；不外发任何内容",
-        "verify": "读到的就是产线发起弹窗将要显示的同一份清单（同一个函数、同一份判据）",
+        "data_out": "仅本地读取统计指标与阻塞项，不外发任何内容",
+        "verify": "与产线发起预检共用同一判据函数，结果一致",
     },
     "document_outline": {
         "label": "剧本文档结构解析",
         "risk": "read",
         "perms": ("doc:read",),
         "args": {"document_id": {"type": "int", "required": True}},
-        # 这条不是形式（说明书 §2「云端发送内容需最小化」）：读数只有标题、
-        # 段数、字数、版本号——**正文一个字都不进结果**。
-        # 所以这一步的产物被云端模型读走时，泄露面是零，而不是"大概不多"。
-        "data_out": "只回标题／段落数／字数／版本，不回正文",
-        "verify": "版本令牌就是 document.version 那一列，正文一改读数就跟着变",
+        "data_out": "仅返回元信息（标题、段落数、字数、版本号），不回传正文",
+        "verify": "校验返回版本号与文档版本令牌一致",
     },
     "text_job_submit": {
         "label": "提交文本生成作业",
-        # 按最严的一档登记：今天文本只有云端一条轨（deepseek），要花钱、要出本机。
-        # 等本地文本腿（ollama）实测通过，档位仍留 paid 也不亏——
-        # 参数里带的是正文素材，"不花钱"不等于"可以不给人看"。
         "risk": "paid",
         "perms": ("job:submit",),
         "args": {
@@ -112,9 +106,8 @@ TOOLS: dict[str, dict] = {
             "episode_id": {"type": "int", "required": False},
             "idempotency_key": {"type": "str", "required": False, "max": 120},
         },
-        "data_out": "把 prompt 那一格的内容**逐字**交给所选供应商，不裁剪不摘要",
-        # 验收拿的是 Job 的真实终态与产物文件，不是 Agent 自己说"我做完了"
-        "verify": "作业终态为成功、且产物清单里有一个能读的文本文件才算成",
+        "data_out": "将 prompt 参数完整发送至所选模型供应商",
+        "verify": "校验目标作业终态为成功且产物文件可读",
     },
     "asset_register": {
         "label": "创建项目正式资产",
@@ -127,38 +120,38 @@ TOOLS: dict[str, dict] = {
             "summary": {"type": "str", "required": False, "max": 2000},
             "consistency_prompt": {"type": "str", "required": False, "max": 2000},
         },
-        "data_out": "只写库，不外发任何内容",
-        "verify": "回读那一行：名称与类型必须与批准时逐字一致",
+        "data_out": "仅本地写入资产库，不外发任何内容",
+        "verify": "校验资产库回读名称与类型完全一致",
     },
     "episode_shot_audit": {
         "label": "单集分镜进度与异常镜头巡检",
         "risk": "read",
         "perms": ("project:read",),
         "args": {"episode_id": {"type": "int", "required": True}},
-        "data_out": "只读库里分镜阶段状态与异常镜头编号；不外发任何正文或提示词",
-        "verify": "与项目工作台单集看板调同一个函数（episode_board），结论完全一致",
+        "data_out": "仅本地读取分镜阶段状态与异常编号，不外发正文或提示词",
+        "verify": "与项目工作台单集看板共用同一计算函数，统计一致",
     },
     "episode_audio_audit": {
         "label": "单集对白与配音缺口巡检",
         "risk": "read",
         "perms": ("audio:read",),
         "args": {"episode_id": {"type": "int", "required": True}},
-        "data_out": "只读库里分镜台词存在性与音频片段状态统计；不外发台词正文",
-        "verify": "复用音频中心同一套台词识别与状态同步函数，与音频中心列表口径一致",
+        "data_out": "仅本地统计台词覆盖率与音频状态，不外发台词正文",
+        "verify": "复用音频中心台词识别与状态同步逻辑，口径一致",
     },
     "consistency_scan": {
         "label": "项目设定与资产矛盾扫描",
         "risk": "write",
         "perms": ("doc:write",),
         "args": {},
-        "data_out": "只在本地扫描并写入设定中心审阅列表，不外发任何项目内容",
-        "verify": "扫描结果写入设定中心矛盾审阅表，回读 open_count 与审阅列表一致",
+        "data_out": "仅本地扫描并写入设定中心审阅列表，不外发任何内容",
+        "verify": "校验扫描结果已持久化至设定中心审阅表",
     },
 }
 
 # 有限枚举：写在这里是为了界面与测试都有一处可问，而不是各自硬写四个字符串。
-RISK_LABEL = {"read": "只读", "write": "写入", "paid": "花钱的写入",
-              "formal": "改正式业务事实"}
+RISK_LABEL = {"read": "只读", "write": "写操作（需审批）",
+              "paid": "付费作业（需审批）", "formal": "正式变更（需审批）"}
 
 
 # ---------- 参数校验 ----------

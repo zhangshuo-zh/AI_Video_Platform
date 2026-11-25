@@ -174,7 +174,12 @@ function quickTemplatesHtml() {
   </div>`;
 }
 
-/** 规划推理通道摘要：配置·健康·驻留·端点四件事分开念（说明书 §2「状态概念不混淆」）。 */
+const HEALTH_SHORT = {
+  ok: '可用', missing: '未就绪', unknown: '待探测', unconfigured: '未配置',
+  unregistered: '未登记',
+};
+
+/** 规划推理通道摘要：表内只放标准短态，长说明收进 title 与卡片问号气泡。 */
 function legsHtml(configs) {
   if (!configs || !configs.cards) {
     return '<p class="hint">推理通道详细状态需要系统配置权限；当前角色可查看自己的任务记录。</p>';
@@ -183,17 +188,16 @@ function legsHtml(configs) {
     <td><b>${escapeHtml(c.backend_label)}</b></td>
     <td>${c.configured ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / '))
       : '<span class="t-desc">未配置默认模型</span>'}</td>
-    <td>${chip(HEALTH_TONE[c.health_state] || 'gray',
-      c.health_detail || '未检查')}</td>
+    <td><span title="${escapeHtml(c.health_detail || '未检查')}">${chip(HEALTH_TONE[c.health_state] || 'gray',
+      HEALTH_SHORT[c.health_state] || '待探测')}</span></td>
     <td><span class="t-desc">${escapeHtml(c.endpoint || '（非本机服务型通道）')}</span></td>
     <td><span class="t-desc">${escapeHtml(c.resident || '—')}</span></td>
-    <td class="r"><button class="btn sm" data-goto-models="${escapeHtml(c.backend)}"
+    <td class="r"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
       >前往模型中心</button></td>
   </tr>`).join('');
   return `<div class="table-wrap"><table>
     <thead><tr><th>推理通道</th><th>已配置模型</th><th>健康状态</th><th>服务端点</th>
-      <th>驻留状态</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="card-foot"><p class="modal-meta">${escapeHtml(configs.caliber || '')}</p></div>`;
+      <th>驻留状态</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /**
@@ -479,21 +483,34 @@ export default {
     return `
       <div class="card mb-card" >
         <div class="card-head"><h2>规划推理通道（本地 / 云端）</h2>
-          <span class="sub">统一引用模型中心配置；本页只读，进入时实时检查通道健康</span></div>
+          ${helpTip(
+            '通道与状态口径说明',
+            '统一引用模型中心配置；本页只读，进入时实时检查通道健康。',
+            [
+              escapeHtml((cache.configs && cache.configs.caliber) || ''),
+              '<b>凭据安全</b>：密钥仅从系统环境变量或加密密钥库读取，永不入库、不回显。',
+            ].filter(Boolean),
+          )}</div>
         ${legsHtml(cache.configs)}
         <div class="card-foot">
           ${cards.map((c) => `<p class="modal-meta"><b>${escapeHtml(c.backend_label)}</b>：
             密钥 ${c.key_env
-              ? `${escapeHtml(c.key_env)}·${c.secret_present ? '已配置' : '未配置'}`
-              : '本机服务无需密钥'}（密钥值不入库、不回显）；
-            计价 ${escapeHtml(c.cost_note || '—')}</p>`).join('')}
+              ? `${escapeHtml(c.key_env)}（${c.secret_present ? '已配置' : '未配置'}）`
+              : '本机服务无需密钥'} ｜ 计价参考：${escapeHtml(c.cost_note || '—')}</p>`).join('')}
         </div>
       </div>
       <div class="card">
         <div class="card-head"><h2>授权工具能力目录</h2>
-          <span class="sub">智能体仅允许调用下列白名单工具，按风险等级自动执行或拦截送审</span></div>
+          ${helpTip(
+            '工具白名单与风控边界',
+            '智能体仅允许调用下列白名单工具，按风险等级自动执行或拦截送审。',
+            [
+              escapeHtml((cache.tools && cache.tools.note) || ''),
+              '<b>人工审批门禁</b>：风险等级为写操作 / 付费作业 / 正式变更时，执行前自动暂停并送审核中心签字。',
+            ].filter(Boolean),
+          )}</div>
         <div class="table-wrap"><table>
-          <thead><tr><th>工具标识</th><th>能力说明</th><th>风险等级</th><th>往外送什么</th>
+          <thead><tr><th>工具标识</th><th>能力说明</th><th>风险等级</th><th>数据外发范围</th>
             <th>验收标准</th></tr></thead>
           <tbody>${tools.map(([code, t]) => `<tr>
             <td><code>${escapeHtml(code)}</code></td>
@@ -503,8 +520,7 @@ export default {
             <td><span class="t-desc">${escapeHtml(t.verify)}</span></td></tr>`).join('')}
           </tbody></table></div>
         <div class="card-foot">
-          <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.note) || '')}</p>
-          <p class="modal-meta">${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
+          <p class="modal-meta">安全基线：${escapeHtml((cache.tools && cache.tools.forbidden) || '')}
             ｜单次任务步骤上限 ${escapeHtml(String((cache.tools && cache.tools.max_plan_steps) ?? '—'))} 步</p>
         </div>
       </div>`;

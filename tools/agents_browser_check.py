@@ -324,7 +324,7 @@ def main():
         # 按表头认出"工具白名单"那张表，而不是按下标取第几张——
         # 页面上表格的顺序以后会变，按下标写的验收会变绿得莫名其妙
         rows = P.eval_js(cdp, "(() => { const t = [...document.querySelectorAll('.view.on table')]"
-                              ".find(x => x.innerText.includes('往外送什么'));"
+                              ".find(x => x.innerText.includes('数据外发范围'));"
                               "return t ? t.querySelectorAll('tbody tr').length : 0; })()")
         want = len(tools_api["items"])
         check("工具白名单的行数等于接口给的那几行", rows == want, f"页面 {rows}｜接口 {want}")
@@ -336,7 +336,7 @@ def main():
               (not secret) or secret not in body,
               "环境变量里有值，比对过页面全文")
         check("DEEPSEEK_API_KEY 这个变量名是可以念出来的",
-              "DEEPSEEK_API_KEY" in body or "不需要密钥" in body)
+              "DEEPSEEK_API_KEY" in body or "无需密钥" in body)
         check("驻留那一栏分开说了两族（服务型／子进程型），没混成一个状态",
               "驻留" in body)
         check("有「去模型中心」的跳转而不是第二个配置表单",
