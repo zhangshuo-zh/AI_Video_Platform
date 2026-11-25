@@ -8,7 +8,8 @@ from functools import wraps
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
                      status as http_status)
 
-from services import asset_candidates, content_operations, content_units, asset_media, asset_vision
+from services import asset_candidates, content_operations, content_units, asset_media, asset_random, asset_vision
+from schemas.assets import AssetRandomCharacterIn, AssetRandomCharacterOut
 
 import asset_studio
 import asset_import_recovery
@@ -230,6 +231,14 @@ def create_asset(project_id: int, payload: AssetIn,
     if payload.scope == "global" and not is_manager(user):
         raise HTTPException(status_code=403, detail="全局资产只有管理员能新建")
     return _content_call(content_units.create_asset, project_id, payload)
+
+
+@router.post("/projects/{project_id}/assets/random-character",
+             response_model=AssetRandomCharacterOut)
+def random_character_asset(project_id: int, payload: AssetRandomCharacterIn,
+                           user=Depends(require_permission("asset:write"))) -> AssetRandomCharacterOut:
+    ensure(user, project_id, "write")
+    return _content_call(asset_random.random_character, project_id, int(user["id"]), payload)
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut)

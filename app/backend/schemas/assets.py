@@ -257,3 +257,21 @@ class AssetReversePromptOut(BaseModel):
     provider: str
     model: str
     used_images: list[str] = []
+
+
+class AssetRandomCharacterIn(BaseModel):
+    """随机生成完整角色人设的请求参数。"""
+    theme: str = Field(default="", max_length=200)
+    execution_mode: Literal["auto", "local", "cloud"] = "auto"
+    provider_code: str | None = Field(default=None, max_length=60)
+    model_code: str | None = Field(default=None, max_length=120)
+
+
+class AssetRandomCharacterOut(BaseModel):
+    name: str
+    summary: str
+    tags: list[str] = []
+    aliases: list[str] = []
+    consistency_prompt: str
+    provider: str
+    model: str

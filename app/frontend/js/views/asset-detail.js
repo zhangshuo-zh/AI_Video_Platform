@@ -28,6 +28,7 @@ let cache = null;   // 本次渲染拿到的资产、引用、档案与形态，
 let refs = [];
 let newAssetKind = 'character';
 let pendingImages = [];
+let pendingTurnaroundJob = null; // { assetId, jobId } 创建角色后待自动挂入「三视图」槽位的生成作业
 
 export function setNewAssetKind(kind) {
   newAssetKind = ['character', 'scene', 'prop'].includes(kind) ? kind : 'character';
@@ -77,9 +78,11 @@ export async function renderDetail(id) {
     pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
     pendingImages = [];
   }
-  const newTextOptions = isNew && store.can('job:submit')
-    ? await api.providerOptions().then((rows) => (rows || []).filter((o) => o.capability === 'text')).catch(() => [])
+  const newProviderOptions = isNew && store.can('job:submit')
+    ? await api.providerOptions().catch(() => [])
     : [];
+  const newTextOptions = newProviderOptions.filter((o) => o.capability === 'text');
+  const newImageOptions = newProviderOptions.filter((o) => o.capability === 'image');
   const data = isNew ? {
     isNew: true,
     asset: {
@@ -90,7 +93,8 @@ export async function renderDetail(id) {
       created_at: '', updated_at: '',
     },
     shots: [], refsError: '', profile: null, profileError: '',
-    variants: [], variantsError: '', gens: [], gensError: '', impact: null, textOptions: newTextOptions,
+    variants: [], variantsError: '', gens: [], gensError: '', impact: null,
+    textOptions: newTextOptions, imageOptions: newImageOptions,
   } : await load(id);
   cache = data;
   refs = data.shots || [];
@@ -142,6 +146,42 @@ export async function renderDetail(id) {
             <div class="card-head"><h2>基本信息</h2>
               <span class="sub">名称在同一范围、同一类型里唯一</span></div>
             <div class="card-body">
+              ${isNew && canEdit && store.can('job:submit') && store.currentId ? (() => {
+                const imgOpts = data.imageOptions || [];
+                const isBadImg = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
+                const imgPref = imgOpts.find((o) => o.backend === 'local' && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                  || imgOpts.find((o) => o.backend === 'local' && !isBadImg(o))
+                  || imgOpts.find((o) => o.health_state === 'ok' || o.validation_state === 'ok')
+                  || imgOpts[0];
+                const imgOptHtml = imgOpts.map((o, idx) => {
+                  const val = `${o.backend}|${o.provider}|${o.model}`;
+                  const sel = imgPref && o === imgPref ? ' selected' : (!imgPref && idx === 0 ? ' selected' : '');
+                  const tag = o.backend === 'cloud' ? '云端' : '本地';
+                  const warn = isBadImg(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
+                    : (o.validation_state === 'ok' ? '（已验证）' : '');
+                  return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
+                }).join('');
+                return `<div class="ad-random-card" id="ad-random-card"${a.kind === 'character' ? '' : ' hidden'}>
+                  <div class="ad-random-row">
+                    <div class="ad-random-title"><b>🎲 随机角色抽卡（两步确认流）</b>
+                      <span class="t-dim">第一步随机生成完整人设，可反复重抽微调；第二步保存角色并异步生成三视图</span></div>
+                    <div class="ad-random-controls">
+                      <input class="ctl sm" id="ad-rand-theme" maxlength="100"
+                        placeholder="灵感词（选填，留空纯随机，如：赛博猫娘、白发异瞳）">
+                      <button type="button" class="btn sm" id="ad-rand-btn">🎲 随机生成人设</button>
+                    </div>
+                  </div>
+                  <div class="ad-random-row ad-random-tv">
+                    <label class="ad-tv-label">三视图生图模型
+                      <select class="ctl sm" id="ad-tv-model" aria-label="三视图生图模型">
+                        ${imgOptHtml || '<option value="">暂无可用生图模型（请先到模型中心配置）</option>'}
+                      </select>
+                    </label>
+                    <button type="button" class="btn primary sm" id="ad-save-tv"${imgOpts.length ? '' : ' disabled'}>🎨 保存并生成三视图</button>
+                  </div>
+                  <p class="t-dim ad-random-status" id="ad-rand-status" role="status"></p>
+                </div>`;
+              })() : ''}
               <div class="form-grid">
                 <label for="ad-kind">资产类型</label>
                 <select id="ad-kind" class="ctl"${canEdit ? '' : ' disabled'}>${kindOptions}</select>
@@ -315,6 +355,9 @@ export async function renderDetail(id) {
                 </label>` : ''}
               </div></div>
             <div class="card-body">
+              ${!isNew && pendingTurnaroundJob && pendingTurnaroundJob.assetId === a.id
+                ? `<div class="bar info ad-tv-watch" id="ad-tv-watch" role="status">🎨 正在生成角色三视图（作业 #${pendingTurnaroundJob.jobId}），完成后将自动挂入「三视图」槽位… <a href="#generate/0">去生成中心查看</a></div>`
+                : ''}
               ${isNew ? '<div class="ad-slots" data-ad-slots></div><div class="ad-imgs" data-ad-imgs></div>' : (() => {
                 const { slots, extra } = assignReferenceSlots(a.kind, a.ref_images, a.image_purposes);
                 const canUse = Boolean(store.currentEpisodeId && store.can('job:submit'));
@@ -497,12 +540,12 @@ export function mountDetail(root, id) {
     });
   });
 
-  const saveBtn = root.querySelector('#ad-save');
-  saveBtn?.addEventListener('click', async () => {
-    const name = root.querySelector('#ad-name').value.trim();
-    if (!name) { root.querySelector('#ad-name').focus(); return; }
+  const buildAssetPayload = () => {
+    const nameEl = root.querySelector('#ad-name');
+    const name = nameEl.value.trim();
+    if (!name) { nameEl.focus(); return null; }
     const globalEl = root.querySelector('#ad-global');
-    const payload = {
+    return {
       kind: root.querySelector('#ad-kind').value,
       name,
       summary: root.querySelector('#ad-summary').value.trim(),
@@ -511,28 +554,39 @@ export function mountDetail(root, id) {
       aliases: split(root.querySelector('#ad-aliases').value),
       scope: globalEl?.checked ? 'global' : 'project',
     };
-    if (isNew) {
-      let created = null;
-      const ok = await run('创建资产', async () => {
-        created = await api.createAsset(store.currentId, payload);
-        let known = new Set(created.ref_images || []);
-        for (const item of pendingImages) {
-          const updated = await api.uploadAssetImage(created.id, item.file);
-          const added = (updated?.ref_images || []).find((p) => !known.has(p));
-          if (added) {
-            known.add(added);
-            if (item.slotKey) {
-              await api.setAssetImagePurpose(created.id, {
-                path: added, variant_id: null, purpose: item.slotKey,
-              });
-            }
+  };
+
+  const createNewAsset = async (payload, btn) => {
+    let created = null;
+    const ok = await run('创建资产', async () => {
+      created = await api.createAsset(store.currentId, payload);
+      const known = new Set(created.ref_images || []);
+      for (const item of pendingImages) {
+        const updated = await api.uploadAssetImage(created.id, item.file);
+        const added = (updated?.ref_images || []).find((p) => !known.has(p));
+        if (added) {
+          known.add(added);
+          if (item.slotKey) {
+            await api.setAssetImagePurpose(created.id, {
+              path: added, variant_id: null, purpose: item.slotKey,
+            });
           }
         }
-      }, { btn: saveBtn });
-      if (!ok || !created) return;
-      pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
-      pendingImages = [];
-      openDetail('assets', created.id);
+      }
+    }, { btn });
+    if (!ok || !created) return null;
+    pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+    pendingImages = [];
+    return created;
+  };
+
+  const saveBtn = root.querySelector('#ad-save');
+  saveBtn?.addEventListener('click', async () => {
+    const payload = buildAssetPayload();
+    if (!payload) return;
+    if (isNew) {
+      const created = await createNewAsset(payload, saveBtn);
+      if (created) openDetail('assets', created.id);
       return;
     }
     const ok = await run('保存', () => api.updateAsset(id, {
@@ -541,6 +595,143 @@ export function mountDetail(root, id) {
     }), { btn: saveBtn });
     if (ok) refresh();
   });
+
+  const randomCard = root.querySelector('#ad-random-card');
+  const kindSel = root.querySelector('#ad-kind');
+  if (isNew && randomCard && kindSel) {
+    kindSel.addEventListener('change', () => {
+      randomCard.hidden = kindSel.value !== 'character';
+    });
+  }
+
+  const randBtn = root.querySelector('#ad-rand-btn');
+  const randStatus = root.querySelector('#ad-rand-status');
+  randBtn?.addEventListener('click', async () => {
+    const modelSel = root.querySelector('#ad-ai-model');
+    const picked = modelSel?.value ? modelSel.value.split('|') : null;
+    const mode = picked && picked.length === 3 ? picked[0] : 'auto';
+    const providerCode = picked && picked.length === 3 ? picked[1] : null;
+    const modelCode = picked && picked.length === 3 ? picked[2] : null;
+    if (mode === 'cloud') {
+      const go = await confirmDanger({
+        title: '使用云端文本模型生成随机角色',
+        danger: false,
+        okText: '确认生成',
+        body: `<p>当前将使用云端文本模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b> 随机生成角色人设，可能产生少量云端调用费用。</p>`,
+      });
+      if (!go || !randBtn.isConnected) return;
+    }
+    randBtn.disabled = true;
+    if (randStatus) randStatus.textContent = '正在构思角色设定…';
+    try {
+      const theme = root.querySelector('#ad-rand-theme')?.value.trim() || '';
+      const out = await api.assetRandomCharacter(store.currentId, {
+        theme, execution_mode: mode, provider_code: providerCode, model_code: modelCode,
+      });
+      if (!randBtn.isConnected) return;
+      root.querySelector('#ad-name').value = out.name || '';
+      root.querySelector('#ad-summary').value = out.summary || '';
+      root.querySelector('#ad-tags').value = (out.tags || []).join(', ');
+      root.querySelector('#ad-aliases').value = (out.aliases || []).join(', ');
+      root.querySelector('#ad-prompt').value = out.consistency_prompt || '';
+      randBtn.textContent = '🎲 换一个人设';
+      if (randStatus) {
+        randStatus.textContent = `已通过 ${out.provider} / ${out.model} 生成「${out.name}」，可继续微调或重抽，满意后点「保存并生成三视图」`;
+      }
+    } catch (err) {
+      if (randStatus && randBtn.isConnected) randStatus.textContent = `随机生成失败：${err.message || err}`;
+    } finally {
+      if (randBtn.isConnected) randBtn.disabled = false;
+    }
+  });
+
+  const saveTvBtn = root.querySelector('#ad-save-tv');
+  saveTvBtn?.addEventListener('click', async () => {
+    const payload = buildAssetPayload();
+    if (!payload) return;
+    const tvSel = root.querySelector('#ad-tv-model');
+    const picked = tvSel?.value ? tvSel.value.split('|') : null;
+    if (!picked || picked.length !== 3) {
+      if (randStatus) randStatus.textContent = '暂无可用生图模型，请先到「模型中心」配置图像通道';
+      return;
+    }
+    const [execMode, providerCode, modelCode] = picked;
+    if (execMode === 'cloud') {
+      const go = await confirmDanger({
+        title: '创建角色并提交云端三视图生成',
+        danger: false,
+        okText: '确认创建并生图',
+        body: `<p>将先创建角色「<b>${escapeHtml(payload.name)}</b>」，并提交三视图生成任务到云端模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b>（按模型中心口径计费）。</p>`,
+      });
+      if (!go || !saveTvBtn.isConnected) return;
+    }
+    saveTvBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (randStatus) randStatus.textContent = '正在创建角色并提交三视图生成任务…';
+    const created = await createNewAsset(payload, saveTvBtn);
+    if (!created) {
+      if (saveTvBtn.isConnected) saveTvBtn.disabled = false;
+      if (saveBtn?.isConnected) saveBtn.disabled = false;
+      return;
+    }
+    const coreDesc = payload.consistency_prompt || payload.summary || payload.name;
+    const turnaroundPrompt = `角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯色背景，保持五官发型服装配色完全一致：${coreDesc}`.slice(0, 1000);
+    try {
+      const submitted = await api.assetGenerationSubmit(store.currentId, {
+        operation: 'asset_image',
+        target_asset_id: created.id,
+        image_prompt: turnaroundPrompt,
+        execution_mode: execMode,
+        provider_code: providerCode,
+        model_code: modelCode,
+        params: { width: 1344, height: 768 },
+        user_confirmed_cloud: execMode === 'cloud',
+        idempotency_key: `ad-tv-${created.id}-${Date.now()}`,
+      });
+      pendingTurnaroundJob = { assetId: created.id, jobId: submitted.job_id };
+    } catch (err) {
+      pendingTurnaroundJob = null;
+      if (randStatus && saveTvBtn.isConnected) {
+        randStatus.textContent = `角色已创建，但三视图任务提交失败：${err.message || err}`;
+      }
+    }
+    openDetail('assets', created.id);
+  });
+
+  if (!isNew && pendingTurnaroundJob && pendingTurnaroundJob.assetId === a.id && store.currentId) {
+    const watch = pendingTurnaroundJob;
+    const watchBar = root.querySelector('#ad-tv-watch');
+    (async () => {
+      for (let i = 0; i < 60; i += 1) {
+        await new Promise((r) => setTimeout(r, 2500));
+        if (!root.isConnected || pendingTurnaroundJob?.jobId !== watch.jobId) return;
+        try {
+          const gen = await api.assetGeneration(store.currentId, watch.jobId);
+          if (!root.isConnected || pendingTurnaroundJob?.jobId !== watch.jobId) return;
+          if (gen.status === 'succeeded') {
+            pendingTurnaroundJob = null;
+            const imported = await api.assetImportImage(a.id, { job_id: watch.jobId });
+            if (imported?.path) {
+              await api.setAssetImagePurpose(a.id, { path: imported.path, variant_id: null, purpose: '三视图' });
+            }
+            refresh();
+            return;
+          }
+          if (gen.status === 'failed' || gen.status === 'cancelled') {
+            pendingTurnaroundJob = null;
+            if (watchBar?.isConnected) {
+              watchBar.className = 'bar bad ad-tv-watch';
+              watchBar.textContent = `三视图生成未完成（${publicStatus(gen.status)}）：${gen.error || '请前往生成中心查看'}`;
+            }
+            return;
+          }
+        } catch {
+          // 网络抖动时继续下一轮
+        }
+      }
+      pendingTurnaroundJob = null;
+    })();
+  }
 
   const aiBtn = root.querySelector('#ad-ai-refine');
   const aiStatus = root.querySelector('#ad-ai-status');

@@ -167,6 +167,7 @@ from .asset_media import (
 from .asset_candidates import asset_candidate_review, update_asset_candidate_review, import_asset_candidates
 
 from .asset_vision import reverse_prompt
+from .asset_random import random_character
 
 __all__ = [
     'create_model',

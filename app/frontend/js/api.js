@@ -557,6 +557,7 @@ export const api = {
   },
   deleteAssetVariantImage: (vid, path) => send('DELETE', `/api/asset-variants/${vid}/images?path=${encodeURIComponent(path)}`),
   assetGenerationSubmit: (pid, body) => send('POST', `/api/projects/${pid}/asset-generations`, body),
+  assetRandomCharacter: (pid, body) => send('POST', `/api/projects/${pid}/assets/random-character`, body),
   assetGeneration: (pid, jobId) => get(`/api/projects/${pid}/asset-generations/${jobId}`),
   // 刷新后把"我刚生成的那批"读回来：状态在 job 表里，不在浏览器里攒副本
   //
