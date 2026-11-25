@@ -179,25 +179,40 @@ const HEALTH_SHORT = {
   unregistered: '未登记',
 };
 
-/** 规划推理通道摘要：表内只放标准短态，长说明收进 title 与卡片问号气泡。 */
+/** 规划推理通道摘要：表内只放标准短态与密钥计价，长说明收进 title 与卡片问号气泡。 */
 function legsHtml(configs) {
   if (!configs || !configs.cards) {
     return '<p class="hint">推理通道详细状态需要系统配置权限；当前角色可查看自己的任务记录。</p>';
   }
-  const rows = configs.cards.map((c) => `<tr>
-    <td><b>${escapeHtml(c.backend_label)}</b></td>
-    <td>${c.configured ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / '))
-      : '<span class="t-desc">未配置默认模型</span>'}</td>
-    <td><span title="${escapeHtml(c.health_detail || '未检查')}">${chip(HEALTH_TONE[c.health_state] || 'gray',
-      HEALTH_SHORT[c.health_state] || '待探测')}</span></td>
-    <td><span class="t-desc">${escapeHtml(c.endpoint || '（非本机服务型通道）')}</span></td>
-    <td><span class="t-desc">${escapeHtml(c.resident || '—')}</span></td>
-    <td class="r"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
-      >前往模型中心</button></td>
-  </tr>`).join('');
-  return `<div class="table-wrap"><table>
+  const shortResident = (text) => {
+    if (!text) return '—';
+    const idx = text.indexOf('（');
+    return idx > 0 ? text.slice(0, idx) : text;
+  };
+  const rows = configs.cards.map((c) => {
+    const secretText = c.key_env
+      ? `${c.key_env}（${c.secret_present ? '已配置' : '未配置'}）`
+      : '无需密钥';
+    const costShort = !c.cost_note ? '—'
+      : c.cost_note.includes('不计费') ? '本地不计费'
+      : c.cost_note.split('：').slice(-1)[0].trim();
+    return `<tr>
+      <td class="ag-nowrap"><b>${escapeHtml(c.backend_label)}</b></td>
+      <td>${c.configured ? escapeHtml([c.provider, c.model].filter(Boolean).join(' / '))
+        : '<span class="t-desc">未配置默认模型</span>'}</td>
+      <td><span title="${escapeHtml(c.health_detail || '未检查')}">${chip(HEALTH_TONE[c.health_state] || 'gray',
+        HEALTH_SHORT[c.health_state] || '待探测')}</span></td>
+      <td><span class="t-desc">${escapeHtml(c.endpoint || '—')}</span></td>
+      <td><span class="t-desc" title="${escapeHtml(c.resident || '')}">${escapeHtml(shortResident(c.resident))}</span></td>
+      <td><div class="ag-cred">${escapeHtml(secretText)}</div>
+        <div class="t-desc" title="${escapeHtml(c.cost_note || '')}">${escapeHtml(costShort)}</div></td>
+      <td class="r ag-act-col"><button class="btn sm ag-nowrap" data-goto-models="${escapeHtml(c.backend)}"
+        >前往模型中心</button></td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table class="ag-legs-table">
     <thead><tr><th>推理通道</th><th>已配置模型</th><th>健康状态</th><th>服务端点</th>
-      <th>驻留状态</th><th class="r"></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      <th>驻留状态</th><th>密钥与计价</th><th class="r ag-act-col">操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /**
@@ -478,7 +493,6 @@ export default {
         <p>智能体推理通道直接引用「模型中心」的默认轨配置，无独立副本。</p>
         <p class="hint">你仍可在「运行与审批」中查看和追踪自己发起的任务。</p></div></div>`;
     }
-    const cards = (cache.configs && cache.configs.cards) || [];
     const tools = Object.entries((cache.tools && cache.tools.items) || {});
     return `
       <div class="card mb-card" >
@@ -492,12 +506,6 @@ export default {
             ].filter(Boolean),
           )}</div>
         ${legsHtml(cache.configs)}
-        <div class="card-foot">
-          ${cards.map((c) => `<p class="modal-meta"><b>${escapeHtml(c.backend_label)}</b>：
-            密钥 ${c.key_env
-              ? `${escapeHtml(c.key_env)}（${c.secret_present ? '已配置' : '未配置'}）`
-              : '本机服务无需密钥'} ｜ 计价参考：${escapeHtml(c.cost_note || '—')}</p>`).join('')}
-        </div>
       </div>
       <div class="card">
         <div class="card-head"><h2>授权工具能力目录</h2>
