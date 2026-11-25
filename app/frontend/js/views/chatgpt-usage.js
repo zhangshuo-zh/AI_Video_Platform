@@ -6,14 +6,16 @@ const number = (value) => value == null ? '未记录' : Number(value).toLocaleSt
 
 export function chatgptUsageHtml() {
   return `<details class="chatgpt-usage" data-cg-usage>
-    <summary>本平台使用统计</summary>
+    <summary class="chatgpt-usage-summary"><span>本平台使用统计</span><span class="usage-summary-hint">按北京时间汇总个人草案请求</span></summary>
     <div class="chatgpt-usage-body">
-      <div class="chatgpt-usage-controls">
-        <label>时间<select class="ctl" data-usage-days><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select></label>
-        <label>范围<select class="ctl" data-usage-scope><option value="all">我的可见项目</option><option value="current">当前项目</option></select></label>
-        <button class="btn sm" data-usage-refresh>刷新统计</button>
+      <div class="chatgpt-usage-toolbar">
+        <p class="hint">统计本人在本平台发起的 ChatGPT 草案请求，按北京时间汇总。</p>
+        <div class="chatgpt-usage-controls">
+          <label>时间<select class="ctl" data-usage-days><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select></label>
+          <label>范围<select class="ctl" data-usage-scope><option value="all">我的可见项目</option><option value="current">当前项目</option></select></label>
+          <button class="btn sm" data-usage-refresh>刷新统计</button>
+        </div>
       </div>
-      <p class="hint">统计本人在本平台发起的 ChatGPT 草案请求，按北京时间汇总。</p>
       <div data-usage-content role="region" aria-label="ChatGPT 使用统计"></div>
     </div>
   </details>`;
@@ -39,12 +41,16 @@ function statsHtml(data) {
       <div><b>${empty ? '—' : Math.round(data.succeeded / data.total * 100) + '%'}</b><span>草案成功率</span></div>
       <div><b>${data.avg_duration_ms == null ? '未记录' : (data.avg_duration_ms / 1000).toFixed(1) + ' 秒'}</b><span>平均请求耗时</span></div>
     </div>
-    <div class="usage-chart-head"><h3>每日请求</h3><ul class="usage-legend">${Object.entries(STATES).map(([state, text]) => `<li><i class="usage-${state}"></i>${text} ${number(data[state])}</li>`).join('')}</ul></div>
-    <div class="usage-chart${empty ? ' is-empty' : ''}"><ol class="usage-trend">${trend}</ol>
-      ${empty ? '<p class="usage-chart-empty">这段时间暂无草案请求</p>' : ''}</div>
-    <div class="usage-details-grid"><div><h3>模型分布</h3><ul class="usage-models">${models}</ul></div>
-      <div><h3>已报告 Token</h3><dl class="usage-tokens"><div><dt>输入</dt><dd>${number(data.input_tokens)}</dd></div><div><dt>输出</dt><dd>${number(data.output_tokens)}</dd></div></dl>
-      <p class="hint">输入已记录 ${data.input_samples}/${data.total} 次，输出已记录 ${data.output_samples}/${data.total} 次；耗时已记录 ${data.duration_samples}/${data.total} 次。</p></div></div>
+    <div class="usage-chart-card">
+      <div class="usage-chart-head"><h3>每日请求</h3><ul class="usage-legend">${Object.entries(STATES).map(([state, text]) => `<li><i class="usage-${state}"></i>${text} ${number(data[state])}</li>`).join('')}</ul></div>
+      <div class="usage-chart${empty ? ' is-empty' : ''}"><ol class="usage-trend">${trend}</ol>
+        ${empty ? '<p class="usage-chart-empty">这段时间暂无草案请求</p>' : ''}</div>
+    </div>
+    <div class="usage-details-grid">
+      <div class="usage-detail-card"><h3>模型分布</h3><ul class="usage-models">${models}</ul></div>
+      <div class="usage-detail-card"><h3>已报告 Token</h3><dl class="usage-tokens"><div><dt>输入</dt><dd>${number(data.input_tokens)}</dd></div><div><dt>输出</dt><dd>${number(data.output_tokens)}</dd></div></dl>
+      <p class="hint">输入已记录 ${data.input_samples}/${data.total} 次，输出已记录 ${data.output_samples}/${data.total} 次；耗时已记录 ${data.duration_samples}/${data.total} 次。</p></div>
+    </div>
     ${data.skipped_records ? `<p class="hint">另有 ${data.skipped_records} 条本机记录暂时无法读取。</p>` : ''}`;
 }
 

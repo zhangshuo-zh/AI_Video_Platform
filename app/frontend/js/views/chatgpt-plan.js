@@ -19,27 +19,42 @@ export function chatgptPlanCard() {
       <span class="t-desc" data-cg-account role="status">正在读取连接状态…</span>
       <span class="right cg-fold-hint" aria-hidden="true"></span></summary>
     <div class="card-body chatgpt-plan-body">
-      <p>根据制作目标拆解工具与步骤，预览确认后可创建运行。</p>
-      <div class="row chatgpt-plan-conn">
-        <button class="btn sm" data-cg-connect data-oai-siwc-button>Continue with ChatGPT</button>
-        <button class="btn sm" data-cg-switch hidden>更换账号</button>
-        <button class="btn sm" data-cg-status>刷新连接</button>
-        <button class="btn ghost sm" data-cg-disconnect hidden>断开连接</button></div>
-      <a data-cg-authorize target="_blank" rel="noopener noreferrer" hidden>打开 ChatGPT 授权页面 →</a>
-      <div class="chatgpt-plan-fields">
-        <label>模型<select class="ctl" data-cg-model aria-label="ChatGPT 模型"><option value="">连接后选择</option></select></label>
-        <label>范围<select class="ctl" data-cg-episode aria-label="计划范围"><option value="">整个项目</option></select></label>
+      <div class="chatgpt-plan-conn" data-cg-conn-bar data-cg-state="idle">
+        <div class="chatgpt-conn-info">
+          <div class="chatgpt-conn-badge">
+            <i class="chatgpt-conn-dot" aria-hidden="true"></i>
+            <span class="chatgpt-conn-title" data-cg-conn-label>个人 ChatGPT 套餐</span>
+          </div>
+          <p class="chatgpt-conn-sub">使用个人 ChatGPT 额度拆解工具与步骤，预览草案并确认后再创建运行。</p>
+        </div>
+        <div class="chatgpt-conn-actions">
+          <button class="btn primary sm" data-cg-connect data-oai-siwc-button>Continue with ChatGPT</button>
+          <button class="btn sm" data-cg-switch hidden>更换账号</button>
+          <button class="btn sm" data-cg-status>刷新连接</button>
+          <button class="btn ghost sm" data-cg-disconnect hidden>断开连接</button>
+        </div>
       </div>
-      <label>制作目标<textarea class="ctl" data-cg-goal rows="3" maxlength="2000"
-        placeholder="例：盘点当前集缺少的资产，并安排人物履历与分镜准备步骤"></textarea></label>
-      <label class="chatgpt-plan-consent"><input type="checkbox" data-cg-consent>
-        <span>同意发送目标、集号、镜头数和平台工具清单给 OpenAI，并使用个人 ChatGPT 套餐额度。</span></label>
-      <div class="chatgpt-plan-actions"><button class="btn primary sm" data-cg-generate disabled>生成计划草案</button>
-        <button class="btn ghost sm" data-cg-recover hidden>查询上次结果</button>
-        <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">查看套餐用量 ↗</a></div>
-      <p class="note" data-cg-notice role="status"></p>
-      <div data-cg-result hidden></div>
-      <button class="btn sm" data-cg-accept hidden>确认计划，创建暂停的运行</button>
+      <a class="chatgpt-auth-link" data-cg-authorize target="_blank" rel="noopener noreferrer" hidden>打开 ChatGPT 授权页面 →</a>
+      <div class="chatgpt-plan-composer">
+        <div class="chatgpt-plan-fields">
+          <label><span class="chatgpt-field-label">推理模型</span><select class="ctl" data-cg-model aria-label="ChatGPT 模型"><option value="">连接后选择</option></select></label>
+          <label><span class="chatgpt-field-label">作用范围</span><select class="ctl" data-cg-episode aria-label="计划范围"><option value="">整个项目</option></select></label>
+        </div>
+        <label><span class="chatgpt-field-label">制作目标</span><textarea class="ctl" data-cg-goal rows="3" maxlength="2000"
+          placeholder="例：盘点当前集缺少的资产，并安排人物履历与分镜准备步骤"></textarea></label>
+        <label class="chatgpt-plan-consent"><input type="checkbox" data-cg-consent>
+          <span>同意发送目标、集号、镜头数和平台工具清单给 OpenAI，并使用个人 ChatGPT 套餐额度。</span></label>
+        <div class="chatgpt-plan-actions">
+          <div class="chatgpt-action-left">
+            <button class="btn primary" data-cg-generate disabled>生成计划草案</button>
+            <button class="btn ghost sm" data-cg-recover hidden>查询上次结果</button>
+          </div>
+          <a class="chatgpt-usage-ext" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">查看套餐用量 ↗</a>
+        </div>
+      </div>
+      <p class="note chatgpt-notice" data-cg-notice role="status"></p>
+      <div class="chatgpt-draft-box" data-cg-result hidden></div>
+      <button class="btn primary" data-cg-accept hidden>确认计划，创建暂停的运行</button>
       ${chatgptUsageHtml()}
     </div></details>`;
 }
@@ -80,7 +95,19 @@ export function mountChatGPTPlan(root, onAccepted) {
       const state = await api.chatgptConnection();
       if (!card.isConnected || seq !== revision) return;
       connected = state.connected && state.sharing;
-      $('account').textContent = state.error || (state.pending ? '等待授权，请完成后刷新连接' : connected ? `已连接 ${state.account || 'ChatGPT'}` : state.connected ? '已登录，请重新授权使用套餐' : '尚未连接');
+      const accountText = state.error || (state.pending ? '等待授权，请完成后刷新连接' : connected ? `已连接 ${state.account || 'ChatGPT'}` : state.connected ? '已登录，请重新授权使用套餐' : '尚未连接');
+      $('account').textContent = accountText;
+      const connBar = card.querySelector('[data-cg-conn-bar]');
+      const connLabel = card.querySelector('[data-cg-conn-label]');
+      if (connBar) connBar.dataset.cgState = connected ? 'connected' : (state.pending ? 'pending' : 'idle');
+      if (connLabel) connLabel.textContent = accountText;
+      if (connected) {
+        $('connect').classList.remove('primary');
+        $('connect').hidden = true;
+      } else {
+        $('connect').classList.add('primary');
+        $('connect').hidden = false;
+      }
       if (!state.pending) { $('authorize').hidden = true; $('authorize').removeAttribute('href'); }
       $('disconnect').hidden = !state.connected;
       $('switch').hidden = !state.registered;

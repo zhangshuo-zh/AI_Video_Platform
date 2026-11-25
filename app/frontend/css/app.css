@@ -3902,69 +3902,102 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 .ag-cred{font-size:12px;font-weight:500;color:var(--ink)}
 /* 授权工具能力目录：放开 .t-desc 默认 320px 单行截断，让数据外发范围与验收标准完整铺满右侧 */
 .ag-tools-table .t-desc{max-width:none;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5}
-/* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
-   账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
-   与下面的表单分开——它们是两件事：先连上，再填目标。 */
-.chatgpt-plan-conn{padding-bottom:12px;border-bottom:1px solid var(--line)}
-/* 同意条款离主按钮近一点：它是提交的前提，不该和按钮之间隔着 16px。 */
-.chatgpt-plan-consent{margin-top:-4px}
-/* 外链与主按钮分开：主操作在左，外部跳转退成文字链并靠右。 */
-.chatgpt-plan-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.chatgpt-plan-actions>:last-child{margin-left:auto}
-.chatgpt-plan-body>.row{flex-wrap:wrap;gap:8px}
+/* ChatGPT 制作计划草案：三段式卡片布局（连接状态胶囊 + 起草面板 + 使用统计） */
+.chatgpt-plan-body{display:grid;gap:14px}
+.chatgpt-plan-conn{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;
+  padding:12px 16px;border:1px solid var(--line);border-radius:12px;background:var(--hover-soft)}
+.chatgpt-plan-conn[data-cg-state="connected"]{border-color:var(--ok-line);background:linear-gradient(135deg,var(--ok-soft),var(--hover-soft))}
+.chatgpt-plan-conn[data-cg-state="pending"]{border-color:var(--warn-line,var(--line));background:var(--warn-soft,var(--hover-soft))}
+.chatgpt-conn-info{display:grid;gap:3px;min-width:0}
+.chatgpt-conn-badge{display:flex;align-items:center;gap:8px;min-width:0}
+.chatgpt-conn-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ink-3)}
+.chatgpt-plan-conn[data-cg-state="connected"] .chatgpt-conn-dot{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft)}
+.chatgpt-plan-conn[data-cg-state="pending"] .chatgpt-conn-dot{background:var(--warn)}
+.chatgpt-conn-title{font-size:13px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.chatgpt-conn-sub{margin:0;font-size:var(--fs-aux);color:var(--ink-2);line-height:1.45}
+.chatgpt-conn-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+.chatgpt-auth-link{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:6px 12px;
+  border-radius:8px;border:1px solid var(--accent-line,var(--line));background:var(--accent-soft);
+  font-size:var(--fs-aux);font-weight:500;color:var(--accent);text-decoration:none}
+.chatgpt-auth-link:hover{filter:brightness(1.04)}
+
+.chatgpt-plan-composer{display:grid;gap:14px;padding:16px;border:1px solid var(--line);
+  border-radius:12px;background:var(--surface,var(--panel))}
+.chatgpt-field-label{font-size:12px;font-weight:600;color:var(--ink-2)}
+.chatgpt-plan-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:4px}
+.chatgpt-action-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chatgpt-usage-ext{margin-left:auto;display:inline-flex;align-items:center;gap:4px;padding:5px 12px;
+  border:1px solid var(--line);border-radius:999px;background:var(--hover-soft);
+  font-size:var(--fs-aux);color:var(--ink-2);text-decoration:none;transition:border-color var(--fast),color var(--fast),background var(--fast)}
+.chatgpt-usage-ext:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.chatgpt-notice:empty{display:none}
 .chatgpt-plan-body>[data-cg-accept]{justify-self:start}
 .chatgpt-plan-body [data-cg-account]{overflow-wrap:anywhere;min-width:0}
 .chatgpt-plan-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .chatgpt-plan-body label{display:grid;gap:6px;min-width:0}
 .chatgpt-plan-body .ctl{width:100%;min-width:0}
 .chatgpt-plan-body label.chatgpt-plan-consent{display:flex;align-items:flex-start;gap:10px;
-  color:var(--ink-2);padding:10px 12px;border:1px solid var(--line);border-radius:10px;
-  background:var(--field);line-height:1.55;cursor:pointer}
-/* 勾上之后把边框点亮：这是提交的前提，光靠一个小方框看不出「必须勾」。 */
+  color:var(--ink-2);padding:11px 14px;border:1px solid var(--line);border-radius:10px;
+  background:var(--field);line-height:1.55;cursor:pointer;transition:border-color var(--fast),background var(--fast)}
 .chatgpt-plan-body label.chatgpt-plan-consent:has(input:checked){border-color:var(--ok-line);
-  background:var(--ok-soft)}
+  background:var(--ok-soft);color:var(--ink)}
 .chatgpt-plan-consent input{margin-top:4px;flex:none}
-.chatgpt-plan-steps{padding-left:24px;display:grid;gap:12px}
-.chatgpt-plan-steps li{line-height:1.6;overflow-wrap:anywhere}
+.chatgpt-draft-box{padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--hover-soft)}
+.chatgpt-plan-steps{padding-left:20px;display:grid;gap:10px;margin-top:10px}
+.chatgpt-plan-steps li{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface,var(--panel));line-height:1.6;overflow-wrap:anywhere}
 .chatgpt-plan-steps .chip{margin-left:8px}
-.chatgpt-plan-steps pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:8px;background:var(--hover-soft)}
+.chatgpt-plan-steps pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;border-radius:8px;background:var(--hover-soft);margin-top:6px;font-size:12px}
 @media(max-width:600px){.chatgpt-plan-fields{grid-template-columns:minmax(0,1fr)}}
 
-.chatgpt-usage{border-top:1px solid var(--line);padding-top:12px}
-.chatgpt-usage>summary{cursor:pointer;font-weight:600;color:var(--ink)}
-.chatgpt-usage-body{display:grid;gap:16px;padding-top:12px;min-width:0}
-.chatgpt-usage-controls{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px}
-.chatgpt-usage-controls label{width:140px;font-size:var(--fs-aux);color:var(--ink-2)}
-.usage-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:20px}
-.usage-summary>div{display:grid;gap:4px;padding:12px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--hover-soft)}
-.usage-summary b{font-size:var(--stat-n);line-height:1.3;font-variant-numeric:tabular-nums}
+.chatgpt-usage{border:1px solid var(--line);border-radius:12px;background:var(--hover-soft);overflow:hidden}
+.chatgpt-usage-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 16px;cursor:pointer;font-weight:600;color:var(--ink);list-style:none}
+.chatgpt-usage-summary::-webkit-details-marker{display:none}
+.chatgpt-usage-summary:hover{background:var(--row-hover)}
+.usage-summary-hint{font-size:var(--fs-aux);font-weight:400;color:var(--ink-3);margin-right:auto;margin-left:8px}
+.chatgpt-usage-summary::after{content:'展开 ▾';font-size:var(--fs-aux);font-weight:400;color:var(--ink-3)}
+.chatgpt-usage[open] .chatgpt-usage-summary::after{content:'收起 ▴'}
+.chatgpt-usage[open] .chatgpt-usage-summary{border-bottom:1px solid var(--line)}
+.chatgpt-usage-body{display:grid;gap:14px;padding:14px 16px 16px;min-width:0;background:var(--surface,var(--panel))}
+.chatgpt-usage-toolbar{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.chatgpt-usage-toolbar>.hint{margin:0;align-self:center}
+.chatgpt-usage-controls{display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px}
+.chatgpt-usage-controls label{width:136px;font-size:var(--fs-aux);color:var(--ink-2)}
+.usage-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.usage-summary>div{display:grid;gap:4px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;
+  background:var(--hover-soft);border-left:3px solid var(--accent-line,var(--line))}
+.usage-summary b{font-size:20px;line-height:1.3;font-variant-numeric:tabular-nums;color:var(--ink)}
 .usage-summary span,.usage-legend{color:var(--ink-2);font-size:var(--fs-aux)}
+.usage-chart-card{padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--hover-soft);display:grid;gap:10px}
 .usage-chart-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}
 .chatgpt-usage h3{font-size:var(--fs-strong);font-weight:600;margin:0}
-.usage-legend{display:flex;flex-wrap:wrap;gap:8px 12px;list-style:none}
-.usage-legend li{display:flex;align-items:center;gap:4px}
+.usage-legend{display:flex;flex-wrap:wrap;gap:8px 14px;list-style:none}
+.usage-legend li{display:flex;align-items:center;gap:5px}
 .usage-legend i{width:7px;height:7px;border-radius:50%}
 .usage-succeeded{background:var(--ok)}
 .usage-failed{background:var(--bad)}
 .usage-unconfirmed{background:var(--warn)}
 .usage-generating{background:var(--accent)}
-.usage-trend{display:flex;align-items:flex-end;gap:4px;list-style:none;padding:12px 0 0;margin-bottom:24px;border-bottom:1px solid var(--line)}
+.usage-trend{display:flex;align-items:flex-end;gap:4px;list-style:none;padding:8px 0 0;margin-bottom:22px;border-bottom:1px solid var(--line)}
 .usage-trend li{flex:1;min-width:0;text-align:center;font-size:10px;position:relative}
-.usage-day-count{display:block;height:18px;color:var(--ink-2)}
-.usage-day-track{height:100px;display:flex;align-items:flex-end;justify-content:center}
+.usage-day-count{display:block;height:16px;color:var(--ink-2)}
+.usage-day-track{height:84px;display:flex;align-items:flex-end;justify-content:center}
+.usage-chart.is-empty .usage-day-track{height:60px}
 .usage-day-stack{width:100%;max-width:36px;display:flex;flex-direction:column;justify-content:flex-end;border-radius:4px 4px 0 0;overflow:hidden}
 .usage-day-stack>span{display:block;width:100%;flex-shrink:0}
 .usage-day-label{display:block;position:absolute;top:100%;left:50%;transform:translateX(-50%);padding-top:4px;color:var(--ink-2);white-space:nowrap}
-.usage-details-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}
+.usage-details-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.usage-detail-card{padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--hover-soft)}
 .usage-models{display:grid;gap:12px;list-style:none;margin-top:12px}
 .usage-models li>div:first-child{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:var(--fs-aux)}
 .usage-models b{font-weight:500;min-width:0;overflow-wrap:anywhere}
 .usage-models li span{flex-shrink:0;color:var(--ink-2)}
 .usage-model-track{height:6px;background:var(--hover-strong);border-radius:4px;margin-top:4px;overflow:hidden}
 .usage-model-track>span{display:block;height:100%;background:var(--accent);border-radius:inherit}
-.usage-tokens{display:flex;gap:24px;margin:12px 0}
+.usage-tokens{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0 10px}
+.usage-tokens>div{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface,var(--panel))}
 .usage-tokens dt{font-size:var(--fs-aux);color:var(--ink-2)}
-.usage-tokens dd{font-size:var(--fs-strong);font-weight:600}
+.usage-tokens dd{font-size:var(--fs-strong);font-weight:600;margin:2px 0 0;font-variant-numeric:tabular-nums}
 @media(max-width:600px){
   .usage-summary{gap:6px}
   .usage-summary>div{padding:8px}
@@ -3975,10 +4008,12 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 }
 
 .usage-chart{position:relative}
-.usage-chart.is-empty .usage-trend{background:repeating-linear-gradient(to top,transparent 0 24px,var(--line) 24px 25px)}
+.usage-chart.is-empty .usage-trend{background:repeating-linear-gradient(to top,transparent 0 20px,var(--line) 20px 21px)}
 .usage-chart.is-empty .usage-day-track{position:relative}
 .usage-chart.is-empty .usage-day-track::after{content:'';position:absolute;bottom:0;width:6px;height:2px;background:var(--ink-3);border-radius:2px}
-.usage-chart-empty{position:absolute;left:0;right:0;top:40%;text-align:center;font-size:var(--fs-aux);color:var(--ink-2);pointer-events:none}
+.usage-chart-empty{position:absolute;left:50%;top:36%;transform:translate(-50%,-50%);padding:4px 12px;
+  border-radius:999px;border:1px solid var(--line);background:var(--surface,var(--panel));
+  font-size:var(--fs-aux);color:var(--ink-2);pointer-events:none;white-space:nowrap}
 
 /* ==========================================================================
    影视与 AI 创作微动效及工具类 (Phase 1 基础库)
