@@ -503,7 +503,7 @@ export default {
               '<b>凭据安全</b>：密钥仅从系统环境变量或加密密钥库读取，永不入库、不回显。',
             ].filter(Boolean),
           )}
-          <div class="right"><button class="btn sm" data-goto-models="policy">场景调用策略 →</button></div>
+          <div class="right"><button class="btn" data-goto-models="policy">场景调用策略 →</button></div>
         </div>
         ${legsHtml(cache.configs)}
       </div>
