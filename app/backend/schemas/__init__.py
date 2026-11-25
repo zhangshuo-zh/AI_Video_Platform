@@ -38,7 +38,8 @@
 from .assets import (
     AssetProfileIn, AssetProfileOut, VariantIn, VariantUpdateIn, VariantOut, AssetGenIn,
     AssetGenOut, AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut, AssetImagePurposeIn,
-    AssetImageBatchIn, AssetCandidateReviewIn, AssetReversePromptIn, AssetReversePromptOut
+    AssetImageBatchIn, AssetCandidateReviewIn, AssetReversePromptIn, AssetReversePromptOut,
+    AssetRandomCharacterIn, AssetRandomCharacterOut,
 )
 
 from .audio import (
@@ -422,7 +423,8 @@ __all__ = [
     "AgentActionQueueOut", "AgentConfigsOut", "AgentOverviewOut", "AgentPendingOut",
     "AgentPlanOptionsOut", "AgentRunCreateOut", "AgentRunDetailOut", "AgentRunListOut",
     "AgentStepReviewOut", "AgentToolsOut", "AssetImpactOut", "AssetReversePromptIn",
-    "AssetReversePromptOut", "AudioCapabilitiesOut",
+    "AssetReversePromptOut", "AssetRandomCharacterIn", "AssetRandomCharacterOut",
+    "AudioCapabilitiesOut",
     "AuthProfileOut", "ChatGPTAcceptOut", "ChatGPTConnectionOut", "ChatGPTDraftOut",
     "ChatGPTModelsOut", "ChatGPTUsageOut", "ConfigChangesOut", "ContextOut",
     "EngineActionOut", "EngineListOut", "EngineMutationOut", "EngineProbeOut",

@@ -147,28 +147,50 @@ export async function renderDetail(id) {
               <span class="sub">名称在同一范围、同一类型里唯一</span></div>
             <div class="card-body">
               ${isNew && canEdit && store.can('job:submit') && store.currentId ? (() => {
+                const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
+                const textOpts = data.textOptions || [];
+                const textPref = textOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                  || textOpts.find((o) => !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                  || textOpts.find((o) => !isBadHealth(o))
+                  || textOpts[0];
+                const textOptHtml = textOpts.map((o, idx) => {
+                  const val = `${o.backend}|${o.provider}|${o.model}`;
+                  const sel = textPref && o === textPref ? ' selected' : (!textPref && idx === 0 ? ' selected' : '');
+                  const tag = o.backend === 'cloud' ? '云端' : '本地';
+                  const warn = isBadHealth(o)
+                    ? (o.backend === 'local' && o.provider === 'ollama' ? '（未启动，将自动拉起）' : `（${HEALTH_LABEL[o.health_state] || '不可用'}）`)
+                    : (o.validation_state === 'ok' ? '（已验证）' : '');
+                  return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
+                }).join('');
                 const imgOpts = data.imageOptions || [];
-                const isBadImg = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
-                const imgPref = imgOpts.find((o) => o.backend === 'local' && (o.health_state === 'ok' || o.validation_state === 'ok'))
-                  || imgOpts.find((o) => o.backend === 'local' && !isBadImg(o))
-                  || imgOpts.find((o) => o.health_state === 'ok' || o.validation_state === 'ok')
+                const imgPref = imgOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                  || imgOpts.find((o) => !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                  || imgOpts.find((o) => !isBadHealth(o))
                   || imgOpts[0];
                 const imgOptHtml = imgOpts.map((o, idx) => {
                   const val = `${o.backend}|${o.provider}|${o.model}`;
                   const sel = imgPref && o === imgPref ? ' selected' : (!imgPref && idx === 0 ? ' selected' : '');
                   const tag = o.backend === 'cloud' ? '云端' : '本地';
-                  const warn = isBadImg(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
+                  const warn = isBadHealth(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
                     : (o.validation_state === 'ok' ? '（已验证）' : '');
                   return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
                 }).join('');
                 return `<div class="ad-random-card" id="ad-random-card"${a.kind === 'character' ? '' : ' hidden'}>
                   <div class="ad-random-row">
                     <div class="ad-random-title"><b>🎲 随机角色抽卡（两步确认流）</b>
-                      <span class="t-dim">第一步随机生成完整人设，可反复重抽微调；第二步保存角色并异步生成三视图</span></div>
+                      <span class="t-dim">第一步选模型随机生成完整人设，可反复重抽微调；第二步保存角色并异步生成三视图</span></div>
+                  </div>
+                  <div class="ad-random-row">
+                    <label class="ad-tv-label">人设文本模型
+                      <select class="ctl sm" id="ad-rand-model" aria-label="人设文本模型">
+                        ${textOptHtml || '<option value="">暂无可用文本模型（请先到模型中心配置）</option>'}
+                      </select>
+                    </label>
                     <div class="ad-random-controls">
                       <input class="ctl sm" id="ad-rand-theme" maxlength="100"
                         placeholder="灵感词（选填，留空纯随机，如：赛博猫娘、白发异瞳）">
                       <button type="button" class="btn sm" id="ad-rand-btn">🎲 随机生成人设</button>
+                      <button type="button" class="btn sm" id="ad-rand-cancel" hidden>取消</button>
                     </div>
                   </div>
                   <div class="ad-random-row ad-random-tv">
@@ -210,9 +232,9 @@ export async function renderDetail(id) {
                   ${canEdit && store.can('job:submit') && store.currentId ? (() => {
                     const textOpts = data.textOptions || [];
                     const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
-                    const preferred = textOpts.find((o) => o.backend === 'local' && (o.health_state === 'ok' || o.validation_state === 'ok'))
-                      || textOpts.find((o) => o.backend === 'local' && !isBadHealth(o))
-                      || textOpts.find((o) => o.health_state === 'ok' || o.validation_state === 'ok')
+                    const preferred = textOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                      || textOpts.find((o) => !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                      || textOpts.find((o) => !isBadHealth(o))
                       || textOpts[0];
                     const optHtml = textOpts.map((o, idx) => {
                       const val = `${o.backend}|${o.provider}|${o.model}`;
@@ -605,9 +627,24 @@ export function mountDetail(root, id) {
   }
 
   const randBtn = root.querySelector('#ad-rand-btn');
+  const randCancelBtn = root.querySelector('#ad-rand-cancel');
+  const randThemeInput = root.querySelector('#ad-rand-theme');
   const randStatus = root.querySelector('#ad-rand-status');
+  let randAbort = null;
+  let randCanceled = false;
+  randCancelBtn?.addEventListener('click', () => {
+    if (!randAbort) return;
+    randCanceled = true;
+    randAbort.abort();
+  });
+  randThemeInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing && randBtn && !randBtn.disabled) {
+      e.preventDefault();
+      randBtn.click();
+    }
+  });
   randBtn?.addEventListener('click', async () => {
-    const modelSel = root.querySelector('#ad-ai-model');
+    const modelSel = root.querySelector('#ad-rand-model') || root.querySelector('#ad-ai-model');
     const picked = modelSel?.value ? modelSel.value.split('|') : null;
     const mode = picked && picked.length === 3 ? picked[0] : 'auto';
     const providerCode = picked && picked.length === 3 ? picked[1] : null;
@@ -621,13 +658,42 @@ export function mountDetail(root, id) {
       });
       if (!go || !randBtn.isConnected) return;
     }
+    const modelLabel = providerCode && modelCode ? `${providerCode} / ${modelCode}` : '默认文本模型';
+    const startedAt = Date.now();
+    const ctl = new AbortController();
+    randAbort = ctl;
+    randCanceled = false;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      ctl.abort();
+    }, 120_000);
+    const updateWaiting = () => {
+      if (!randStatus || !randBtn.isConnected) return;
+      const sec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+      const hint = mode === 'local' || mode === 'auto' ? '，本地模型首次加载可能较慢' : '';
+      randStatus.textContent = `正在通过 ${modelLabel} 构思角色设定…（已等待 ${sec}s${hint}）`;
+    };
+    let tickId = 0;
+    const scheduleTick = () => {
+      tickId = setTimeout(() => {
+        if (!randBtn.isConnected) {
+          ctl.abort();
+          return;
+        }
+        if (!document.hidden) updateWaiting();
+        scheduleTick();
+      }, 1000);
+    };
+    scheduleTick();
     randBtn.disabled = true;
-    if (randStatus) randStatus.textContent = '正在构思角色设定…';
+    if (randCancelBtn) randCancelBtn.hidden = false;
+    if (randStatus) randStatus.textContent = `正在通过 ${modelLabel} 构思角色设定…`;
     try {
-      const theme = root.querySelector('#ad-rand-theme')?.value.trim() || '';
+      const theme = randThemeInput?.value.trim() || '';
       const out = await api.assetRandomCharacter(store.currentId, {
         theme, execution_mode: mode, provider_code: providerCode, model_code: modelCode,
-      });
+      }, { signal: ctl.signal });
       if (!randBtn.isConnected) return;
       root.querySelector('#ad-name').value = out.name || '';
       root.querySelector('#ad-summary').value = out.summary || '';
@@ -635,13 +701,26 @@ export function mountDetail(root, id) {
       root.querySelector('#ad-aliases').value = (out.aliases || []).join(', ');
       root.querySelector('#ad-prompt').value = out.consistency_prompt || '';
       randBtn.textContent = '🎲 换一个人设';
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      const startedHint = out.ollama_auto_started ? '已自动拉起本地 Ollama 并' : '已';
       if (randStatus) {
-        randStatus.textContent = `已通过 ${out.provider} / ${out.model} 生成「${out.name}」，可继续微调或重抽，满意后点「保存并生成三视图」`;
+        randStatus.textContent = `${startedHint}通过 ${out.provider} / ${out.model} 生成「${out.name}」（耗时 ${elapsed}s），可继续微调或重抽，满意后点「保存并生成三视图」`;
       }
     } catch (err) {
-      if (randStatus && randBtn.isConnected) randStatus.textContent = `随机生成失败：${err.message || err}`;
+      if (!randStatus || !randBtn.isConnected) return;
+      if (randCanceled) {
+        randStatus.textContent = '已取消本次随机生成';
+      } else if (timedOut) {
+        randStatus.textContent = '随机生成超时（120 秒未返回），请确认文本模型运行正常，或切换更快的模型后重试';
+      } else {
+        randStatus.textContent = `随机生成失败：${err.message || err}`;
+      }
     } finally {
+      clearTimeout(timeoutId);
+      clearTimeout(tickId);
+      if (randAbort === ctl) randAbort = null;
       if (randBtn.isConnected) randBtn.disabled = false;
+      if (randCancelBtn?.isConnected) randCancelBtn.hidden = true;
     }
   });
 

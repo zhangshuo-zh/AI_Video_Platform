@@ -5,7 +5,7 @@
 """
 from functools import wraps
 
-from fastapi import (APIRouter, Depends, File, HTTPException, Query, UploadFile,
+from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request, UploadFile,
                      status as http_status)
 
 from services import asset_candidates, content_operations, content_units, asset_media, asset_random, asset_vision
@@ -13,6 +13,7 @@ from schemas.assets import AssetRandomCharacterIn, AssetRandomCharacterOut
 
 import asset_studio
 import asset_import_recovery
+import engine_launch
 import production as production_mod
 from access import ensure, ensure_asset, ensure_by, is_manager
 from deps import actor_name, require_permission
@@ -236,9 +237,15 @@ def create_asset(project_id: int, payload: AssetIn,
 @router.post("/projects/{project_id}/assets/random-character",
              response_model=AssetRandomCharacterOut)
 def random_character_asset(project_id: int, payload: AssetRandomCharacterIn,
+                           request: Request,
                            user=Depends(require_permission("asset:write"))) -> AssetRandomCharacterOut:
     ensure(user, project_id, "write")
-    return _content_call(asset_random.random_character, project_id, int(user["id"]), payload)
+    client = request.client.host if request.client else ""
+    allow_auto_start = client in engine_launch.LOOPBACK and is_manager(user)
+    return _content_call(
+        asset_random.random_character, project_id, int(user["id"]), payload,
+        allow_auto_start=allow_auto_start,
+    )
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut)

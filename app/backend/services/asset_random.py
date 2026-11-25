@@ -1,12 +1,13 @@
 """Randomly draft a complete character asset profile using configured text models."""
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 import os
 import re
 import secrets
 import time
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidTag
@@ -14,6 +15,7 @@ from cryptography.exceptions import InvalidTag
 import chatgpt_plan
 import chatgpt_usage
 import cloud_run
+import engine_launch
 import secret_store
 from repositories.content import assets
 from repositories.engine_instances import engine_instances
@@ -25,7 +27,11 @@ from .asset_vision_transport import _VisionError, _request
 from .content_operations import ContentOperationError
 
 _MAX_REQUESTS = BoundedSemaphore(4)
-_TOTAL_SECONDS = 90.0
+_OLLAMA_LAUNCH_LOCK = Lock()
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_ALLOW_AUTO_START: ContextVar[bool] = ContextVar("asset_random_allow_auto_start", default=False)
+_OLLAMA_STARTED: ContextVar[bool] = ContextVar("asset_random_ollama_started", default=False)
+_TOTAL_SECONDS = 110.0
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 _CREDENTIAL = re.compile(r"\b(?:authorization\s*[:=]|bearer\s+|sk-[a-z0-9_-]{12,})", re.I)
@@ -70,7 +76,31 @@ def _resolve_secret(env_name: str) -> str:
         return ""
 
 
+def _pick_ollama_model(models: list[str], explicit_model: str | None) -> str:
+    if explicit_model:
+        hit = next((m for m in models if m == explicit_model or m == explicit_model + ":latest"), None)
+        if hit:
+            return hit
+    return models[0]
+
+
+def _extract_ollama_models(tags: object) -> list[str]:
+    if not isinstance(tags, dict):
+        return []
+    raw_models = tags.get("models")
+    if not isinstance(raw_models, list):
+        return []
+    out: list[str] = []
+    for m in raw_models:
+        if isinstance(m, dict):
+            name = m.get("name")
+            if isinstance(name, str):
+                out.append(name)
+    return out
+
+
 def _ollama_endpoint_and_model(explicit_model: str | None, deadline: float) -> tuple[str, str]:
+    candidates: list[tuple[str, bool]] = []
     for inst in engine_instances.instances():
         if inst["engine_code"] != "ollama" or not inst["enabled"]:
             continue
@@ -83,24 +113,49 @@ def _ollama_endpoint_and_model(explicit_model: str | None, deadline: float) -> t
                 continue
         except ValueError:
             continue
+        is_local = (parsed.hostname or "").lower() in _LOOPBACK_HOSTS
+        candidates.append((endpoint, is_local))
         try:
             tags = _request(endpoint + "/api/tags", label="Ollama", deadline=deadline, idle=2.5)
         except _VisionError:
             continue
-        models = [m.get("name") for m in (tags.get("models") or []) if isinstance(m, dict) and isinstance(m.get("name"), str)]
-        if not models:
-            continue
-        if explicit_model:
-            hit = next((m for m in models if m == explicit_model or m == explicit_model + ":latest"), None)
-            if hit:
-                return endpoint, hit
-        return endpoint, models[0]
+        models = _extract_ollama_models(tags)
+        if models:
+            return endpoint, _pick_ollama_model(models, explicit_model)
+
+    launch_note = ""
+    if _ALLOW_AUTO_START.get():
+        local_endpoints = [ep for ep, is_local in candidates if is_local]
+        for endpoint in local_endpoints:
+            with _OLLAMA_LAUNCH_LOCK:
+                result = engine_launch.launch("ollama", endpoint)
+            if not result.reachable:
+                launch_note = result.message
+                continue
+            try:
+                tags = _request(endpoint + "/api/tags", label="Ollama",
+                                deadline=min(deadline, time.monotonic() + 5), idle=3.0)
+            except _VisionError:
+                continue
+            models = _extract_ollama_models(tags)
+            if models:
+                if result.started:
+                    _OLLAMA_STARTED.set(True)
+                return endpoint, _pick_ollama_model(models, explicit_model)
+            launch_note = "已启动本地 Ollama，但尚未拉取任何文本模型"
+
+    if launch_note:
+        raise _VisionError(
+            503,
+            f"未找到可用的 Ollama 文本模型（自动拉起结果：{launch_note}），请检查模型或切换云端通道",
+            unavailable=True,
+        )
     raise _VisionError(503, "未找到可用的 Ollama 文本模型，请检查本地实例或切换云端通道", unavailable=True)
 
 
 def _run_ollama(instruction: str, model: str | None, deadline: float) -> tuple[str, str]:
     endpoint, chosen = _ollama_endpoint_and_model(model, min(deadline, time.monotonic() + 6))
-    result = _request(endpoint + "/api/chat", label="Ollama", deadline=deadline, idle=45, body={
+    result = _request(endpoint + "/api/chat", label="Ollama", deadline=deadline, idle=90, body={
         "model": chosen,
         "messages": [{"role": "user", "content": instruction}],
         "format": "json", "think": False, "stream": False,
@@ -119,7 +174,7 @@ def _run_deepseek(instruction: str, model: str | None, deadline: float) -> tuple
         raise _VisionError(424, "未配置 DEEPSEEK_API_KEY", unavailable=True)
     chosen = model or _DEFAULT_DEEPSEEK_MODEL
     base = (os.environ.get("DEEPSEEK_BASE_URL") or cloud_run.DEFAULT_DEEPSEEK_BASE).rstrip("/")
-    result = _request(f"{base}/chat/completions", label="DeepSeek", deadline=deadline, idle=45, token=key, body={
+    result = _request(f"{base}/chat/completions", label="DeepSeek", deadline=deadline, idle=60, token=key, body={
         "model": chosen,
         "messages": [{"role": "user", "content": instruction}],
         "temperature": 0.9,
@@ -129,7 +184,8 @@ def _run_deepseek(instruction: str, model: str | None, deadline: float) -> tuple
     choices = result.get("choices") if isinstance(result, dict) else None
     first = choices[0] if isinstance(choices, list) and choices else None
     msg = first.get("message") if isinstance(first, dict) else None
-    text = msg.get("content") if isinstance(msg, dict) and isinstance(msg.get("content"), str) else ""
+    raw_content = msg.get("content") if isinstance(msg, dict) else None
+    text = raw_content if isinstance(raw_content, str) else ""
     return (text if key not in text else ""), chosen
 
 
@@ -147,7 +203,7 @@ def _run_gemini(instruction: str, model: str | None, deadline: float) -> tuple[s
         gen_config["thinkingConfig"] = tcfg
     result = _request(
         f"{base}/v1beta/models/{chosen}:generateContent",
-        label="Gemini", deadline=deadline, idle=45,
+        label="Gemini", deadline=deadline, idle=60,
         extra_headers={"x-goog-api-key": key},
         body={"contents": [{"role": "user", "parts": [{"text": instruction}]}], "generationConfig": gen_config},
     )
@@ -167,7 +223,7 @@ def _run_chatgpt(user_id: int, project_id: int, instruction: str,
     state = "failed"
     try:
         result = _request(f"{chatgpt_plan.RESOURCE}/responses", label="ChatGPT", deadline=deadline,
-                          idle=45, responses=True, token=token, metrics=metrics, body={
+                          idle=60, responses=True, token=token, metrics=metrics, body={
             "model": chosen, "store": False, "stream": True,
             "instructions": "根据用户提示创作动漫角色设定，只输出严格 JSON 对象。",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": instruction}]}],
@@ -200,9 +256,11 @@ def _parse_character_json(raw: str) -> dict:
     name = str(obj.get("name") or "").strip()[:60]
     summary = str(obj.get("summary") or "").strip()[:500]
     prompt = str(obj.get("consistency_prompt") or "").strip()[:1000]
-    raw_tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
+    maybe_tags = obj.get("tags")
+    raw_tags: list = maybe_tags if isinstance(maybe_tags, list) else []
     tags = [str(t).strip()[:20] for t in raw_tags if str(t).strip()][:10]
-    raw_aliases = obj.get("aliases") if isinstance(obj.get("aliases"), list) else []
+    maybe_aliases = obj.get("aliases")
+    raw_aliases: list = maybe_aliases if isinstance(maybe_aliases, list) else []
     aliases = [str(a).strip()[:30] for a in raw_aliases if str(a).strip()][:6]
     if not name or not prompt:
         raise _VisionError(502, "模型生成的角色名称或提示词为空，请点击再试一次")
@@ -223,9 +281,12 @@ def _pick_cloud_provider() -> tuple[str, str | None]:
 
 
 def random_character(project_id: int, user_id: int,
-                     payload: AssetRandomCharacterIn) -> AssetRandomCharacterOut:
+                     payload: AssetRandomCharacterIn,
+                     *, allow_auto_start: bool = False) -> AssetRandomCharacterOut:
     if not _MAX_REQUESTS.acquire(blocking=False):
         raise ContentOperationError(503, "当前 AI 生成请求较多，请稍后重试")
+    allow_tok = _ALLOW_AUTO_START.set(allow_auto_start)
+    started_tok = _OLLAMA_STARTED.set(False)
     try:
         deadline = time.monotonic() + _TOTAL_SECONDS
         existing = [str(r["name"]) for r in assets.list_visible(project_id, kind="character")
@@ -238,14 +299,19 @@ def random_character(project_id: int, user_id: int,
         def finish(text_and_model: tuple[str, str], used_provider: str) -> AssetRandomCharacterOut:
             raw, used_model = text_and_model
             parsed = _parse_character_json(raw)
-            return AssetRandomCharacterOut(provider=used_provider, model=used_model, **parsed)
+            return AssetRandomCharacterOut(
+                provider=used_provider, model=used_model,
+                ollama_auto_started=(used_provider == "ollama" and _OLLAMA_STARTED.get()),
+                **parsed,
+            )
 
         if mode == "local" or provider == "ollama":
             return finish(_run_ollama(instruction, model, deadline), "ollama")
 
         if mode == "cloud":
-            target_p = provider or _pick_cloud_provider()[0]
-            target_m = model or _pick_cloud_provider()[1]
+            default_p, default_m = _pick_cloud_provider()
+            target_p = provider or default_p
+            target_m = model or default_m
             if target_p == "deepseek":
                 return finish(_run_deepseek(instruction, target_m, deadline), "deepseek")
             if target_p == "gemini":
@@ -275,5 +341,13 @@ def random_character(project_id: int, user_id: int,
             if not exc.unavailable:
                 raise
         raise _VisionError(503, "暂无可用的文本模型通道，请先在「模型中心」配置 Ollama 或云端文本模型")
+    except _VisionError as exc:
+        if exc.status_code == 504 and ("看图" in exc.detail or "参考图" in exc.detail):
+            raise ContentOperationError(
+                504, "生成角色人设超时，本地模型首次加载可能较慢，请稍后重试或切换其他文本模型",
+            ) from None
+        raise
     finally:
+        _ALLOW_AUTO_START.reset(allow_tok)
+        _OLLAMA_STARTED.reset(started_tok)
         _MAX_REQUESTS.release()

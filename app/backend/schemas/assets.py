@@ -275,3 +275,4 @@ class AssetRandomCharacterOut(BaseModel):
     consistency_prompt: str
     provider: str
     model: str
+    ollama_auto_started: bool = False

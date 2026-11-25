@@ -298,7 +298,8 @@ def gemini_extract_text(data: object) -> tuple[str, str | None, str | None]:
     if not isinstance(first, dict):
         return "", None, None
     reason = first.get("finishReason")
-    content = first.get("content") if isinstance(first.get("content"), dict) else {}
+    raw_content = first.get("content")
+    content = raw_content if isinstance(raw_content, dict) else {}
     parts = content.get("parts") or []
     text = "".join(
         p["text"] for p in parts
@@ -326,7 +327,7 @@ def _gemini(request: dict, result: dict) -> int:
     if request.get("format") is not None:
         gen_cfg["responseMimeType"] = "application/json"
 
-    body = {"contents": [{"role": "user", "parts": [{"text": request["prompt"]}]}]}
+    body: dict = {"contents": [{"role": "user", "parts": [{"text": request["prompt"]}]}]}
     if gen_cfg:
         body["generationConfig"] = gen_cfg
 

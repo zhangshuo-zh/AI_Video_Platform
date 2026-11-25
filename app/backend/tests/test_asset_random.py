@@ -55,3 +55,104 @@ def test_random_character_rejects_empty_required_fields(as_role, seeded, monkeyp
             json={"execution_mode": "local", "provider_code": "ollama"},
         )
         assert r.status_code == 502
+
+
+def test_random_character_timeout_message_is_contextual(as_role, seeded, monkeypatch):
+    from services import asset_random
+    from services.asset_vision_transport import _VisionError
+
+    pid = seeded["project_id"]
+
+    def _slow_ollama(instruction, model, deadline):
+        raise _VisionError(504, "Ollama推理超时，请减少参考图或更换通道")
+
+    monkeypatch.setattr(asset_random, "_run_ollama", _slow_ollama)
+    with as_role("editor") as c:
+        r = c.post(
+            f"/api/projects/{pid}/assets/random-character",
+            json={"execution_mode": "local", "provider_code": "ollama"},
+        )
+        assert r.status_code == 504
+        detail = r.json()["detail"]
+        assert "生成角色人设超时" in detail
+        assert "参考图" not in detail
+
+
+def test_random_character_auto_starts_local_ollama_for_loopback_manager(as_role, seeded, monkeypatch):
+    import engine_launch
+    from services import asset_random
+    from services.asset_vision_transport import _VisionError
+
+    pid = seeded["project_id"]
+    sample = {
+        "name": "白露",
+        "summary": "在蒸汽工坊里给机械鸟调音的少女学徒。",
+        "tags": ["蒸汽朋克", "学徒", "工坊"],
+        "aliases": ["小露"],
+        "consistency_prompt": "精致赛璐璐画风，浅茶色双麻花辫，琥珀色大眼睛，米白泡泡袖衬衫配棕色皮质背带围裙，全身比例一致。",
+    }
+    state = {"running": False, "launched": 0}
+
+    monkeypatch.setattr(engine_launch, "LOOPBACK", frozenset({"testclient", "127.0.0.1"}))
+    monkeypatch.setattr(
+        asset_random.engine_instances, "instances",
+        lambda: [{"engine_code": "ollama", "enabled": 1, "endpoint": "http://127.0.0.1:11434"}],
+    )
+
+    def _fake_launch(code, endpoint):
+        assert code == "ollama"
+        assert endpoint == "http://127.0.0.1:11434"
+        state["launched"] += 1
+        state["running"] = True
+        return engine_launch.LaunchResult(True, "ollama", True, True, "已启动 ollama serve")
+
+    def _fake_request(url, **kwargs):
+        if url.endswith("/api/tags"):
+            if not state["running"]:
+                raise _VisionError(503, "Ollama无法连接", unavailable=True)
+            return {"models": [{"name": "qwen3:8b"}]}
+        if url.endswith("/api/chat"):
+            return {"message": {"content": json.dumps(sample, ensure_ascii=False)}}
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(engine_launch, "launch", _fake_launch)
+    monkeypatch.setattr(asset_random, "_request", _fake_request)
+
+    with as_role("admin") as c:
+        r = c.post(
+            f"/api/projects/{pid}/assets/random-character",
+            json={"execution_mode": "local", "provider_code": "ollama", "model_code": "qwen3:8b"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["name"] == "白露"
+        assert body["ollama_auto_started"] is True
+        assert state["launched"] == 1
+
+
+def test_random_character_does_not_auto_start_ollama_for_non_manager(as_role, seeded, monkeypatch):
+    import engine_launch
+    from services import asset_random
+    from services.asset_vision_transport import _VisionError
+
+    pid = seeded["project_id"]
+    launched = []
+
+    monkeypatch.setattr(engine_launch, "LOOPBACK", frozenset({"testclient", "127.0.0.1"}))
+    monkeypatch.setattr(
+        asset_random.engine_instances, "instances",
+        lambda: [{"engine_code": "ollama", "enabled": 1, "endpoint": "http://127.0.0.1:11434"}],
+    )
+    monkeypatch.setattr(engine_launch, "launch", lambda code, ep: launched.append((code, ep)))
+    monkeypatch.setattr(
+        asset_random, "_request",
+        lambda url, **kwargs: (_ for _ in ()).throw(_VisionError(503, "Ollama无法连接", unavailable=True)),
+    )
+
+    with as_role("editor") as c:
+        r = c.post(
+            f"/api/projects/{pid}/assets/random-character",
+            json={"execution_mode": "local", "provider_code": "ollama"},
+        )
+        assert r.status_code == 503
+        assert launched == []

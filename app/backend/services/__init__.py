@@ -228,6 +228,7 @@ __all__ = [
     'delete_variant_image',
     'set_image_purpose',
     'reverse_prompt',
+    'random_character',
     "prepare_job", "PreparedJob",
     "ContentOperationError", "MAX_ALIASES", "MAX_ALIAS_LEN", "MAX_SHOT_ASSETS",
     "extract_shot_frame", "ModelPolicyInvalid", "catalog_payload", "policies_payload",

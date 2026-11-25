@@ -470,32 +470,47 @@ def main():
         # 类名什么时候翻过去不由这里决定，掐 60ms 量会因渲染快慢时红时绿。
         nav_anim = cdp.eval("""(async () => {
           const wait = (ms) => new Promise(r => setTimeout(r, ms));
-          const at = (v) => [...document.querySelectorAll('.nav-item')]
-            .find(e => e.dataset.v === v);
-          const item = at('assets'), plain = at('projects');
-          const sub = item && item.nextElementSibling;
-          if (!sub || !plain) return 'no-sub';
-          const sample = async (ms) => {
-            const vals = [];
-            const iv = setInterval(
-              () => vals.push(Math.round(sub.getBoundingClientRect().height)), 16);
-            await wait(ms); clearInterval(iv); return vals;
-          };
-          plain.click(); await wait(500);
-          const closed = Math.round(sub.getBoundingClientRect().height);
-          const visClosed = getComputedStyle(sub).visibility;
-          item.click(); const up = await sample(700);
-          const opened = Math.round(sub.getBoundingClientRect().height);
-          const visOpen = getComputedStyle(sub).visibility;
-          plain.click(); const down = await sample(700);
-          const top = Math.max(...up, ...down);
-          return JSON.stringify({
-            closed, opened, top,
-            midUp: up.filter(v => v > 0 && v < top).length,
-            midDown: down.filter(v => v > 0 && v < top).length,
-            visClosed, visOpen,
-            prop: getComputedStyle(sub).transitionProperty,
-          });
+          const toggle = document.getElementById('sidebar-toggle');
+          const wasDock = document.documentElement.dataset.sidebar === 'dock';
+          if (wasDock && toggle) {
+            // 桌面默认进入 dock 浮卡模式（.nav-sub 视觉收起 height:0），
+            // 切到固定展开（pinned）态验证内联二级菜单的插值过渡，测完复原。
+            toggle.click();
+            await wait(120);
+          }
+          try {
+            const at = (v) => [...document.querySelectorAll('.nav-item')]
+              .find(e => e.dataset.v === v);
+            const item = at('assets'), plain = at('projects');
+            const sub = item && item.nextElementSibling;
+            if (!sub || !plain) return 'no-sub';
+            const sample = async (ms) => {
+              const vals = [];
+              const iv = setInterval(
+                () => vals.push(Math.round(sub.getBoundingClientRect().height)), 16);
+              await wait(ms); clearInterval(iv); return vals;
+            };
+            plain.click(); await wait(500);
+            const closed = Math.round(sub.getBoundingClientRect().height);
+            const visClosed = getComputedStyle(sub).visibility;
+            item.click(); const up = await sample(700);
+            const opened = Math.round(sub.getBoundingClientRect().height);
+            const visOpen = getComputedStyle(sub).visibility;
+            plain.click(); const down = await sample(700);
+            const top = Math.max(...up, ...down);
+            return JSON.stringify({
+              closed, opened, top,
+              midUp: up.filter(v => v > 0 && v < top).length,
+              midDown: down.filter(v => v > 0 && v < top).length,
+              visClosed, visOpen,
+              prop: getComputedStyle(sub).transitionProperty,
+            });
+          } finally {
+            if (wasDock && toggle && document.documentElement.dataset.sidebar !== 'dock') {
+              toggle.click();
+              await wait(120);
+            }
+          }
         })()""")
         na = json.loads(nav_anim) if str(nav_anim).startswith("{") else {}
         check("二级菜单展开与缩回都是插值（中间帧采得到）",

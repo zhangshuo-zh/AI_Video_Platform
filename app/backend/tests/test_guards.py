@@ -62,6 +62,7 @@ ROUTES = [
     # ---------- 资产 ----------
     ("GET", "/api/projects/{p}/assets", None, 404),
     ("POST", "/api/projects/{p}/assets", {"kind": "character", "name": "越权角色"}, 404),
+    ("POST", "/api/projects/{p}/assets/random-character", {}, 404),
     ("GET", "/api/assets/{a}", None, 404),
     ("PUT", "/api/assets/{a}", {"kind": "character", "name": "改名"}, 404),
     ("PUT", "/api/assets/{a}/cover", {"path": "1/x.png"}, 404),
