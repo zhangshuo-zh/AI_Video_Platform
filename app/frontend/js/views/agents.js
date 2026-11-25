@@ -517,7 +517,7 @@ export default {
               '<b>人工审批门禁</b>：风险等级为写操作 / 付费作业 / 正式变更时，执行前自动暂停并送审核中心签字。',
             ].filter(Boolean),
           )}</div>
-        <div class="table-wrap"><table>
+        <div class="table-wrap"><table class="ag-tools-table">
           <thead><tr><th>工具标识</th><th>能力说明</th><th>风险等级</th><th>数据外发范围</th>
             <th>验收标准</th></tr></thead>
           <tbody>${tools.map(([code, t]) => `<tr>

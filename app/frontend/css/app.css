@@ -3881,6 +3881,8 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 .ag-nowrap{white-space:nowrap}
 .ag-act-col{width:1%;white-space:nowrap}
 .ag-cred{font-size:12px;font-weight:500;color:var(--ink)}
+/* 授权工具能力目录：放开 .t-desc 默认 320px 单行截断，让数据外发范围与验收标准完整铺满右侧 */
+.ag-tools-table .t-desc{max-width:none;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5}
 /* 连接状态行单独成一栏：原来「尚未连接」与两个按钮挤在同一条 flex 里，
    账号文字和按钮之间没有分隔，读起来像一句话。加一条底线把「连接态」
    与下面的表单分开——它们是两件事：先连上，再填目标。 */
