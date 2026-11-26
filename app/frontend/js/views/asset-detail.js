@@ -28,7 +28,8 @@ let cache = null;   // 本次渲染拿到的资产、引用、档案与形态，
 let refs = [];
 let newAssetKind = 'character';
 let pendingImages = [];
-let pendingTurnaroundJob = null; // { assetId, jobId } 创建角色后待自动挂入「三视图」槽位的生成作业
+let pendingTurnaroundJobs = []; // [{ assetId, jobId, purpose, label, status, error }] 创建角色后待自动挂入标准槽位的生成作业
+let pendingTurnaroundNotice = null; // { assetId, kind, text } 创建后跳转到详情页时展示的三视图提交反馈
 
 export function setNewAssetKind(kind) {
   newAssetKind = ['character', 'scene', 'prop'].includes(kind) ? kind : 'character';
@@ -194,12 +195,17 @@ export async function renderDetail(id) {
                     </div>
                   </div>
                   <div class="ad-random-row ad-random-tv">
-                    <label class="ad-tv-label">三视图生图模型
-                      <select class="ctl sm" id="ad-tv-model" aria-label="三视图生图模型">
+                    <label class="ad-tv-label">生图模型
+                      <select class="ctl sm" id="ad-tv-model" aria-label="生图模型">
                         ${imgOptHtml || '<option value="">暂无可用生图模型（请先到模型中心配置）</option>'}
                       </select>
                     </label>
-                    <button type="button" class="btn primary sm" id="ad-save-tv"${imgOpts.length ? '' : ' disabled'}>🎨 保存并生成三视图</button>
+                    <select class="ctl sm" id="ad-tv-mode" aria-label="生成模式">
+                      <option value="quad">4 格设定集（封面/三视图/特写/背面）</option>
+                      <option value="single">仅三视图（1 张）</option>
+                    </select>
+                    <button type="button" class="btn primary sm" id="ad-save-tv"${imgOpts.length ? '' : ' disabled'}>🎨 保存并生成设定集</button>
+                    <button type="button" class="btn sm" id="ad-copy-gpt" title="复制适合直接导入平台 4 个标准槽位的 GPT 生图指令">📋 复制 GPT 4图提示词</button>
                   </div>
                   <p class="t-dim ad-random-status" id="ad-rand-status" role="status"></p>
                 </div>`;
@@ -377,9 +383,26 @@ export async function renderDetail(id) {
                 </label>` : ''}
               </div></div>
             <div class="card-body">
-              ${!isNew && pendingTurnaroundJob && pendingTurnaroundJob.assetId === a.id
-                ? `<div class="bar info ad-tv-watch" id="ad-tv-watch" role="status">🎨 正在生成角色三视图（作业 #${pendingTurnaroundJob.jobId}），完成后将自动挂入「三视图」槽位… <a href="#generate/0">去生成中心查看</a></div>`
-                : ''}
+              ${(() => {
+                const activeJobs = !isNew
+                  ? pendingTurnaroundJobs.filter((j) => j.assetId === a.id)
+                  : [];
+                if (activeJobs.length) {
+                  const doneCount = activeJobs.filter((j) => j.status === 'succeeded').length;
+                  const summaryText = activeJobs.map((j) => {
+                    const tag = j.status === 'succeeded' ? '✓'
+                      : (j.status === 'failed' || j.status === 'cancelled' ? '✗' : '生成中');
+                    return `${j.label} ${tag}`;
+                  }).join(' · ');
+                  return `<div class="bar info ad-tv-watch" id="ad-tv-watch" role="status">🎨 正在生成角色设定图（已完成 ${doneCount}/${activeJobs.length}）：${escapeHtml(summaryText)} <a href="#generate/0">去生成中心查看</a></div>`;
+                }
+                if (!isNew && pendingTurnaroundNotice && pendingTurnaroundNotice.assetId === a.id) {
+                  const notice = pendingTurnaroundNotice;
+                  pendingTurnaroundNotice = null;
+                  return `<div class="bar ${notice.kind === 'bad' ? 'bad' : 'info'} ad-tv-watch" id="ad-tv-watch" role="status">${escapeHtml(notice.text)} <a href="#models">检查模型中心</a> · <a href="#asset-studio">去资产创作重试</a></div>`;
+                }
+                return '';
+              })()}
               ${isNew ? '<div class="ad-slots" data-ad-slots></div><div class="ad-imgs" data-ad-imgs></div>' : (() => {
                 const { slots, extra } = assignReferenceSlots(a.kind, a.ref_images, a.image_purposes);
                 const canUse = Boolean(store.currentEpisodeId && store.can('job:submit'));
@@ -632,6 +655,8 @@ export function mountDetail(root, id) {
   const randStatus = root.querySelector('#ad-rand-status');
   let randAbort = null;
   let randCanceled = false;
+  let randImagePromptEn = '';
+  let randPromptZhSnapshot = '';
   randCancelBtn?.addEventListener('click', () => {
     if (!randAbort) return;
     randCanceled = true;
@@ -700,6 +725,8 @@ export function mountDetail(root, id) {
       root.querySelector('#ad-tags').value = (out.tags || []).join(', ');
       root.querySelector('#ad-aliases').value = (out.aliases || []).join(', ');
       root.querySelector('#ad-prompt').value = out.consistency_prompt || '';
+      randImagePromptEn = (out.image_prompt_en || '').trim();
+      randPromptZhSnapshot = (out.consistency_prompt || '').trim();
       randBtn.textContent = '🎲 换一个人设';
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       const startedHint = out.ollama_auto_started ? '已自动拉起本地 Ollama 并' : '已';
@@ -725,6 +752,56 @@ export function mountDetail(root, id) {
   });
 
   const saveTvBtn = root.querySelector('#ad-save-tv');
+  const copyGptBtn = root.querySelector('#ad-copy-gpt');
+  const tvModeSel = root.querySelector('#ad-tv-mode');
+  copyGptBtn?.addEventListener('click', async () => {
+    const name = root.querySelector('#ad-name')?.value.trim() || '未命名角色';
+    const summary = root.querySelector('#ad-summary')?.value.trim() || '';
+    const prompt = root.querySelector('#ad-prompt')?.value.trim() || '';
+    const core = prompt || summary;
+    if (!core) {
+      if (randStatus) randStatus.textContent = '请先随机生成人设或填写一致性提示词后再复制';
+      root.querySelector('#ad-prompt')?.focus();
+      return;
+    }
+    const gptPrompt = [
+      `请根据以下角色设定，为我**分别生成 4 张独立的高清角色设定图**（不要拼在一张图里，也不要在画面上添加任何文字、标签、水印或标尺）：`,
+      '',
+      `【角色名称】${name}`,
+      summary ? `【角色简介】${summary}` : '',
+      `【核心外形一致性设定】${core}`,
+      '',
+      `请按以下 4 个标准规格逐张输出，并确保 4 张图中的画风质感、脸型五官、瞳色、发型发色、服装配色材质与配饰 100% 一致：`,
+      `1. 第 1 张【封面 / 正面定妆】（竖版 3:4）：角色正面全身站姿定妆照，面向镜头，干净纯白背景，无文字。`,
+      `2. 第 2 张【三视图（正/侧/背）】（横版 16:9）：同一角色的正面、侧面、背面全身三视图，水平等高并排对齐，干净纯白背景，无文字。`,
+      `3. 第 3 张【面部特写】（方图 1:1）：同一角色的胸部以上面部特写，清晰展现五官、眼神光、发饰与表情细节，干净纯白背景，无文字。`,
+      `4. 第 4 张【背面细节】（竖版 3:4）：同一角色的背面全身图，清晰展现背部发型层次、服装剪裁与随身配饰，干净纯白背景，无文字。`,
+    ].filter((line) => line !== '').join('\n');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(gptPrompt);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = gptPrompt;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      if (randStatus) randStatus.textContent = '已复制 GPT 4 图设定集提示词，去 ChatGPT 粘贴即可逐张出图并导入 4 个槽位';
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: '已复制 GPT 4 图提示词到剪贴板', kind: 'ok' },
+      }));
+    } catch (err) {
+      if (randStatus) randStatus.textContent = `复制失败：${err.message || err}`;
+    }
+  });
+  tvModeSel?.addEventListener('change', () => {
+    if (!saveTvBtn) return;
+    saveTvBtn.textContent = tvModeSel.value === 'single' ? '🎨 保存并生成三视图' : '🎨 保存并生成设定集';
+  });
   saveTvBtn?.addEventListener('click', async () => {
     const payload = buildAssetPayload();
     if (!payload) return;
@@ -735,18 +812,20 @@ export function mountDetail(root, id) {
       return;
     }
     const [execMode, providerCode, modelCode] = picked;
+    const isQuad = (tvModeSel?.value || 'quad') === 'quad';
+    const jobCount = isQuad ? 4 : 1;
     if (execMode === 'cloud') {
       const go = await confirmDanger({
-        title: '创建角色并提交云端三视图生成',
+        title: isQuad ? '创建角色并提交云端 4 格设定集生成' : '创建角色并提交云端三视图生成',
         danger: false,
         okText: '确认创建并生图',
-        body: `<p>将先创建角色「<b>${escapeHtml(payload.name)}</b>」，并提交三视图生成任务到云端模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b>（按模型中心口径计费）。</p>`,
+        body: `<p>将先创建角色「<b>${escapeHtml(payload.name)}</b>」，并提交 <b>${jobCount} 条</b>生图任务到云端模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b>（按模型中心口径计费）。</p>`,
       });
       if (!go || !saveTvBtn.isConnected) return;
     }
     saveTvBtn.disabled = true;
     if (saveBtn) saveBtn.disabled = true;
-    if (randStatus) randStatus.textContent = '正在创建角色并提交三视图生成任务…';
+    if (randStatus) randStatus.textContent = `正在创建角色并提交 ${jobCount} 条生图任务…`;
     const created = await createNewAsset(payload, saveTvBtn);
     if (!created) {
       if (saveTvBtn.isConnected) saveTvBtn.disabled = false;
@@ -754,61 +833,196 @@ export function mountDetail(root, id) {
       return;
     }
     const coreDesc = payload.consistency_prompt || payload.summary || payload.name;
-    const turnaroundPrompt = `角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯色背景，保持五官发型服装配色完全一致：${coreDesc}`.slice(0, 1000);
-    try {
-      const submitted = await api.assetGenerationSubmit(store.currentId, {
-        operation: 'asset_image',
-        target_asset_id: created.id,
-        image_prompt: turnaroundPrompt,
-        execution_mode: execMode,
-        provider_code: providerCode,
-        model_code: modelCode,
-        params: { width: 1344, height: 768 },
-        user_confirmed_cloud: execMode === 'cloud',
-        idempotency_key: `ad-tv-${created.id}-${Date.now()}`,
-      });
-      pendingTurnaroundJob = { assetId: created.id, jobId: submitted.job_id };
-    } catch (err) {
-      pendingTurnaroundJob = null;
-      if (randStatus && saveTvBtn.isConnected) {
-        randStatus.textContent = `角色已创建，但三视图任务提交失败：${err.message || err}`;
+    const isLocalImg = execMode === 'local';
+    const hasFreshEn = Boolean(randImagePromptEn && payload.consistency_prompt.trim() === randPromptZhSnapshot);
+    const enCore = hasFreshEn ? randImagePromptEn : coreDesc;
+    const isMflux = providerCode === 'mflux';
+
+    const buildSlotPrompt = (enPrefix, zhPrefix) => {
+      if (isLocalImg && hasFreshEn) return `${enPrefix}, ${enCore}`.slice(0, 1000);
+      if (isLocalImg) return `${enPrefix}, ${coreDesc}`.slice(0, 1000);
+      return `${zhPrefix}${coreDesc}`.slice(0, 1000);
+    };
+
+    const specs = isQuad ? [
+      {
+        purpose: '封面定妆',
+        label: '封面定妆',
+        prompt: buildSlotPrompt(
+          'full body front view portrait, standing pose, looking at viewer, clean solid white background, consistent anime character design',
+          '角色正面全身定妆照（封面基准），站姿清晰，面向镜头，干净纯白背景，保持五官发型服装配色完全一致：',
+        ),
+        params: isMflux ? { width: 576, height: 768 } : { width: 768, height: 1024 },
+      },
+      {
+        purpose: '三视图',
+        label: '三视图',
+        prompt: buildSlotPrompt(
+          'anime character turnaround sheet, front view, side view, back view, full body standing pose, clean solid white background, consistent character design',
+          '角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+        ),
+        params: isMflux ? { width: 896, height: 512 } : { width: 1344, height: 768 },
+      },
+      {
+        purpose: '面部特写',
+        label: '面部特写',
+        prompt: buildSlotPrompt(
+          'close-up face and upper body portrait, clear facial features, eyes, hair accessories and expression, clean solid white background, consistent anime character design',
+          '角色面部与半身特写，清晰展现五官、眼神、发饰与表情细节，干净纯白背景，保持设定完全一致：',
+        ),
+        params: isMflux ? { width: 512, height: 512 } : { width: 768, height: 768 },
+      },
+      {
+        purpose: '背面细节',
+        label: '背面细节',
+        prompt: buildSlotPrompt(
+          'full body back view, showing back of hair, back of outfit and accessories, standing pose, clean solid white background, consistent anime character design',
+          '角色背面全身设定图，清晰展现背部发型、服装剪裁与随身配饰细节，干净纯白背景，保持设定完全一致：',
+        ),
+        params: isMflux ? { width: 576, height: 768 } : { width: 768, height: 1024 },
+      },
+    ] : [
+      {
+        purpose: '三视图',
+        label: '三视图',
+        prompt: buildSlotPrompt(
+          'anime character turnaround sheet, front view, side view, back view, full body standing pose, clean solid white background, consistent character design',
+          '角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+        ),
+        params: isMflux ? { width: 896, height: 512 } : { width: 1344, height: 768 },
+      },
+    ];
+
+    const chosenImgOpt = (cache.imageOptions || []).find(
+      (o) => o.backend === execMode && o.provider === providerCode && o.model === modelCode,
+    );
+    const firstPrice = execMode === 'cloud' && providerCode !== 'mock'
+      ? (chosenImgOpt?.prices || [])[0] || null
+      : null;
+    const estimate = firstPrice ? {
+      quantity: 1,
+      unit: firstPrice.unit,
+      unit_price_micros: firstPrice.amount_micros,
+      currency: firstPrice.currency,
+      source: firstPrice.source,
+    } : null;
+
+    const batchStamp = Date.now();
+    const submittedList = [];
+    let firstErr = null;
+    for (let idx = 0; idx < specs.length; idx += 1) {
+      const spec = specs[idx];
+      try {
+        const submitted = await api.assetGenerationSubmit(store.currentId, {
+          operation: 'asset_image',
+          target_asset_id: created.id,
+          image_prompt: spec.prompt,
+          execution_mode: execMode,
+          provider_code: providerCode,
+          model_code: modelCode,
+          params: spec.params,
+          estimate,
+          user_confirmed_cloud: execMode === 'cloud',
+          idempotency_key: `ad-tv-${created.id}-${idx}-${batchStamp}`,
+        });
+        submittedList.push({
+          assetId: created.id,
+          jobId: submitted.job_id,
+          purpose: spec.purpose,
+          label: spec.label,
+          status: submitted.status || 'queued',
+          error: '',
+        });
+      } catch (err) {
+        if (!firstErr) firstErr = err;
       }
+    }
+
+    if (submittedList.length) {
+      pendingTurnaroundJobs = submittedList;
+      pendingTurnaroundNotice = null;
+      const msg = submittedList.length === specs.length
+        ? `已创建角色「${payload.name}」并排队 ${submittedList.length} 张设定图，完成后将自动填入对应槽位`
+        : `已创建角色「${payload.name}」，已排队 ${submittedList.length}/${specs.length} 张（部分失败：${firstErr?.message || firstErr}）`;
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: msg, kind: submittedList.length === specs.length ? 'ok' : 'err' },
+      }));
+    } else {
+      pendingTurnaroundJobs = [];
+      const errMsg = `角色「${payload.name}」已保存，但设定图任务提交失败：${firstErr?.message || firstErr || '未知错误'}`;
+      pendingTurnaroundNotice = { assetId: created.id, kind: 'bad', text: errMsg };
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: errMsg, kind: 'err' },
+      }));
     }
     openDetail('assets', created.id);
   });
 
-  if (!isNew && pendingTurnaroundJob && pendingTurnaroundJob.assetId === a.id && store.currentId) {
-    const watch = pendingTurnaroundJob;
+  const activeWatchJobs = !isNew && store.currentId
+    ? pendingTurnaroundJobs.filter((j) => j.assetId === a.id)
+    : [];
+  if (activeWatchJobs.length) {
     const watchBar = root.querySelector('#ad-tv-watch');
+    const batchIds = new Set(activeWatchJobs.map((j) => j.jobId));
+    const renderWatchBar = () => {
+      if (!watchBar?.isConnected) return;
+      const doneCount = activeWatchJobs.filter((j) => j.status === 'succeeded').length;
+      const failCount = activeWatchJobs.filter((j) => j.status === 'failed' || j.status === 'cancelled').length;
+      const summaryText = activeWatchJobs.map((j) => {
+        const tag = j.status === 'succeeded' ? '✓'
+          : (j.status === 'failed' || j.status === 'cancelled' ? '✗' : '生成中');
+        return `${j.label} ${tag}`;
+      }).join(' · ');
+      if (failCount === activeWatchJobs.length) {
+        watchBar.className = 'bar bad ad-tv-watch';
+        watchBar.textContent = `设定图生成未完成：${activeWatchJobs[0].error || '请前往生成中心查看'}`;
+        return;
+      }
+      watchBar.className = 'bar info ad-tv-watch';
+      watchBar.innerHTML = `🎨 正在生成角色设定图（已完成 ${doneCount}/${activeWatchJobs.length}）：${escapeHtml(summaryText)} <a href="#generate/0">去生成中心查看</a>`;
+    };
     (async () => {
-      for (let i = 0; i < 60; i += 1) {
+      for (let i = 0; i < 180; i += 1) {
         await new Promise((r) => setTimeout(r, 2500));
-        if (!root.isConnected || pendingTurnaroundJob?.jobId !== watch.jobId) return;
-        try {
-          const gen = await api.assetGeneration(store.currentId, watch.jobId);
-          if (!root.isConnected || pendingTurnaroundJob?.jobId !== watch.jobId) return;
-          if (gen.status === 'succeeded') {
-            pendingTurnaroundJob = null;
-            const imported = await api.assetImportImage(a.id, { job_id: watch.jobId });
-            if (imported?.path) {
-              await api.setAssetImagePurpose(a.id, { path: imported.path, variant_id: null, purpose: '三视图' });
+        if (!root.isConnected || !pendingTurnaroundJobs.some((j) => batchIds.has(j.jobId))) return;
+        let importedAny = false;
+        for (const item of activeWatchJobs) {
+          if (['succeeded', 'failed', 'cancelled'].includes(item.status)) continue;
+          try {
+            const gen = await api.assetGeneration(store.currentId, item.jobId);
+            if (!root.isConnected || !pendingTurnaroundJobs.some((j) => batchIds.has(j.jobId))) return;
+            item.status = gen.status;
+            if (gen.status === 'succeeded') {
+              const imported = await api.assetImportImage(a.id, { job_id: item.jobId });
+              if (imported?.path) {
+                await api.setAssetImagePurpose(a.id, {
+                  path: imported.path, variant_id: null, purpose: item.purpose,
+                });
+                if (item.purpose === '封面定妆') {
+                  await api.setAssetCover(a.id, imported.path).catch(() => {});
+                }
+              }
+              importedAny = true;
+            } else if (gen.status === 'failed' || gen.status === 'cancelled') {
+              item.error = gen.error || publicStatus(gen.status);
             }
-            refresh();
-            return;
+          } catch {
+            // 网络抖动时继续下一轮
           }
-          if (gen.status === 'failed' || gen.status === 'cancelled') {
-            pendingTurnaroundJob = null;
-            if (watchBar?.isConnected) {
-              watchBar.className = 'bar bad ad-tv-watch';
-              watchBar.textContent = `三视图生成未完成（${publicStatus(gen.status)}）：${gen.error || '请前往生成中心查看'}`;
-            }
-            return;
-          }
-        } catch {
-          // 网络抖动时继续下一轮
+        }
+        renderWatchBar();
+        const allSettled = activeWatchJobs.every((j) => ['succeeded', 'failed', 'cancelled'].includes(j.status));
+        if (allSettled) {
+          pendingTurnaroundJobs = pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId));
+          refresh();
+          return;
+        }
+        if (importedAny) {
+          refresh();
+          return;
         }
       }
-      pendingTurnaroundJob = null;
+      pendingTurnaroundJobs = pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId));
     })();
   }
 

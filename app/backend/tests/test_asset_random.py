@@ -24,6 +24,7 @@ def test_random_character_returns_structured_profile(as_role, seeded, monkeypatc
         "tags": ["科幻", "机械师", "异瞳", "外冷内热"],
         "aliases": ["澪姐", "猫耳技师"],
         "consistency_prompt": "日系二次元厚涂画风，银白齐肩短发，左金右蓝异色瞳，深蓝高领工装夹克配金色拉链，机械猫耳发箍，全身三视图比例一致。",
+        "image_prompt_en": "anime style, cel shading, silver bob hair, heterochromia gold left eye blue right eye, navy high-collar jacket with gold zipper, mechanical cat ear headband",
     }
     monkeypatch.setattr(
         asset_random, "_run_ollama",
@@ -39,6 +40,7 @@ def test_random_character_returns_structured_profile(as_role, seeded, monkeypatc
         assert body["tags"] == ["科幻", "机械师", "异瞳", "外冷内热"]
         assert body["aliases"] == ["澪姐", "猫耳技师"]
         assert "三视图" in body["consistency_prompt"]
+        assert "silver bob hair" in body["image_prompt_en"]
 
 
 def test_random_character_rejects_empty_required_fields(as_role, seeded, monkeypatch):
@@ -156,3 +158,33 @@ def test_random_character_does_not_auto_start_ollama_for_non_manager(as_role, se
         )
         assert r.status_code == 503
         assert launched == []
+
+
+def test_random_character_retries_once_on_malformed_json(as_role, seeded, monkeypatch):
+    from services import asset_random
+
+    pid = seeded["project_id"]
+    sample = {
+        "name": "青岚",
+        "summary": "云端修真学院的剑修助教。",
+        "tags": ["仙侠", "剑修"],
+        "aliases": ["岚师兄"],
+        "consistency_prompt": "新中式仙侠水墨画风，墨色高马尾，青白交领剑袍，腰佩玉剑穗，全身比例一致。",
+    }
+    calls = {"n": 0}
+
+    def _flaky_deepseek(instruction, model, deadline):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ('{"name": "青岚", "consistency_prompt": "截断了', "deepseek-chat")
+        return (json.dumps(sample, ensure_ascii=False), "deepseek-chat")
+
+    monkeypatch.setattr(asset_random, "_run_deepseek", _flaky_deepseek)
+    with as_role("editor") as c:
+        r = c.post(
+            f"/api/projects/{pid}/assets/random-character",
+            json={"execution_mode": "cloud", "provider_code": "deepseek", "model_code": "deepseek-chat"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "青岚"
+        assert calls["n"] == 2

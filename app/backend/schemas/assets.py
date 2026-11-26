@@ -273,6 +273,7 @@ class AssetRandomCharacterOut(BaseModel):
     tags: list[str] = []
     aliases: list[str] = []
     consistency_prompt: str
+    image_prompt_en: str = ""
     provider: str
     model: str
     ollama_auto_started: bool = False

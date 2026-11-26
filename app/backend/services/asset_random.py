@@ -64,6 +64,7 @@ def _seed_hint(theme: str, existing_names: list[str]) -> str:
         '- "aliases": 1-2 个外号或简称数组\n'
         '- "consistency_prompt": 用于 AI 绘图的跨镜头角色一致性提示词（120-320 字，中文），'
         "必须按顺序包含：画风质感、脸型五官与瞳色、发型与发色、全身服装层次与配色材质、标志性配饰，以及正面/侧面/背面一致的全身比例特征，不要包含一次性动作或背景。\n"
+        '- "image_prompt_en": 与 consistency_prompt 对应的纯英文生图提示词（50-140 词，英文逗号分隔短语，供 FLUX/SDXL 等英文生图模型使用，必须包含画风、性别/体型、发色发型、瞳色五官、服装配色材质与配饰，不要包含中文或背景）。\n'
         f"创作灵感种子：{base}{avoid_line}"
     )
 
@@ -159,7 +160,7 @@ def _run_ollama(instruction: str, model: str | None, deadline: float) -> tuple[s
         "model": chosen,
         "messages": [{"role": "user", "content": instruction}],
         "format": "json", "think": False, "stream": False,
-        "options": {"temperature": 0.9, "num_predict": 1200},
+        "options": {"temperature": 0.9, "num_predict": 2048},
     })
     if not isinstance(result, dict):
         raise _VisionError(502, "Ollama 返回格式无效")
@@ -178,7 +179,7 @@ def _run_deepseek(instruction: str, model: str | None, deadline: float) -> tuple
         "model": chosen,
         "messages": [{"role": "user", "content": instruction}],
         "temperature": 0.9,
-        "max_tokens": 1200,
+        "max_tokens": 2048,
         "response_format": {"type": "json_object"},
     })
     choices = result.get("choices") if isinstance(result, dict) else None
@@ -197,7 +198,7 @@ def _run_gemini(instruction: str, model: str | None, deadline: float) -> tuple[s
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", chosen):
         raise _VisionError(422, "Gemini 模型名称格式无效")
     base = (os.environ.get("GEMINI_BASE_URL") or cloud_run.DEFAULT_GEMINI_BASE).rstrip("/")
-    gen_config: dict = {"temperature": 0.9, "maxOutputTokens": 1200, "responseMimeType": "application/json"}
+    gen_config: dict = {"temperature": 0.9, "maxOutputTokens": 2048, "responseMimeType": "application/json"}
     tcfg = cloud_run.gemini_thinking_config(chosen, thinking=False)
     if tcfg:
         gen_config["thinkingConfig"] = tcfg
@@ -239,6 +240,8 @@ def _run_chatgpt(user_id: int, project_id: int, instruction: str,
 
 def _parse_character_json(raw: str) -> dict:
     cleaned = re.sub(r"\A\s*```[\w-]*\s*|\s*```\s*\Z", "", (raw or "").strip())
+    if not cleaned:
+        raise _VisionError(502, "模型返回内容为空，请重试")
     if _CREDENTIAL.search(cleaned):
         raise _VisionError(502, "模型返回了无法安全使用的内容")
     try:
@@ -256,6 +259,7 @@ def _parse_character_json(raw: str) -> dict:
     name = str(obj.get("name") or "").strip()[:60]
     summary = str(obj.get("summary") or "").strip()[:500]
     prompt = str(obj.get("consistency_prompt") or "").strip()[:1000]
+    prompt_en = str(obj.get("image_prompt_en") or "").strip()[:1000]
     maybe_tags = obj.get("tags")
     raw_tags: list = maybe_tags if isinstance(maybe_tags, list) else []
     tags = [str(t).strip()[:20] for t in raw_tags if str(t).strip()][:10]
@@ -267,6 +271,7 @@ def _parse_character_json(raw: str) -> dict:
     return {
         "name": name, "summary": summary, "tags": tags,
         "aliases": aliases, "consistency_prompt": prompt,
+        "image_prompt_en": prompt_en,
     }
 
 
@@ -296,47 +301,56 @@ def random_character(project_id: int, user_id: int,
         provider = (payload.provider_code or "").strip().lower()
         model = (payload.model_code or "").strip() or None
 
-        def finish(text_and_model: tuple[str, str], used_provider: str) -> AssetRandomCharacterOut:
-            raw, used_model = text_and_model
-            parsed = _parse_character_json(raw)
-            return AssetRandomCharacterOut(
-                provider=used_provider, model=used_model,
-                ollama_auto_started=(used_provider == "ollama" and _OLLAMA_STARTED.get()),
-                **parsed,
-            )
+        def finish(runner, used_provider: str) -> AssetRandomCharacterOut:
+            last_err: _VisionError | None = None
+            for attempt in range(2):
+                raw, used_model = runner()
+                try:
+                    parsed = _parse_character_json(raw)
+                    return AssetRandomCharacterOut(
+                        provider=used_provider, model=used_model,
+                        ollama_auto_started=(used_provider == "ollama" and _OLLAMA_STARTED.get()),
+                        **parsed,
+                    )
+                except _VisionError as exc:
+                    if exc.status_code != 502 or attempt == 1 or (deadline - time.monotonic()) < 15:
+                        raise
+                    last_err = exc
+            assert last_err is not None
+            raise last_err
 
         if mode == "local" or provider == "ollama":
-            return finish(_run_ollama(instruction, model, deadline), "ollama")
+            return finish(lambda: _run_ollama(instruction, model, deadline), "ollama")
 
         if mode == "cloud":
             default_p, default_m = _pick_cloud_provider()
             target_p = provider or default_p
             target_m = model or default_m
             if target_p == "deepseek":
-                return finish(_run_deepseek(instruction, target_m, deadline), "deepseek")
+                return finish(lambda: _run_deepseek(instruction, target_m, deadline), "deepseek")
             if target_p == "gemini":
-                return finish(_run_gemini(instruction, target_m, deadline), "gemini")
+                return finish(lambda: _run_gemini(instruction, target_m, deadline), "gemini")
             if target_p == "chatgpt":
-                return finish(_run_chatgpt(user_id, project_id, instruction, target_m, deadline), "chatgpt")
+                return finish(lambda: _run_chatgpt(user_id, project_id, instruction, target_m, deadline), "chatgpt")
             raise ContentOperationError(422, f"随机角色暂不支持云端通道「{target_p or '未配置'}」，请切回本地 Ollama、DeepSeek 或 Gemini")
 
         # auto: 本地 Ollama 优先，其次已配置的云端文本通道
         try:
-            return finish(_run_ollama(instruction, model, deadline), "ollama")
+            return finish(lambda: _run_ollama(instruction, model, deadline), "ollama")
         except _VisionError as exc:
             if not exc.unavailable:
                 raise
         cloud_p, cloud_m = _pick_cloud_provider()
         if cloud_p == "deepseek" and _resolve_secret("DEEPSEEK_API_KEY"):
-            return finish(_run_deepseek(instruction, cloud_m, deadline), "deepseek")
+            return finish(lambda: _run_deepseek(instruction, cloud_m, deadline), "deepseek")
         if cloud_p == "gemini" and _resolve_secret("GEMINI_API_KEY"):
-            return finish(_run_gemini(instruction, cloud_m, deadline), "gemini")
+            return finish(lambda: _run_gemini(instruction, cloud_m, deadline), "gemini")
         if _resolve_secret("DEEPSEEK_API_KEY"):
-            return finish(_run_deepseek(instruction, None, deadline), "deepseek")
+            return finish(lambda: _run_deepseek(instruction, None, deadline), "deepseek")
         if _resolve_secret("GEMINI_API_KEY"):
-            return finish(_run_gemini(instruction, None, deadline), "gemini")
+            return finish(lambda: _run_gemini(instruction, None, deadline), "gemini")
         try:
-            return finish(_run_chatgpt(user_id, project_id, instruction, None, deadline), "chatgpt")
+            return finish(lambda: _run_chatgpt(user_id, project_id, instruction, None, deadline), "chatgpt")
         except _VisionError as exc:
             if not exc.unavailable:
                 raise
