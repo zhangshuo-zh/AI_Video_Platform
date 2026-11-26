@@ -81,40 +81,44 @@ export function readImageSize(file) {
 }
 
 function computeCropBox(w, h, targetRatio) {
+  if (!targetRatio) return { x: 0, y: 0, w, h };
   const curRatio = w / h;
-  let sx = 0;
-  let sy = 0;
-  let sw = w;
-  let sh = h;
+  let x = 0;
+  let y = 0;
+  let cw = w;
+  let ch = h;
   if (curRatio > targetRatio) {
-    sw = Math.round(h * targetRatio);
-    sx = Math.round((w - sw) / 2);
+    cw = Math.round(h * targetRatio);
+    x = Math.round((w - cw) / 2);
   } else {
-    sh = Math.round(w / targetRatio);
-    sy = Math.round((h - sh) / 2);
+    ch = Math.round(w / targetRatio);
+    y = Math.round((h - ch) / 2);
   }
-  return { sx, sy, sw: Math.max(1, sw), sh: Math.max(1, sh) };
+  return { x, y, w: Math.max(1, cw), h: Math.max(1, ch) };
 }
 
-function centerCropFile(file, targetRatio) {
+function cropFileByBox(file, box) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       try {
-        const { sx, sy, sw, sh } = computeCropBox(img.naturalWidth, img.naturalHeight, targetRatio);
+        const sx = Math.max(0, Math.min(img.naturalWidth - 1, Math.round(box.x)));
+        const sy = Math.max(0, Math.min(img.naturalHeight - 1, Math.round(box.y)));
+        const sw = Math.max(1, Math.min(img.naturalWidth - sx, Math.round(box.w)));
+        const sh = Math.max(1, Math.min(img.naturalHeight - sy, Math.round(box.h)));
         const canvas = document.createElement('canvas');
         canvas.width = sw;
         canvas.height = sh;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
         const outType = file.type === 'image/webp' ? 'image/webp'
           : (file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png');
         canvas.toBlob((blob) => {
           URL.revokeObjectURL(url);
           if (!blob) return reject(new Error('图片裁剪失败'));
           const cropped = new File([blob], file.name, { type: outType });
-          resolve({ file: cropped, width: canvas.width, height: canvas.height });
+          resolve({ file: cropped, width: sw, height: sh });
         }, outType, 0.94);
       } catch (err) {
         URL.revokeObjectURL(url);
@@ -130,9 +134,9 @@ function centerCropFile(file, targetRatio) {
 }
 
 /**
- * 上传前像素与比例校验：
+ * 上传前像素校验与交互式可视化裁剪：
  * - 短边 < MIN_SHORT_SIDE 直接拦截并返回 null；
- * - 若指定槽位且比例偏差 > 18%，弹窗提供「居中裁剪」或「原比例上传」。
+ * - 弹出交互式裁剪弹窗，支持拖拽移动与四角缩放自选裁剪区域，也可直接原图上传。
  */
 export async function prepareSlotUpload(file, slot = null) {
   let dims;
@@ -151,12 +155,7 @@ export async function prepareSlotUpload(file, slot = null) {
     return null;
   }
 
-  if (!slot || !slot.ratio) return { file, slot };
-  const curRatio = dims.width / dims.height;
-  const diff = Math.abs(curRatio - slot.ratio) / slot.ratio;
-  if (diff <= 0.18) return { file, slot };
-
-  return await askCropChoice(file, dims, slot);
+  return await askInteractiveCrop(file, dims, slot);
 }
 
 function showNoticeDialog(title, bodyHtml) {
@@ -176,27 +175,301 @@ function showNoticeDialog(title, bodyHtml) {
   dlg.showModal();
 }
 
-function askCropChoice(file, dims, slot) {
+function askInteractiveCrop(file, dims, slot) {
   return new Promise((resolve) => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dlg = document.createElement('dialog');
-    dlg.className = 'asset-reference-dialog';
+    dlg.className = 'asset-reference-dialog ad-crop-dialog';
     const previewUrl = URL.createObjectURL(file);
-    const crop = computeCropBox(dims.width, dims.height, slot.ratio);
-    const cropTooSmall = Math.min(crop.sw, crop.sh) < MIN_SHORT_SIDE;
+
+    const presets = [];
+    if (slot?.ratio) {
+      const shortSpec = (slot.spec || '').split('·')[0].trim() || '推荐';
+      presets.push({ id: 'slot', label: `推荐 ${shortSpec}`, ratio: slot.ratio });
+    }
+    presets.push(
+      { id: '3:4', label: '3:4 竖版', ratio: 3 / 4 },
+      { id: '16:9', label: '16:9 横版', ratio: 16 / 9 },
+      { id: '1:1', label: '1:1 方图', ratio: 1 },
+      { id: 'free', label: '自由比例', ratio: null },
+    );
+
+    let activePreset = presets[0];
+    let lockedRatio = activePreset.ratio;
+    let box = computeCropBox(dims.width, dims.height, lockedRatio);
+    const minCropPx = Math.min(64, Math.min(dims.width, dims.height));
+
+    const titleText = slot ? `裁剪并上传到「${slot.label}」` : '上传参考图（可选区域裁剪）';
+    const ratioBtnsHtml = presets.map((p, i) => (
+      `<button type="button" class="btn xs${i === 0 ? ' primary' : ''}" data-ratio-id="${escapeHtml(p.id)}">${escapeHtml(p.label)}</button>`
+    )).join('');
+
     dlg.innerHTML = `<div class="stack">
-      <h2>「${escapeHtml(slot.label)}」比例建议</h2>
-      <img class="asset-reference-preview" src="${previewUrl}" alt="待传预览">
-      <p>当前尺寸 <b>${dims.width}×${dims.height}</b>，该槽位推荐规格为 <b>${escapeHtml(slot.spec)}</b>（居中裁剪后约 <b>${crop.sw}×${crop.sh}</b>）。</p>
-      <p class="hint">${cropTooSmall
-        ? `提示：居中裁剪后短边将低于 ${MIN_SHORT_SIDE}px，建议优先保持原比例上传以保留清晰度。`
-        : '居中裁剪可保证三视图/定妆照构图统一；若原图已包含完整结构，也可保持原比例上传。'}</p>
+      <div class="ad-crop-head">
+        <h2>${escapeHtml(titleText)}</h2>
+        <span class="t-dim">拖选框移位 · 拖四角调大小 · 滚轮缩放画布</span>
+      </div>
+      <div class="ad-crop-ratios">
+        ${ratioBtnsHtml}
+        <button type="button" class="btn xs" data-act="reset">居中重置</button>
+        <span class="ad-crop-zoom-group">
+          <button type="button" class="btn xs" data-zoom="out" title="缩小视图">−</button>
+          <button type="button" class="btn xs" data-zoom="reset" data-zoom-label title="重置缩放为 100%">100%</button>
+          <button type="button" class="btn xs" data-zoom="in" title="放大视图">＋</button>
+        </span>
+      </div>
+      <div class="ad-crop-stage-wrap" data-crop-wrap>
+        <div class="ad-crop-stage" data-crop-stage>
+          <img class="ad-crop-img" src="${previewUrl}" alt="裁剪预览" draggable="false">
+          <div class="ad-crop-box" data-crop-box>
+            <span class="ad-crop-grid" aria-hidden="true"></span>
+            <span class="ad-crop-handle nw" data-handle="nw"></span>
+            <span class="ad-crop-handle ne" data-handle="ne"></span>
+            <span class="ad-crop-handle sw" data-handle="sw"></span>
+            <span class="ad-crop-handle se" data-handle="se"></span>
+          </div>
+        </div>
+      </div>
+      <p class="ad-crop-meta" data-crop-meta></p>
       <div class="row ad-slot-acts">
         <button class="btn" type="button" data-act="cancel">取消</button>
-        <button class="btn${cropTooSmall ? ' primary' : ''}" type="button" data-act="raw">原比例上传</button>
-        <button class="btn${cropTooSmall ? '' : ' primary'}" type="button" data-act="crop">按推荐比例居中裁剪</button>
+        <button class="btn" type="button" data-act="raw">原图直接上传</button>
+        <button class="btn primary" type="button" data-act="crop">✂️ 裁剪并上传</button>
       </div>
     </div>`;
+
+    const wrap = dlg.querySelector('[data-crop-wrap]');
+    const stage = dlg.querySelector('[data-crop-stage]');
+    const imgEl = dlg.querySelector('.ad-crop-img');
+    const boxEl = dlg.querySelector('[data-crop-box]');
+    const metaEl = dlg.querySelector('[data-crop-meta]');
+    const zoomLabel = dlg.querySelector('[data-zoom-label]');
+
+    let zoom = 1;
+    let baseW = 0;
+    let baseH = 0;
+
+    const measureBase = () => {
+      if (baseW > 0 && baseH > 0) return true;
+      const maxW = Math.max(200, (wrap.clientWidth || 680) - 24);
+      const maxH = Math.max(200, Math.round(window.innerHeight * 0.54));
+      const scale = Math.min(maxW / dims.width, maxH / dims.height, 1);
+      baseW = Math.max(1, Math.round(dims.width * scale));
+      baseH = Math.max(1, Math.round(dims.height * scale));
+      return true;
+    };
+
+    const applyZoom = (nextZoom, focusClientX = null, focusClientY = null) => {
+      measureBase();
+      const clamped = Math.max(1, Math.min(4, Number(nextZoom.toFixed(2))));
+      const prevW = imgEl.clientWidth || baseW;
+      const prevH = imgEl.clientHeight || baseH;
+      const wrapRect = wrap.getBoundingClientRect();
+      const stageRect = stage.getBoundingClientRect();
+      const relX = focusClientX !== null
+        ? (focusClientX - stageRect.left) / prevW
+        : (wrap.scrollLeft + wrapRect.width / 2 - (stageRect.left - wrapRect.left + wrap.scrollLeft)) / prevW;
+      const relY = focusClientY !== null
+        ? (focusClientY - stageRect.top) / prevH
+        : (wrap.scrollTop + wrapRect.height / 2 - (stageRect.top - wrapRect.top + wrap.scrollTop)) / prevH;
+
+      zoom = clamped;
+      const newW = Math.round(baseW * zoom);
+      const newH = Math.round(baseH * zoom);
+      imgEl.style.width = `${newW}px`;
+      imgEl.style.height = `${newH}px`;
+      wrap.classList.toggle('is-zoomed', zoom > 1.01);
+      if (zoomLabel) zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+      paint();
+
+      if (zoom > 1.01) {
+        const anchorX = focusClientX !== null ? (focusClientX - wrapRect.left) : wrapRect.width / 2;
+        const anchorY = focusClientY !== null ? (focusClientY - wrapRect.top) : wrapRect.height / 2;
+        wrap.scrollLeft = Math.max(0, relX * newW + 12 - anchorX);
+        wrap.scrollTop = Math.max(0, relY * newH + 12 - anchorY);
+      } else {
+        wrap.scrollLeft = 0;
+        wrap.scrollTop = 0;
+      }
+    };
+
+    const clampBox = (next) => {
+      let { x, y, w, h } = next;
+      w = Math.max(minCropPx, Math.min(dims.width, w));
+      h = Math.max(minCropPx, Math.min(dims.height, h));
+      if (lockedRatio) {
+        if (w / h > lockedRatio) w = h * lockedRatio;
+        else h = w / lockedRatio;
+      }
+      x = Math.max(0, Math.min(dims.width - w, x));
+      y = Math.max(0, Math.min(dims.height - h, y));
+      return { x, y, w, h };
+    };
+
+    const paint = () => {
+      const sw = imgEl.clientWidth;
+      const sh = imgEl.clientHeight;
+      if (!sw || !sh) return;
+      const sx = sw / dims.width;
+      const sy = sh / dims.height;
+      boxEl.style.left = `${(box.x * sx).toFixed(2)}px`;
+      boxEl.style.top = `${(box.y * sy).toFixed(2)}px`;
+      boxEl.style.width = `${(box.w * sx).toFixed(2)}px`;
+      boxEl.style.height = `${(box.h * sy).toFixed(2)}px`;
+      const rw = Math.round(box.w);
+      const rh = Math.round(box.h);
+      const tooSmall = Math.min(rw, rh) < MIN_SHORT_SIDE;
+      metaEl.innerHTML = `原图 <b>${dims.width}×${dims.height}</b> → 裁剪输出 <b>${rw}×${rh} px</b>`
+        + (slot?.spec ? `（推荐 ${escapeHtml(slot.spec)}）` : '')
+        + (tooSmall ? ` <span class="ad-crop-warn">· 提示：短边小于 ${MIN_SHORT_SIDE}px，建议放大取景框以保清晰度</span>` : '');
+    };
+
+    imgEl.addEventListener('load', () => applyZoom(1), { once: true });
+
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : (1 / 1.15);
+      applyZoom(zoom * factor, e.clientX, e.clientY);
+    }, { passive: false });
+
+    dlg.querySelector('[data-zoom="in"]').addEventListener('click', () => applyZoom(zoom * 1.25));
+    dlg.querySelector('[data-zoom="out"]').addEventListener('click', () => applyZoom(zoom / 1.25));
+    dlg.querySelector('[data-zoom="reset"]').addEventListener('click', () => applyZoom(1));
+
+    let pan = null;
+    wrap.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('[data-crop-box]') || e.target.closest('[data-handle]')) return;
+      if (zoom <= 1.01) return;
+      e.preventDefault();
+      wrap.setPointerCapture(e.pointerId);
+      pan = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        scrollLeft: wrap.scrollLeft,
+        scrollTop: wrap.scrollTop,
+      };
+    });
+    wrap.addEventListener('pointermove', (e) => {
+      if (!pan || e.pointerId !== pan.pointerId) return;
+      wrap.scrollLeft = pan.scrollLeft - (e.clientX - pan.startX);
+      wrap.scrollTop = pan.scrollTop - (e.clientY - pan.startY);
+    });
+    const endPan = (e) => {
+      if (!pan || e.pointerId !== pan.pointerId) return;
+      try { wrap.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      pan = null;
+    };
+    wrap.addEventListener('pointerup', endPan);
+    wrap.addEventListener('pointercancel', endPan);
+
+    let drag = null;
+    stage.addEventListener('pointerdown', (e) => {
+      const handleEl = e.target.closest('[data-handle]');
+      const inBox = e.target.closest('[data-crop-box]');
+      if (!handleEl && !inBox) return;
+      const sw = imgEl.clientWidth;
+      const sh = imgEl.clientHeight;
+      if (!sw || !sh) return;
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+      drag = {
+        pointerId: e.pointerId,
+        mode: handleEl ? handleEl.dataset.handle : 'move',
+        startX: e.clientX,
+        startY: e.clientY,
+        scaleX: dims.width / sw,
+        scaleY: dims.height / sh,
+        orig: { ...box },
+      };
+    });
+
+    stage.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      const dx = (e.clientX - drag.startX) * drag.scaleX;
+      const dy = (e.clientY - drag.startY) * drag.scaleY;
+      const o = drag.orig;
+
+      if (drag.mode === 'move') {
+        box = clampBox({ x: o.x + dx, y: o.y + dy, w: o.w, h: o.h });
+        paint();
+        return;
+      }
+
+      const right = o.x + o.w;
+      const bottom = o.y + o.h;
+      let nx = o.x;
+      let ny = o.y;
+      let nw = o.w;
+      let nh = o.h;
+
+      if (drag.mode.includes('e')) nw = o.w + dx;
+      if (drag.mode.includes('s')) nh = o.h + dy;
+      if (drag.mode.includes('w')) {
+        nw = o.w - dx;
+        nx = right - nw;
+      }
+      if (drag.mode.includes('n')) {
+        nh = o.h - dy;
+        ny = bottom - nh;
+      }
+
+      if (lockedRatio) {
+        const anchorRight = drag.mode.includes('w');
+        const anchorBottom = drag.mode.includes('n');
+        const maxW = anchorRight ? right : (dims.width - o.x);
+        const maxH = anchorBottom ? bottom : (dims.height - o.y);
+        const maxByRatioW = Math.min(maxW, maxH * lockedRatio);
+        const minByRatioW = Math.max(minCropPx, minCropPx * lockedRatio);
+        const desiredW = Math.abs(dx) >= Math.abs(dy) * lockedRatio ? nw : nh * lockedRatio;
+        nw = Math.max(minByRatioW, Math.min(maxByRatioW, desiredW));
+        nh = nw / lockedRatio;
+        nx = anchorRight ? (right - nw) : o.x;
+        ny = anchorBottom ? (bottom - nh) : o.y;
+      } else {
+        if (drag.mode.includes('w')) {
+          nw = Math.max(minCropPx, Math.min(right, nw));
+          nx = right - nw;
+        } else {
+          nw = Math.max(minCropPx, Math.min(dims.width - nx, nw));
+        }
+        if (drag.mode.includes('n')) {
+          nh = Math.max(minCropPx, Math.min(bottom, nh));
+          ny = bottom - nh;
+        } else {
+          nh = Math.max(minCropPx, Math.min(dims.height - ny, nh));
+        }
+      }
+
+      box = clampBox({ x: nx, y: ny, w: nw, h: nh });
+      paint();
+    });
+
+    const endDrag = (e) => {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      try { stage.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      drag = null;
+    };
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+
+    dlg.querySelectorAll('[data-ratio-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const found = presets.find((p) => p.id === btn.dataset.ratioId);
+        if (!found) return;
+        activePreset = found;
+        lockedRatio = found.ratio;
+        dlg.querySelectorAll('[data-ratio-id]').forEach((b) => b.classList.toggle('primary', b === btn));
+        box = computeCropBox(dims.width, dims.height, lockedRatio);
+        paint();
+      });
+    });
+
+    dlg.querySelector('[data-act="reset"]').addEventListener('click', () => {
+      box = computeCropBox(dims.width, dims.height, lockedRatio);
+      paint();
+    });
+
     let settled = false;
     const finish = (val) => {
       if (settled) return;
@@ -216,7 +489,7 @@ function askCropChoice(file, dims, slot) {
       btn.disabled = true;
       btn.textContent = '裁剪中…';
       try {
-        const out = await centerCropFile(file, slot.ratio);
+        const out = await cropFileByBox(file, box);
         finish({ file: out.file, slot });
       } catch {
         finish({ file, slot });
@@ -224,6 +497,7 @@ function askCropChoice(file, dims, slot) {
     });
     document.body.append(dlg);
     dlg.showModal();
+    requestAnimationFrame(() => applyZoom(1));
   });
 }
 

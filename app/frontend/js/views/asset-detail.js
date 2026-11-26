@@ -30,6 +30,8 @@ let newAssetKind = 'character';
 let pendingImages = [];
 let pendingTurnaroundJobs = []; // [{ assetId, jobId, purpose, label, status, error }] 创建角色后待自动挂入标准槽位的生成作业
 let pendingTurnaroundNotice = null; // { assetId, kind, text } 创建后跳转到详情页时展示的三视图提交反馈
+let activeSection = 'basic';
+let activeSectionAssetKey = null;
 
 export function setNewAssetKind(kind) {
   newAssetKind = ['character', 'scene', 'prop'].includes(kind) ? kind : 'character';
@@ -126,6 +128,27 @@ export async function renderDetail(id) {
   const kindOptions = Object.entries(ASSET_KIND_LABELS)
     .map(([v, l]) => `<option value="${v}"${a.kind === v ? ' selected' : ''}>${l}</option>`).join('');
 
+  const sectionAssetKey = isNew ? 'new' : String(id);
+  if (activeSectionAssetKey !== sectionAssetKey) {
+    activeSection = 'basic';
+    activeSectionAssetKey = sectionAssetKey;
+  }
+  const validSections = isNew ? ['basic', 'refs'] : ['basic', 'refs', 'profile', 'usage'];
+  if (!validSections.includes(activeSection)) activeSection = 'basic';
+  const refCount = isNew ? pendingImages.length : (a.ref_images || []).length;
+  const usageCount = (data.gens || []).length + refs.length;
+  const secTabs = isNew
+    ? [
+      { key: 'basic', label: '基本信息' },
+      { key: 'refs', label: '参考图', count: refCount },
+    ]
+    : [
+      { key: 'basic', label: '基本信息' },
+      { key: 'refs', label: '参考图', count: refCount },
+      { key: 'profile', label: a.kind === 'character' ? '档案与形态' : '命名形态', count: variants.length },
+      { key: 'usage', label: '生成与引用', count: usageCount },
+    ];
+
   return `
     <section class="view on">
       <div class="page-head ad-page-head">
@@ -141,9 +164,12 @@ export async function renderDetail(id) {
         </div>
       </div>
 
-      <div class="ad-grid">
-        <div class="stack">
-          <div class="card">
+      <div class="ad-sec-tabs" role="tablist" aria-label="切换展示板块">
+        ${secTabs.map((t) => `<button type="button" class="ad-sec-tab${activeSection === t.key ? ' on' : ''}" role="tab" aria-selected="${activeSection === t.key ? 'true' : 'false'}" data-ad-tab="${t.key}">${escapeHtml(t.label)}${typeof t.count === 'number' ? ` <span class="ad-sec-cnt">${t.count}</span>` : ''}</button>`).join('')}
+      </div>
+
+      <div class="ad-panel" data-ad-panel="basic"${activeSection === 'basic' ? '' : ' hidden'}>
+        <div class="card">
             <div class="card-head"><h2>基本信息</h2>
               <span class="sub">名称在同一范围、同一类型里唯一</span></div>
             <div class="card-body">
@@ -210,86 +236,105 @@ export async function renderDetail(id) {
                   <p class="t-dim ad-random-status" id="ad-rand-status" role="status"></p>
                 </div>`;
               })() : ''}
-              <div class="form-grid">
-                <label for="ad-kind">资产类型</label>
-                <select id="ad-kind" class="ctl"${canEdit ? '' : ' disabled'}>${kindOptions}</select>
-
-                <label for="ad-name">名称</label>
-                <input id="ad-name" class="ctl" maxlength="60" value="${escapeHtml(a.name)}"
-                       autocomplete="off"${canEdit ? '' : ' disabled'}>
-
-                <label for="ad-summary" class="top">简介</label>
-                <textarea id="ad-summary" class="ctl" rows="2" maxlength="500"
-                          ${canEdit ? '' : 'disabled'}>${escapeHtml(a.summary)}</textarea>
-
-                <label for="ad-tags">标签</label>
-                <input id="ad-tags" class="ctl" value="${escapeHtml((a.tags || []).join(', '))}"
-                       placeholder="逗号分隔，最多 10 个"${canEdit ? '' : ' disabled'}>
-
-                <label for="ad-aliases">别名</label>
-                <input id="ad-aliases" class="ctl" value="${escapeHtml((a.aliases || []).join(', '))}"
-                       placeholder="逗号分隔"${canEdit ? '' : ' disabled'}>
-
-                <label for="ad-prompt" class="top">一致性提示词</label>
-                <div class="ad-prompt-col">
-                  <textarea id="ad-prompt" class="ctl" rows="5" maxlength="1000"
-                            placeholder="可先写几个关键特征词，再点下方「AI 完善提示词」扩写润色"${canEdit ? '' : ' disabled'}
-                      >${escapeHtml(a.consistency_prompt)}</textarea>
-                  ${canEdit && store.can('job:submit') && store.currentId ? (() => {
-                    const textOpts = data.textOptions || [];
-                    const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
-                    const preferred = textOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
-                      || textOpts.find((o) => !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
-                      || textOpts.find((o) => !isBadHealth(o))
-                      || textOpts[0];
-                    const optHtml = textOpts.map((o, idx) => {
-                      const val = `${o.backend}|${o.provider}|${o.model}`;
-                      const sel = preferred && o === preferred ? ' selected' : (!preferred && idx === 0 ? ' selected' : '');
-                      const tag = o.backend === 'cloud' ? '云端' : '本地';
-                      const warn = isBadHealth(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
-                        : (o.validation_state === 'ok' ? '（已验证）' : '');
-                      return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
-                    }).join('');
-                    return `
-                    <div class="ad-ai-bar">
-                      <div class="ad-ai-group ad-ai-group-grow">
-                        <select class="ctl sm ad-ai-model" id="ad-ai-model" aria-label="选择文本模型">
-                          ${optHtml || '<option value="">暂无可用文本模型</option>'}
-                        </select>
-                        <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
-                      </div>
-                      <div class="ad-ai-group">
-                        <select class="ctl sm ad-vision-provider" id="ad-vision-provider" aria-label="看图反推通道">
-                          <option value="auto">自动通道（本地优先）</option>
-                          <option value="ollama">本地 Ollama</option>
-                          <option value="chatgpt">ChatGPT 套餐</option>
-                          <option value="gemini">Google Gemini</option>
-                          <option value="dashscope">通义千问 VL</option>
-                        </select>
-                        <select class="ctl sm ad-vision-lang" id="ad-vision-lang" aria-label="看图反推语言">
-                          <option value="zh">中文提示词</option>
-                          <option value="en">英文 Tag</option>
-                          <option value="bilingual">中英双语</option>
-                        </select>
-                        <button type="button" class="btn sm" id="ad-ai-reverse"${isNew || !a.ref_images.length ? ' disabled' : ''} title="${isNew ? '请先保存资产并上传参考图' : (!a.ref_images.length ? '请先在右侧上传参考图' : '综合封面与三视图反向生成一致性提示词')}">📷 看图反推</button>
-                      </div>
-                    </div>
-                    <div class="ad-ai-feedback">
-                      <span class="t-dim" id="ad-ai-status" role="status"></span>
-                      <button type="button" class="btn xs ghost" id="ad-ai-cancel" hidden>取消反推</button>
-                      <button type="button" class="btn xs ghost" id="ad-ai-undo" hidden>撤销还原</button>
-                    </div>`;
-                  })() : ''}
+              <div class="ad-basic-form">
+                <div class="ad-field">
+                  <label for="ad-kind">资产类型</label>
+                  <select id="ad-kind" class="ctl"${canEdit ? '' : ' disabled'}>${kindOptions}</select>
                 </div>
 
-                <span class="pf-label">归属</span>
-                ${isGlobal
-                  ? '<span class="t-dim">全局资产池 —— 已属于所有项目，不能收回成单个项目资产'
-                    + '（可能正被多个项目的镜头引用，收回会让引用悬空）</span>'
-                  : (store.isManager
-                      ? `<label class="chk"><input type="checkbox" id="ad-global">
-                           <span>${isNew ? '放进全局资产池（各项目都能引用，不属于当前项目）' : '升为全局资产（id 不变，现有引用照旧有效）'}</span></label>`
-                      : '<span class="t-dim">本项目资产（全局资产只有管理员能建）</span>')}
+                <div class="ad-field">
+                  <label for="ad-name">名称</label>
+                  <input id="ad-name" class="ctl" maxlength="60" value="${escapeHtml(a.name)}"
+                         autocomplete="off"${canEdit ? '' : ' disabled'}>
+                </div>
+
+                <div class="ad-field">
+                  <label for="ad-tags">标签</label>
+                  <input id="ad-tags" class="ctl" value="${escapeHtml((a.tags || []).join(', '))}"
+                         placeholder="逗号分隔，最多 10 个"${canEdit ? '' : ' disabled'}>
+                </div>
+
+                <div class="ad-field">
+                  <label for="ad-aliases">别名</label>
+                  <input id="ad-aliases" class="ctl" value="${escapeHtml((a.aliases || []).join(', '))}"
+                         placeholder="逗号分隔"${canEdit ? '' : ' disabled'}>
+                </div>
+
+                <div class="ad-field ad-field-full">
+                  <label for="ad-summary">简介</label>
+                  <textarea id="ad-summary" class="ctl" rows="2" maxlength="500"
+                            ${canEdit ? '' : 'disabled'}>${escapeHtml(a.summary)}</textarea>
+                </div>
+
+                <div class="ad-field ad-field-full">
+                  <label for="ad-prompt">一致性提示词</label>
+                  <div class="ad-prompt-col">
+                    <textarea id="ad-prompt" class="ctl" rows="6" maxlength="1000"
+                              placeholder="可先写几个关键特征词，再点下方「AI 完善提示词」扩写润色"${canEdit ? '' : ' disabled'}
+                        >${escapeHtml(a.consistency_prompt)}</textarea>
+                    ${canEdit && store.can('job:submit') && store.currentId ? (() => {
+                      const textOpts = data.textOptions || [];
+                      const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
+                      const preferred = textOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                        || textOpts.find((o) => !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
+                        || textOpts.find((o) => !isBadHealth(o))
+                        || textOpts[0];
+                      const optHtml = textOpts.map((o, idx) => {
+                        const val = `${o.backend}|${o.provider}|${o.model}`;
+                        const sel = preferred && o === preferred ? ' selected' : (!preferred && idx === 0 ? ' selected' : '');
+                        const tag = o.backend === 'cloud' ? '云端' : '本地';
+                        const warn = isBadHealth(o) ? `（${HEALTH_LABEL[o.health_state] || '不可用'}）`
+                          : (o.validation_state === 'ok' ? '（已验证）' : '');
+                        return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
+                      }).join('');
+                      return `
+                      <div class="ad-ai-bar">
+                        <div class="ad-ai-group ad-ai-group-grow">
+                          <select class="ctl sm ad-ai-model" id="ad-ai-model" aria-label="选择文本模型">
+                            ${optHtml || '<option value="">暂无可用文本模型</option>'}
+                          </select>
+                          <button type="button" class="btn sm" id="ad-ai-refine">✨ AI 完善提示词</button>
+                        </div>
+                        <div class="ad-ai-group">
+                          <select class="ctl sm ad-vision-provider" id="ad-vision-provider" aria-label="看图反推通道">
+                            <option value="auto">自动通道（本地优先）</option>
+                            <option value="ollama">本地 Ollama</option>
+                            <option value="chatgpt">ChatGPT 套餐</option>
+                            <option value="gemini">Google Gemini</option>
+                            <option value="dashscope">通义千问 VL</option>
+                          </select>
+                          <select class="ctl sm ad-vision-lang" id="ad-vision-lang" aria-label="看图反推语言">
+                            <option value="zh">中文提示词</option>
+                            <option value="en">英文 Tag</option>
+                            <option value="bilingual">中英双语</option>
+                          </select>
+                          <button type="button" class="btn sm" id="ad-ai-reverse"${isNew || !a.ref_images.length ? ' disabled' : ''} title="${isNew ? '请先保存资产并上传参考图' : (!a.ref_images.length ? '请先在「参考图」板块上传参考图' : '综合封面与三视图反向生成一致性提示词')}">📷 看图反推</button>
+                        </div>
+                      </div>
+                      <div class="ad-ai-feedback">
+                        <span class="t-dim" id="ad-ai-status" role="status"></span>
+                        <button type="button" class="btn xs ghost" id="ad-ai-cancel" hidden>取消反推</button>
+                        <button type="button" class="btn xs ghost" id="ad-ai-undo" hidden>撤销还原</button>
+                      </div>`;
+                    })() : ''}
+                    <p class="ad-prompt-tip">写作要点：${a.kind === 'character'
+                      ? '面部与识别特征、发型、服装、体型与总体风格、必须保持不变的细节。'
+                      : a.kind === 'scene'
+                        ? '空间结构、建筑风格、环境与光照氛围、需要保持一致的固定元素。'
+                        : '形状、材质、颜色、尺寸与比例、独特标记。'}喂给生成模型的稳定描述，最终由你定稿。</p>
+                  </div>
+                </div>
+
+                <div class="ad-field ad-field-full">
+                  <span class="ad-field-label">归属</span>
+                  ${isGlobal
+                    ? '<span class="t-dim">全局资产池 —— 已属于所有项目，不能收回成单个项目资产'
+                      + '（可能正被多个项目的镜头引用，收回会让引用悬空）</span>'
+                    : (store.isManager
+                        ? `<label class="chk"><input type="checkbox" id="ad-global">
+                             <span>${isNew ? '放进全局资产池（各项目都能引用，不属于当前项目）' : '升为全局资产（id 不变，现有引用照旧有效）'}</span></label>`
+                        : '<span class="t-dim">本项目资产（全局资产只有管理员能建）</span>')}
+                </div>
               </div>
               ${isNew ? '<p class="modal-meta">同一范围、同一类型里名称唯一；重名说明该合并，不是新建。</p>'
                 : `<p class="modal-meta">创建于 ${a.created_at}　最后修改 ${a.updated_at}${canEdit ? '' : '　· 你对此资产只读'}</p>`}
@@ -299,80 +344,18 @@ export async function renderDetail(id) {
 
           ${isNew ? '' : (() => {
             const miss = missingOf(a, data.profile, variants);
-            return `<div class="card">
-            <div class="card-head"><h2>还缺什么</h2>
-              <span class="sub">${miss.length ? `${miss.length} 项` : '该有都有了'}</span>
-              ${miss.length ? '<div class="right"><button class="btn sm" data-goto-studio>去补齐</button></div>' : ''}</div>
-            <div class="card-body">
-              ${miss.length ? `<div class="ad-miss-list">${miss.map((m) => `<span class="chip amber">缺 · ${escapeHtml(m)}</span>`).join('')}</div>
-                  <p class="t-dim" style="margin:8px 0 0">以上项目可在「资产创作」中补齐——这里只读，写只在创作那一页。</p>`
-                : '<p class="t-dim">基础资料齐了。齐不等于对：一致性提示词好不好用，'
-                  + '要看下一镜出来的画面，那要跑一次才知道。</p>'}
-            </div>
-          </div>`;
+            return `<div class="ad-miss-bar">
+              <span class="ad-miss-label">资料完整度</span>
+              ${miss.length
+                ? `<div class="ad-miss-list">${miss.map((m) => `<span class="chip amber">缺 · ${escapeHtml(m)}</span>`).join('')}</div>
+                   <button class="btn sm" data-goto-studio>去资产创作补齐</button>`
+                : '<span class="t-dim">基础资料已齐备（实际效果以生成画面为准）</span>'}
+            </div>`;
           })()}
+      </div>
 
-          ${!isNew && data.profileError ? `<div class="card"><div class="bar bad">
-            人物档案读不到：${escapeHtml(data.profileError)}</div></div>` : ''}
-          ${!isNew && a.kind === 'character' && !data.profileError ? `
-          <div class="card">
-            <div class="card-head"><h2>人物档案</h2>
-              <span class="sub">${data.profile && data.profile.exists ? '最后改于 ' + escapeHtml(data.profile.updated_at) : '还没写过'}</span>
-              <div class="right"><button class="btn sm" data-goto-studio>去创作</button></div></div>
-            <div class="card-body">
-              ${[['履历', 'biography'], ['性格', 'personality'], ['成长过程', 'growth_arc'],
-                 ['文字设定提示词', 'text_prompt']].map(([label, key]) => `
-                <p class="note"><b>${label}</b><br>
-                  ${escapeHtml((data.profile && data.profile[key]) || '—')}</p>`).join('')}
-              ${data.profile ? `<p class="note"><b>专属 TTS 配音绑定</b><br>
-                声线：${escapeHtml(data.profile.tts_voice || '默认')} ·
-                语速：${escapeHtml(String(data.profile.tts_rate ?? 1.0))}x ·
-                情绪／造声：${escapeHtml(data.profile.tts_mood || '默认')}</p>` : ''}
-              <p class="t-desc">档案与一致性提示词是两回事：这一份讲"这个人是怎么走到今天的"，
-                上面那一格讲"他画出来必须长什么样"。这里只读，改在资产创作。</p>
-            </div>
-          </div>` : ''}
-          ${!isNew && data.variantsError ? `<div class="card"><div class="bar bad">
-            形态清单读不到：${escapeHtml(data.variantsError)}</div></div>` : ''}
-          ${!isNew && !data.variantsError ? `
-          <div class="card">
-            <div class="card-head"><h2>命名形态</h2>
-              <span class="sub">${variants.length} 个 · 图跟着形态走</span>
-              <div class="right"><button class="btn sm" data-goto-studio>加形态</button></div></div>
-            <div class="card-body">
-              ${variants.length ? variants.map((v) => `
-                <div class="as-variant">
-                  <div class="as-variant-head"><b>${escapeHtml(v.name)}</b>
-                    <span class="chip plain">${escapeHtml(v.variant_type_label)}</span>
-                    <span class="t-dim">${v.image_count} 图${v.source_job_id ? ` · 来源作业 #${v.source_job_id}` : ''}</span></div>
-                  ${v.prompt ? `<p class="t-desc">${escapeHtml(v.prompt)}</p>` : ''}
-                  ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((ip) => `
-                    <figure class="ad-img"><img src="${escapeHtml(`/files/${ip}`)}" alt="${escapeHtml(v.name)} 的图"
-                      loading="lazy" data-preview="${escapeHtml(`/files/${ip}`)}"></figure>`).join('')}</div>`
-                    : '<p class="t-dim">这个形态还没有图。</p>'}
-                </div>`).join('')
-                : '<p class="t-dim">还没有形态。服饰、视角、形态各存各的图，'
-                  + '下游才不会被互相矛盾的服装带跑。</p>'}
-            </div>
-          </div>` : ''}
-
-          <div class="card">
-            <div class="card-head"><h2>一致性提示词怎么写</h2></div>
-            <div class="card-body">
-              <p class="note">
-                ${a.kind === 'character'
-                  ? '角色：面部与识别特征、发型、服装、体型与总体风格、必须保持不变的细节。'
-                  : a.kind === 'scene'
-                    ? '场景：空间结构、建筑风格、环境与光照氛围、需要保持一致的固定元素。'
-                    : '道具：形状、材质、颜色、尺寸与比例、独特标记。'}
-                这段是喂给生成模型的稳定描述，抽取只会给建议值，最终由你改。
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div class="stack">
-          <div class="card">
+      <div class="ad-panel" data-ad-panel="refs"${activeSection === 'refs' ? '' : ' hidden'}>
+        <div class="card">
             <div class="card-head"><h2>参考图</h2>
               <span class="sub">第一张是封面</span>
               <div class="right">
@@ -447,72 +430,123 @@ export async function renderDetail(id) {
               ${canEdit ? `<p class="modal-meta">短边 ≥ 512px，支持 PNG / JPEG / WebP（≤20MB），按槽位上传可对齐推荐比例。</p>` : ''}
             </div>
           </div>
-
-          ${isNew ? '' : `<div class="card">
-            <div class="card-head"><h2>最近生成记录</h2>
-              <span class="sub">${(data.gens || []).length} 条 · 只读</span>
-              <div class="right"><button class="btn sm" data-goto-studio>去生成</button></div></div>
-            <div class="card-body">
-              ${data.gensError ? `<div class="bar bad">生成记录读不到：${escapeHtml(data.gensError)}</div>` : ''}
-              <details class="ad-fold"${data.gensError ? ' open' : ''}>
-                <summary class="ad-fold-sum">${(data.gens || []).length ? `展开查看 ${(data.gens || []).length} 条生成记录` : '暂无生成记录（产物需在「资产创作」显式存入）'}</summary>
-                <div class="ad-fold-body">
-                  ${(data.gens || []).length ? (data.gens || []).map((j) => `
-                    <div class="ad-ref">
-                      <div>
-                        <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
-                          <span class="chip ${jobTone(j.status)}" title="${escapeHtml(j.status_label || j.status)}">${escapeHtml(publicStatus(j.status))}</span></div>
-                        <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
-                          (j.execution_mode === 'cloud' ? '云端' : '本地'))}
-                          ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}
-                          ${j.cost_micros ? `· 预计 ${escapeHtml(formatMoney(j.cost_micros, j.currency))}` : ''}
-                          ${j.target_variant_id ? `· 形态 #${j.target_variant_id}` : ''}</p>
-                      </div>
-                      <a class="btn xs" href="#generate/0">查看</a>
-                    </div>`).join('')
-                    : '<p class="t-dim">暂无记录。图像生成成功后需预览并显式存入资产。</p>'}
-                </div>
-              </details>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head"><h2>被哪些镜头引用</h2>
-              <span class="sub">${refs.length} 条 · 只读${impactCounts?.stale ? ` · ${impactCounts.stale} 镜源已变` : ''}</span>
-              ${store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
-                ? `<div class="right"><button class="btn xs" data-reference-usage-open>查作业实际用图</button>
-                  ${a.kind === 'character' ? '<button class="btn xs" data-appearance-open>角色出镜对照</button>' : ''}</div>` : ''}</div>
-            <div class="card-body">
-              ${cache.refsError ? `<div class="bar bad">引用清单读不到：${escapeHtml(cache.refsError)}
-                ——这一格先别当成"没有引用"，更别照着它决定删不删</div>` : ''}
-              <details class="ad-fold"${(refs.length > 0 && refs.length <= 5) || impactCounts?.stale || cache.refsError ? ' open' : ''}>
-                <summary class="ad-fold-sum">${refs.length ? `展开查看 ${refs.length} 条引用镜头明细` : '暂无镜头引用（在创作中心分镜表引用）'}</summary>
-                <div class="ad-fold-body">
-                  ${refs.length ? refs.map((s) => {
-                    const imp = impactMap.get(Number(s.shot_id));
-                    const impBadge = !imp ? ''
-                      : imp.stale ? '<span class="chip amber">源已变 · 建议重跑</span>'
-                      : imp.job_id ? `<span class="chip green">${imp.signed ? '已签字仍可用' : '产物仍可用'}</span>`
-                      : '<span class="chip gray">未生成</span>';
-                    return `
-                    <div class="ad-ref">
-                      <div>
-                        <div class="t-strong">${escapeHtml(s.project_name)}
-                          <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span> ${impBadge}</div>
-                        <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
-                          ${s.variant_names && s.variant_names.length
-                            ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
-                      </div>
-                      <button class="btn xs" data-goto-shot="${s.episode_id}">去分镜</button>
-                    </div>`;
-                  }).join('')
-                    : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
-                </div>
-              </details>
-            </div>
-          </div>`}
-        </div>
       </div>
+
+      ${isNew ? '' : `
+      <div class="ad-panel" data-ad-panel="profile"${activeSection === 'profile' ? '' : ' hidden'}>
+        ${data.profileError ? `<div class="card"><div class="bar bad">
+          人物档案读不到：${escapeHtml(data.profileError)}</div></div>` : ''}
+        ${a.kind === 'character' && !data.profileError ? `
+        <div class="card">
+          <div class="card-head"><h2>人物档案</h2>
+            <span class="sub">${data.profile && data.profile.exists ? '最后改于 ' + escapeHtml(data.profile.updated_at) : '还没写过'}</span>
+            <div class="right"><button class="btn sm" data-goto-studio>去创作</button></div></div>
+          <div class="card-body">
+            <div class="ad-profile-grid">
+              ${[['履历', 'biography'], ['性格', 'personality'], ['成长过程', 'growth_arc'],
+                 ['文字设定提示词', 'text_prompt']].map(([label, key]) => `
+                <div class="ad-profile-item">
+                  <b>${label}</b>
+                  <p>${escapeHtml((data.profile && data.profile[key]) || '—')}</p>
+                </div>`).join('')}
+            </div>
+            ${data.profile ? `<p class="note" style="margin-top:12px"><b>专属 TTS 配音绑定：</b>
+              声线 ${escapeHtml(data.profile.tts_voice || '默认')} ·
+              语速 ${escapeHtml(String(data.profile.tts_rate ?? 1.0))}x ·
+              情绪／造声 ${escapeHtml(data.profile.tts_mood || '默认')}</p>` : ''}
+            <p class="ad-prompt-tip">档案与一致性提示词是两回事：这一份讲"这个人是怎么走到今天的"，基本信息里讲"他画出来必须长什么样"。这里只读，改在资产创作。</p>
+          </div>
+        </div>` : ''}
+        ${data.variantsError ? `<div class="card"><div class="bar bad">
+          形态清单读不到：${escapeHtml(data.variantsError)}</div></div>` : ''}
+        ${!data.variantsError ? `
+        <div class="card">
+          <div class="card-head"><h2>命名形态</h2>
+            <span class="sub">${variants.length} 个 · 图跟着形态走</span>
+            <div class="right"><button class="btn sm" data-goto-studio>加形态</button></div></div>
+          <div class="card-body">
+            ${variants.length ? variants.map((v) => `
+              <div class="as-variant">
+                <div class="as-variant-head"><b>${escapeHtml(v.name)}</b>
+                  <span class="chip plain">${escapeHtml(v.variant_type_label)}</span>
+                  <span class="t-dim">${v.image_count} 图${v.source_job_id ? ` · 来源作业 #${v.source_job_id}` : ''}</span></div>
+                ${v.prompt ? `<p class="t-desc">${escapeHtml(v.prompt)}</p>` : ''}
+                ${v.ref_images.length ? `<div class="ad-imgs">${v.ref_images.map((ip) => `
+                  <figure class="ad-img"><img src="${escapeHtml(`/files/${ip}`)}" alt="${escapeHtml(v.name)} 的图"
+                    loading="lazy" data-preview="${escapeHtml(`/files/${ip}`)}"></figure>`).join('')}</div>`
+                  : '<p class="t-dim">这个形态还没有图。</p>'}
+              </div>`).join('')
+              : '<p class="t-dim">还没有形态。服饰、视角、形态各存各的图，'
+                + '下游才不会被互相矛盾的服装带跑。</p>'}
+          </div>
+        </div>` : ''}
+      </div>
+
+      <div class="ad-panel" data-ad-panel="usage"${activeSection === 'usage' ? '' : ' hidden'}>
+        <div class="card">
+          <div class="card-head"><h2>最近生成记录</h2>
+            <span class="sub">${(data.gens || []).length} 条 · 只读</span>
+            <div class="right"><button class="btn sm" data-goto-studio>去生成</button></div></div>
+          <div class="card-body">
+            ${data.gensError ? `<div class="bar bad">生成记录读不到：${escapeHtml(data.gensError)}</div>` : ''}
+            <details class="ad-fold" open>
+              <summary class="ad-fold-sum">${(data.gens || []).length ? `共 ${(data.gens || []).length} 条生成记录` : '暂无生成记录（产物需在「资产创作」显式存入）'}</summary>
+              <div class="ad-fold-body">
+                ${(data.gens || []).length ? (data.gens || []).map((j) => `
+                  <div class="ad-ref">
+                    <div>
+                      <div class="t-strong">${escapeHtml(j.operation_label || j.operation)}
+                        <span class="chip ${jobTone(j.status)}" title="${escapeHtml(j.status_label || j.status)}">${escapeHtml(publicStatus(j.status))}</span></div>
+                      <p class="t-dim">作业 #${j.job_id} · ${escapeHtml(
+                        (j.execution_mode === 'cloud' ? '云端' : '本地'))}
+                        ${escapeHtml(j.provider_code || '')}/${escapeHtml(j.model_code || '')}
+                        ${j.cost_micros ? `· 预计 ${escapeHtml(formatMoney(j.cost_micros, j.currency))}` : ''}
+                        ${j.target_variant_id ? `· 形态 #${j.target_variant_id}` : ''}</p>
+                    </div>
+                    <a class="btn xs" href="#generate/0">查看</a>
+                  </div>`).join('')
+                  : '<p class="t-dim">暂无记录。图像生成成功后需预览并显式存入资产。</p>'}
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>被哪些镜头引用</h2>
+            <span class="sub">${refs.length} 条 · 只读${impactCounts?.stale ? ` · ${impactCounts.stale} 镜源已变` : ''}</span>
+            ${store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
+              ? `<div class="right"><button class="btn xs" data-reference-usage-open>查作业实际用图</button>
+                ${a.kind === 'character' ? '<button class="btn xs" data-appearance-open>角色出镜对照</button>' : ''}</div>` : ''}</div>
+          <div class="card-body">
+            ${cache.refsError ? `<div class="bar bad">引用清单读不到：${escapeHtml(cache.refsError)}
+              ——这一格先别当成"没有引用"，更别照着它决定删不删</div>` : ''}
+            <details class="ad-fold" open>
+              <summary class="ad-fold-sum">${refs.length ? `共 ${refs.length} 条引用镜头明细` : '暂无镜头引用（在创作中心分镜表引用）'}</summary>
+              <div class="ad-fold-body">
+                ${refs.length ? refs.map((s) => {
+                  const imp = impactMap.get(Number(s.shot_id));
+                  const impBadge = !imp ? ''
+                    : imp.stale ? '<span class="chip amber">源已变 · 建议重跑</span>'
+                    : imp.job_id ? `<span class="chip green">${imp.signed ? '已签字仍可用' : '产物仍可用'}</span>`
+                    : '<span class="chip gray">未生成</span>';
+                  return `
+                  <div class="ad-ref">
+                    <div>
+                      <div class="t-strong">${escapeHtml(s.project_name)}
+                        <span class="t-dim">第 ${s.episode_seq} 集 · ${escapeHtml(s.episode_title)}</span> ${impBadge}</div>
+                      <p class="t-dim">镜 ${s.seq} · ${escapeHtml(s.summary)}
+                        ${s.variant_names && s.variant_names.length
+                          ? `<br>用的形态：${escapeHtml(s.variant_names.join('、'))}` : ''}</p>
+                    </div>
+                    <button class="btn xs" data-goto-shot="${s.episode_id}">去分镜</button>
+                  </div>`;
+                }).join('')
+                  : '<p class="t-dim">还没有镜头引用它。在创作中心的分镜表里选资产即可引用。</p>'}
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>`}
 
       <div class="modal" id="ad-del-modal" hidden>
         <div class="modal-box">
@@ -543,6 +577,26 @@ export function mountDetail(root, id) {
   if (!cache || cache.error) return;
   const isNew = Boolean(cache.isNew);
   const a = cache.asset;
+
+  const applySection = (sec) => {
+    activeSection = sec;
+    root.querySelectorAll('[data-ad-tab]').forEach((btn) => {
+      const on = btn.dataset.adTab === sec;
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    root.querySelectorAll('[data-ad-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.adPanel !== sec;
+    });
+  };
+  root.querySelectorAll('[data-ad-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => applySection(btn.dataset.adTab));
+  });
+  root.querySelectorAll('[data-switch-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => applySection(btn.dataset.switchTab));
+  });
+  applySection(activeSection);
+
   if (isNew) {
     root.querySelector('#ad-name')?.focus();
   } else {
@@ -1295,6 +1349,8 @@ export function mountDetail(root, id) {
     const slotsHost = root.querySelector('[data-ad-slots]');
     const host = root.querySelector('[data-ad-imgs]');
     if (!host || !slotsHost) return;
+    const cntBadge = root.querySelector('[data-ad-tab="refs"] .ad-sec-cnt');
+    if (cntBadge) cntBadge.textContent = String(pendingImages.length);
     const curKind = root.querySelector('#ad-kind')?.value || a.kind;
     const slots = slotsForKind(curKind);
     const byKey = new Map();

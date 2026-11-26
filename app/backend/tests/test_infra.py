@@ -900,7 +900,7 @@ def test_自绘下拉照抄原生控件的宽高():
     code = "\n".join(line for line in js.split("\n")
                       if not line.strip().startswith(("//", "*", "/*")))
     assert "wrap.style.width = cs.width" in code, "外壳没抄原生宽度"
-    assert "wrap.style.height = cs.height" in code, "外壳没抄原生高度"
+    assert ("wrap.style.height = cs.height" in code or "wrap.style.height = selHeight" in code), "外壳没抄原生高度"
     assert "btn.style.height = selHeight" in code, "按钮没跟外壳同高"
 
 
@@ -2356,3 +2356,28 @@ def test_迁移回滚完成后才记录日志(monkeypatch, tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         migration.migrate(verbose=False)
     assert observations == [("operation_rollback error=%s", "OperationalError")]
+
+
+def test_夜间自绘下拉必须彻底隐藏原生select且具备防裁切基线():
+    """防复发守卫（2026-11-26 macOS 夜间模式双影与文字裁切）：
+    1. `.fv-pick>select.ctl` 必须带 `display:none !important`，避免视图高权重选择器
+       （如 `.ad-ai-group select.ctl.xxx{display:block}`）把被接管的原生 <select> 翻出来叠层；
+    2. `.fv-pick-btn` 全局基线须居中且不低于 32px，且 `pick.js` 抄写高度时有下限保护，
+       避免 macOS 约 21px 的原生 <select> 高度压扁自绘按钮导致文字沉底裁切。
+    """
+    css = (FRONTEND / "css" / "app.css").read_text(encoding="utf-8")
+    pick_js = (FRONTEND / "js" / "pick.js").read_text(encoding="utf-8")
+
+    assert ".fv-pick>select.ctl{display:none !important}" in css, (
+        "缺少 .fv-pick>select.ctl{display:none !important}，夜间模式原生 select 可能被视图样式翻出叠层"
+    )
+    m = re.search(r"^\.fv-pick-btn\{([^}]+)\}", css, re.M)
+    assert m, "app.css 缺少 .fv-pick-btn 基线定义"
+    btn_body = m.group(1)
+    assert "display:flex" in btn_body and "align-items:center" in btn_body and "min-height:32px" in btn_body, (
+        ".fv-pick-btn 缺少居中与 min-height:32px 防裁切基线"
+    )
+    assert "Math.max(rawH, 32)" in pick_js, (
+        "pick.js 抄写原生 select 高度时缺少 32px 下限保护（macOS 原生 select 过矮会压扁按钮）"
+    )
+

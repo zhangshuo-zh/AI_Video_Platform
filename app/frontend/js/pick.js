@@ -114,10 +114,12 @@ export function enhanceSelect(sel) {
     wrap.style.width = cs.width;
     wrap.style.flex = sel.style.flex || 'none';
   }
-  if (cs.height && cs.height !== 'auto') wrap.style.height = cs.height;
+  // macOS 原生 <select> 默认高度约 21px，直接照抄会把自绘按钮压扁裁字，故设 32px 下限。
+  const rawH = cs.height && cs.height !== 'auto' ? parseFloat(cs.height) : NaN;
+  const selHeight = Number.isFinite(rawH) && rawH > 0 ? `${Math.max(rawH, 32)}px` : '';
+  if (selHeight) wrap.style.height = selHeight;
   if (cs.minWidth && cs.minWidth !== '0px') wrap.style.minWidth = cs.minWidth;
   if (cs.maxWidth && cs.maxWidth !== 'none') wrap.style.maxWidth = cs.maxWidth;
-  const selHeight = cs.height && cs.height !== 'auto' ? cs.height : '';
   sel.parentNode.insertBefore(wrap, sel);
   wrap.appendChild(sel);
 
