@@ -378,6 +378,8 @@ export async function renderDetail(id) {
               <div class="right">
                 ${!isNew && a.kind === 'character' && store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
                   ? '<button class="btn sm" data-appearance-open>角色出镜对照</button>' : ''}
+                ${!isNew && a.kind === 'character'
+                  ? '<button type="button" class="btn sm" data-copy-expr-prompt title="为主角复制 6 种情绪表情差分提示词（建议附上面部特写图发给 GPT 出图，再导入补充参考图）">🎭 表情差分提示词</button>' : ''}
                 ${canEdit ? `<label class="btn sm ad-upload">${isNew ? '预选参考图' : '上传参考图'}
                   <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp"${isNew ? ' multiple' : ''} hidden>
                 </label>` : ''}
@@ -751,6 +753,59 @@ export function mountDetail(root, id) {
     }
   });
 
+  const copyToClipboard = async (text) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  };
+
+  root.querySelector('[data-copy-expr-prompt]')?.addEventListener('click', async () => {
+    const name = root.querySelector('#ad-name')?.value.trim() || a.name || '未命名角色';
+    const summary = root.querySelector('#ad-summary')?.value.trim() || a.summary || '';
+    const prompt = root.querySelector('#ad-prompt')?.value.trim() || a.consistency_prompt || '';
+    const core = prompt || summary;
+    if (!core) {
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: '请先填写角色简介或一致性提示词后再复制', kind: 'err' },
+      }));
+      return;
+    }
+    const exprPrompt = [
+      `请参考我附上的角色「面部特写 / 封面定妆」图片及以下设定，为我**分别生成 6 张独立的高清角色表情差分特写图**（不要拼成九宫格，也不要在画面上添加任何文字、标签或水印）：`,
+      '',
+      `【角色名称】${name}`,
+      summary ? `【角色简介】${summary}` : '',
+      `【核心外形一致性设定】${core}`,
+      '',
+      `【统一画面规格】全部为正方 1:1 宽高比（高分辨率 ≥1024×1024 像素），胸部以上正面/微侧特写，干净纯白背景，严格保持参考图中的画风、脸型五官、瞳色、发型发色、耳饰发卡与领口服装 100% 不变，仅变化面部神态与微手势：`,
+      `1. 第 1 张【自然微笑】：温柔元气的自然微笑，眼神明亮放松。`,
+      `2. 第 2 张【平静】：日常放松的平静神态，嘴角自然微抿。`,
+      `3. 第 3 张【惊讶】：睁大双眼、微微张嘴的惊讶神态。`,
+      `4. 第 4 张【害羞】：脸颊微红、眼神略微闪躲的可爱害羞神态。`,
+      `5. 第 5 张【认真】：眉眼微蹙、目光专注坚定的认真/战斗神态。`,
+      `6. 第 6 张【委屈】：微微嘟嘴、眼眶湿润略带委屈的撒娇神态。`,
+    ].filter((line) => line !== '').join('\n');
+    try {
+      await copyToClipboard(exprPrompt);
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: '已复制主角 6 表情差分提示词（建议附上面部特写图发给 GPT，再导入补充参考图）', kind: 'ok' },
+      }));
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: `复制失败：${err.message || err}`, kind: 'err' },
+      }));
+    }
+  });
+
   const saveTvBtn = root.querySelector('#ad-save-tv');
   const copyGptBtn = root.querySelector('#ad-copy-gpt');
   const tvModeSel = root.querySelector('#ad-tv-mode');
@@ -771,25 +826,14 @@ export function mountDetail(root, id) {
       summary ? `【角色简介】${summary}` : '',
       `【核心外形一致性设定】${core}`,
       '',
-      `请按以下 4 个标准规格逐张输出，并确保 4 张图中的画风质感、脸型五官、瞳色、发型发色、服装配色材质与配饰 100% 一致：`,
-      `1. 第 1 张【封面 / 正面定妆】（竖版 3:4）：角色正面全身站姿定妆照，面向镜头，干净纯白背景，无文字。`,
-      `2. 第 2 张【三视图（正/侧/背）】（横版 16:9）：同一角色的正面、侧面、背面全身三视图，水平等高并排对齐，干净纯白背景，无文字。`,
-      `3. 第 3 张【面部特写】（方图 1:1）：同一角色的胸部以上面部特写，清晰展现五官、眼神光、发饰与表情细节，干净纯白背景，无文字。`,
-      `4. 第 4 张【背面细节】（竖版 3:4）：同一角色的背面全身图，清晰展现背部发型层次、服装剪裁与随身配饰，干净纯白背景，无文字。`,
+      `请严格按以下 4 个画面规格与比例逐张生成并输出独立图片，并确保 4 张图中的画风质感、脸型五官、瞳色、发型发色、服装配色材质与配饰 100% 一致：`,
+      `1. 第 1 张【封面 / 正面定妆】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：角色正面全身站姿定妆照，面向镜头，干净纯白背景，无文字。`,
+      `2. 第 2 张【三视图（正/侧/背）】（宽屏横版 16:9 宽高比，高分辨率 ≥1536×864 像素）：同一角色的正面、侧面、背面全身三视图，水平等高并排对齐，干净纯白背景，无文字。`,
+      `3. 第 3 张【面部特写】（正方 1:1 宽高比，高分辨率 ≥1024×1024 像素）：同一角色的胸部以上面部特写，清晰展现五官、眼神光、发饰与表情细节，干净纯白背景，无文字。`,
+      `4. 第 4 张【背面细节】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：同一角色的背面全身图，清晰展现背部发型层次、服装剪裁与随身配饰，干净纯白背景，无文字。`,
     ].filter((line) => line !== '').join('\n');
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(gptPrompt);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = gptPrompt;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
-      }
+      await copyToClipboard(gptPrompt);
       if (randStatus) randStatus.textContent = '已复制 GPT 4 图设定集提示词，去 ChatGPT 粘贴即可逐张出图并导入 4 个槽位';
       window.dispatchEvent(new CustomEvent('app:toast', {
         detail: { text: '已复制 GPT 4 图提示词到剪贴板', kind: 'ok' },
