@@ -1205,6 +1205,7 @@ export function engineInstancesCard() {
           `}
           <div class="inst-actions-subgrid">
             <button type="button" class="btn xs" data-act-probe="${it.id}" title="对该端点发起 HTTP 探活并记录探测留痕">探测</button>
+            <button type="button" class="btn xs ghost" data-act-replace-url="${it.id}" title="保留显示名、密钥与备注，一键替换新端点地址（如 Colab 重启后的新 trycloudflare.com 链接）">🔄 换地址</button>
             <button type="button" class="btn xs ghost" data-act-probes="${it.id}" title="查看最近探测留痕记录">看历史</button>
             <button type="button" class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}"
                     title="${it.enabled ? '暂停该实例调度（不终止后台运行中的进程）' : '恢复该实例接入模型中心调度'}">${
@@ -1759,6 +1760,49 @@ export function mountEngineInstances(root) {
       const ok = await run(on ? '恢复调度' : '暂停调度',
         () => api.patchEngine(btn.dataset.actToggle, { enabled: on }), { btn });
       if (ok) repaint();
+    });
+  });
+
+  root.querySelectorAll('[data-act-replace-url]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.actReplaceUrl);
+      const item = (cache.engines?.items || []).find((x) => Number(x.id) === id);
+      if (!item) return;
+      const raw = window.prompt(
+        `为「${item.display_name || item.engine_label || item.engine_code}」粘贴新的服务地址（将保留原名称与配置并自动清理旧地址）：`,
+        item.endpoint || '',
+      );
+      if (raw === null) return;
+      const nextUrl = raw.trim().replace(/\/+$/, '');
+      if (!nextUrl || nextUrl === String(item.endpoint || '').replace(/\/+$/, '')) return;
+      let created = null;
+      let probe = null;
+      const ok = await run('更换地址', async () => {
+        created = await api.createEngine({
+          engine_code: item.engine_code,
+          endpoint: nextUrl,
+          display_name: item.display_name || '',
+          shared_secret_env: item.shared_secret_env || '',
+          note: item.note || '',
+        });
+        if (!item.enabled && created?.id) {
+          await api.patchEngine(created.id, { enabled: false });
+        }
+        await api.removeEngine(item.id);
+        if (item.enabled && created?.id) {
+          probe = await api.probeEngine(created.id).catch(() => null);
+        }
+      }, { btn });
+      if (!ok) return;
+      stopEngineWatchdog(id);
+      if (probe && (probe.state === 'ok' || probe.ok)) {
+        alertNotify(`已更换为新地址并连通就绪：${nextUrl}`, 'info');
+      } else if (probe) {
+        alertNotify(`已更换为新地址（${nextUrl}），当前探测：${probe.detail || '未连上'}`, 'warn');
+      } else {
+        alertNotify(`已更换为新地址：${nextUrl}`, 'info');
+      }
+      repaint();
     });
   });
 
