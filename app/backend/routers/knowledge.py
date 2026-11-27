@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
+from fastapi.responses import PlainTextResponse
 
 import access
 import services
@@ -157,3 +158,18 @@ def resolve_consistency_issue(
         user_id=user["id"],
     )
     return ConsistencyIssueOut(**result)
+
+
+@router.get("/projects/{project_id}/knowledge/notebooklm-bundle")
+def export_notebooklm_bundle(
+    project_id: int,
+    user=Depends(require_permission("project:read")),
+) -> PlainTextResponse:
+    """导出项目设定、人物档案、画风词缀、分集分镜与剧本文档为单份 Markdown。"""
+    access.ensure(user, project_id, "read")
+    filename, content = services.build_notebooklm_bundle(project_id)
+    return PlainTextResponse(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

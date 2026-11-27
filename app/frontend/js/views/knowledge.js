@@ -133,6 +133,7 @@ export default {
         <div class="right">
           <span class="chip blue">词缀 ${affixes.length}</span>
           <span class="chip ${openCount ? 'yellow' : 'green'}">当前视图 ${issues.length} 条</span>
+          <a class="btn sm" href="${api.knowledgeNotebooklmBundleUrl(project.id)}" download title="导出项目全部角色、档案、画风词缀、分集分镜与剧本文档为单个 Markdown，直接拖入 NotebookLM Pro 做防吃书检索">📚 导出 NotebookLM 设定包</a>
           ${store.can('job:submit') ? '<button class="btn bridge sm" id="kn-agent-audit" title="前往智能体中心发起全项目设定与资产矛盾扫描">智能体扫描矛盾 <span class="bridge-arrow" aria-hidden="true">→</span></button>' : ''}
         </div>
       </div>

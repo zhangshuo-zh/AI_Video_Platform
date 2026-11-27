@@ -362,7 +362,7 @@ export async function renderDetail(id) {
                 ${!isNew && a.kind === 'character' && store.currentId && store.can('job:read') && (a.project_id == null || a.project_id === store.currentId)
                   ? '<button class="btn sm" data-appearance-open>角色出镜对照</button>' : ''}
                 ${!isNew && a.kind === 'character'
-                  ? '<button type="button" class="btn sm" data-copy-expr-prompt title="为主角复制 6 种情绪表情差分提示词（建议附上面部特写图发给 GPT 出图，再导入补充参考图）">🎭 表情差分提示词</button>' : ''}
+                  ? '<button type="button" class="btn sm" data-copy-quad-prompt title="复制 4 格角色设定图提示词（可直接粘贴到 ChatGPT Plus GPT Image 或 Google AI Pro Nano Banana 出图）">📋 4图设定提示词</button><button type="button" class="btn sm" data-copy-expr-prompt title="为主角复制 6 种情绪表情差分提示词（建议附上面部特写图发给 GPT / Nano Banana 出图，再导入补充参考图）">🎭 表情差分提示词</button>' : ''}
                 ${canEdit && isNew ? `<label class="btn sm ad-upload">预选补充参考图
                   <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" multiple hidden>
                 </label>` : ''}
@@ -397,7 +397,7 @@ export async function renderDetail(id) {
                   return `<figure class="ad-img${isCover ? ' cover' : ''}">
                     ${slotMeta ? `<div class="ad-slot-bar"><b class="ad-slot-title">${escapeHtml(slotMeta.label)}</b><span class="ad-slot-ratio">${escapeHtml(slotMeta.spec)}</span></div>` : ''}
                     <div class="ad-img-wrap">
-                      <img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(slotMeta ? slotMeta.label : '参考图')}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}"${slotMeta ? ` data-slot-key="${escapeHtml(slotMeta.key)}" data-ref-path="${escapeHtml(p)}"` : ''}>
+                      <img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(slotMeta ? slotMeta.label : '参考图')}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}" data-ref-path="${escapeHtml(p)}"${slotMeta ? ` data-slot-key="${escapeHtml(slotMeta.key)}"` : ''}>
                       <span class="ad-dim-badge" data-dim-badge hidden></span>
                     </div>
                     <div class="ad-check-msg" data-check-msg hidden></div>
@@ -874,40 +874,53 @@ export function mountDetail(root, id) {
 
   const saveTvBtn = root.querySelector('#ad-save-tv');
   const copyGptBtn = root.querySelector('#ad-copy-gpt');
+  const copyQuadSavedBtn = root.querySelector('[data-copy-quad-prompt]');
   const tvModeSel = root.querySelector('#ad-tv-mode');
-  copyGptBtn?.addEventListener('click', async () => {
-    const name = root.querySelector('#ad-name')?.value.trim() || '未命名角色';
-    const summary = root.querySelector('#ad-summary')?.value.trim() || '';
-    const prompt = root.querySelector('#ad-prompt')?.value.trim() || '';
+  const handleCopyQuadPrompt = async () => {
+    const name = root.querySelector('#ad-name')?.value.trim() || a.name || '未命名角色';
+    const summary = root.querySelector('#ad-summary')?.value.trim() || a.summary || '';
+    const prompt = root.querySelector('#ad-prompt')?.value.trim() || a.consistency_prompt || '';
     const core = prompt || summary;
     if (!core) {
       if (randStatus) randStatus.textContent = '请先随机生成人设或填写一致性提示词后再复制';
+      else {
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: '请先在「基本信息」填写一致性提示词后再复制', kind: 'warn' },
+        }));
+      }
       root.querySelector('#ad-prompt')?.focus();
       return;
     }
     const gptPrompt = [
-      `请根据以下角色设定，为我**分别生成 4 张独立的高清角色设定图**（不要拼在一张图里，也不要在画面上添加任何文字、标签、水印或标尺）：`,
+      `请根据以下角色设定，为我**分别生成 4 张独立的高清角色设定图**（适用于 ChatGPT GPT Image / Google Nano Banana，不要拼在一张图里，也不要在画面上添加任何文字、标签、水印或标尺）：`,
       '',
       `【角色名称】${name}`,
       summary ? `【角色简介】${summary}` : '',
       `【核心外形一致性设定】${core}`,
       '',
       `请严格按以下 4 个画面规格与比例逐张生成并输出独立图片，并确保 4 张图中的画风质感、脸型五官、瞳色、发型发色、服装配色材质与配饰 100% 一致：`,
-      `1. 第 1 张【封面 / 正面定妆】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：角色正面全身站姿定妆照，面向镜头，干净纯白背景，无文字。`,
-      `2. 第 2 张【三视图（正/侧/背）】（宽屏横版 16:9 宽高比，高分辨率 ≥1536×864 像素）：同一角色的正面、侧面、背面全身三视图，水平等高并排对齐，干净纯白背景，无文字。`,
-      `3. 第 3 张【面部特写】（正方 1:1 宽高比，高分辨率 ≥1024×1024 像素）：同一角色的胸部以上面部特写，清晰展现五官、眼神光、发饰与表情细节，干净纯白背景，无文字。`,
-      `4. 第 4 张【背面细节】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：同一角色的背面全身图，清晰展现背部发型层次、服装剪裁与随身配饰，干净纯白背景，无文字。`,
+      `1. 第 1 张【面部特写（封面）】（正方 1:1 宽高比，高分辨率 ≥1024×1024 像素）：胸部以上面部特写，清晰展现五官、眼神光、发饰与表情细节，干净纯白背景，无文字。`,
+      `2. 第 2 张【正面定妆照】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：同一角色正面全身站姿定妆照，面向镜头，干净纯白背景，无文字。`,
+      `3. 第 3 张【三视图（正/侧/背）】（宽屏横版 16:9 宽高比，高分辨率 ≥1536×864 像素）：同一角色的正面、侧面、背面全身三视图，水平等高并排对齐，干净纯白背景，无文字。`,
+      `4. 第 4 张【背面高清图】（竖版 3:4 宽高比，高分辨率 ≥1024×1365 像素）：同一角色的背面全身图，清晰展现背部发型层次、服装剪裁与随身配饰，干净纯白背景，无文字。`,
     ].filter((line) => line !== '').join('\n');
     try {
       await copyToClipboard(gptPrompt);
-      if (randStatus) randStatus.textContent = '已复制 GPT 4 图设定集提示词，去 ChatGPT 粘贴即可逐张出图并导入 4 个槽位';
+      if (randStatus) randStatus.textContent = '已复制 4 图设定集提示词，可贴给 ChatGPT / Nano Banana 逐张出图并导入 4 个槽位';
       window.dispatchEvent(new CustomEvent('app:toast', {
-        detail: { text: '已复制 GPT 4 图提示词到剪贴板', kind: 'ok' },
+        detail: { text: '已复制 4 图设定提示词（适配 ChatGPT / Nano Banana）', kind: 'ok' },
       }));
     } catch (err) {
       if (randStatus) randStatus.textContent = `复制失败：${err.message || err}`;
+      else {
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: `复制失败：${err.message || err}`, kind: 'err' },
+        }));
+      }
     }
-  });
+  };
+  copyGptBtn?.addEventListener('click', handleCopyQuadPrompt);
+  copyQuadSavedBtn?.addEventListener('click', handleCopyQuadPrompt);
   tvModeSel?.addEventListener('change', () => {
     if (!saveTvBtn) return;
     saveTvBtn.textContent = tvModeSel.value === 'single' ? '🎨 保存并生成三视图' : '🎨 保存并生成设定集';

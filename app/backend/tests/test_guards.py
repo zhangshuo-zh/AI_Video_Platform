@@ -162,6 +162,7 @@ ROUTES = [
     ("PATCH", "/api/audio-clips/{q}",
      {"kind": "dialogue", "speaker": "", "text": "改", "notes": ""}, 404),
     ("POST", "/api/audio-clips/{q}/submit", None, 404),
+    ("POST", "/api/audio-clips/{q}/upload", "FILE", 404),
     ("POST", "/api/projects/{p}/episodes/{e}/audio/batch-tts", {}, 404),
     ("POST", "/api/audio-clips/{q}/lip-sync", {}, 404),
     ("DELETE", "/api/audio-clips/{q}", None, 404),
@@ -400,6 +401,7 @@ ROUTES = [
     ("POST", "/api/projects/{p}/knowledge/consistency/scan", None, 404),
     ("POST", "/api/projects/{p}/knowledge/consistency/{x}/resolve",
      {"action": "adopt"}, 404),
+    ("GET", "/api/projects/{p}/knowledge/notebooklm-bundle", None, 404),
     # ---------- M4：SSE 实时状态流与历史废片安全清理（GC） ----------
     ("GET", "/api/events/stream?once=1", None, 200),
     ("GET", "/api/system/resources", None, 200),

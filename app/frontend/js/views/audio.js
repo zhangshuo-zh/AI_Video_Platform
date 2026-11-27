@@ -16,7 +16,7 @@ const TABS = [
   { key: 'voice', label: '配音管理', kinds: ['dialogue', 'narration'],
     hint: '台词与旁白。台词挂到镜头，旁白可以只挂到集。' },
   { key: 'music', label: '音乐管理', kinds: ['music'],
-    hint: '一集可以有多条音乐；按用途写在文本里，生成时整段送进队列。' },
+    hint: '一集可以有多条音乐；可送进本地队列，或直接上传 Google Lyria / 外部生成的 MP3/WAV。' },
   { key: 'viseme', label: '口型对齐', kinds: ['dialogue'],
     hint: '对口型将已就绪台词与镜头最新画面联动，支持 FFmpeg 音画合成与 Mock 全链校验，提交到统一队列。' },
   { key: 'sfx', label: '音效管理', kinds: ['sfx'],
@@ -80,29 +80,31 @@ export default {
       const [label, tone] = STATUS[c.status] || [c.status, 'gray'];
       const where = [c.episode_title ? `第 ${c.episode_seq} 集` : '未挂集',
                      c.shot_id ? `第 ${c.shot_seq} 镜` : null].filter(Boolean).join(' · ');
-      const playable = c.path && c.job_id;
+      const audioSrc = c.path
+        ? (c.job_id ? `/api/jobs/${c.job_id}/artifacts/0` : `/files/${c.path}`)
+        : '';
       return `<tr>
         <td><b>${escapeHtml(c.speaker || KIND_LABEL[c.kind] || c.kind)}</b>
           <span class="t-desc">${escapeHtml(where)}</span></td>
         <td><div class="audio-text">${escapeHtml(c.text)}</div>
           ${c.notes ? `<span class="t-desc">${escapeHtml(c.notes)}</span>` : ''}</td>
         <td><span class="chip ${tone}">${escapeHtml(label)}</span>
-          ${c.job_id ? `<span class="t-desc">作业 #${c.job_id}${c.job_status ? ' · ' + escapeHtml(jobLabel(c.job_status)) : ''}</span>` : ''}
+          ${c.job_id ? `<span class="t-desc">作业 #${c.job_id}${c.job_status ? ' · ' + escapeHtml(jobLabel(c.job_status)) : ''}</span>` : (c.path ? '<span class="t-desc">外部导入</span>' : '')}
           ${c.job_error ? `<span class="t-desc t-bad">${escapeHtml(c.job_error)}</span>` : ''}</td>
         <td>${tab === 2 ? (c.visemes.length ? `${c.visemes.length} 段` : '<span class="t-dim">未生成</span>')
-          : (playable ? `<audio controls preload="none" style="height:30px;max-width:230px"
-              src="/api/jobs/${c.job_id}/artifacts/0"></audio>`
-            : c.path ? `<span class="t-desc" title="${escapeHtml(c.path)}">${escapeHtml(c.path)}</span>`
+          : (audioSrc ? `<audio controls preload="none" style="height:30px;max-width:230px"
+              src="${escapeHtml(audioSrc)}"></audio>`
             : '<span class="t-dim">—</span>')}</td>
         <td class="r">
           ${(() => {
             if (!canWrite || (c.status !== 'draft' && c.status !== 'failed')) return '';
             const cap = capOf(c.kind);
+            const uploadBtn = `<label class="btn sm" title="上传外部生成的 MP3 / WAV / OGG / FLAC / M4A（如 Google Lyria BGM 或外部配音）">⬆ 导入音频<input type="file" data-audio-upload="${c.id}" accept=".mp3,.wav,.ogg,.flac,.m4a,audio/*" hidden></label>`;
             // 服务端说不能提交，按钮就只能是灰的并且写着为什么——
             // 让人点一次拿一次 422，等于把状态透明化又退回成猜谜
-            return cap && !cap.can_submit
+            return `${uploadBtn} ` + (cap && !cap.can_submit
               ? `<button class="btn sm" disabled title="${escapeHtml(cap.why)}">送进队列（未接线）</button>`
-              : `<button class="btn sm primary" data-audio-submit="${c.id}">送进队列</button>`;
+              : `<button class="btn sm primary" data-audio-submit="${c.id}">送进队列</button>`);
           })()}
           ${(tab === 0 || tab === 2) && canWrite && c.status === 'ready'
             ? (c.shot_id
@@ -271,6 +273,23 @@ export default {
         },
       }));
       refresh();
+    });
+
+    root.querySelectorAll('[data-audio-upload]').forEach((inp) => {
+      inp.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        const clipId = Number(inp.dataset.audioUpload);
+        audioNotice = ''; audioNoticeKey = '';
+        const ok = await run('导入外部音频', () => api.uploadAudioClip(clipId, file));
+        if (ok) {
+          window.dispatchEvent(new CustomEvent('app:toast', {
+            detail: { text: `已导入外部音频：${file.name}`, kind: 'ok' },
+          }));
+          refresh();
+        }
+      });
     });
 
     root.querySelectorAll('[data-audio-submit]').forEach((btn) => {

@@ -66,7 +66,7 @@ from .artifact_review import (
 
 from .audio import (
     AUDIO_KINDS, AUDIO_STATUS, audio_batch_tts, audio_clip_view,
-    audio_lip_sync, audio_sync, audio_submit
+    audio_lip_sync, audio_sync, audio_submit, audio_upload, cleanup_uploaded_audio
 )
 
 from .cascade import (
@@ -106,7 +106,8 @@ from .jobs import (
 )
 
 from .knowledge import (
-    affix_view, issue_view, scan_consistency, resolve_consistency_issue
+    affix_view, issue_view, scan_consistency, resolve_consistency_issue,
+    build_notebooklm_bundle
 )
 
 from .project_stats import (

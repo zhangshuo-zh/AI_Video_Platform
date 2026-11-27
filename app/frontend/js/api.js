@@ -506,6 +506,11 @@ export const api = {
   createAudioClip: (pid, body) => send('POST', `/api/projects/${pid}/audio-clips`, body),
   updateAudioClip: (id, body) => send('PATCH', `/api/audio-clips/${id}`, body),
   submitAudioClip: (id) => send('POST', `/api/audio-clips/${id}/submit`),
+  uploadAudioClip: (id, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request(`/api/audio-clips/${id}/upload`, { method: 'POST', body: form }, { timeoutMs: 120_000 }).then(toJson);
+  },
   batchEpisodeTts: (pid, eid, body = {}) => send('POST', `/api/projects/${pid}/episodes/${eid}/audio/batch-tts`, body),
   deleteAudioClip: (id) => send('DELETE', `/api/audio-clips/${id}`),
 
@@ -596,6 +601,7 @@ export const api = {
       episode_id: episodeId, ...(subtitlePath ? { subtitle_path: subtitlePath } : {}),
     })),
   knowledgeAffixes: (pid) => get(`/api/projects/${pid}/knowledge/affixes`),
+  knowledgeNotebooklmBundleUrl: (pid) => `/api/projects/${pid}/knowledge/notebooklm-bundle`,
   createKnowledgeAffix: (pid, body) => send('POST', `/api/projects/${pid}/knowledge/affixes`, body),
   updateKnowledgeAffix: (pid, id, body) => send('PUT', `/api/projects/${pid}/knowledge/affixes/${id}`, body),
   deleteKnowledgeAffix: (pid, id) => send('DELETE', `/api/projects/${pid}/knowledge/affixes/${id}`),

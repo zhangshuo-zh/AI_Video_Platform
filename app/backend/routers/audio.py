@@ -3,7 +3,7 @@
 音频中心不建第二条队列：提交素材时只落一条 job，执行仍由同一个 worker。
 这一页负责"这条台词/音乐属于哪一集哪一镜"，以及作业成功后把产物路径抄回来。
 """
-from fastapi import APIRouter, Body, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status as http_status
 
 import access
 import services
@@ -138,8 +138,24 @@ def submit_lip_sync(clip_id: int,
     return AudioLipSyncOut(**out)
 
 
+@router.post("/audio-clips/{clip_id}/upload", response_model=AudioClipOut)
+def upload_clip(clip_id: int,
+                file: UploadFile = File(...),
+                user=Depends(require_permission("audio:write"))) -> AudioClipOut:
+    """导入外部生成的音频文件（如 Google Lyria BGM 或外部配音）直接置为就绪。"""
+    row = _clip(clip_id, user, "write")
+    if row["status"] in ("queued", "ready"):
+        raise HTTPException(status_code=409, detail="这条素材已经在队列里或已就绪；要替换请先删除或新建一条")
+    try:
+        out = services.audio_upload(row, file.file, file.filename, file.content_type)
+    except services.AudioInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return AudioClipOut(**out)
+
+
 @router.delete("/audio-clips/{clip_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 def delete_clip(clip_id: int,
                 user=Depends(require_permission("audio:write"))) -> None:
-    _clip(clip_id, user, "write")
+    row = _clip(clip_id, user, "write")
     clips.delete(clip_id)
+    services.cleanup_uploaded_audio(row)

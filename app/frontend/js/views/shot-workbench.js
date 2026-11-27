@@ -8,6 +8,7 @@ import { jobLabel, jobTone, publicStatus } from '../validation.js';
 import { gotoEntry } from '../goto.js';
 import { checklistHtml } from './review-checklist.js';
 let reviewDraft = null;
+let currentShotData = null;
 
 /**
  * 单镜头生产工作台（0037，任务书 §6）。这是本次改造的业务闭环：
@@ -387,7 +388,9 @@ export default {
     }
     try {
       d = await api.shotWorkbench(shotId, entry?.jobId);
+      currentShotData = d;
     } catch (err) {
+      currentShotData = null;
       return `<section class="view on"><div class="page-head"><h1>镜头工作台</h1></div>
         <div class="card"><div class="empty"><div class="empty-t">读不到这一镜</div>
         <p>${escapeHtml(err.message || '')}</p>
@@ -414,6 +417,7 @@ export default {
       <p>${escapeHtml((d.setting.summary || '').slice(0, 80))}</p>
       <div class="right">
         <button class="btn" id="sw-back">${work ? '返回本集待办' : entry?.reviewReturn ? '返回审核队列' : '分镜表'}</button>
+        <button class="btn" id="sw-copy-video-prompt" title="一键复制带景别、运镜、时长与引用角色一致性的提示词，可直接用于 Google Flow (Veo) 或 ChatGPT Sora 生成高光视频镜头">🎬 复制 Flow/Sora 提示词</button>
         <button class="btn" id="sw-edit">编辑设定</button>
         <button class="btn${reviewing ? '' : ' primary'}" id="sw-generate">提交生成</button>
       </div></div>`;
@@ -681,6 +685,39 @@ export default {
       renderView('generate');
     });
     const editBtn = root.querySelector('#sw-edit');
+    root.querySelector('#sw-copy-video-prompt')?.addEventListener('click', async () => {
+      const s = currentShotData?.setting || {};
+      const refs = currentShotData?.references || [];
+      const refLines = refs
+        .map((r) => `- ${r.name || '资产'}${r.consistency_prompt ? `：${r.consistency_prompt}` : ''}`)
+        .filter(Boolean);
+      const specParts = [
+        s.aspect ? `画面比例 ${s.aspect}` : '',
+        s.duration ? `时长约 ${s.duration} 秒` : '',
+        s.shot_size ? `景别：${s.shot_size}` : '',
+        s.camera_move ? `运镜：${s.camera_move}` : '',
+        s.style ? `画风：${s.style}` : '',
+      ].filter(Boolean);
+      const text = [
+        `【高光视频镜头提示词（适配 Google Flow Veo / ChatGPT Sora）】`,
+        specParts.length ? `【镜头规格】${specParts.join(' · ')}` : '',
+        s.summary ? `【剧情与动作】${s.summary}` : '',
+        s.prompt ? `【核心画面提示词】${s.prompt}` : '',
+        refLines.length ? `【登场角色/场景一致性】\n${refLines.join('\n')}` : '',
+        s.negative_prompt ? `【避免出现】${s.negative_prompt}` : '',
+        `【质量要求】保持2D高品质日系动画作画质感、角色五官与服饰全程稳定不崩、运动连贯自然、无文字水印。`,
+      ].filter(Boolean).join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: '已复制 Flow (Veo) / Sora 高光镜头提示词到剪贴板', kind: 'ok' },
+        }));
+      } catch (err) {
+        window.dispatchEvent(new CustomEvent('app:toast', {
+          detail: { text: `复制失败：${err?.message || err}`, kind: 'err' },
+        }));
+      }
+    });
     editBtn?.addEventListener('click', () => {
       const modal = root.querySelector('#sw-modal');
       if (modal) modal.hidden = false;

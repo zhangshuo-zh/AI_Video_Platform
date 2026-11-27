@@ -1,7 +1,12 @@
 import adapters
 import json
+import os
 import re
+import uuid
+from typing import BinaryIO
 
+from config import FILES_DIR
+from paths import resolve_within
 from repositories.audio import clips
 from repositories.content import assets, episodes, profiles, shots
 from repositories.jobs import jobs as job_repo
@@ -434,3 +439,71 @@ def audio_lip_sync(
         "source_kind": src_kind or "mock",
         "audio_path": audio_path,
     }
+
+
+MAX_AUDIO_BYTES = 50 * 1024 * 1024
+
+
+def _sniff_audio_ext(header: bytes) -> str | None:
+    """按文件头魔数识别常见外部音频格式，拒绝文本/图片等伪装文件。"""
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "wav"
+    if len(header) >= 3 and header[:3] == b"ID3":
+        return "mp3"
+    if len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0:
+        return "mp3"
+    if len(header) >= 4 and header[:4] == b"OggS":
+        return "ogg"
+    if len(header) >= 4 and header[:4] == b"fLaC":
+        return "flac"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "m4a"
+    return None
+
+
+def audio_upload(clip, stream: BinaryIO, filename: str | None = None,
+                 content_type: str | None = None) -> dict:
+    """上传外部音频文件（如 Google Lyria BGM 或外部配音）并标记素材就绪。"""
+    _ = (filename, content_type)
+    if clip["status"] not in ("draft", "failed"):
+        raise AudioInvalid("这条素材已经在队列里或已就绪；要替换请先删除或新建一条")
+    data = stream.read(MAX_AUDIO_BYTES + 1)
+    if not data:
+        raise AudioInvalid("上传的音频文件为空")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise AudioInvalid(f"音频文件大小超过上限 {MAX_AUDIO_BYTES // 1024 // 1024}MB")
+    ext = _sniff_audio_ext(data[:32])
+    if ext is None:
+        raise AudioInvalid("仅支持 MP3 / WAV / OGG / FLAC / M4A 音频文件，请检查文件内容")
+
+    project_id = int(clip["project_id"])
+    folder = FILES_DIR / "audio" / str(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    out_name = f"{uuid.uuid4().hex}.{ext}"
+    target = folder / out_name
+    temp = folder / (out_name + ".tmp")
+    rel_path = f"audio/{project_id}/{out_name}"
+    committed = False
+    try:
+        temp.write_bytes(data)
+        os.replace(temp, target)
+        clips.finish(int(clip["id"]), status="ready", path=rel_path, duration_ms=None)
+        updated = clips.get(int(clip["id"]))
+        if updated is None:
+            raise AudioInvalid("音频素材不存在")
+        committed = True
+        return audio_clip_view(updated)
+    finally:
+        temp.unlink(missing_ok=True)
+        if not committed:
+            target.unlink(missing_ok=True)
+
+
+def cleanup_uploaded_audio(clip) -> None:
+    """删除由外部上传写入 FILES_DIR/audio/ 的音频文件，不动作业产物目录。"""
+    raw_path = str(clip["path"] or "")
+    if not raw_path.startswith("audio/"):
+        return
+    target = resolve_within(FILES_DIR, raw_path)
+    if target is not None and target.is_file():
+        target.unlink(missing_ok=True)
