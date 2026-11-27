@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
+from io import StringIO
 from typing import Any
 
 from repositories.audio import clips
@@ -10,12 +12,14 @@ from repositories.content import assets, episodes, profiles, shots, variants
 from repositories.documents import documents as docs
 from repositories.knowledge import knowledge
 from repositories.projects import projects
-from workspace import PathError
+from workspace import PathError, path_of
 
 from .documents import read_content
 from .jobs import shot_asset_ids
 
 _DIALOGUE_LINE_RE = re.compile(r"^\s*([^\s：:#*\[\]<>0-9/\\]{2,12})：\s*\S+")
+_NOTEBOOKLM_DOC_MAX_CHARS = 200_000
+_NOTEBOOKLM_BUNDLE_MAX_CHARS = 2_000_000
 
 
 def _json_list(raw: object) -> list[Any]:
@@ -381,67 +385,61 @@ def resolve_consistency_issue(
     return issue_view(updated)
 
 
-def build_notebooklm_bundle(project_id: int) -> tuple[str, str]:
-    """将项目设定、角色档案、画风词缀、分集分镜与剧本文档聚合为单份 Markdown。
-
-    面向 NotebookLM Pro 等长上下文知识库工具：下载后直接拖入即可做防吃书校验、
-    人物关系核对与剧集复盘。纯只读，不修改任何库状态。
-    """
+def _notebooklm_lines(project_id: int) -> Iterator[str]:
     proj = projects.get(project_id)
     proj_name = str(proj["name"]) if proj is not None else f"项目 #{project_id}"
     proj_desc = str(proj["description"] or "").strip() if proj is not None else ""
 
-    lines: list[str] = [
+    yield from (
         f"# 《{proj_name}》设定与剧本知识包（NotebookLM Pro 防吃书版）",
         "",
         "> 本文件由 AI 视频生产平台自动聚合生成，包含项目角色/场景/道具设定、人物档案、全局画风词缀、分集分镜大纲与项目剧本文档，可直接上传至 NotebookLM Pro 作为项目防吃书与剧情核对知识源。",
         "",
-    ]
+    )
     if proj_desc:
-        lines.extend(["## 项目简介", "", proj_desc, ""])
+        yield from ("## 项目简介", "", proj_desc, "")
 
     # 1. 全局画风词缀
     affix_rows = knowledge.list_affixes(project_id)
-    lines.extend(["## 一、全局画风词缀库", ""])
+    yield from ("## 一、全局画风词缀库", "")
     if not affix_rows:
-        lines.append("（暂无画风词缀）")
+        yield "（暂无画风词缀）"
     else:
         for row in affix_rows:
             flag = "（默认注入）" if row["is_default"] else ""
-            lines.append(f"- **{row['name']}** [{row['category']}]{flag}")
+            yield f"- **{row['name']}** [{row['category']}]{flag}"
             if row["positive"]:
-                lines.append(f"  - 正向：{row['positive']}")
+                yield f"  - 正向：{row['positive']}"
             if row["negative"]:
-                lines.append(f"  - 负向：{row['negative']}")
-    lines.append("")
+                yield f"  - 负向：{row['negative']}"
+    yield ""
 
     # 2. 资产与人物档案
     visible_assets = assets.list_visible(project_id)
     kind_titles = [("character", "角色设定"), ("scene", "场景设定"), ("prop", "道具设定")]
-    lines.extend(["## 二、核心资产与人物档案", ""])
+    yield from ("## 二、核心资产与人物档案", "")
     if not visible_assets:
-        lines.append("（暂无资产设定）")
-        lines.append("")
+        yield from ("（暂无资产设定）", "")
     else:
         for kind, title in kind_titles:
             group = [a for a in visible_assets if str(a["kind"]) == kind]
             if not group:
                 continue
-            lines.extend([f"### {title}（{len(group)}）", ""])
+            yield from (f"### {title}（{len(group)}）", "")
             for a in group:
                 aid = int(a["id"])
                 scope_label = "全局池" if a["project_id"] is None else "本项目"
                 aliases = [str(x).strip() for x in _json_list(a["aliases"]) if str(x).strip()]
                 tags = [str(x).strip() for x in _json_list(a["tags"]) if str(x).strip()]
-                lines.append(f"#### {a['name']}（{scope_label} · #{aid}）")
+                yield f"#### {a['name']}（{scope_label} · #{aid}）"
                 if aliases:
-                    lines.append(f"- **别名**：{'、'.join(aliases)}")
+                    yield f"- **别名**：{'、'.join(aliases)}"
                 if tags:
-                    lines.append(f"- **标签**：{'、'.join(tags)}")
+                    yield f"- **标签**：{'、'.join(tags)}"
                 if a["summary"]:
-                    lines.append(f"- **简介**：{str(a['summary']).strip()}")
+                    yield f"- **简介**：{str(a['summary']).strip()}"
                 if a["consistency_prompt"]:
-                    lines.append(f"- **外形一致性提示词**：{str(a['consistency_prompt']).strip()}")
+                    yield f"- **外形一致性提示词**：{str(a['consistency_prompt']).strip()}"
                 if kind == "character":
                     prof = profiles.get(aid)
                     if prof and prof.get("exists"):
@@ -453,31 +451,30 @@ def build_notebooklm_bundle(project_id: int) -> tuple[str, str]:
                         ):
                             val = str(prof.get(key) or "").strip()
                             if val:
-                                lines.append(f"- **{label}**：{val}")
+                                yield f"- **{label}**：{val}"
                         if prof.get("tts_voice") or prof.get("tts_mood"):
-                            lines.append(
+                            yield (
                                 f"- **配音音色**：声线={prof.get('tts_voice') or '默认'}，"
                                 f"语速={prof.get('tts_rate', 1.0)}x，情绪={prof.get('tts_mood') or '默认'}"
                             )
                 var_rows = variants.list_by_asset(aid)
                 if var_rows:
                     var_names = [f"{v['name']}({v['variant_type']})" for v in var_rows]
-                    lines.append(f"- **命名形态**：{'、'.join(var_names)}")
-                lines.append("")
+                    yield f"- **命名形态**：{'、'.join(var_names)}"
+                yield ""
 
     # 3. 分集与分镜大纲
     ep_rows = episodes.list_by_project(project_id)
-    lines.extend(["## 三、分集与分镜大纲", ""])
+    yield from ("## 三、分集与分镜大纲", "")
     if not ep_rows:
-        lines.append("（暂无分集）")
-        lines.append("")
+        yield from ("（暂无分集）", "")
     else:
         for ep in ep_rows:
             ep_id = int(ep["id"])
-            lines.append(f"### 第 {ep['seq']} 集：{ep['title']}（状态：{ep['status']}）")
+            yield f"### 第 {ep['seq']} 集：{ep['title']}（状态：{ep['status']}）"
             ep_shots = shots.list_by_episode(ep_id)
             if not ep_shots:
-                lines.append("（本集暂无分镜）")
+                yield "（本集暂无分镜）"
             else:
                 for sh in ep_shots:
                     meta = [f"{sh['duration']}s"]
@@ -485,27 +482,48 @@ def build_notebooklm_bundle(project_id: int) -> tuple[str, str]:
                         meta.append(str(sh["shot_size"]))
                     if sh["camera_move"]:
                         meta.append(str(sh["camera_move"]))
-                    lines.append(f"- **镜 {sh['seq']}**（{' / '.join(meta)}）：{str(sh['summary'] or '').strip()}")
+                    yield f"- **镜 {sh['seq']}**（{' / '.join(meta)}）：{str(sh['summary'] or '').strip()}"
                     if sh["prompt"]:
-                        lines.append(f"  - 画面提示词：{str(sh['prompt']).strip()}")
-            lines.append("")
+                        yield f"  - 画面提示词：{str(sh['prompt']).strip()}"
+            yield ""
 
     # 4. 剧本文档正文
     doc_rows = docs.list_by_project(project_id)
-    lines.extend(["## 四、项目剧本与设定文档", ""])
+    yield from ("## 四、项目剧本与设定文档", "")
     if not doc_rows:
-        lines.append("（暂无文档）")
-        lines.append("")
-    else:
-        for doc in doc_rows:
-            lines.append(f"### {doc['title']}（类型：{doc['kind']} · 状态：{doc['status']}）")
-            lines.append("")
-            try:
-                content = str(read_content(doc).get("content") or "").strip()
-            except (OSError, PathError, ValueError):
-                content = ""
-            lines.append(content or "（正文为空或文件尚未写入）")
-            lines.append("")
+        yield from ("（暂无文档）", "")
+    limit = _NOTEBOOKLM_DOC_MAX_CHARS
+    for doc in doc_rows:
+        yield from (f"### {doc['title']}（类型：{doc['kind']} · 状态：{doc['status']}）", "")
+        raw = ""
+        try:
+            target = path_of(doc["rel_path"])
+            if target.is_file():
+                with target.open(encoding="utf-8") as source:
+                    # 正文文件通常以换行结尾，多读一字以区分换行和后续正文。
+                    raw = source.read(limit + 2)
+        except (OSError, PathError, ValueError):
+            pass
+        content = raw.strip()
+        yield content[:limit] or "（正文为空或文件尚未写入）"
+        if len(raw) == limit + 2 or len(content) > limit:
+            yield from ("", f"> 单文档正文超过 {limit:,} 字符，已截断。")
+        yield ""
 
+
+def build_notebooklm_bundle(project_id: int) -> tuple[str, str]:
+    """将项目设定、分集分镜与剧本文档汇总为有大小上限的 Markdown。"""
     filename = f"project-{project_id}-notebooklm.md"
-    return filename, "\n".join(lines).strip() + "\n"
+    limit = _NOTEBOOKLM_BUNDLE_MAX_CHARS
+    output = StringIO()
+    for line in _notebooklm_lines(project_id):
+        remaining = limit - output.tell()
+        if len(line) + 1 > remaining:
+            if not line:
+                continue
+            notice = f"\n\n> 知识包达到 {limit:,} 字符上限，后续内容已截断。\n"
+            output.write(line[:remaining])
+            return filename, output.getvalue()[:limit - len(notice)].rstrip() + notice
+        output.write(line)
+        output.write("\n")
+    return filename, output.getvalue().strip() + "\n"

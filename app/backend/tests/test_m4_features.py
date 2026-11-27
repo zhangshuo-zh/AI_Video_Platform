@@ -16,6 +16,7 @@ import pytest
 
 import adapters
 import engine_http_run
+import imagetypes
 import jobfiles
 import runners
 import safenet
@@ -33,6 +34,7 @@ from repositories.pipeline import pipeline_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
 from runners_pkg import inputs as runner_inputs
+from services import asset_upscale
 
 
 def _has_ffmpeg() -> bool:
@@ -219,6 +221,8 @@ def test_m4_comfyui_workflow_http_e2e(tmp_path, monkeypatch, checkpoint, install
         headers = {key.lower(): value for key, value in req.header_items()}
         assert headers["authorization"] == "Bearer test-comfyui-token"
         assert headers["x-shared-secret"] == "test-comfyui-token"
+        if url.path != "/system_stats":
+            assert headers["ngrok-skip-browser-warning"] == "1"
         requests_seen.append((req.get_method(), url.path))
         if url.path == "/system_stats":
             payload = {"system": {"comfyui_version": "0.3.40"}}
@@ -232,7 +236,7 @@ def test_m4_comfyui_workflow_http_e2e(tmp_path, monkeypatch, checkpoint, install
             payload = {"name": "uploaded_init.png", "subfolder": "", "type": "input"}
         elif url.path == "/prompt":
             submitted_prompt.update(json.loads(req.data)["prompt"])
-            payload = {"prompt_id": "comfy-test-123"}
+            payload = {"prompt_id": "comfy-test-123", "node_errors": {}}
         elif url.path == "/history/comfy-test-123":
             payload = {
                 "comfy-test-123": {
@@ -299,6 +303,139 @@ def test_m4_comfyui_workflow_http_e2e(tmp_path, monkeypatch, checkpoint, install
     ]
     assert submitted_prompt["1"]["inputs"]["ckpt_name"] == selected
     assert out_path.read_bytes() == png_out_bytes
+
+
+@pytest.mark.parametrize("prompt_id", [None, "comfy-test"])
+def test_m4_comfyui_rejects_prompt_node_errors_before_polling(tmp_path, monkeypatch, prompt_id):
+    out_path = tmp_path / "image.png"
+    receipt_path = tmp_path / "receipt.json"
+    submitted = {"prompt_id": prompt_id, "node_errors": {"1": {"errors": ["模型不可用"]}}}
+    requests_seen = []
+
+    def open_comfyui(req, *, timeout):
+        requests_seen.append(urllib.parse.urlparse(req.full_url).path)
+        assert requests_seen == ["/prompt"]
+        assert req.get_header("Ngrok-skip-browser-warning") == "1"
+        assert req.get_header("Authorization") is None
+        return io.BytesIO(json.dumps(submitted).encode())
+
+    monkeypatch.setattr(safenet, "safe_urlopen", open_comfyui)
+    code = engine_http_run._run_comfyui(
+        {"workflow": {"1": {"class_type": "SaveImage"}}},
+        "http://127.0.0.1:8188", out_path, receipt_path,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert code == 1
+    assert receipt["error"] == "comfyui_node_error"
+    assert "模型不可用" in receipt["message"]
+    assert requests_seen == ["/prompt"]
+    assert not out_path.exists()
+
+
+@pytest.mark.parametrize(("case", "error"), [
+    ("at-limit", ""),
+    ("over-limit", "comfyui_image_too_large"),
+    ("html", "comfyui_view_failed"),
+    ("empty", "empty_image"),
+])
+def test_m4_comfyui_view_has_size_and_signature_guards(tmp_path, monkeypatch, case, error):
+    png = _write_test_png(tmp_path / "server.png").read_bytes()
+    limit = len(png)
+    bodies = {
+        "at-limit": png,
+        "over-limit": png + b"x" * 1000,
+        "html": b"<html><body>" + b"x" * 64 + b"</body></html>",
+        "empty": b"",
+    }
+    monkeypatch.setattr(imagetypes, "MAX_IMAGE_BYTES", limit)
+    bytes_read = 0
+
+    class ViewResponse(io.BytesIO):
+        def read(self, size=-1):
+            nonlocal bytes_read
+            assert 0 < size <= min(65536, limit + 1 - bytes_read)
+            chunk = super().read(size)
+            bytes_read += len(chunk)
+            return chunk
+
+    def open_comfyui(req, *, timeout):
+        path = urllib.parse.urlparse(req.full_url).path
+        if path == "/prompt":
+            payload = {"prompt_id": "task"}
+        elif path == "/history/task":
+            payload = {"task": {"outputs": {"1": {"images": [{"filename": "result.png"}]}}}}
+        else:
+            assert path == "/view"
+            return ViewResponse(bodies[case])
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(safenet, "safe_urlopen", open_comfyui)
+    out_path = tmp_path / "image.png"
+    receipt_path = tmp_path / "receipt.json"
+    code = engine_http_run._run_comfyui(
+        {"workflow": {"1": {"class_type": "SaveImage"}}},
+        "http://127.0.0.1:8188", out_path, receipt_path,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["error"] == error
+    assert bytes_read == min(len(bodies[case]), limit + 1)
+    if error:
+        assert code == 1
+        assert not out_path.exists()
+        assert not out_path.with_suffix(".png.part").exists()
+    else:
+        assert code == 0
+        assert out_path.read_bytes() == png
+
+
+@pytest.mark.parametrize(("configured", "secret"), [
+    (True, "  upscale-token  "), (True, None), (True, " "), (False, None),
+])
+def test_m4_comfyui_upscale_headers(as_role, fresh_project, tmp_path, monkeypatch, configured, secret):
+    c = as_role("admin")
+    asset = c.post(f"/api/projects/{fresh_project()}/assets", json={
+        "kind": "character", "name": "超分认证测试",
+    })
+    assert asset.status_code == 201, asset.text
+    aid = asset.json()["id"]
+    png = _write_test_png(tmp_path / "source.png").read_bytes()
+    uploaded = c.post(f"/api/assets/{aid}/images", files={"file": ("source.png", png, "image/png")})
+    assert uploaded.status_code == 200, uploaded.text
+    old_path = uploaded.json()["ref_images"][0]
+    secret_env = "TEST_COMFYUI_UPSCALE_SECRET"
+    if secret is None:
+        monkeypatch.delenv(secret_env, raising=False)
+    else:
+        monkeypatch.setenv(secret_env, secret)
+    monkeypatch.setattr(asset_upscale.engine_instances, "pick", lambda code: {
+        "endpoint": "http://127.0.0.1:8188",
+        "shared_secret_env": secret_env if configured else "",
+    })
+    requests_seen = []
+    responses = {
+        "/upload/image": b'{"name": "in.png"}',
+        "/prompt": b'{"prompt_id": "task"}',
+        "/history/task": b'{"task": {"outputs": {"4": {"images": [{"filename": "out.png"}]}}}}',
+        "/view": png,
+    }
+
+    def open_comfyui(req, *, timeout):
+        path = urllib.parse.urlparse(req.full_url).path
+        requests_seen.append(path)
+        assert req.get_header("Authorization") == ("Bearer upscale-token" if configured else None)
+        assert req.get_header("Ngrok-skip-browser-warning") == "1"
+        return io.BytesIO(responses[path])
+
+    monkeypatch.setattr(safenet, "safe_urlopen", open_comfyui)
+    result = c.post(f"/api/assets/{aid}/images/upscale", json={"path": old_path})
+    if not configured or (secret and secret.strip()):
+        assert result.status_code == 200, result.text
+        assert requests_seen == list(responses)
+    else:
+        assert result.status_code == 422, result.text
+        assert secret_env in result.json()["detail"]
+        assert requests_seen == []
+        assert (FILES_DIR / old_path).is_file()
 
 
 def test_m4_lip_sync_endpoint_and_pipeline_node(as_role, people):

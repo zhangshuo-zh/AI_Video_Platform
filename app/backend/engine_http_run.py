@@ -31,13 +31,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 
+import imagetypes
 import safenet
 
 POLL_HINT = 600     # 单次本机出图的上限（秒）。远小于 worker 的 7200 作业上限
 
 
 def _comfyui_headers(secret_env: str) -> dict[str, str]:
-    headers: dict[str, str] = {}
+    headers = {"ngrok-skip-browser-warning": "1"}
     if secret_env:
         secret = (os.environ.get(secret_env) or "").strip()
         if not secret:
@@ -185,6 +186,10 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         return _finish(receipt_path, ok=False, code="comfyui_submit_failed",
                        message=f"提交 ComfyUI /prompt 失败：{exc}", endpoint=endpoint)
 
+    node_errors = submitted.get("node_errors")
+    if node_errors:
+        return _finish(receipt_path, ok=False, code="comfyui_node_error",
+                       message=f"ComfyUI 工作流节点出错：{node_errors}", endpoint=endpoint)
     prompt_id = str(submitted.get("prompt_id") or "").strip()
     if not prompt_id:
         return _finish(receipt_path, ok=False, code="comfyui_no_prompt_id",
@@ -226,17 +231,28 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         "type": str(image_meta.get("type") or "output"),
     })
     view_url = f"{endpoint}/view?{view_qs}"
+    blob = bytearray()
+    limit = imagetypes.MAX_IMAGE_BYTES
     try:
         safenet.check_url(view_url)
         with safenet.safe_urlopen(Request(view_url, headers=headers), timeout=timeout) as resp:
-            blob = resp.read()
+            while chunk := resp.read(min(65536, limit + 1 - len(blob))):
+                blob.extend(chunk)
+                if len(blob) > limit:
+                    break
     except (HTTPError, URLError, OSError, ValueError) as exc:
         return _finish(receipt_path, ok=False, code="comfyui_view_failed",
                        message=f"回收 ComfyUI 图像失败：{exc}", prompt_id=prompt_id)
 
+    if len(blob) > limit:
+        return _finish(receipt_path, ok=False, code="comfyui_image_too_large",
+                       message=f"ComfyUI 回收图像超过 {limit} 字节上限", prompt_id=prompt_id)
     if len(blob) < 64:
         return _finish(receipt_path, ok=False, code="empty_image",
                        message=f"ComfyUI 回收图像只有 {len(blob)} 字节", prompt_id=prompt_id)
+    if imagetypes.sniff(bytes(blob[:32])) is None:
+        return _finish(receipt_path, ok=False, code="comfyui_view_failed",
+                       message="ComfyUI /view 返回的内容不是有效图片", prompt_id=prompt_id)
     tmp = out_path.with_suffix(out_path.suffix + ".part")
     tmp.write_bytes(blob)
     tmp.replace(out_path)

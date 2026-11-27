@@ -35,9 +35,12 @@ def _timeout(deadline: float) -> float:
 
 
 def _request(url: str, deadline: float, data: bytes | None = None,
-             content_type: str | None = None, limit: int = 1024 * 1024) -> bytes:
-    headers = {"Content-Type": content_type} if content_type else {}
-    req = Request(url, data=data, headers=headers)
+             content_type: str | None = None, limit: int = 1024 * 1024, *,
+             headers: dict[str, str] | None = None) -> bytes:
+    request_headers = {"ngrok-skip-browser-warning": "1", **(headers or {})}
+    if content_type:
+        request_headers["Content-Type"] = content_type
+    req = Request(url, data=data, headers=request_headers)
     try:
         with safenet.safe_urlopen(req, timeout=_timeout(deadline)) as response:
             chunks = []
@@ -59,9 +62,12 @@ def _request(url: str, deadline: float, data: bytes | None = None,
 
 
 def _json_request(url: str, deadline: float, data: bytes | None = None,
-                  content_type: str | None = None) -> dict:
+                  content_type: str | None = None, *,
+                  headers: dict[str, str] | None = None) -> dict:
     try:
-        result = json.loads(_request(url, deadline, data, content_type))
+        raw = (_request(url, deadline, data, content_type) if headers is None
+               else _request(url, deadline, data, content_type, headers=headers))
+        result = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise ContentOperationError(502, "ComfyUI 返回了无效的 JSON") from exc
     if not isinstance(result, dict):
@@ -69,13 +75,14 @@ def _json_request(url: str, deadline: float, data: bytes | None = None,
     return result
 
 
-def _upload(base: str, source: Path, deadline: float) -> str:
+def _upload(base: str, source: Path, deadline: float, headers: dict[str, str] | None = None) -> str:
     boundary = uuid.uuid4().hex
     data = source.read_bytes()
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{uuid.uuid4().hex}{source.suffix}"\r\n'
             'Content-Type: application/octet-stream\r\n\r\n').encode() + data
     body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--{boundary}--\r\n').encode()
-    result = _json_request(base + "/upload/image", deadline, body, f"multipart/form-data; boundary={boundary}")
+    result = _json_request(base + "/upload/image", deadline, body,
+                           f"multipart/form-data; boundary={boundary}", headers=headers)
     name = result.get("name")
     if not isinstance(name, str) or not name:
         raise ContentOperationError(502, "ComfyUI 未返回上传图片名称")
@@ -83,14 +90,15 @@ def _upload(base: str, source: Path, deadline: float) -> str:
     return f"{folder}/{name}" if isinstance(folder, str) and folder else name
 
 
-def _submit(base: str, name: str, model: str, deadline: float) -> str:
+def _submit(base: str, name: str, model: str, deadline: float, headers: dict[str, str] | None = None) -> str:
     workflow = {
         "1": {"class_type": "LoadImage", "inputs": {"image": name}},
         "2": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": model}},
         "3": {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["2", 0], "image": ["1", 0]}},
         "4": {"class_type": "SaveImage", "inputs": {"filename_prefix": "aivp_upscale", "images": ["3", 0]}},
     }
-    result = _json_request(base + "/prompt", deadline, json.dumps({"prompt": workflow}).encode(), "application/json")
+    result = _json_request(base + "/prompt", deadline, json.dumps({"prompt": workflow}).encode(),
+                           "application/json", headers=headers)
     if result.get("node_errors"):
         raise ContentOperationError(502, f"ComfyUI 工作流节点出错，请检查模型：{result['node_errors']}")
     prompt_id = result.get("prompt_id")
@@ -99,9 +107,9 @@ def _submit(base: str, name: str, model: str, deadline: float) -> str:
     return prompt_id
 
 
-def _wait(base: str, prompt_id: str, deadline: float) -> dict:
+def _wait(base: str, prompt_id: str, deadline: float, headers: dict[str, str] | None = None) -> dict:
     while True:
-        result = _json_request(base + "/history/" + quote(prompt_id, safe=""), deadline)
+        result = _json_request(base + "/history/" + quote(prompt_id, safe=""), deadline, headers=headers)
         item = result.get(prompt_id)
         if isinstance(item, dict):
             status = item.get("status", {})
@@ -177,6 +185,13 @@ def upscale_asset_image(asset_id: int, payload: AssetImageUpscaleIn) -> AssetIma
         base = safenet.check_url(instance["endpoint"]).rstrip("/")
     except ValueError as exc:
         raise ContentOperationError(422, f"ComfyUI 地址不合法：{exc}") from exc
+    secret_env = (dict(instance).get("shared_secret_env") or "").strip()
+    headers = None
+    if secret_env:
+        secret = (os.environ.get(secret_env) or "").strip()
+        if not secret:
+            raise ContentOperationError(422, f"密钥环境变量 {secret_env} 没配或值为空")
+        headers = {"Authorization": f"Bearer {secret}"}
     if not _SEMAPHORE.acquire(timeout=2.0):
         raise ContentOperationError(429, "已有 2 个超分任务正在运行，请稍后再试")
     target = None
@@ -184,11 +199,11 @@ def upscale_asset_image(asset_id: int, payload: AssetImageUpscaleIn) -> AssetIma
     committed = False
     try:
         deadline = time.monotonic() + 90.0
-        name = _upload(base, source, deadline)
-        prompt_id = _submit(base, name, payload.model_name, deadline)
-        image = _wait(base, prompt_id, deadline)
+        name = _upload(base, source, deadline, headers)
+        prompt_id = _submit(base, name, payload.model_name, deadline, headers)
+        image = _wait(base, prompt_id, deadline, headers)
         query = urlencode({key: image.get(key, default) for key, default in (("filename", ""), ("subfolder", ""), ("type", "output"))})
-        data = _request(base + "/view?" + query, deadline, limit=MAX_IMAGE_BYTES)
+        data = _request(base + "/view?" + query, deadline, limit=MAX_IMAGE_BYTES, headers=headers)
         ext = sniff(data[:32])
         if ext is None:
             raise ContentOperationError(502, "ComfyUI 返回的内容不是有效图片")

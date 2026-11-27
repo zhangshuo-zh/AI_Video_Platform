@@ -65,7 +65,7 @@ from .artifact_review import (
 )
 
 from .audio import (
-    AUDIO_KINDS, AUDIO_STATUS, audio_batch_tts, audio_clip_view,
+    AUDIO_KINDS, AUDIO_STATUS, MAX_AUDIO_BYTES, audio_batch_tts, audio_clip_view,
     audio_lip_sync, audio_sync, audio_submit, audio_upload, cleanup_uploaded_audio
 )
 
@@ -169,6 +169,7 @@ from .asset_candidates import asset_candidate_review, update_asset_candidate_rev
 
 from .asset_vision import reverse_prompt
 from .asset_random import random_character
+from .asset_upscale import upscale_asset_image
 
 __all__ = [
     'create_model',
@@ -351,6 +352,11 @@ __all__ = [
     "worker_status",
     "set_concurrency",
     "concurrency_now",
+    "MAX_AUDIO_BYTES",
+    "audio_upload",
+    "build_notebooklm_bundle",
+    "cleanup_uploaded_audio",
+    "upscale_asset_image",
 ]
 
 # ---------- 兼容：原单文件暴露的间接引用 ----------

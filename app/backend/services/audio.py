@@ -1,5 +1,6 @@
 import adapters
 import json
+import logging
 import os
 import re
 import uuid
@@ -19,6 +20,7 @@ from .providers import resolve_provider
 
 _DIALOGUE_PREFIX_RE = re.compile(r"^\s*([^\s：:]{1,16})[：:]\s*[「“\"]?(.+?)[」”\"]?\s*$")
 _QUOTE_RE = re.compile(r"[「“\"]([^」”\"]{2,200})[」”\"]")
+_LOG = logging.getLogger(__name__)
 
 
 AUDIO_KINDS = {"dialogue": "台词", "narration": "旁白",
@@ -492,11 +494,16 @@ def audio_upload(clip, stream: BinaryIO, filename: str | None = None,
         if updated is None:
             raise AudioInvalid("音频素材不存在")
         committed = True
-        return audio_clip_view(updated)
     finally:
         temp.unlink(missing_ok=True)
         if not committed:
             target.unlink(missing_ok=True)
+    if clip["status"] == "failed" and clip["path"] != rel_path:
+        try:
+            cleanup_uploaded_audio(clip)
+        except (OSError, RuntimeError, ValueError):
+            _LOG.warning("清理素材 %s 的旧音频文件失败", clip["id"], exc_info=True)
+    return audio_clip_view(updated)
 
 
 def cleanup_uploaded_audio(clip) -> None:
@@ -505,5 +512,5 @@ def cleanup_uploaded_audio(clip) -> None:
     if not raw_path.startswith("audio/"):
         return
     target = resolve_within(FILES_DIR, raw_path)
-    if target is not None and target.is_file():
+    if target is not None and target.is_relative_to(FILES_DIR.resolve() / "audio") and target.is_file():
         target.unlink(missing_ok=True)
