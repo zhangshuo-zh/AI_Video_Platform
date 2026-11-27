@@ -268,7 +268,7 @@ def available_providers(
                     capability="image", capability_label=CAPABILITIES["image"],
                     backend="local", backend_label=BACKENDS["local"],
                     provider="comfyui", model="comfyui-workflow",
-                    adapter_label=comfy_adapter.label,
+                    adapter_label=f"ComfyUI（{label}）",
                     health_state="ok",
                     health_detail=f"已启用 ComfyUI 节点（{label}），可直接生成参考图",
                     models=[m.as_dict() for m in comfy_adapter.models],

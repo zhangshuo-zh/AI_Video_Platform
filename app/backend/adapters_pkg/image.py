@@ -102,7 +102,7 @@ _DRAW_THINGS = Adapter(
 # 后者是"这台机器装了哪些节点"，几 MB 的 JSON，用来判"服务在不在"太贵。
 _COMFYUI = Adapter(
     code="comfyui",
-    label="ComfyUI（本机工作流应用）",
+    label="ComfyUI（工作流节点）",
     capability="image",
     backend="local",
     source="官方路由文档 docs.comfy.org「服务器路由（HTTP 和 WebSocket API）」的"
