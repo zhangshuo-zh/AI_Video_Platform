@@ -36,17 +36,30 @@ SLOT = "http://127.0.0.1:7860"
 
 @pytest.mark.parametrize("bad,keyword", [
     ("", "不能空"),
-    ("127.0.0.1:7860", "只接受 http://"),
-    ("https://127.0.0.1:7860", "只接受 http://"),
+    ("127.0.0.1:7860", "只接受 http:// 或 https://"),
+    ("ftp://127.0.0.1:7860", "只接受 http:// 或 https://"),
     ("http://u:p@127.0.0.1:7860", "不许带用户名或口令"),
     ("http://127.0.0.1:7860?token=x", "不许带查询串"),
     ("http://127.0.0.1:80", "端口"),
+    ("https://example.com:80", "端口"),
     ("http://127.0.0.1:7860/sdapi", "不要带路径"),
 ])
 def test_端点形状逐条拦住(bad, keyword):
     with pytest.raises(EngineInstanceError) as exc:
         engine_instances.create({"engine_code": "draw_things", "endpoint": bad})
     assert keyword in str(exc.value)
+
+
+def test_https云端隧道端点允许登记():
+    row = engine_instances.create({
+        "engine_code": "comfyui",
+        "endpoint": "https://demo-colab-node.trycloudflare.com/",
+        "label": "Colab L4",
+    })
+    try:
+        assert row["endpoint"] == "https://demo-colab-node.trycloudflare.com"
+    finally:
+        engine_instances.delete(row["id"])
 
 
 def test_同一端点不许登记两次():

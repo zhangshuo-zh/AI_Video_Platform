@@ -75,14 +75,14 @@ def validate_endpoint(raw: str) -> str:
         raise EngineInstanceError("endpoint 不能空——这一行的全部意义就是"
                                   "「这一档引擎在哪个地址」")
     parsed = urlparse(text)
-    if parsed.scheme != "http":
-        raise EngineInstanceError(f"endpoint 只接受 http:// 开头的地址，"
+    if parsed.scheme not in ("http", "https"):
+        raise EngineInstanceError(f"endpoint 只接受 http:// 或 https:// 开头的地址，"
                                   f"现在是「{parsed.scheme or '没有 scheme'}」")
     if parsed.username or parsed.password:
         raise EngineInstanceError("endpoint 里不许带用户名或口令；"
                                   "凭据只走环境变量（shared_secret_env 那一格填变量名）")
     if parsed.query or parsed.fragment:
-        raise EngineInstanceError("endpoint 不许带查询串或片段，只写 http://主机:端口")
+        raise EngineInstanceError("endpoint 不许带查询串或片段，只写 http(s)://主机[:端口]")
     try:
         host = parsed.hostname
         port = parsed.port
@@ -90,10 +90,13 @@ def validate_endpoint(raw: str) -> str:
         raise EngineInstanceError(f"endpoint 读不出主机与端口：{text}") from exc
     if not host:
         raise EngineInstanceError(f"endpoint 缺主机名：{text}")
-    if port is None:
-        raise EngineInstanceError("endpoint 必须显式写端口（例如 http://127.0.0.1:7860）")
-    if not (1024 <= port <= 65535):
-        raise EngineInstanceError(f"端口 {port} 不合法：只接受 1024—65535")
+    if parsed.scheme == "http":
+        if port is None:
+            raise EngineInstanceError("http:// endpoint 必须显式写端口（例如 http://127.0.0.1:7860）")
+        if not (1024 <= port <= 65535):
+            raise EngineInstanceError(f"端口 {port} 不合法：只接受 1024—65535")
+    elif port is not None and port != 443 and not (1024 <= port <= 65535):
+        raise EngineInstanceError(f"端口 {port} 不合法：https 只接受 443 或 1024—65535")
     if parsed.path not in ("", "/"):
         raise EngineInstanceError(f"endpoint 只写到主机与端口，不要带路径：{parsed.path}")
     # 第五条规矩（2026-11-08 补）：不许指向云元数据接口。
