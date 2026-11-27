@@ -1333,11 +1333,31 @@ export function mountDetail(root, id) {
           if (check.reasons.length) {
             const text = (check.level === 'bad' ? '✕ ' : '⚠ ') + check.reasons.join(' · ');
             const canFix = !isNew && canEdit && check.ratioMismatch && slot && img.dataset.refPath;
-            msgEl.innerHTML = `<span>${escapeHtml(text)}</span>${canFix
+            const canUpscale = !isNew && canEdit && check.lowRes && img.dataset.refPath;
+            msgEl.innerHTML = `<span>${escapeHtml(text)}</span>${canUpscale
+              ? ' <button type="button" class="btn xs ad-fix-btn" data-upscale-ref title="调用已启用的 ComfyUI 节点做 4x 动漫超分并替换原图">✨ AI 超分提清</button>' : ''}${canFix
               ? ' <button type="button" class="btn xs ad-fix-btn" data-fix-ref>✨ 修正比例</button>' : ''}`;
             msgEl.classList.remove('is-warn', 'is-bad');
             msgEl.classList.add(`is-${check.level}`);
             msgEl.hidden = false;
+            const upscaleBtn = msgEl.querySelector('[data-upscale-ref]');
+            if (upscaleBtn) {
+              upscaleBtn.addEventListener('click', async () => {
+                const oldPath = img.dataset.refPath;
+                if (!oldPath) return;
+                let res = null;
+                const ok = await run('AI 动漫超分提清', async () => {
+                  res = await api.upscaleAssetImage(id, { path: oldPath });
+                }, { btn: upscaleBtn });
+                if (ok) {
+                  const dimTip = res?.width && res?.height ? `（${res.width}×${res.height}）` : '';
+                  window.dispatchEvent(new CustomEvent('app:toast', {
+                    detail: { text: `已通过 ComfyUI 超分提清并替换原图${dimTip}`, kind: 'ok' },
+                  }));
+                  refresh();
+                }
+              });
+            }
             const fixBtn = msgEl.querySelector('[data-fix-ref]');
             if (fixBtn) {
               fixBtn.addEventListener('click', async () => {

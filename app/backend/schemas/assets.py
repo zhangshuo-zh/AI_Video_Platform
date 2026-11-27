@@ -9,6 +9,12 @@ from .jobs import JobEstimateIn
 
 # ---------- 资产增强：人物档案、命名形态、资产生成与产物导入（迁移 0033） ----------
 
+class AssetImageUpscaleIn(BaseModel):
+    path: str
+    model_name: str = "RealESRGAN_x4plus_anime_6B.pth"
+    replace: bool = True
+
+
 class AssetImagePurposeIn(BaseModel):
     path: str = Field(min_length=1, max_length=500)
     variant_id: int | None = Field(default=None, gt=0)
@@ -20,6 +26,19 @@ def _image_purposes_of(row, images: list[str]) -> dict[str, str]:
         return {}
     purposes = json.loads(row["image_purposes"])
     return {path: purposes[path] for path in images if path in purposes}
+
+
+from .content import AssetOut
+
+
+class AssetImageUpscaleOut(BaseModel):
+    asset: AssetOut
+    old_path: str
+    new_path: str
+    width: int
+    height: int
+    model_name: str
+    replaced: bool
 
 
 class AssetProfileIn(BaseModel):

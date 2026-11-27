@@ -39,7 +39,7 @@ from .assets import (
     AssetProfileIn, AssetProfileOut, VariantIn, VariantUpdateIn, VariantOut, AssetGenIn,
     AssetGenOut, AssetGenPreviewOut, AssetImageImportIn, AssetImageImportOut, AssetImagePurposeIn,
     AssetImageBatchIn, AssetCandidateReviewIn, AssetReversePromptIn, AssetReversePromptOut,
-    AssetRandomCharacterIn, AssetRandomCharacterOut,
+    AssetRandomCharacterIn, AssetRandomCharacterOut, AssetImageUpscaleIn, AssetImageUpscaleOut,
 )
 
 from .audio import (
@@ -192,6 +192,8 @@ __all__ = [
     "AssetGenOperation",
     "AssetGenOut",
     "AssetGenPreviewOut",
+    "AssetImageUpscaleIn",
+    "AssetImageUpscaleOut",
     "AssetImageImportIn",
     "AssetImageImportOut",
     "AssetImageBatchIn",

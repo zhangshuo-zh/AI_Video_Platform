@@ -75,6 +75,7 @@ ROUTES = [
     ("GET", "/api/assets/{a}/shots", None, 404),
     ("DELETE", "/api/assets/{a}", None, 404),
     ("POST", "/api/assets/{a}/images", "FILE", 404),
+    ("POST", "/api/assets/{a}/images/upscale", {"path": "1/x.png"}, 404),
     ("DELETE", "/api/assets/{a}/images?path=x", None, 404),
     # ---------- 资产增强（0033：人物档案、命名形态、生成与产物导入） ----------
     # 全部 404：这些接口都挂在"某条资产"下面，看不见那条资产就不该知道它有没有档案。

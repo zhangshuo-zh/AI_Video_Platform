@@ -542,6 +542,7 @@ export const api = {
     // 同上：multipart 不走 send。
     return request(`/api/assets/${id}/images`, { method: 'POST', body: form }).then(toJson);
   },
+  upscaleAssetImage: (id, body, opts = {}) => send('POST', `/api/assets/${id}/images/upscale`, body, { timeoutMs: 120_000, ...opts }),
   deleteAssetImage: (id, path) => send('DELETE', `/api/assets/${id}/images?path=${encodeURIComponent(path)}`),
 
   // 资产增强（0033）：人物档案、命名形态、生成与产物导入。

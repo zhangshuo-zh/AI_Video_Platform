@@ -43,13 +43,16 @@ export function evaluateReferenceImage(width, height, slot = null) {
   if (shortSide < MIN_SHORT_SIDE) {
     return {
       level: 'bad',
+      lowRes: true,
       ratioMismatch: false,
-      reasons: [`短边 ${shortSide}px < ${MIN_SHORT_SIDE}px，清晰度不足，建议重传高清图`],
+      reasons: [`短边 ${shortSide}px < ${MIN_SHORT_SIDE}px，清晰度不足，建议重传高清图或 AI 超分提清`],
     };
   }
   const reasons = [];
+  let lowRes = false;
   let ratioMismatch = false;
   if (slot?.minPx && longSide < slot.minPx) {
+    lowRes = true;
     reasons.push(`长边 ${longSide}px < 推荐 ${slot.minPx}px`);
   }
   if (slot?.ratio && height > 0) {
@@ -62,9 +65,9 @@ export function evaluateReferenceImage(width, height, slot = null) {
     }
   }
   if (reasons.length) {
-    return { level: 'warn', ratioMismatch, reasons };
+    return { level: 'warn', lowRes, ratioMismatch, reasons };
   }
-  return { level: 'ok', ratioMismatch: false, reasons: [] };
+  return { level: 'ok', lowRes: false, ratioMismatch: false, reasons: [] };
 }
 
 /**

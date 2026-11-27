@@ -8,8 +8,8 @@ from functools import wraps
 from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request, UploadFile,
                      status as http_status)
 
-from services import asset_candidates, content_operations, content_units, asset_media, asset_random, asset_vision
-from schemas.assets import AssetRandomCharacterIn, AssetRandomCharacterOut
+from services import asset_candidates, content_operations, content_units, asset_media, asset_random, asset_vision, asset_upscale
+from schemas.assets import AssetRandomCharacterIn, AssetRandomCharacterOut, AssetImageUpscaleIn, AssetImageUpscaleOut
 
 import asset_studio
 import asset_import_recovery
@@ -369,6 +369,13 @@ def upload_asset_image(asset_id: int, file: UploadFile = File(...),
     # 后者要绕回项目，而全局资产的 project_id 是 NULL，绕不回去会被错判成 404
     ensure_asset(asset_id, user, "write")
     return _content_call(asset_media.upload_asset_image, asset_id, file.file, file.content_type)
+
+
+@router.post("/assets/{asset_id}/images/upscale", response_model=AssetImageUpscaleOut)
+def upscale_asset_image(asset_id: int, payload: AssetImageUpscaleIn,
+                        user=Depends(require_permission("asset:write"))) -> AssetImageUpscaleOut:
+    ensure_asset(asset_id, user, "write")
+    return _content_call(asset_upscale.upscale_asset_image, asset_id, payload)
 
 
 @router.delete("/assets/{asset_id}/images", response_model=AssetOut)
