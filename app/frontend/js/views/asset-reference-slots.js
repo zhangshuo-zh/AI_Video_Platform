@@ -7,27 +7,63 @@ export const MIN_SHORT_SIDE = 512;
 
 export const SLOT_DEFS = {
   character: [
-    { key: '面部特写', label: '面部特写（封面）', spec: '1:1 · ≥1024px', ratio: 1, hint: '默认头像封面，保五官、发饰与眼神不崩', isCover: true },
-    { key: '封面定妆', label: '正面定妆照', spec: '3:4 · ≥1024px', ratio: 3 / 4, hint: '角色全身正面造型与镜头首帧基准' },
-    { key: '三视图', label: '三视图（正/侧/背）', spec: '16:9 · ≥1536px', ratio: 16 / 9, hint: '角色全身正/侧/背一致性基准' },
-    { key: '背面细节', label: '背面高清图', spec: '3:4 · ≥768px', ratio: 3 / 4, hint: '高清背面视角，补足三视图背面细节' },
+    { key: '面部特写', label: '面部特写（封面）', spec: '1:1 · ≥1024px', ratio: 1, minPx: 1024, hint: '默认头像封面，保五官、发饰与眼神不崩', isCover: true },
+    { key: '封面定妆', label: '正面定妆照', spec: '3:4 · ≥1024px', ratio: 3 / 4, minPx: 1024, hint: '角色全身正面造型与镜头首帧基准' },
+    { key: '三视图', label: '三视图（正/侧/背）', spec: '16:9 · ≥1536px', ratio: 16 / 9, minPx: 1536, hint: '角色全身正/侧/背一致性基准' },
+    { key: '背面细节', label: '背面高清图', spec: '3:4 · ≥768px', ratio: 3 / 4, minPx: 768, hint: '高清背面视角，补足三视图背面细节' },
   ],
   scene: [
-    { key: '全景定调', label: '全景定调（封面）', spec: '16:9 · ≥1280px', ratio: 16 / 9, hint: '场景构图与氛围总基准', isCover: true },
-    { key: '机位结构', label: '机位 / 结构视角', spec: '16:9 · ≥1024px', ratio: 16 / 9, hint: '多角度空间关系参考' },
-    { key: '光影时段', label: '光影 / 时段变体', spec: '16:9 · ≥1024px', ratio: 16 / 9, hint: '日夜或关键灯光状态' },
-    { key: '材质细节', label: '局部材质 / 陈设', spec: '1:1 · ≥768px', ratio: 1, hint: '建筑材质与陈设特写' },
+    { key: '全景定调', label: '全景定调（封面）', spec: '16:9 · ≥1280px', ratio: 16 / 9, minPx: 1280, hint: '场景构图与氛围总基准', isCover: true },
+    { key: '机位结构', label: '机位 / 结构视角', spec: '16:9 · ≥1024px', ratio: 16 / 9, minPx: 1024, hint: '多角度空间关系参考' },
+    { key: '光影时段', label: '光影 / 时段变体', spec: '16:9 · ≥1024px', ratio: 16 / 9, minPx: 1024, hint: '日夜或关键灯光状态' },
+    { key: '材质细节', label: '局部材质 / 陈设', spec: '1:1 · ≥768px', ratio: 1, minPx: 768, hint: '建筑材质与陈设特写' },
   ],
   prop: [
-    { key: '正面全貌', label: '正面全貌（封面）', spec: '1:1 · ≥1024px', ratio: 1, hint: '道具完整造型与配色', isCover: true },
-    { key: '材质细节', label: '材质 / 纹理特写', spec: '1:1 · ≥768px', ratio: 1, hint: '铭文、材质反光细节' },
-    { key: '比例对照', label: '持握 / 比例对照', spec: '4:3 · ≥768px', ratio: 4 / 3, hint: '与手部或常规物体比例对照' },
-    { key: '展开状态', label: '展开 / 触发状态', spec: '1:1 · ≥768px', ratio: 1, hint: '变形、发光或开启态' },
+    { key: '正面全貌', label: '正面全貌（封面）', spec: '1:1 · ≥1024px', ratio: 1, minPx: 1024, hint: '道具完整造型与配色', isCover: true },
+    { key: '材质细节', label: '材质 / 纹理特写', spec: '1:1 · ≥768px', ratio: 1, minPx: 768, hint: '铭文、材质反光细节' },
+    { key: '比例对照', label: '持握 / 比例对照', spec: '4:3 · ≥768px', ratio: 4 / 3, minPx: 768, hint: '与手部或常规物体比例对照' },
+    { key: '展开状态', label: '展开 / 触发状态', spec: '1:1 · ≥768px', ratio: 1, minPx: 768, hint: '变形、发光或开启态' },
   ],
 };
 
 export function slotsForKind(kind) {
   return SLOT_DEFS[kind] || SLOT_DEFS.prop;
+}
+
+/**
+ * 对已加载参考图按槽位规范做自动检核：
+ * - bad（红）：短边 < 512px，清晰度不足；
+ * - warn（黄）：未达槽位推荐长边分辨率，或宽高比偏离槽位推荐比例超过 ±15%；
+ * - ok（绿）：满足规格要求。
+ */
+export function evaluateReferenceImage(width, height, slot = null) {
+  const shortSide = Math.min(width, height);
+  const longSide = Math.max(width, height);
+  if (shortSide < MIN_SHORT_SIDE) {
+    return {
+      level: 'bad',
+      ratioMismatch: false,
+      reasons: [`短边 ${shortSide}px < ${MIN_SHORT_SIDE}px，清晰度不足，建议重传高清图`],
+    };
+  }
+  const reasons = [];
+  let ratioMismatch = false;
+  if (slot?.minPx && longSide < slot.minPx) {
+    reasons.push(`长边 ${longSide}px < 推荐 ${slot.minPx}px`);
+  }
+  if (slot?.ratio && height > 0) {
+    const curRatio = width / height;
+    const diff = Math.abs(curRatio / slot.ratio - 1);
+    if (diff > 0.15) {
+      ratioMismatch = true;
+      const ratioLabel = (slot.spec || '').split('·')[0].trim() || '推荐比例';
+      reasons.push(`比例偏离推荐 ${ratioLabel}`);
+    }
+  }
+  if (reasons.length) {
+    return { level: 'warn', ratioMismatch, reasons };
+  }
+  return { level: 'ok', ratioMismatch: false, reasons: [] };
 }
 
 /**
@@ -534,4 +570,190 @@ export function askReversePromptApply(res, hasExisting) {
     document.body.append(dlg);
     dlg.showModal();
   });
+}
+
+function sampleCornerColor(img) {
+  const probe = document.createElement('canvas');
+  const pw = Math.min(img.naturalWidth, 128);
+  const ph = Math.min(img.naturalHeight, 128);
+  probe.width = Math.max(1, pw);
+  probe.height = Math.max(1, ph);
+  const ctx = probe.getContext('2d');
+  ctx.drawImage(img, 0, 0, probe.width, probe.height);
+  const data = ctx.getImageData(0, 0, probe.width, probe.height).data;
+  const patch = Math.min(4, probe.width, probe.height);
+  const corners = [
+    [0, 0],
+    [probe.width - patch, 0],
+    [0, probe.height - patch],
+    [probe.width - patch, probe.height - patch],
+  ];
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (const [cx, cy] of corners) {
+    for (let dy = 0; dy < patch; dy += 1) {
+      for (let dx = 0; dx < patch; dx += 1) {
+        const idx = ((cy + dy) * probe.width + (cx + dx)) * 4;
+        if (data[idx + 3] < 20) continue;
+        r += data[idx];
+        g += data[idx + 1];
+        b += data[idx + 2];
+        count += 1;
+      }
+    }
+  }
+  if (!count) return '#ffffff';
+  const hex = (v) => Math.max(0, Math.min(255, Math.round(v / count))).toString(16).padStart(2, '0');
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+function computePaddedSize(w, h, targetRatio) {
+  const cur = w / h;
+  if (cur < targetRatio) {
+    return { outW: Math.round(h * targetRatio), outH: h };
+  }
+  return { outW: w, outH: Math.round(w / targetRatio) };
+}
+
+function renderPaddedFile(img, targetRatio, fillColor, fileName, mimeType) {
+  return new Promise((resolve, reject) => {
+    const { outW, outH } = computePaddedSize(img.naturalWidth, img.naturalHeight, targetRatio);
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(0, 0, outW, outH);
+    const dx = Math.round((outW - img.naturalWidth) / 2);
+    const dy = Math.round((outH - img.naturalHeight) / 2);
+    ctx.drawImage(img, dx, dy, img.naturalWidth, img.naturalHeight);
+    const outType = mimeType === 'image/webp' ? 'image/webp'
+      : (mimeType === 'image/jpeg' ? 'image/jpeg' : 'image/png');
+    canvas.toBlob((blob) => {
+      if (!blob) return reject(new Error('补边生成失败'));
+      resolve({ file: new File([blob], fileName, { type: outType }), width: outW, height: outH });
+    }, outType, 0.94);
+  });
+}
+
+/**
+ * 标黄「比例偏离」参考图一键修正弹窗：
+ * - 支持智能采底色补边（不裁主体、0 失真对齐推荐比例），可切换 自动采样 / 纯白 / 纯黑；
+ * - 也支持一键切换到交互式裁剪弹窗重裁。
+ */
+export async function askFixReferenceImage(imageUrl, slot) {
+  if (!slot?.ratio) return null;
+  const resp = await fetch(imageUrl);
+  if (!resp.ok) throw new Error('无法读取原参考图');
+  const blob = await resp.blob();
+  const ext = blob.type === 'image/jpeg' ? 'jpg' : (blob.type === 'image/webp' ? 'webp' : 'png');
+  const rawFile = new File([blob], `reference.${ext}`, { type: blob.type || 'image/png' });
+  const objUrl = URL.createObjectURL(blob);
+  let img;
+  try {
+    img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('参考图解码失败'));
+      el.src = objUrl;
+    });
+  } catch (err) {
+    URL.revokeObjectURL(objUrl);
+    throw err;
+  }
+
+  const autoColor = sampleCornerColor(img);
+  const { outW, outH } = computePaddedSize(img.naturalWidth, img.naturalHeight, slot.ratio);
+  const ratioLabel = (slot.spec || '').split('·')[0].trim() || '推荐比例';
+
+  const choice = await new Promise((resolve) => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'asset-reference-dialog ad-fix-dialog';
+    let bgColor = autoColor;
+
+    dlg.innerHTML = `<div class="stack">
+      <div class="ad-crop-head">
+        <h2>✨ 修正「${escapeHtml(slot.label)}」比例</h2>
+        <span class="t-dim">无损补边对齐 ${escapeHtml(ratioLabel)}，不裁切人物主体</span>
+      </div>
+      <div class="ad-crop-ratios">
+        <span class="t-dim" style="font-size:12px">补边底色：</span>
+        <button type="button" class="btn xs primary" data-bg="${escapeHtml(autoColor)}"><span class="ad-color-dot" style="background:${escapeHtml(autoColor)}"></span>自动采样</button>
+        <button type="button" class="btn xs" data-bg="#ffffff"><span class="ad-color-dot" style="background:#ffffff"></span>纯白</button>
+        <button type="button" class="btn xs" data-bg="#111111"><span class="ad-color-dot" style="background:#111111"></span>纯黑</button>
+      </div>
+      <div class="ad-fix-preview-wrap">
+        <canvas class="ad-fix-canvas" data-fix-canvas></canvas>
+      </div>
+      <p class="ad-crop-meta">原图 <b>${img.naturalWidth}×${img.naturalHeight}</b> → 补边输出 <b>${outW}×${outH} px</b>（对齐 ${escapeHtml(ratioLabel)}）</p>
+      <div class="row ad-slot-acts">
+        <button class="btn" type="button" data-act="cancel">取消</button>
+        <button class="btn" type="button" data-act="recrop">✂️ 改用交互裁剪</button>
+        <button class="btn primary" type="button" data-act="pad">✨ 补边对齐并替换</button>
+      </div>
+    </div>`;
+
+    const canvas = dlg.querySelector('[data-fix-canvas]');
+    const paintPreview = () => {
+      const scale = Math.min(560 / outW, 380 / outH, 1);
+      const cw = Math.max(1, Math.round(outW * scale));
+      const ch = Math.max(1, Math.round(outH * scale));
+      canvas.width = cw;
+      canvas.height = ch;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, cw, ch);
+      const dw = Math.round(img.naturalWidth * scale);
+      const dh = Math.round(img.naturalHeight * scale);
+      ctx.drawImage(img, Math.round((cw - dw) / 2), Math.round((ch - dh) / 2), dw, dh);
+    };
+
+    dlg.querySelectorAll('[data-bg]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        bgColor = btn.dataset.bg;
+        dlg.querySelectorAll('[data-bg]').forEach((b) => b.classList.toggle('primary', b === btn));
+        paintPreview();
+      });
+    });
+
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      dlg.close();
+      dlg.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      resolve(val);
+    };
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) finish(null); });
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish(null); });
+    dlg.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
+    dlg.querySelector('[data-act="recrop"]').addEventListener('click', () => finish({ mode: 'recrop' }));
+    dlg.querySelector('[data-act="pad"]').addEventListener('click', async () => {
+      const btn = dlg.querySelector('[data-act="pad"]');
+      btn.disabled = true;
+      btn.textContent = '生成中…';
+      try {
+        const res = await renderPaddedFile(img, slot.ratio, bgColor, rawFile.name, rawFile.type);
+        finish({ mode: 'pad', file: res.file });
+      } catch {
+        finish(null);
+      }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    paintPreview();
+  });
+
+  URL.revokeObjectURL(objUrl);
+  if (!choice) return null;
+  if (choice.mode === 'pad') return choice.file;
+  if (choice.mode === 'recrop') {
+    const cropped = await askInteractiveCrop(rawFile, { width: img.naturalWidth, height: img.naturalHeight }, slot);
+    return cropped ? cropped.file : null;
+  }
+  return null;
 }

@@ -1,7 +1,7 @@
 import { openCharacterAppearances } from './asset-appearances.js';
 import { openReferenceUsage } from './asset-reference-usage.js';
 import { referenceActions, bindReferenceActions } from './asset-reference-actions.js';
-import { askReversePromptApply, assignReferenceSlots, prepareSlotUpload, slotsForKind } from './asset-reference-slots.js';
+import { askFixReferenceImage, askReversePromptApply, assignReferenceSlots, evaluateReferenceImage, prepareSlotUpload, slotsForKind } from './asset-reference-slots.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
 import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
@@ -397,9 +397,10 @@ export async function renderDetail(id) {
                   return `<figure class="ad-img${isCover ? ' cover' : ''}">
                     ${slotMeta ? `<div class="ad-slot-bar"><b class="ad-slot-title">${escapeHtml(slotMeta.label)}</b><span class="ad-slot-ratio">${escapeHtml(slotMeta.spec)}</span></div>` : ''}
                     <div class="ad-img-wrap">
-                      <img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(slotMeta ? slotMeta.label : '参考图')}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}">
+                      <img src="${escapeHtml(`/files/${p}`)}" alt="${escapeHtml(slotMeta ? slotMeta.label : '参考图')}" loading="lazy" data-preview="${escapeHtml(`/files/${p}`)}"${slotMeta ? ` data-slot-key="${escapeHtml(slotMeta.key)}" data-ref-path="${escapeHtml(p)}"` : ''}>
                       <span class="ad-dim-badge" data-dim-badge hidden></span>
                     </div>
+                    <div class="ad-check-msg" data-check-msg hidden></div>
                     <figcaption>
                       ${isCover ? '<span class="chip blue">封面</span>'
                         : (canEdit ? `<button class="btn xs" data-cover="${escapeHtml(p)}">设为封面</button>` : '')}
@@ -1305,12 +1306,73 @@ export function mountDetail(root, id) {
   revBtn?.addEventListener('click', () => runReversePrompt([], revBtn));
 
   const bindDimBadges = (scopeEl) => {
+    const canEdit = isNew ? store.can('asset:write') : (store.can('asset:write') && (a.project_id !== null || store.isManager));
+    const curKind = root.querySelector('#ad-kind')?.value || a.kind;
+    const slotMap = new Map(slotsForKind(curKind).map((s) => [s.key, s]));
     scopeEl.querySelectorAll('.ad-img img').forEach((img) => {
       const fill = () => {
+        if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+        const fig = img.closest('.ad-img');
         const b = img.parentElement?.querySelector('[data-dim-badge]');
-        if (b && img.naturalWidth > 0) {
-          b.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+        const msgEl = fig?.querySelector('[data-check-msg]');
+        const slot = img.dataset.slotKey ? slotMap.get(img.dataset.slotKey) || null : null;
+        const check = evaluateReferenceImage(img.naturalWidth, img.naturalHeight, slot);
+        if (b) {
+          const icon = check.level === 'bad' ? '✕ ' : (check.level === 'warn' ? '⚠ ' : '✓ ');
+          b.textContent = `${icon}${img.naturalWidth}×${img.naturalHeight}`;
+          b.classList.remove('is-ok', 'is-warn', 'is-bad');
+          b.classList.add(`is-${check.level}`);
+          b.title = check.reasons.length ? check.reasons.join('；') : '符合参考图规格要求';
           b.hidden = false;
+        }
+        if (fig) {
+          fig.classList.toggle('is-check-warn', check.level === 'warn');
+          fig.classList.toggle('is-check-bad', check.level === 'bad');
+        }
+        if (msgEl) {
+          if (check.reasons.length) {
+            const text = (check.level === 'bad' ? '✕ ' : '⚠ ') + check.reasons.join(' · ');
+            const canFix = !isNew && canEdit && check.ratioMismatch && slot && img.dataset.refPath;
+            msgEl.innerHTML = `<span>${escapeHtml(text)}</span>${canFix
+              ? ' <button type="button" class="btn xs ad-fix-btn" data-fix-ref>✨ 修正比例</button>' : ''}`;
+            msgEl.classList.remove('is-warn', 'is-bad');
+            msgEl.classList.add(`is-${check.level}`);
+            msgEl.hidden = false;
+            const fixBtn = msgEl.querySelector('[data-fix-ref]');
+            if (fixBtn) {
+              fixBtn.addEventListener('click', async () => {
+                const oldPath = img.dataset.refPath;
+                if (!oldPath) return;
+                let fixedFile = null;
+                try {
+                  fixedFile = await askFixReferenceImage(`/files/${oldPath}`, slot);
+                } catch (err) {
+                  window.dispatchEvent(new CustomEvent('app:toast', {
+                    detail: { text: `无法读取参考图：${err?.message || err}`, kind: 'bad' },
+                  }));
+                  return;
+                }
+                if (!fixedFile) return;
+                const wasCover = oldPath === (a.ref_images || [])[0];
+                const prevSet = new Set(a.ref_images || []);
+                const ok = await run('修正参考图比例', async () => {
+                  const updated = await api.uploadAssetImage(id, fixedFile);
+                  const newPath = (updated?.ref_images || []).find((p) => !prevSet.has(p))
+                    || (updated?.ref_images || [])[(updated?.ref_images?.length || 1) - 1]
+                    || '';
+                  if (!newPath) throw new Error('上传修正图后未拿到新路径');
+                  await api.setAssetImagePurpose(id, { path: newPath, variant_id: null, purpose: slot.key });
+                  if (wasCover) {
+                    await api.setAssetCover(id, newPath);
+                  }
+                  await api.deleteAssetImage(id, oldPath);
+                }, { btn: fixBtn });
+                if (ok) refresh();
+              });
+            }
+          } else {
+            msgEl.hidden = true;
+          }
         }
       };
       if (img.complete) fill();
@@ -1372,9 +1434,10 @@ export function mountDetail(root, id) {
       <figure class="ad-img${idx === 0 ? ' cover' : ''}">
         ${slotMeta ? `<div class="ad-slot-bar"><b class="ad-slot-title">${escapeHtml(slotMeta.label)}</b><span class="ad-slot-ratio">${escapeHtml(slotMeta.spec)}</span></div>` : ''}
         <div class="ad-img-wrap">
-          <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}">
+          <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.file.name)}"${slotMeta ? ` data-slot-key="${escapeHtml(slotMeta.key)}"` : ''}>
           <span class="ad-dim-badge" data-dim-badge hidden></span>
         </div>
+        <div class="ad-check-msg" data-check-msg hidden></div>
         <figcaption>
           ${idx === 0 ? '<span class="chip blue">预选封面</span>' : `<span class="t-dim">图 ${idx + 1}</span>`}
           <button type="button" class="btn xs danger" data-rm-pending="${idx}">移除</button>
