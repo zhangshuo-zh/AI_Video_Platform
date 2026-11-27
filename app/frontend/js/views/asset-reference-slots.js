@@ -1,6 +1,7 @@
 /**
  * 参考图标准槽位与上传规范（纯前端 Canvas 校验与居中裁剪，复用 image_purposes 字段）。
  */
+import { api } from '../api.js';
 import { escapeHtml } from '../util.js';
 
 export const MIN_SHORT_SIDE = 512;
@@ -645,9 +646,7 @@ function renderPaddedFile(img, targetRatio, fillColor, fileName, mimeType) {
  */
 export async function askFixReferenceImage(imageUrl, slot) {
   if (!slot?.ratio) return null;
-  const resp = await fetch(imageUrl);
-  if (!resp.ok) throw new Error('无法读取原参考图');
-  const blob = await resp.blob();
+  const blob = await api.fetchFileBlob(imageUrl);
   const ext = blob.type === 'image/jpeg' ? 'jpg' : (blob.type === 'image/webp' ? 'webp' : 'png');
   const rawFile = new File([blob], `reference.${ext}`, { type: blob.type || 'image/png' });
   const objUrl = URL.createObjectURL(blob);

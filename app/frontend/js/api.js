@@ -231,7 +231,13 @@ export const api = {
   jobArtifactUrl: (id, index) => `/api/jobs/${id}/artifacts/${index}`,
   jobCosts: (projectId) => get('/api/jobs/costs'
     + (projectId ? `?project_id=${projectId}` : '')),
-  providerOptions: () => get('/api/providers/available'),
+  providerOptions: (opts = {}) => get('/api/providers/available'
+    + (opts?.includeUnregistered ? '?include_unregistered=true' : '')),
+  fetchFileBlob: async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('无法读取原参考图');
+    return await res.blob();
+  },
   generationProfiles: (projectId, capability) => get('/api/generation-profiles?'
     + new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}),
       ...(capability ? { capability } : {}) })),

@@ -82,7 +82,7 @@ export async function renderDetail(id) {
     pendingImages = [];
   }
   const newProviderOptions = isNew && store.can('job:submit')
-    ? await api.providerOptions().catch(() => [])
+    ? await api.providerOptions({ includeUnregistered: true }).catch(() => [])
     : [];
   const newTextOptions = newProviderOptions.filter((o) => o.capability === 'text');
   const newImageOptions = newProviderOptions.filter((o) => o.capability === 'image');

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from schemas.enums import ValidationKind, ValidationState
 
 import adapters
+import chatgpt_plan
 import engines
 import validations
 from config import ALLOW_MOCK
@@ -30,6 +31,7 @@ from models import (BACKENDS, CAPABILITIES, CurrentProviderOut, ProviderManifest
                     ProviderOptionOut, ProviderOut, ProviderUpdate, ValidationIn,
                     ValidationOut, provider_slot_version)
 from repositories.config_log import record as config_log_record
+from repositories.engine_instances import engine_instances
 from repositories.model_center import model_center as registration_repo
 from repositories.providers import has_key, providers
 from repositories.validation import validations as validation_repo
@@ -96,7 +98,10 @@ def provider_manifest(_=Depends(require_permission("system:config"))) -> dict:
 
 
 @router.get("/providers/available", response_model=list[ProviderOptionOut])
-def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
+def available_providers(
+    include_unregistered: bool = Query(False),
+    user=Depends(require_user),
+) -> list[ProviderOptionOut]:
     """提交作业时可选的槽位：只列已启用且填了 provider/模型的。
 
     参数白名单跟着槽位一起回：界面按它渲染输入框，提交时后端再验一遍。
@@ -178,6 +183,76 @@ def available_providers(_=Depends(require_user)) -> list[ProviderOptionOut]:
                 validation_state=badge, validation_at=at,
                 models=[m.as_dict() for m in adapter.models],
             ))
+    if include_unregistered:
+        seen_keys = {(o.capability, o.backend, o.provider, o.model) for o in out}
+        # 1) 已配置密钥的云端文本适配器（如 Google Gemini、DeepSeek），把适配器核验过的模型全部暴露出来。
+        for code in ("deepseek", "gemini"):
+            adapter = adapters.find("text", "cloud", code)
+            if adapter is None or not adapter.key_env or not has_key(
+                {"backend": "cloud"}, adapter.key_env
+            ):
+                continue
+            for spec in adapter.models:
+                key = ("text", "cloud", adapter.code, spec.code)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                out.append(ProviderOptionOut(
+                    capability="text", capability_label=CAPABILITIES["text"],
+                    backend="cloud", backend_label=BACKENDS["cloud"],
+                    provider=adapter.code, model=spec.code,
+                    adapter_label=adapter.label,
+                    health_state="ok",
+                    health_detail=f"已检测到 {adapter.key_env}，可直接用于文本推理",
+                    models=[spec.as_dict()],
+                ))
+        # 2) 当前登录用户已连接的 ChatGPT Plus 套餐（本地 OAuth 态检查，零网络延迟）。
+        try:
+            cg_status = chatgpt_plan.status(int(user["id"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            cg_status = {}
+        if cg_status.get("connected"):
+            cg_key = ("text", "cloud", "chatgpt", "gpt-5.1")
+            if cg_key not in seen_keys:
+                seen_keys.add(cg_key)
+                out.append(ProviderOptionOut(
+                    capability="text", capability_label=CAPABILITIES["text"],
+                    backend="cloud", backend_label=BACKENDS["cloud"],
+                    provider="chatgpt", model="gpt-5.1",
+                    adapter_label="ChatGPT 套餐",
+                    health_state="ok",
+                    health_detail="已连接个人 ChatGPT 账号，可直接用于角色抽卡",
+                    models=[],
+                ))
+        # 3) 在线 Ollama 实例上已拉取的全部文本模型（极短超时探测，离线秒跳过）。
+        ollama_adapter = adapters.find("text", "local", "ollama")
+        for inst in engine_instances.instances():
+            if inst["engine_code"] != "ollama" or not inst["enabled"]:
+                continue
+            endpoint = str(inst["endpoint"] or "").rstrip("/")
+            if not endpoint:
+                continue
+            probe = engines.probe("ollama", endpoint, timeout=engines.LIST_TIMEOUT_SECONDS)
+            if probe.state != "ok":
+                continue
+            for m_name in probe.values.get("models") or ():
+                if not isinstance(m_name, str) or not m_name.strip():
+                    continue
+                if "embed" in m_name.lower():
+                    continue
+                key = ("text", "local", "ollama", m_name)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                out.append(ProviderOptionOut(
+                    capability="text", capability_label=CAPABILITIES["text"],
+                    backend="local", backend_label=BACKENDS["local"],
+                    provider="ollama", model=m_name,
+                    adapter_label=ollama_adapter.label if ollama_adapter else "Ollama",
+                    health_state="ok",
+                    health_detail="本机 Ollama 实时在线模型",
+                    models=[],
+                ))
     if ALLOW_MOCK:
         # 演示/自测开关（FASTVIDEO_ALLOW_MOCK=1，生产默认关闭）打开时，给每类能力补一条
         # 身份写明"不执行模型"的假槽位。为什么非要它进这份清单：这台机器上文本轨被

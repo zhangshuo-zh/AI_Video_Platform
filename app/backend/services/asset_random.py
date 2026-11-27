@@ -351,7 +351,7 @@ def random_character(project_id: int, user_id: int,
         if mode == "cloud":
             default_p, default_m = _pick_cloud_provider()
             target_p = provider or default_p
-            target_m = model or default_m
+            target_m = model or (default_m if target_p == default_p else None)
             if target_p == "deepseek":
                 return finish(lambda: _run_deepseek(instruction, target_m, deadline), "deepseek")
             if target_p == "gemini":

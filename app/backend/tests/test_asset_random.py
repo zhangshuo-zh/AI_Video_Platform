@@ -216,3 +216,30 @@ def test_显式指定ollama模型时跨实例精确查找不回退错模(monkeyp
         asset_random._ollama_endpoint_and_model("nonexistent:7b", time.monotonic() + 10)
     assert ei.value.status_code == 422
 
+
+def test_providers_available_include_unregistered_自动暴露已配密钥的gemini与chatgpt(as_role, monkeypatch):
+    """随机抽卡请求 include_unregistered=true 时，应自动暴露已配 GEMINI_API_KEY 的 Gemini 核验模型
+    及已连接的 ChatGPT 套餐；不传该参数时保持既有严格口径不变。
+    """
+    import chatgpt_plan
+    import engines
+    from routers import settings as settings_router
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-123456")
+    monkeypatch.setattr(chatgpt_plan, "status", lambda _uid: {"connected": True})
+    monkeypatch.setattr(
+        settings_router.engines,
+        "probe",
+        lambda *a, **kw: engines.EngineStatus(state="missing", detail="offline", values={}),
+    )
+
+    c = as_role("editor")
+    strict = c.get("/api/providers/available").json()
+    assert not any(o["provider"] == "chatgpt" for o in strict)
+
+    expanded = c.get("/api/providers/available", params={"include_unregistered": "true"}).json()
+    providers_found = {(o["capability"], o["backend"], o["provider"], o["model"]) for o in expanded}
+    assert ("text", "cloud", "gemini", "gemini-4-hydrogen") in providers_found
+    assert ("text", "cloud", "chatgpt", "gpt-5.1") in providers_found
+
+
