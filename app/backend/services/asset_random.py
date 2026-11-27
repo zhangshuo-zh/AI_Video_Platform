@@ -77,9 +77,17 @@ def _resolve_secret(env_name: str) -> str:
         return ""
 
 
+def _match_ollama_model(models: list[str], explicit_model: str) -> str | None:
+    norm = explicit_model.strip()
+    if not norm:
+        return None
+    alt = norm[:-7] if norm.endswith(":latest") else f"{norm}:latest"
+    return next((m for m in models if m == norm or m == alt), None)
+
+
 def _pick_ollama_model(models: list[str], explicit_model: str | None) -> str:
     if explicit_model:
-        hit = next((m for m in models if m == explicit_model or m == explicit_model + ":latest"), None)
+        hit = _match_ollama_model(models, explicit_model)
         if hit:
             return hit
     return models[0]
@@ -102,6 +110,7 @@ def _extract_ollama_models(tags: object) -> list[str]:
 
 def _ollama_endpoint_and_model(explicit_model: str | None, deadline: float) -> tuple[str, str]:
     candidates: list[tuple[str, bool]] = []
+    online_with_models = False
     for inst in engine_instances.instances():
         if inst["engine_code"] != "ollama" or not inst["enabled"]:
             continue
@@ -122,7 +131,13 @@ def _ollama_endpoint_and_model(explicit_model: str | None, deadline: float) -> t
             continue
         models = _extract_ollama_models(tags)
         if models:
-            return endpoint, _pick_ollama_model(models, explicit_model)
+            online_with_models = True
+            if explicit_model:
+                hit = _match_ollama_model(models, explicit_model)
+                if hit:
+                    return endpoint, hit
+                continue
+            return endpoint, models[0]
 
     launch_note = ""
     if _ALLOW_AUTO_START.get():
@@ -140,11 +155,22 @@ def _ollama_endpoint_and_model(explicit_model: str | None, deadline: float) -> t
                 continue
             models = _extract_ollama_models(tags)
             if models:
+                online_with_models = True
                 if result.started:
                     _OLLAMA_STARTED.set(True)
-                return endpoint, _pick_ollama_model(models, explicit_model)
+                if explicit_model:
+                    hit = _match_ollama_model(models, explicit_model)
+                    if hit:
+                        return endpoint, hit
+                    continue
+                return endpoint, models[0]
             launch_note = "已启动本地 Ollama，但尚未拉取任何文本模型"
 
+    if explicit_model and online_with_models:
+        raise _VisionError(
+            422,
+            f"已启用的 Ollama 实例中未找到指定模型「{explicit_model}」，请确认模型名称或先拉取该模型",
+        )
     if launch_note:
         raise _VisionError(
             503,

@@ -34,17 +34,23 @@ def delete_asset(asset_id: int, refs) -> None:
             status_code=409,
             detail=f"这个资产被 {len(refs)} 条镜头引用（如《{first['project_name']}》"
                    f"第 {first['episode_seq']} 集 镜 {first['seq']}），先去创作中心解除引用")
-    # 先拿到图片清单再删行：删完就取不到了，文件会变成孤儿
-    row = assets.get(asset_id)
-    if row is None:
-        raise ContentOperationError(status_code=404, detail="资产不存在")
-    # 清单解析与"删文件只允许删 FILES_DIR 里面"这两件事都已有出处
-    # （`_images_of` 认坏 JSON、`remove_imported_file` 走 `resolve_within`）。
-    # 原来这里手写 `json.loads(...)` 加一段 unlink 循环：一条脏 `ref_images`
-    # （坏 JSON 或数组里混了非字符串）就会让资产行删掉、文件只清一半、
-    # 界面报 500，而且第二条再也删不掉——同一个教训在 v0.96 已经收过一次。
-    images = _images_of(row)
-    assets.delete(asset_id)
+    with transaction():
+        # 全量引用复查与删除收进同一事务：即使调用方看不到某些项目的镜头，
+        # 也不允许删掉被它们引用的全局资产，且不泄露不可见项目的名称或镜头号。
+        all_refs = production.referencing_shot_rows(asset_id)
+        if all_refs:
+            raise ContentOperationError(
+                status_code=409,
+                detail="这个资产正被其他项目的镜头引用，无法删除；请联系相关项目解除引用后再试",
+            )
+        # 先拿到图片清单再删行：删完就取不到了，文件会变成孤儿
+        row = assets.get(asset_id)
+        if row is None:
+            raise ContentOperationError(status_code=404, detail="资产不存在")
+        # 清单解析与"删文件只允许删 FILES_DIR 里面"这两件事都已有出处
+        # （`_images_of` 认坏 JSON、`remove_imported_file` 走 `resolve_within`）。
+        images = _images_of(row)
+        assets.delete(asset_id)
 
     for rel in images:
         asset_studio.remove_imported_file(rel)

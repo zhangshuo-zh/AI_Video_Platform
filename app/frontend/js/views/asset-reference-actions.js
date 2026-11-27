@@ -4,16 +4,18 @@ import { renderView } from '../router.js';
 import { store } from '../store.js';
 import { escapeHtml, run } from '../util.js';
 
-export function referenceActions(path, purpose, canEdit, canUse) {
+export function referenceActions(path, purpose, canEdit, canUse, fixedSlot = false) {
   const encoded = escapeHtml(path);
-  return `<div class="asset-ref-actions">
-    ${canEdit ? `<form data-reference-purpose="${encoded}">
+  const purposeHtml = fixedSlot
+    ? ''
+    : (canEdit ? `<form data-reference-purpose="${encoded}">
       <input class="ctl xs" name="purpose" maxlength="30" aria-label="参考图用途"
-        placeholder="用途，如侧脸/反打" value="${escapeHtml(purpose || '')}">
+        placeholder="用途，如微笑/惊讶/侧脸" value="${escapeHtml(purpose || '')}">
       <button class="btn xs" type="submit">保存</button>
-    </form>` : (purpose ? `<span class="chip plain">${escapeHtml(purpose)}</span>` : '')}
-    ${canUse ? `<button class="btn xs" data-reference-use="${encoded}">用作镜头首帧</button>` : ''}
-  </div>`;
+    </form>` : (purpose ? `<span class="chip plain">${escapeHtml(purpose)}</span>` : ''));
+  const useHtml = canUse ? `<button class="btn xs" data-reference-use="${encoded}">用作镜头首帧</button>` : '';
+  if (!purposeHtml && !useHtml) return '';
+  return `<div class="asset-ref-actions">${purposeHtml}${useHtml}</div>`;
 }
 
 export function referenceDialog(title, body) {

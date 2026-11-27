@@ -670,3 +670,80 @@ def test_cloud_run_gemini_成功并过滤思考写回执(tmp_path, monkeypatch, 
     assert mock_api.calls[-1][3]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     assert "AIza***" in cloud_run._redact("bad key AIzaSyABCDEFGHIJKLMNOPQRSTUVWX123", "")
     assert "AIzaSy" not in cloud_run._redact("bad key AIzaSyABCDEFGHIJKLMNOPQRSTUVWX123", "")
+
+
+def test_download_截断与中断不留半截正式文件(tmp_path, monkeypatch):
+    """P0-2 回归：Content-Length 不匹配或中途 OSError 均不得留下半截正式文件或临时文件。"""
+    import cloud_run
+
+    class _ShortResp:
+        headers = {"Content-Length": "100"}
+
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read(self, _n=-1):
+            item = self._chunks.pop(0) if self._chunks else b""
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _FakeOpener:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def open(self, _req, timeout=0):
+            return _ShortResp(self._chunks)
+
+    target = tmp_path / "out.mp4"
+    monkeypatch.setattr(cloud_run.safenet, "opener_without_redirects", lambda: _FakeOpener([b"short", b""]))
+    with pytest.raises(cloud_run._ProviderError) as ei:
+        cloud_run._download("http://127.0.0.1:9/v.mp4", target, timeout=5)
+    assert ei.value.code == "incomplete_download"
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setattr(
+        cloud_run.safenet,
+        "opener_without_redirects",
+        lambda: _FakeOpener([b"half", OSError("connection reset")]),
+    )
+    with pytest.raises(OSError):
+        cloud_run._download("http://127.0.0.1:9/v.mp4", target, timeout=5)
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cloud_run_脱敏回执与响应上限及取消结构化错误码(monkeypatch):
+    """P0-3 / P0-4 / P1-1 回归：
+    - _redact 剥离签名 URL 查询参数；_redact_obj 递归脱敏回执；
+    - _read_bounded 超限抛 response_too_large；
+    - _http_error 提取结构化 code，即使错误文案不含 PENDING 也能识别 UnsupportedOperation。
+    """
+    import io
+    import urllib.error
+    import cloud_run
+
+    redacted_url = cloud_run._redact("fetch https://oss.example.com/a.mp4?Signature=secret123&Expires=99", "my-tok")
+    assert "Signature=secret123" not in redacted_url
+    assert "?<redacted>" in redacted_url
+
+    obj = cloud_run._redact_obj({"request_id": "id-my-tok", "nested": ["echo my-tok"]}, "my-tok")
+    assert "my-tok" not in json.dumps(obj, ensure_ascii=False)
+
+    with pytest.raises(cloud_run._ProviderError) as ei:
+        cloud_run._read_bounded(io.BytesIO(b"x" * 20), 10)
+    assert ei.value.code == "response_too_large"
+
+    body = json.dumps({"code": "UnsupportedOperation", "message": "任务状态不允许取消"}).encode("utf-8")
+    exc = urllib.error.HTTPError("http://127.0.0.1/cancel", 400, "Bad Request", {}, io.BytesIO(body))
+    status, extra, _msg = cloud_run._http_error(exc, "my-tok")
+    assert status == 400
+    assert extra["code"] == "UnsupportedOperation"
+

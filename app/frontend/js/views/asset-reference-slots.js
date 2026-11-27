@@ -7,10 +7,10 @@ export const MIN_SHORT_SIDE = 512;
 
 export const SLOT_DEFS = {
   character: [
-    { key: '封面定妆', label: '封面 / 正面定妆', spec: '3:4 · ≥1024px', ratio: 3 / 4, hint: '默认封面与镜头首帧基准', isCover: true },
+    { key: '面部特写', label: '面部特写（封面）', spec: '1:1 · ≥1024px', ratio: 1, hint: '默认头像封面，保五官、发饰与眼神不崩', isCover: true },
+    { key: '封面定妆', label: '正面定妆照', spec: '3:4 · ≥1024px', ratio: 3 / 4, hint: '角色全身正面造型与镜头首帧基准' },
     { key: '三视图', label: '三视图（正/侧/背）', spec: '16:9 · ≥1536px', ratio: 16 / 9, hint: '角色全身正/侧/背一致性基准' },
-    { key: '面部特写', label: '面部特写 / 表情', spec: '1:1 · ≥768px', ratio: 1, hint: '保五官、发饰与眼神不崩' },
-    { key: '背面细节', label: '背面 / 服饰细节', spec: '3:4 · ≥768px', ratio: 3 / 4, hint: '补全背部结构与关键配饰' },
+    { key: '背面细节', label: '背面高清图', spec: '3:4 · ≥768px', ratio: 3 / 4, hint: '高清背面视角，补足三视图背面细节' },
   ],
   scene: [
     { key: '全景定调', label: '全景定调（封面）', spec: '16:9 · ≥1280px', ratio: 16 / 9, hint: '场景构图与氛围总基准', isCover: true },

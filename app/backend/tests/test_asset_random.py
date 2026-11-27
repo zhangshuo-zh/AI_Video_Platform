@@ -188,3 +188,31 @@ def test_random_character_retries_once_on_malformed_json(as_role, seeded, monkey
         assert r.status_code == 200, r.text
         assert r.json()["name"] == "青岚"
         assert calls["n"] == 2
+
+
+def test_显式指定ollama模型时跨实例精确查找不回退错模(monkeypatch):
+    """P1-2 回归：多 Ollama 实例时，显式指定模型应跨实例精确查找，找不到时报 422 而不回退到第一个实例的默认模型。"""
+    import time
+    import pytest
+    from services import asset_random
+    from services.asset_vision_transport import _VisionError
+
+    instances = [
+        {"engine_code": "ollama", "enabled": True, "endpoint": "http://127.0.0.1:11434"},
+        {"engine_code": "ollama", "enabled": True, "endpoint": "http://127.0.0.1:11435"},
+    ]
+    monkeypatch.setattr(asset_random.engine_instances, "instances", lambda: instances)
+
+    def _fake_tags(url, **_kwargs):
+        if "11434" in url:
+            return {"models": [{"name": "llama3:latest"}]}
+        return {"models": [{"name": "qwen2.5:14b"}]}
+
+    monkeypatch.setattr(asset_random, "_request", _fake_tags)
+    ep, model = asset_random._ollama_endpoint_and_model("qwen2.5:14b", time.monotonic() + 10)
+    assert ep == "http://127.0.0.1:11435" and model == "qwen2.5:14b"
+
+    with pytest.raises(_VisionError) as ei:
+        asset_random._ollama_endpoint_and_model("nonexistent:7b", time.monotonic() + 10)
+    assert ei.value.status_code == 422
+

@@ -38,19 +38,35 @@ DEFAULT_WAN_KEY_ENV = "DASHSCOPE_API_KEY"
 # 供应商 task_id 的合法形状：字母数字下划线连字符，1..128。
 # 收窄到这个程度是因为它会被拼进带凭据的 URL（见 run_wan/_poll 里的注释）。
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_URL_QUERY_RE = re.compile(r"(https?://[^\s\"'<>?]+)\?[^\s\"'<>]+", re.I)
+_MAX_JSON_BYTES = 16 * 1024 * 1024
+_MAX_ERROR_BYTES = 64 * 1024
+_MAX_CANCEL_BYTES = 64 * 1024
 
 
 def _now_ms() -> int:
     return int(time.monotonic() * 1000)
 
 
-def _write_json(path: Path, data: dict) -> None:
+def _write_atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    committed = False
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+        committed = True
+    finally:
+        if not committed:
+            tmp.unlink(missing_ok=True)
+
+
+def _write_json(path: Path, data: dict) -> None:
+    _write_atomic_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _redact(text: str, secret: str) -> str:
-    """把密钥值从任何要落盘/打印的文本里抹掉。
+    """把密钥值与签名 URL 查询串从任何要落盘/打印的文本里抹掉。
 
     供应商回显错误时偶尔会把 Authorization 片段带回来；这里再做一次
     值替换，保证日志和结果文件里都找不到它。
@@ -58,9 +74,27 @@ def _redact(text: str, secret: str) -> str:
     text = str(text or "")
     if secret:
         text = text.replace(secret, "***")
+    text = _URL_QUERY_RE.sub(r"\1?<redacted>", text)
     # 常见的 sk- 与 Google AIza 前缀也一并打码，哪怕这次用的不是这个形状的密钥
     text = re.sub(r"(?i)sk-[a-z0-9_-]{8,}", "sk-***", text)
     return re.sub(r"AIza[0-9A-Za-z_-]{20,}", "AIza***", text)[:1200]
+
+
+def _redact_obj(value: object, secret: str) -> object:
+    if isinstance(value, str):
+        return _redact(value, secret)
+    if isinstance(value, dict):
+        return {k: _redact_obj(v, secret) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_obj(item, secret) for item in value]
+    return value
+
+
+def _read_bounded(resp, limit: int, err_code: str = "response_too_large") -> bytes:
+    raw = resp.read(limit + 1)
+    if len(raw) > limit:
+        raise _ProviderError(err_code, f"供应商响应体超过上限 {limit} 字节，已中止读取")
+    return raw
 
 
 def _error_code(status: int | None, kind: str = "") -> str:
@@ -106,7 +140,7 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float):
     # 3xx 在那里抛 UnsafeTarget（ValueError 子类），由 run() 的
     # `except ValueError` 落在 cloud_run_error 上，与"网络不通"分开。
     with safenet.safe_urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
+        raw = _read_bounded(resp, _MAX_JSON_BYTES)
         return resp.status, dict(resp.headers), json.loads(raw.decode("utf-8") or "{}")
 
 
@@ -117,7 +151,7 @@ def _get_json(url: str, headers: dict, timeout: float):
         req.add_header(key, value)
     # 同 _post_json：轮询也带 Bearer，也不跟随重定向。
     with safenet.safe_urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
+        raw = _read_bounded(resp, _MAX_JSON_BYTES)
         return resp.status, dict(resp.headers), json.loads(raw.decode("utf-8") or "{}")
 
 
@@ -145,16 +179,21 @@ def _download(url: str, target: Path, timeout: float,
         raise _ProviderError("unsafe_download_url", f"视频地址不可信：{exc}") from exc
     req = urllib.request.Request(url, method="GET")
     target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     size = 0
+    declared_len: int | None = None
+    committed = False
     # 不跟随重定向：一次 302 就能绕开上面那条地址校验。
     opener = safenet.opener_without_redirects()
     try:
-        with opener.open(req, timeout=timeout) as resp, target.open("wb") as fh:
-            declared = resp.headers.get("Content-Length")
-            if declared and declared.isdigit() and int(declared) > limit:
-                raise _ProviderError(
-                    "download_too_large",
-                    f"供应商声明视频有 {int(declared)} 字节，超过上限 {limit}")
+        with opener.open(req, timeout=timeout) as resp, tmp.open("wb") as fh:
+            declared = (resp.headers.get("Content-Length") or "").strip()
+            if declared.isdigit():
+                declared_len = int(declared)
+                if declared_len > limit:
+                    raise _ProviderError(
+                        "download_too_large",
+                        f"供应商声明视频有 {declared_len} 字节，超过上限 {limit}")
             while True:
                 chunk = resp.read(1024 * 256)
                 if not chunk:
@@ -165,13 +204,21 @@ def _download(url: str, target: Path, timeout: float,
                         "download_too_large",
                         f"下载超过上限 {limit} 字节，已中止（可能是无限流或异常大文件）")
                 fh.write(chunk)
-    except _ProviderError:
-        # 半截文件必须收掉：留在 outputs/ 里会被当成"成功产物"再被 ffprobe 验一遍。
-        target.unlink(missing_ok=True)
-        raise
+        if size == 0:
+            raise _ProviderError("incomplete_download", "下载产物为空文件")
+        if declared_len is not None and size != declared_len:
+            raise _ProviderError(
+                "incomplete_download",
+                f"下载不完整：声明 {declared_len} 字节，实际仅收到 {size} 字节",
+            )
+        os.replace(tmp, target)
+        committed = True
     except safenet.UnsafeTarget as exc:
-        target.unlink(missing_ok=True)
         raise _ProviderError("unsafe_download_url", f"视频地址不可信：{exc}") from exc
+    finally:
+        # 任何异常（含读超时、连接重置、写盘失败、不完整）都必须清理临时文件，不留半截产物。
+        if not committed:
+            tmp.unlink(missing_ok=True)
     return size
 
 
@@ -192,22 +239,33 @@ def _http_error(exc: urllib.error.HTTPError, secret: str) -> tuple[int, dict, st
     status = int(getattr(exc, "code", 0) or 0)
     body = {}
     try:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = exc.read(_MAX_ERROR_BYTES).decode("utf-8", errors="replace")
         body = json.loads(raw or "{}")
     except (OSError, ValueError):
         body = {}
+    finally:
+        try:
+            exc.close()
+        except OSError:
+            pass
     message = ""
+    err_code = ""
+    request_id = ""
     if isinstance(body, dict):
         err = body.get("error")
         if isinstance(err, dict):
-            message = err.get("message") or err.get("code") or ""
-        message = message or body.get("message") or body.get("code") or ""
-        request_id = body.get("request_id") or body.get("id") or ""
-    else:
-        request_id = ""
+            message = str(err.get("message") or err.get("code") or "")
+            err_code = str(err.get("code") or "")
+        message = message or str(body.get("message") or body.get("code") or "")
+        err_code = err_code or str(body.get("code") or "")
+        request_id = str(body.get("request_id") or body.get("id") or "")
     if not message:
         message = getattr(exc, "reason", "") or f"HTTP {status}"
-    return status, {"request_id": request_id, "body": body}, _redact(message, secret)
+    return (
+        status,
+        {"request_id": _redact(request_id, secret), "code": _redact(err_code, secret), "body": body},
+        _redact(message, secret),
+    )
 
 
 def _usage_text(raw) -> dict:
@@ -271,8 +329,8 @@ def _deepseek(request: dict, result: dict) -> int:
         "reasoning_chars": len(message.get("reasoning_content") or ""),
     }
     out = Path(request["output"])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(str(text), encoding="utf-8")
+    safe_text = str(text).replace(secret, "***") if secret else str(text)
+    _write_atomic_text(out, safe_text)
     result["bytes"] = out.stat().st_size
     return 0
 
@@ -366,8 +424,8 @@ def _gemini(request: dict, result: dict) -> int:
         "returned_model": returned_model or model,
     }
     out = Path(request["output"])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, encoding="utf-8")
+    safe_text = text.replace(secret, "***") if secret else text
+    _write_atomic_text(out, safe_text)
     result["bytes"] = out.stat().st_size
     return 0
 
@@ -522,7 +580,7 @@ def cancel_task(*, provider: str, request_id: str, key_env: str = "",
         req.add_header("Authorization", f"Bearer {secret}")
         with safenet.safe_urlopen(req, timeout=timeout) as resp:
             out["http_status"] = resp.status
-            resp.read()
+            resp.read(_MAX_CANCEL_BYTES)
         out["cancelled"] = True
         return out
     except urllib.error.HTTPError as exc:
@@ -602,7 +660,8 @@ def run(request_path: Path) -> int:
         return 3
     finally:
         result["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _write_json(result_path, result)
+        safe_result = _redact_obj(result, secret)
+        _write_json(result_path, safe_result if isinstance(safe_result, dict) else result)
 
 
 def main(argv: list[str] | None = None) -> int:

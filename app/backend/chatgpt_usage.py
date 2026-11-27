@@ -1,6 +1,7 @@
 """汇总本人在本平台发起的 ChatGPT 请求（含计划草案与图片反推）。历史缺失的指标保留为空。"""
 import itertools
 import json
+import math
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -24,18 +25,20 @@ class _DailyUsage(TypedDict):
 
 
 def _number(value: object) -> int | float | None:
-    if (type(value) is int or type(value) is float) and value >= 0:
+    if (type(value) is int or type(value) is float) and math.isfinite(value) and value >= 0:
         return value
     return None
 
 
-def _state(draft, now) -> _UsageState:
+def _state(draft: dict, now: float) -> _UsageState:
     if draft.get('state') == 'ready':
         return 'succeeded'
-    if draft.get('metrics', {}).get('response_state') == 'unconfirmed':
+    raw_metrics = draft.get('metrics')
+    if isinstance(raw_metrics, dict) and raw_metrics.get('response_state') == 'unconfirmed':
         return 'unconfirmed'
     if draft.get('state') == 'generating':
-        return 'unconfirmed' if now - draft['created_at'] > 180 else 'generating'
+        created_at = _number(draft.get('created_at'))
+        return 'unconfirmed' if (created_at is None or now - created_at > 180) else 'generating'
     return 'failed'
 
 
@@ -96,12 +99,19 @@ def summarize(user_id, days, project_ids, *, now=None):
         except (OSError, ValueError):
             skipped += 1
             continue
+        if not isinstance(draft, dict):
+            skipped += 1
+            continue
         if project_ids is not None and draft.get('project_id') not in project_ids:
             continue
         stamp = _number(draft.get('created_at'))
         if stamp is None or stamp > now:
             continue
-        day = str(datetime.fromtimestamp(stamp, ZONE).date())
+        try:
+            day = str(datetime.fromtimestamp(stamp, ZONE).date())
+        except (OverflowError, OSError, ValueError):
+            skipped += 1
+            continue
         if day not in daily:
             continue
         state = _state(draft, now)
@@ -109,12 +119,14 @@ def summarize(user_id, days, project_ids, *, now=None):
         counts[state] += 1
         daily[day]['total'] += 1
         daily[day][state] += 1
-        model = draft.get('model') or '未知模型'
+        raw_model = draft.get('model')
+        model = raw_model.strip() if isinstance(raw_model, str) and raw_model.strip() else '未知模型'
         models[model] = models.get(model, 0) + 1
         duration = _number(draft.get('duration_ms'))
         if duration is not None:
             durations.append(duration)
-        metrics = draft.get('metrics') or {}
+        raw_metrics = draft.get('metrics')
+        metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
         for field, values in (('input_tokens', inputs), ('output_tokens', outputs)):
             value = metrics.get(field)
             if type(value) is int and value >= 0:

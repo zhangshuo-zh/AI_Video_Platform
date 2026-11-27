@@ -264,3 +264,34 @@ def test_vision_usage_included_in_platform_summary(as_role, seeded, monkeypatch)
         assert proj['models'] == [{'model': 'gpt-5.1', 'total': 2}]
         all_vis = c.get('/api/agent/chatgpt/usage', params={'days': 7}).json()
         assert all_vis['total'] == 2 and all_vis['succeeded'] == 1 and all_vis['failed'] == 1
+
+
+def test_用量汇总遇到畸形JSON记录安全跳过不崩溃(private_store):
+    """P1-3 回归：顶层数组、非字符串 model、metrics=null、Infinity 时长等畸形记录不得拖垮整份汇总。"""
+    import json
+    import time
+    import chatgpt_plan
+    import chatgpt_usage
+
+    now = time.time()
+    uid = 777
+    base_dir = chatgpt_plan._directory()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    # 1. 合法但顶层为数组
+    (base_dir / f'usage-{uid}-arr.json').write_text('[1, 2, 3]', encoding='utf-8')
+    # 2. 字段类型异常（model 为 list，metrics 为 null，duration_ms 为 Infinity）
+    (base_dir / f'usage-{uid}-weird.json').write_text(
+        json.dumps({'created_at': now - 10, 'state': 'ready', 'model': ['bad'], 'metrics': None, 'duration_ms': float('inf')}),
+        encoding='utf-8',
+    )
+    # 3. 正常记录
+    chatgpt_usage.record(uid, 1, 'gpt-5.1', state='ready', duration_ms=800,
+                         metrics={'input_tokens': 100, 'output_tokens': 20}, created_at=now - 5)
+
+    res = chatgpt_usage.summarize(uid, days=7, project_ids=None, now=now)
+    assert res['skipped_records'] == 1
+    assert res['total'] == 2
+    assert res['succeeded'] == 2
+    assert res['avg_duration_ms'] == 800
+    assert res['input_tokens'] == 100 and res['output_tokens'] == 20
+

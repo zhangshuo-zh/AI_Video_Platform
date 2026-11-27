@@ -363,8 +363,8 @@ export async function renderDetail(id) {
                   ? '<button class="btn sm" data-appearance-open>角色出镜对照</button>' : ''}
                 ${!isNew && a.kind === 'character'
                   ? '<button type="button" class="btn sm" data-copy-expr-prompt title="为主角复制 6 种情绪表情差分提示词（建议附上面部特写图发给 GPT 出图，再导入补充参考图）">🎭 表情差分提示词</button>' : ''}
-                ${canEdit ? `<label class="btn sm ad-upload">${isNew ? '预选参考图' : '上传参考图'}
-                  <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp"${isNew ? ' multiple' : ''} hidden>
+                ${canEdit && isNew ? `<label class="btn sm ad-upload">预选补充参考图
+                  <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" multiple hidden>
                 </label>` : ''}
               </div></div>
             <div class="card-body">
@@ -403,10 +403,9 @@ export async function renderDetail(id) {
                     <figcaption>
                       ${isCover ? '<span class="chip blue">封面</span>'
                         : (canEdit ? `<button class="btn xs" data-cover="${escapeHtml(p)}">设为封面</button>` : '')}
-                      ${canEdit && !isNew ? `<button type="button" class="btn xs" data-reverse-img="${escapeHtml(p)}" title="仅用这张图反推一致性提示词">反推</button>` : ''}
                       ${canEdit ? `<button class="btn xs danger" data-rm-img="${escapeHtml(p)}">删除</button>` : ''}
                     </figcaption>
-                    ${referenceActions(p, a.image_purposes?.[p], canEdit, canUse)}
+                    ${referenceActions(p, a.image_purposes?.[p], canEdit, canUse, Boolean(slotMeta))}
                   </figure>`;
                 };
                 const slotsHtml = slots.map((s) => (s.path ? renderCard(s.path, s) : `
@@ -422,9 +421,21 @@ export async function renderDetail(id) {
                       </label>` : '<span class="t-dim">待补</span>'}
                     </div>
                   </div>`)).join('');
-                const extraHtml = extra.length ? `
-                  <div class="ad-extra-head">补充参考图（${extra.length}）</div>
-                  <div class="ad-imgs" data-ad-imgs>${extra.map((p) => renderCard(p, null)).join('')}</div>` : '';
+                const extraHtml = `
+                  <div class="ad-extra-section">
+                    <div class="ad-extra-bar">
+                      <div class="ad-extra-info">
+                        <b class="ad-extra-title">补充参考图（${extra.length}）</b>
+                        <span class="t-dim">可上传表情差分、服饰拆解、武器与配饰特写，并逐张命名</span>
+                      </div>
+                      ${canEdit ? `<label class="btn sm">+ 上传补充参考图
+                        <input type="file" id="ad-upload" accept="image/png,image/jpeg,image/webp" hidden>
+                      </label>` : ''}
+                    </div>
+                    ${extra.length
+                      ? `<div class="ad-imgs" data-ad-imgs>${extra.map((p) => renderCard(p, null)).join('')}</div>`
+                      : '<div class="ad-extra-empty">暂无补充参考图，点击右上角「+ 上传补充参考图」即可添加（支持交互式裁剪与自定义用途名称）。</div>'}
+                  </div>`;
                 return `<div class="ad-slots">${slotsHtml}</div>${extraHtml}`;
               })()}
               ${canEdit ? `<p class="modal-meta">短边 ≥ 512px，支持 PNG / JPEG / WebP（≤20MB），按槽位上传可对齐推荐比例。</p>` : ''}
@@ -1096,7 +1107,7 @@ export function mountDetail(root, id) {
                 await api.setAssetImagePurpose(a.id, {
                   path: imported.path, variant_id: null, purpose: item.purpose,
                 });
-                if (item.purpose === '封面定妆') {
+                if (item.purpose === '面部特写') {
                   await api.setAssetCover(a.id, imported.path).catch(() => {});
                 }
               }
@@ -1292,9 +1303,6 @@ export function mountDetail(root, id) {
     }
   };
   revBtn?.addEventListener('click', () => runReversePrompt([], revBtn));
-  root.querySelectorAll('[data-reverse-img]').forEach((btn) => {
-    btn.addEventListener('click', () => runReversePrompt([btn.dataset.reverseImg], btn));
-  });
 
   const bindDimBadges = (scopeEl) => {
     scopeEl.querySelectorAll('.ad-img img').forEach((img) => {

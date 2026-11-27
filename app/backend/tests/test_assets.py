@@ -409,3 +409,32 @@ def test_preparation_checks_purpose_on_the_selected_image_group(as_role, fresh_p
     assert persisted.status_code == 200 and persisted.json()["reference_requirements"] == [saved]
     pruned = client.put(f"/api/shots/{sid}", json={**body, "variant_ids": [second]})
     assert pruned.status_code == 200 and pruned.json()["reference_requirements"] == []
+
+
+def test_不可见项目引用全局资产时删除仍被409拦截且不泄露项目名(as_role):
+    """P0-1 回归：即使调用方看不到某些项目的镜头引用（传入 refs=[]），
+    delete_asset 仍必须在事务内查全量引用并返回通用 409，绝不删掉全局资产或泄露项目名。
+    """
+    import pytest
+    from services import asset_media
+    from services.content_operations import ContentOperationError
+
+    c = as_role("admin")
+    secret_project_name = "绝密未授权项目XYZ"
+    pid = c.post("/api/projects", json={"name": secret_project_name}).json()["id"]
+    eid = c.post(f"/api/projects/{pid}/episodes", json={"title": "E1"}).json()["id"]
+    aid = c.post(
+        f"/api/projects/{pid}/assets",
+        json={"kind": "character", "name": "全局角色防误删", "scope": "global"},
+    ).json()["id"]
+    assert c.post(
+        f"/api/episodes/{eid}/shots",
+        json={"summary": "引用全局角色", "asset_ids": [aid]},
+    ).status_code == 201
+
+    with pytest.raises(ContentOperationError) as exc_info:
+        asset_media.delete_asset(aid, [])
+    assert exc_info.value.status_code == 409
+    assert secret_project_name not in exc_info.value.detail
+    assert c.get(f"/api/assets/{aid}").status_code == 200
+
