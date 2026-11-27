@@ -1162,14 +1162,24 @@ export function engineInstancesCard() {
       <td>
         <div class="inst-endpoint-cell">
           <code class="mono endpoint-text">${escapeHtml(it.endpoint)}</code>
-          <button type="button" class="btn-copy-mini" data-copy-endpoint="${escapeHtml(it.endpoint)}" title="复制端点地址">
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-              <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
-              <path d="M3 11V3a1 1 0 0 1 1-1h8"></path>
-            </svg>
-          </button>
-          ${it.endpoint.startsWith('http://127.0.0.1') || it.endpoint.startsWith('http://localhost')
-            ? `<a href="${escapeHtml(it.endpoint)}" target="_blank" rel="noopener noreferrer" class="link-open-mini" title="在浏览器新标签页测试打开此本地端点">↗</a>` : ''}
+          <span class="inst-endpoint-btns">
+            <button type="button" class="btn-copy-mini" data-copy-endpoint="${escapeHtml(it.endpoint)}" title="复制端点地址">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="5" y="5" width="8" height="8" rx="1.5"></rect>
+                <path d="M3 11V3a1 1 0 0 1 1-1h8"></path>
+              </svg>
+            </button>
+            <button type="button" class="btn-copy-mini" data-act-replace-url="${it.id}" title="更换端点地址（保留显示名、密钥与备注，一键替换新链接）">
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13 4v4H9"></path>
+                <path d="M3 12V8h4"></path>
+                <path d="M3.8 6.2A5 5 0 0 1 12.6 4.6L13 5"></path>
+                <path d="M12.2 9.8A5 5 0 0 1 3.4 11.4L3 11"></path>
+              </svg>
+            </button>
+            ${it.endpoint.startsWith('http://127.0.0.1') || it.endpoint.startsWith('http://localhost') || it.endpoint.startsWith('https://')
+              ? `<a href="${escapeHtml(it.endpoint)}" target="_blank" rel="noopener noreferrer" class="link-open-mini" title="在浏览器新标签页打开此端点">↗</a>` : ''}
+          </span>
         </div>
       </td>
       <td><span class="hint">${escapeHtml(it.connection_type)}</span> ${secret}</td>
@@ -1205,7 +1215,6 @@ export function engineInstancesCard() {
           `}
           <div class="inst-actions-subgrid">
             <button type="button" class="btn xs" data-act-probe="${it.id}" title="对该端点发起 HTTP 探活并记录探测留痕">探测</button>
-            <button type="button" class="btn xs ghost" data-act-replace-url="${it.id}" title="保留显示名、密钥与备注，一键替换新端点地址（如 Colab 重启后的新 trycloudflare.com 链接）">🔄 换地址</button>
             <button type="button" class="btn xs ghost" data-act-probes="${it.id}" title="查看最近探测留痕记录">看历史</button>
             <button type="button" class="btn xs ghost" data-act-toggle="${it.id}" data-to="${it.enabled ? 0 : 1}"
                     title="${it.enabled ? '暂停该实例调度（不终止后台运行中的进程）' : '恢复该实例接入模型中心调度'}">${
