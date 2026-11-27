@@ -1,22 +1,24 @@
 """M4 核心功能测试：设定中心词缀与矛盾审阅、ComfyUI 工作流与对口型节点、SSE 实时流与废片安全 GC。"""
 from __future__ import annotations
 
+import io
 import json
 import math
 import shutil
 import struct
 import subprocess
-import threading
 import urllib.parse
 import uuid
 import wave
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import pytest
 
 import adapters
 import engine_http_run
 import jobfiles
 import runners
+import safenet
 import services
 import worker
 from config import FFMPEG_BIN, FILES_DIR
@@ -25,10 +27,12 @@ from pipeline_pkg import execute as pipeline_execute
 from pipeline_pkg import templates as pipeline_templates
 from repositories.audio import clips as audio_repo
 from repositories.content import assets, episodes, shots
+from repositories.engine_instances import engine_instances
 from repositories.jobs import jobs as job_repo
 from repositories.pipeline import pipeline_repo
 from repositories.projects import projects as project_repo
 from repositories.reviews import reviews
+from runners_pkg import inputs as runner_inputs
 
 
 def _has_ffmpeg() -> bool:
@@ -184,7 +188,13 @@ def test_m4_consistency_scan_and_adopt_reopen(as_role, people):
     assert reopened.json()["status"] == "open"
 
 
-def test_m4_comfyui_workflow_http_e2e(tmp_path):
+@pytest.mark.parametrize(("checkpoint", "installed", "selected"), [
+    ("", ["legacy.ckpt", "sdxl.safetensors", "animagine-xl-3.1.safetensors"],
+     "animagine-xl-3.1.safetensors"),
+    ("", [], None),
+    ("my-model.safetensors", [], "my-model.safetensors"),
+], ids=["auto-checkpoint", "no-checkpoint", "explicit-checkpoint"])
+def test_m4_comfyui_workflow_http_e2e(tmp_path, monkeypatch, checkpoint, installed, selected):
     assert runners.has_branch("image", "comfyui") is True
     adapter = adapters.find("image", "local", "comfyui")
     assert adapter is not None
@@ -192,94 +202,103 @@ def test_m4_comfyui_workflow_http_e2e(tmp_path):
     assert spec is not None
     assert any(p.type == "image" for p in spec.params)
 
-    png_in = _write_test_png(tmp_path / "init.png")
+    monkeypatch.setattr(runner_inputs, "JOBS_DIR", tmp_path)
+    secret_env = "TEST_COMFYUI_SHARED_SECRET"
+    monkeypatch.setenv(secret_env, "test-comfyui-token")
     png_out_bytes = (_write_test_png(tmp_path / "server_out.png", color="magenta")).read_bytes()
-    recorded: dict = {"uploaded": False, "prompt_body": None}
+    params = {"checkpoint": checkpoint}
+    if checkpoint:
+        params["image"] = str(_write_test_png(tmp_path / "123" / "init.png"))
+    endpoint = "https://127.0.0.1:8188"
+    requests_seen = []
+    submitted_prompt = {}
 
-    class _ComfyHandler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            return None
+    def open_comfyui(req, *, timeout):
+        url = urllib.parse.urlparse(req.full_url)
+        assert f"{url.scheme}://{url.netloc}" == endpoint
+        headers = {key.lower(): value for key, value in req.header_items()}
+        assert headers["authorization"] == "Bearer test-comfyui-token"
+        assert headers["x-shared-secret"] == "test-comfyui-token"
+        requests_seen.append((req.get_method(), url.path))
+        if url.path == "/system_stats":
+            payload = {"system": {"comfyui_version": "0.3.40"}}
+        elif url.path == "/object_info/CheckpointLoaderSimple":
+            assert timeout == 20
+            payload = {"CheckpointLoaderSimple": {
+                "input": {"required": {"ckpt_name": [installed]}},
+            }}
+        elif url.path == "/upload/image":
+            assert b"init.png" in req.data
+            payload = {"name": "uploaded_init.png", "subfolder": "", "type": "input"}
+        elif url.path == "/prompt":
+            submitted_prompt.update(json.loads(req.data)["prompt"])
+            payload = {"prompt_id": "comfy-test-123"}
+        elif url.path == "/history/comfy-test-123":
+            payload = {
+                "comfy-test-123": {
+                    "status": {"status_str": "success"},
+                    "outputs": {"9": {"images": [
+                        {"filename": "result_001.png", "subfolder": "", "type": "output"},
+                    ]}},
+                },
+            }
+        elif url.path == "/view":
+            assert urllib.parse.parse_qs(url.query)["filename"] == ["result_001.png"]
+            return io.BytesIO(png_out_bytes)
+        else:
+            pytest.fail(f"意外的 ComfyUI 请求：{req.full_url}")
+        return io.BytesIO(json.dumps(payload).encode())
 
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            if self.path == "/upload/image":
-                recorded["uploaded"] = True
-                assert b"init.png" in raw or b"image" in raw
-                data = json.dumps({"name": "uploaded_init.png", "subfolder": "", "type": "input"}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(data)
-                return
-            if self.path == "/prompt":
-                recorded["prompt_body"] = json.loads(raw.decode("utf-8"))
-                data = json.dumps({"prompt_id": "comfy-test-123"}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(data)
-                return
-            self.send_response(404)
-            self.end_headers()
-
-        def do_GET(self):
-            if self.path == "/history/comfy-test-123":
-                payload = {
-                    "comfy-test-123": {
-                        "status": {"status_str": "success"},
-                        "outputs": {
-                            "9": {
-                                "images": [{"filename": "result_001.png", "subfolder": "", "type": "output"}],
-                            }
-                        },
-                    }
-                }
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(payload).encode())
-                return
-            if self.path.startswith("/view?"):
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                assert qs.get("filename") == ["result_001.png"]
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.end_headers()
-                self.wfile.write(png_out_bytes)
-                return
-            self.send_response(404)
-            self.end_headers()
-
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _ComfyHandler)
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
+    monkeypatch.setattr(safenet, "safe_urlopen", open_comfyui)
+    instance = engine_instances.create({
+        "engine_code": "comfyui", "endpoint": endpoint, "shared_secret_env": secret_env,
+    })
     try:
-        out_path = tmp_path / "out.png"
-        receipt_path = tmp_path / "receipt.json"
-        req = {
-            "engine": "comfyui",
-            "init_image": str(png_in),
-            "poll_interval": 0.02,
-            "poll_timeout": 5.0,
-            "workflow": {
-                "1": {"class_type": "LoadImage", "inputs": {"image": "__UPLOADED_IMAGE__"}},
-                "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "test anime"}},
-            },
+        job = {
+            "id": 123, "capability": "image", "execution_mode": "local",
+            "provider_code": "comfyui", "model_code": "comfyui-workflow",
+            "prompt_snapshot": "test anime",
         }
-        code = engine_http_run._run_comfyui(req, f"http://127.0.0.1:{port}", out_path, receipt_path)
-        assert code == 0
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        assert receipt["ok"] is True
-        assert receipt["engine"] == "comfyui"
-        assert receipt["prompt_id"] == "comfy-test-123"
-        assert recorded["uploaded"] is True
-        assert recorded["prompt_body"]["prompt"]["1"]["inputs"]["image"] == "uploaded_init.png"
-        assert out_path.read_bytes() == png_out_bytes
+        run = runners.build(job, params, tmp_path)
     finally:
-        srv.shutdown()
-        srv.server_close()
+        engine_instances.delete(instance["id"])
+
+    raw_request = Path(run.meta["request_path"]).read_text(encoding="utf-8")
+    req = json.loads(raw_request)
+    assert req["secret_env"] == secret_env
+    assert secret_env in run.pass_env
+    assert "test-comfyui-token" not in raw_request
+    assert req["workflow"]["1"]["inputs"]["ckpt_name"] == (checkpoint or "__AUTO_CHECKPOINT__")
+
+    out_path = run.expected[0]
+    receipt_path = Path(run.meta["result_path"])
+    code = engine_http_run._run_comfyui(req, req["endpoint"], out_path, receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    expected_requests = [("GET", "/system_stats")]
+    if not checkpoint:
+        expected_requests.append(("GET", "/object_info/CheckpointLoaderSimple"))
+    if selected is None:
+        assert code == 1
+        assert receipt["ok"] is False
+        assert receipt["error"] == "comfyui_no_checkpoint"
+        assert "models/checkpoints 为空" in receipt["message"]
+        assert "Animagine XL 3.1" in receipt["message"]
+        assert receipt["endpoint"] == endpoint
+        assert not out_path.exists()
+        assert requests_seen == expected_requests
+        return
+    assert code == 0
+    assert receipt["ok"] is True
+    assert receipt["engine"] == "comfyui"
+    assert receipt["prompt_id"] == "comfy-test-123"
+    if checkpoint:
+        expected_requests.append(("POST", "/upload/image"))
+        assert submitted_prompt["4"]["inputs"]["image"] == "uploaded_init.png"
+    assert requests_seen == expected_requests + [
+        ("POST", "/prompt"), ("GET", "/history/comfy-test-123"), ("GET", "/view"),
+    ]
+    assert submitted_prompt["1"]["inputs"]["ckpt_name"] == selected
+    assert out_path.read_bytes() == png_out_bytes
 
 
 def test_m4_lip_sync_endpoint_and_pipeline_node(as_role, people):

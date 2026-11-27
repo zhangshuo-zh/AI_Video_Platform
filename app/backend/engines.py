@@ -34,15 +34,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import safenet
+from engine_http_run import _comfyui_headers
 from repositories.engine_instances import engine_instances
 
 # 这一族引擎的状态来自"打一次本机服务"，不是"看一次文件系统"。
 # 清单与界面都用这个集合判断该走哪条探测路，避免出现第二份名单。
 # 2026-11-06 加入 ollama：本机常驻 HTTP 服务，与 Draw Things 同一族探测形状
 # （目标机实测 GET /api/tags 回 200 与 models[]）。
-# 2026-11-13 加 comfyui：它是**只探测**的一档（`adapters._COMFYUI` 的 models 为空）。
-# 进这个集合只意味着"平台会去打它的端点看通不通"，**不意味着能提交作业**——
-# 后者由 `runners.build()` 有没有分支决定，而 ComfyUI 没有（要 workflow 契约）。
+# ComfyUI 用系统自述探测连通性，实际模型由作业工作流选择。
 SERVICE_ENGINES = frozenset({"draw_things", "ollama", "comfyui"})
 
 # 其中**只有一个当前模型**的那一小族，才需要提交前核对"引擎现在选的是哪一档"。
@@ -127,7 +126,7 @@ def fetch_info(endpoint: str) -> dict:
 
 
 def _get_info_for(endpoint: str, engine_hint: str = "",
-                  timeout: float | None = None) -> dict:
+                  timeout: float | None = None, *, secret_env: str = "") -> dict:
     if not endpoint:
         return {"error": "没有登记启用中的引擎实例"}
     # engine_hint 是给 probe() 用的：它已经知道自己在探哪一档引擎。
@@ -139,7 +138,10 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
                          "平台不猜地址"}
     url = endpoint.rstrip("/") + path
     try:
-        request = Request(url, method="GET")
+        headers = _comfyui_headers(secret_env)
+        if headers:
+            safenet.check_url(url)
+        request = Request(url, method="GET", headers=headers)
         # 不跟随重定向：端点是人填的，一次 302 就能把它指去任何地方
         # （包括云元数据接口）。这里抛的 UnsafeTarget 是 ValueError 子类，
         # 必须单独接在下面——否则会被当成"连不上"，丢掉"有人在指路"这个信息。
@@ -148,6 +150,8 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
             raw = response.read()
     except safenet.UnsafeTarget as exc:
         return {"error": f"{url} 没有发出请求：{exc}", "timed_out": False}
+    except ValueError as exc:
+        return {"error": str(exc), "timed_out": False}
     except (URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
@@ -173,7 +177,15 @@ def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,
     """
     if engine_code not in SERVICE_ENGINES:
         return EngineStatus("unknown", "这一档不是本机服务型引擎，平台不猜它的状态", {})
-    address = endpoint or resolve_endpoint(engine_code)
+    secret_env = ""
+    if engine_code == "comfyui":
+        instance = (engine_instances.find(engine_code, endpoint.rstrip("/"))
+                    if endpoint else engine_instances.pick(engine_code))
+        address = endpoint or (instance["endpoint"] if instance is not None else "")
+        if instance is not None:
+            secret_env = instance["shared_secret_env"]
+    else:
+        address = endpoint or resolve_endpoint(engine_code)
     if not address:
         # 第三个参数不能省：`EngineStatus` 是 frozen dataclass，`values` 没有默认值。
         # 这一句在 W-B 那天起就没被走到过（那时表里还没有任何引擎会被判成服务型
@@ -192,7 +204,7 @@ def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,
         # 而不是靠在这里改写文案——改写会让"最后检查时间"无处可对。
         if hit is not None and now - hit[0] < PROBE_TTL_SECONDS:
             return hit[1]
-    status = _probe_now(engine_code, address, timeout)
+    status = _probe_now(engine_code, address, timeout, secret_env=secret_env)
     # 短超时探出来的结论不写进缓存：它是"这一屏等不起"的产物，不是"这台服务
     # 现在怎么样"的结论。手动探测（fresh=True）与下一次列表都该重新问一遍。
     if not status.soft:
@@ -223,9 +235,11 @@ def forget_probes() -> None:
 
 
 def _probe_now(engine_code: str, address: str,
-               timeout: float | None = None) -> EngineStatus:
+               timeout: float | None = None, *, secret_env: str = "") -> EngineStatus:
     base = {"endpoint": address}
-    info = _get_info_for(address, engine_code, timeout)
+    if engine_code == "comfyui":
+        base["shared_secret_env"] = secret_env
+    info = _get_info_for(address, engine_code, timeout, secret_env=secret_env)
     if info.get("error"):
         # 连不上是 missing（配了但服务不在），不是 unknown（还没配）——
         # 人要做的事不同：前者去把应用和 API Server 打开，后者是来登记一行。
@@ -274,9 +288,7 @@ def _describe(engine_code: str, payload: dict) -> dict:
             bits.append(f"显存 {vram_total / 1024 ** 3:.1f} GB{used}")
         if not version and not devices:
             bits.append("自述里读不到版本与设备（老版本？）")
-        return {"model": "", "models": [],
-                "detail": "，".join(bits) + "。**这一档只接探测**："
-                          "平台没有 ComfyUI 的 workflow 契约，所以没有提交入口"}
+        return {"model": "", "models": [], "detail": "，".join(bits)}
     if engine_code == "ollama":
         rows = payload.get("models")
         names = [str(m.get("name")) for m in rows

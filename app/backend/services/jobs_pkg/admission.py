@@ -3,6 +3,7 @@ from ..errors import JobInvalid, NoRoute
 from ..providers import resolve_provider
 from db import get_conn
 from repositories.content import shots
+from repositories.engine_instances import engine_instances
 from repositories.jobs import jobs as job_repo
 from repositories.model_center import model_center as registration_repo
 import adapters
@@ -197,11 +198,16 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
         # 兼任"允许清单"。`resolve_provider()` 一个字没改。
         reg = registration_repo.find_registration(capability, mode, provider, model)
         if reg is None:
-            raise JobInvalid(
-                f"{capability} · {mode} 上没有登记 {provider}/{model}。"
-                "显式指定只接受「模型仓库」里登记过的档——"
-                "先在模型中心登记它，或者不传这三件走默认轨")
-        if not reg["enabled"]:
+            if (capability, mode, provider, model) == ("image", "local", "comfyui", "comfyui-workflow"):
+                # 工作流档的权重由执行节点提供，启用的引擎实例可作为登记依据。
+                if engine_instances.pick("comfyui") is None:
+                    raise JobInvalid("请先在「引擎实例」中配置并启用 ComfyUI 节点")
+            else:
+                raise JobInvalid(
+                    f"{capability} · {mode} 上没有登记 {provider}/{model}。"
+                    "显式指定只接受「模型仓库」里登记过的档——"
+                    "先在模型中心登记它，或者不传这三件走默认轨")
+        elif not reg["enabled"]:
             raise JobInvalid(
                 f"{provider}/{model} 这条登记已停用（enabled=0）："
                 "显式指定也走不了停用的档，请到模型仓库把它启用")

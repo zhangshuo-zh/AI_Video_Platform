@@ -47,6 +47,23 @@ def _comfyui_headers(secret_env: str) -> dict[str, str]:
     return headers
 
 
+def _comfyui_pick_checkpoint(endpoint: str, headers: dict[str, str], timeout: int) -> str | None:
+    url = f"{endpoint}/object_info/CheckpointLoaderSimple"
+    safenet.check_url(url)
+    with safenet.safe_urlopen(Request(url, headers=headers), timeout=min(timeout, 20)) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    options = data["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+    if not isinstance(options, list):
+        raise ValueError("ComfyUI ckpt_name 选项应为列表")
+    names = [name for name in options if isinstance(name, str) and name.strip()]
+    anime_keywords = ("animagine", "illustrious", "noobai", "pony", "anime")
+    for name in names:
+        if any(keyword in name.lower() for keyword in anime_keywords):
+            return name
+    return next((name for name in names if name.lower().endswith(".safetensors")),
+                names[0] if names else None)
+
+
 def _comfyui_upload_image(endpoint: str, init_path: Path, headers: dict[str, str], timeout: int) -> str:
     boundary = f"----FastVideoComfy{uuid.uuid4().hex}"
     content = init_path.read_bytes()
@@ -100,6 +117,30 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         headers = _comfyui_headers(secret_env)
     except ValueError as exc:
         return _finish(receipt_path, ok=False, code="secret_env_missing", message=str(exc))
+
+    checkpoint = None
+    for node in workflow.values():
+        if not isinstance(node, dict) or node.get("class_type") != "CheckpointLoaderSimple":
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict) or inputs.get("ckpt_name") not in (None, "", "__AUTO_CHECKPOINT__"):
+            continue
+        if checkpoint is None:
+            try:
+                checkpoint = _comfyui_pick_checkpoint(endpoint, headers, timeout)
+            except safenet.UnsafeTarget as exc:
+                return _finish(receipt_path, ok=False, code="unsafe_target", message=str(exc), endpoint=endpoint)
+            except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+                return _finish(receipt_path, ok=False, code="comfyui_checkpoint_lookup_failed",
+                               message=f"查询 ComfyUI 已安装模型失败：{exc}", endpoint=endpoint)
+            if checkpoint is None:
+                return _finish(
+                    receipt_path, ok=False, code="comfyui_no_checkpoint",
+                    message="ComfyUI 节点尚未安装生图大模型（models/checkpoints 为空），"
+                            "请先在 Colab 里勾选下载 Animagine XL 3.1 或放入 safetensors 模型",
+                    endpoint=endpoint,
+                )
+        inputs["ckpt_name"] = checkpoint
 
     init_image = str(request.get("init_image") or "").strip()
     if init_image:

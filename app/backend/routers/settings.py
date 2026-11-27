@@ -152,9 +152,13 @@ def available_providers(
     slot_keys = {(r["capability"], r["backend"], r["provider"], r["model"])
                  for r in rows}
     extra: list[dict] = []
+    disabled_keys: set[tuple[str, str, str, str]] = set()
     for reg in registration_repo.registrations():
         key = (reg["capability"], reg["backend"], reg["provider"], reg["model_code"])
-        if key in slot_keys or not reg["enabled"]:
+        if not reg["enabled"]:
+            disabled_keys.add(key)
+            continue
+        if key in slot_keys:
             continue
         adapter = adapters.find(reg["capability"], reg["backend"], reg["provider"])
         if adapter is None:
@@ -252,6 +256,22 @@ def available_providers(
                     health_state="ok",
                     health_detail="本机 Ollama 实时在线模型",
                     models=[],
+                ))
+        # 4) 启用的 ComfyUI 节点可直接提交工作流，权重由节点提供。
+        comfy_key = ("image", "local", "comfyui", "comfyui-workflow")
+        if comfy_key not in seen_keys and comfy_key not in disabled_keys:
+            comfy_instance = engine_instances.pick("comfyui")
+            comfy_adapter = adapters.find("image", "local", "comfyui")
+            if comfy_instance is not None and comfy_adapter is not None:
+                label = comfy_instance["display_name"] or comfy_instance["endpoint"]
+                out.append(ProviderOptionOut(
+                    capability="image", capability_label=CAPABILITIES["image"],
+                    backend="local", backend_label=BACKENDS["local"],
+                    provider="comfyui", model="comfyui-workflow",
+                    adapter_label=comfy_adapter.label,
+                    health_state="ok",
+                    health_detail=f"已启用 ComfyUI 节点（{label}），可直接生成参考图",
+                    models=[m.as_dict() for m in comfy_adapter.models],
                 ))
     if ALLOW_MOCK:
         # 演示/自测开关（FASTVIDEO_ALLOW_MOCK=1，生产默认关闭）打开时，给每类能力补一条

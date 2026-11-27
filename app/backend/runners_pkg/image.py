@@ -7,6 +7,7 @@ from pathlib import Path
 
 import engines
 import runtime
+from repositories.engine_instances import engine_instances
 
 from .cloud import _secret_envs
 from .common import _need_runtime
@@ -123,7 +124,7 @@ def _comfyui_workflow_payload(
                 inputs["image"] = init_filename
         return injected
 
-    ckpt_name = checkpoint or "v1-5-pruned-emaonly.safetensors"
+    ckpt_name = checkpoint or "__AUTO_CHECKPOINT__"
     if init_filename:
         return {
             "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt_name}},
@@ -206,6 +207,13 @@ def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         "poll_interval": 0.8,
         "poll_timeout": 300,
     }
+    secret_env = status.values.get("shared_secret_env")
+    if secret_env is None:
+        instance = engine_instances.pick("comfyui")
+        if instance is not None and instance["endpoint"] == endpoint:
+            secret_env = instance["shared_secret_env"]
+    if secret_env:
+        request["secret_env"] = secret_env
     request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
     argv = [sys.executable, str(ENGINE_HTTP_RUNNER), str(request_path)]
     return RunSpec(

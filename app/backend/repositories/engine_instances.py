@@ -149,7 +149,7 @@ class EngineInstanceRepository:
         code = (data.get("engine_code") or "").strip()
         if not code:
             raise EngineInstanceError("engine_code 不能空")
-        dup = self._find(code, endpoint)
+        dup = self.find(code, endpoint)
         if dup is not None:
             raise EngineInstanceError(
                 f"这一档引擎的这个端点已经登记过了（#{dup['id']}）；"
@@ -210,7 +210,7 @@ class EngineInstanceRepository:
         with get_conn() as conn:
             conn.execute("DELETE FROM engine_instance WHERE id = ?", (instance_id,))
 
-    def _find(self, engine_code: str, endpoint: str) -> sqlite3.Row | None:
+    def find(self, engine_code: str, endpoint: str) -> sqlite3.Row | None:
         with get_conn() as conn:
             return conn.execute(
                 "SELECT * FROM engine_instance WHERE engine_code = ? AND endpoint = ?",

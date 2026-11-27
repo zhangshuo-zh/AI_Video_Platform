@@ -28,6 +28,8 @@ import engines
 import runners
 import services
 from repositories.engine_instances import EngineInstanceError, engine_instances
+from repositories.jobs import jobs as job_repo
+from repositories.model_center import model_center
 
 SLOT = "http://127.0.0.1:7860"
 
@@ -471,27 +473,15 @@ def test_撤实例时探测历史跟着走(as_role):
     assert left == 0, "实例撤了，探测历史还在（外键没生效？）"
 
 
-# ---------- ComfyUI：只接探测，不接执行（2026-11-13） ----------
+# ---------- ComfyUI 工作流 ----------
 
-def test_comfyui_只接探测不接执行():
-    """这一档的存在意义只有"看得见它通不通"。
-
-    三条断言各自钉一件事，缺任何一条都会让"只接探测"变成一句注释：
-      ① 它在 `SERVICE_ENGINES` 里——否则 `probe()` 第一句就 return unknown，
-         引擎页永远显示"暂无法检查"，等于没接。
-      ② 它有自述端点——否则 `_get_info_for()` 回"没有已核实的自述端点"，
-         同样探不出东西。选 `/system_stats` 而不是 `/object_info` 的理由写在
-         `engines._INFO_PATHS` 旁边（后者是几 MB 的节点规格表）。
-      ③ 它在 `runners.build()` 里**没有**分支——否则提交框会列出它，
-         而它并没有 workflow 契约，等于对用户承诺一件做不到的事。
-    """
+def test_comfyui已接探测与工作流执行():
     assert "comfyui" in engines.SERVICE_ENGINES
-    assert "comfyui" in engines._INFO_PATHS
     assert engines._INFO_PATHS["comfyui"] == "/system_stats"
     assert runners.has_branch("image", "comfyui")
 
 
-def test_comfyui的自述被翻译成人话(monkeypatch):
+def test_comfyui的自述被翻译成人话():
     """`/system_stats` 的两种形态都要认：新版本看 `system.devices[]`，
     老版本看 `system.memory.total/free`。读不到就说读不到，不编一个数。
     """
@@ -504,8 +494,7 @@ def test_comfyui的自述被翻译成人话(monkeypatch):
     assert "0.3.40" in out["detail"]
     assert "16.0 GB" in out["detail"]        # 17179869184 B
     assert "5.0 GB" in out["detail"]         # 5368709120 B
-    # 这一档必须自己说清"只接探测"——不然"服务在线"会被读成"能出图"
-    assert "只接探测" in out["detail"]
+    assert "服务在线" in out["detail"]
 
     # 老版本形态：没有 devices，内存落在 system.memory
     legacy = {"system": {"comfyui_version": "0.2.0",
@@ -517,3 +506,79 @@ def test_comfyui的自述被翻译成人话(monkeypatch):
     out3 = engines._describe("comfyui", {"system": {}})
     assert "读不到" in out3["detail"]
     assert "0.0 GB" not in out3["detail"]
+
+
+@pytest.fixture
+def comfyui_instance():
+    instance = engine_instances.create({
+        "engine_code": "comfyui", "endpoint": "https://127.0.0.1:8188",
+        "display_name": "ComfyUI 测试节点",
+    })
+    try:
+        yield instance
+    finally:
+        engine_instances.delete(instance["id"])
+
+
+def test_启用ComfyUI自动出现在可用生图模型中(as_role, comfyui_instance, register_tier):
+    c = as_role("editor")
+
+    def options(expanded=True):
+        response = c.get("/api/providers/available", params={"include_unregistered": expanded})
+        assert response.status_code == 200, response.text
+        return [o for o in response.json() if o["provider"] == "comfyui"]
+
+    assert options(expanded=False) == []
+    option, = options()
+    assert (option["capability"], option["backend"], option["model"]) == (
+        "image", "local", "comfyui-workflow",
+    )
+    assert option["health_state"] == "ok"
+    assert "ComfyUI 测试节点" in option["health_detail"]
+    assert [model["code"] for model in option["models"]] == ["comfyui-workflow"]
+
+    engine_instances.update(comfyui_instance["id"], {"enabled": False})
+    assert options() == []
+    engine_instances.update(comfyui_instance["id"], {"enabled": True})
+    reg_id = register_tier("image", "local", "comfyui", "comfyui-workflow")
+    assert len(options()) == 1
+    model_center.update(reg_id, {"enabled": False})
+    assert options() == []
+
+
+@pytest.mark.parametrize("asset_image", [False, True], ids=["job", "asset-image"])
+def test_启用ComfyUI无需模型登记即可提交(as_role, fresh_project, comfyui_instance, register_tier, asset_image):
+    project_id = fresh_project()
+    c = as_role("editor")
+    if asset_image:
+        path = f"/api/projects/{project_id}/asset-generations"
+        body = {"operation": "asset_image", "image_prompt": "anime concept art"}
+    else:
+        path = "/api/jobs"
+        body = {"project_id": project_id, "capability": "image", "prompt": "anime concept art"}
+    body.update(execution_mode="local", provider_code="comfyui", model_code="comfyui-workflow")
+
+    assert model_center.find_registration("image", "local", "comfyui", "comfyui-workflow") is None
+    wrong_model = c.post(path, json={**body, "model_code": "unregistered-model"})
+    assert wrong_model.status_code == 422
+    bad_params = c.post(path, json={**body, "params": {"steps": 0}})
+    assert bad_params.status_code == 422
+
+    accepted = c.post(path, json=body)
+    assert accepted.status_code == 202, accepted.text
+    job = accepted.json()
+    job_repo.request_cancel(job["job_id"] if asset_image else job["id"])
+    assert job["model_code"] == "comfyui-workflow"
+    assert job["provider_code"] == "comfyui"
+
+    # 使用新意图触发准入校验，避免资产生成的幂等回收。
+    engine_instances.update(comfyui_instance["id"], {"enabled": False})
+    blocked = c.post(path, json={**body, "idempotency_key": f"comfy-disabled-{project_id}"})
+    assert blocked.status_code == 422
+    assert "配置并启用 ComfyUI" in blocked.json()["detail"]
+
+    engine_instances.update(comfyui_instance["id"], {"enabled": True})
+    register_tier("image", "local", "comfyui", "comfyui-workflow", enabled=False)
+    blocked = c.post(path, json={**body, "idempotency_key": f"comfy-model-disabled-{project_id}"})
+    assert blocked.status_code == 422
+    assert "这条登记已停用" in blocked.json()["detail"]
