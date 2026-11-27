@@ -60,6 +60,14 @@ def test_https云端隧道端点允许登记():
     })
     try:
         assert row["endpoint"] == "https://demo-colab-node.trycloudflare.com"
+        import services
+        listed = services.engines_payload()
+        matched = [x for x in listed["items"] if x["id"] == row["id"]]
+        assert matched and matched[0]["can_control"] is False
+        assert matched[0]["launch_ready"] is False
+        with pytest.raises(services.ModelOperationError) as exc:
+            services.launch_engine(row["id"], {"id": 1})
+        assert exc.value.status_code == 422
     finally:
         engine_instances.delete(row["id"])
 

@@ -33,6 +33,18 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_local_endpoint(endpoint: str) -> bool:
+    """判断实例端点是否指向本机回环地址；远程/云端隧道节点禁止触发本机进程启停。"""
+    try:
+        host = (urllib.parse.urlparse((endpoint or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _LOCAL_HOSTS
+
 import engines
 
 _audit_log = _get_logger(__name__)

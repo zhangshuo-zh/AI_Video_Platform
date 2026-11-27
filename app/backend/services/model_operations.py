@@ -300,6 +300,10 @@ def launch_engine(instance_id: int, user) -> dict:
         raise ModelOperationError(
             status_code=422,
             detail="这一档连接方式不是本机 HTTP 服务，平台不会按启动配方拉它")
+    if not engine_launch.is_local_endpoint(row["endpoint"]):
+        raise ModelOperationError(
+            status_code=422,
+            detail="该实例指向远程地址，平台不会在本地拉起进程；请在远程节点（如 Colab）侧启动")
 
     result = engine_launch.launch(row["engine_code"], row["endpoint"])
     if not result.ok and not result.started and not result.reachable:
@@ -341,6 +345,10 @@ def stop_engine(instance_id: int, user) -> dict:
         raise ModelOperationError(
             status_code=422,
             detail="这一档连接方式不是本机 HTTP 服务，平台不会按控制配方关闭它")
+    if not engine_launch.is_local_endpoint(row["endpoint"]):
+        raise ModelOperationError(
+            status_code=422,
+            detail="该实例指向远程地址，平台不会在本地关闭进程；请在远程节点（如 Colab）侧停止")
 
     result = engine_launch.stop(row["engine_code"], row["endpoint"])
     if not result.ok:

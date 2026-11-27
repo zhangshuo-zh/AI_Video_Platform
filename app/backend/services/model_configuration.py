@@ -260,6 +260,7 @@ def engines_payload() -> dict:
                 + ("，请重新检查" if age > engines.PROBE_TTL_SECONDS else ""),
                 previous.values)
         recipe = engine_launch.recipe_for(row["engine_code"])
+        is_local = engine_launch.is_local_endpoint(row["endpoint"])
         items.append({
             "id": row["id"], "engine_code": row["engine_code"],
             "engine_label": adapter.label if adapter else "",
@@ -276,13 +277,15 @@ def engines_payload() -> dict:
             "engine_model": status.values.get("model", "") if row["enabled"] else "",
             **_last_probe_fields(last_probe.get(row["id"])),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
-            # 「启动/关闭服务」控制按钮字段（2026-11-14 升级）
+            # 「启动/关闭服务」控制按钮字段（2026-11-14 升级）：仅本机回环端点允许控制
             "can_control": bool(
-                row["connection_type"] in SUPPORTED_CONNECTION_TYPES
+                is_local
+                and row["connection_type"] in SUPPORTED_CONNECTION_TYPES
                 and recipe is not None),
             "is_running": bool(status.state == "ok"),
             "launch_ready": bool(
-                row["connection_type"] in SUPPORTED_CONNECTION_TYPES
+                is_local
+                and row["connection_type"] in SUPPORTED_CONNECTION_TYPES
                 and row["enabled"]
                 and recipe is not None
                 and status.state != "ok"),
