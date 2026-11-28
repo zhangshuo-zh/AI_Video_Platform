@@ -311,7 +311,7 @@ function syncModalInert() {
   // 这几样必须留在 inert 外面：toast 与读屏播报区是说给人听的通道，
   // 弹窗开着的时候它们照样要有声音——把播报一起锁掉，等于让读屏用户
   // 在弹窗期间彻底失去反馈。
-  const KEEP_ALIVE = '.toast-host, #live-polite, .sr-only';
+  const KEEP_ALIVE = '.toast-host, #live-polite, .sr-only, .fv-pick-list';
   const lockThese = (el) => {
     for (const child of el.children) {
       // 走到弹窗本身：**到底为止**。它自己不能锁（那会把弹窗内容一起锁死，

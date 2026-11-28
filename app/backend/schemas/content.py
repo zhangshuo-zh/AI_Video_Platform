@@ -96,6 +96,7 @@ class ShotIn(BaseModel):
 class ShotExtractFrameIn(BaseModel):
     position: Literal["last", "first"] = "last"
     offset_ms: int | None = Field(default=None, ge=0)
+    job_id: int | None = Field(default=None, gt=0)
     apply_to_next_shot: bool = True
     apply_to_self_last_frame: bool = False
 

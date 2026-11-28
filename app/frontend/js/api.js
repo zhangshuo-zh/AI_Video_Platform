@@ -314,6 +314,7 @@ export const api = {
       ? `/api/engines/comfyui/checkpoints?instance_id=${encodeURIComponent(instanceId)}`
       : '/api/engines/comfyui/checkpoints',
   ),
+  comfyuiPreflight: (body) => send('POST', '/api/engines/comfyui/preflight', body),
   createEngine: (body) => send('POST', '/api/engines', body),
   patchEngine: (id, body) => send('PATCH', `/api/engines/${id}`, body),
   // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动

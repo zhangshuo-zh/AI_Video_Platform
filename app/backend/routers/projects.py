@@ -169,7 +169,8 @@ def create_project(payload: ProjectIn,
     members = _clean_members(payload.member_ids, user, user["id"])
     return ProjectOut.from_row(
         project_repo.create(name, payload.description.strip(),
-                            _clean_tags(payload.tags), user["id"], members))
+                            _clean_tags(payload.tags), user["id"], members,
+                            art_style=payload.art_style))
 
 
 @router.get("/tags", response_model=list[dict])
@@ -196,7 +197,8 @@ def update_project(project_id: int, payload: ProjectUpdateIn,
     if not name:
         raise HTTPException(status_code=422, detail="项目名不能为空")
     row = project_repo.update(project_id, name, payload.description.strip(),
-                              _clean_tags(payload.tags))
+                              _clean_tags(payload.tags),
+                              art_style=payload.art_style)
     if row is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     return ProjectOut.from_row(row)

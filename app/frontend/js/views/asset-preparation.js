@@ -4,6 +4,7 @@ import { setParam, setSub } from '../navstate.js';
 import { renderView } from '../router.js';
 import { store } from '../store.js';
 import { escapeHtml } from '../util.js';
+import { setAssetDetailSection } from './asset-detail.js';
 import { referenceDialog } from './asset-reference-actions.js';
 import { setStudioTarget } from './asset-workspaces.js';
 
@@ -107,6 +108,7 @@ export async function openAssetPreparation() {
         setParam('assets', null);
         setSub('assets', 1);
       } else {
+        setAssetDetailSection('refs');
         setParam('assets', id);
         setSub('assets', 0);
       }

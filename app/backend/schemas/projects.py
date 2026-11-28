@@ -7,9 +7,13 @@ from .enums import BACKENDS, CAPABILITIES, ProjectStatus
 from .tokens import provider_slot_version
 
 
+ArtStyle = Literal["2d", "25d", "3d"]
+
+
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     description: str = Field(default="", max_length=500)
+    art_style: ArtStyle = "2d"
     tags: list[str] = []
     # 建项目时一并指定协作人：弹窗里一次填完，免去"建完再去加人"两步
     member_ids: list[int] = []
@@ -88,6 +92,7 @@ class ProjectUpdateIn(BaseModel):
     """
     name: str = Field(min_length=1, max_length=60)
     description: str = Field(default="", max_length=500)
+    art_style: ArtStyle = "2d"
     tags: list[str] = []
 
 
@@ -108,6 +113,7 @@ class ProjectOut(BaseModel):
     name: str
     status: str
     description: str = ""
+    art_style: str = "2d"
     owner_id: int
     owner_name: str = ""
     created_at: str
@@ -142,6 +148,7 @@ class ProjectOut(BaseModel):
 
         return cls(id=row["id"], name=row["name"], status=row["status"],
                    description=row["description"],
+                   art_style=(row["art_style"] if "art_style" in keys and row["art_style"] else "2d"),
                    owner_id=row["owner_id"],
                    owner_name=row["owner_name"] if "owner_name" in keys else "",
                    created_at=row["created_at"], updated_at=row["updated_at"],

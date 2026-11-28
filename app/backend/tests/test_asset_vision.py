@@ -128,7 +128,7 @@ def test_reverse_prompt_falls_back_to_chatgpt_when_no_ollama(as_role, fresh_proj
     assert resp.status_code == 200
     data = resp.json()
     assert data["provider"] == "chatgpt"
-    assert data["model"] == "gpt-5.1"
+    assert data["model"] == "gpt-6.1-terra"
     assert data["prompt"] == "anime girl, navy raincoat"
 
 

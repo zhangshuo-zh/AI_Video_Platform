@@ -910,11 +910,22 @@ function paintEx(root) {
     return `<button type="button" class="chip ${k === ex.kind ? 'blue' : 'plain'}"
               data-ex-kind="${k}">${labels[k]} ${n}</button>`;
   }).join('');
+  const pendingShots = ex.kind === 'shot' ? list.filter((i) => i.status === 'pending') : [];
+  const shotBar = ex.kind === 'shot' && pendingShots.length
+    ? `<div class="row u-between u-wrap u-gap-8 u-mt-8" id="ex-shot-bar">
+        <div class="row u-gap-8">
+          <button type="button" class="btn xs" id="ex-shot-all">全选待入库 (${pendingShots.length})</button>
+          <button type="button" class="btn xs" id="ex-shot-none">全不选</button>
+        </div>
+        <span class="t-desc" id="ex-shot-count">已选 ${pendingShots.length} / ${pendingShots.length} 镜</span>
+      </div>` : '';
   const cards = list.map((item) => exCard(item, root)).join('')
     || '<p class="hint u-text-left">这一类没有候选。</p>';
   const exportBtn = ex.kind === 'shot' && list.length
     ? `<a class="btn sm" target="_blank" rel="noopener"
           href="/api/extract/runs/${run.id}/shots.md">导出 Markdown</a>` : '';
+  const importShotsBtn = ex.kind === 'shot' && pendingShots.length
+    ? `<button type="button" class="btn primary sm" id="ex-import-shots">🎬 导入选中镜头 (${pendingShots.length})</button>` : '';
   body.innerHTML = `
     <div class="row u-between u-wrap u-gap-8">
       <div class="ai-ops" id="ex-kinds">${tabs}</div>
@@ -922,10 +933,11 @@ function paintEx(root) {
         已入库 ${run.counts.accepted} · 已合并 ${run.counts.merged} · 已驳回 ${run.counts.rejected}</span>
     </div>
     <p class="modal-meta">${escapeHtml(run.note || '')}</p>
+    ${shotBar}
     <div class="ex-list">${cards}</div>
     ${err}`;
   actions.innerHTML = `
-    <button class="btn" id="ex-close">关闭</button>${exportBtn}
+    <button class="btn" id="ex-close">关闭</button>${exportBtn}${importShotsBtn}
     <a class="btn" href="#assets/0" id="ex-goto-assets">去资产中心看结果</a>`;
   body.querySelectorAll('[data-ex-kind]').forEach((btn) => {
     btn.addEventListener('click', () => { ex.kind = btn.dataset.exKind; paintEx(root); });
@@ -934,6 +946,48 @@ function paintEx(root) {
   actions.querySelector('#ex-goto-assets')?.addEventListener('click', () => {
     closeEx();
     window.dispatchEvent(new CustomEvent('app:go', { detail: 'assets' }));
+  });
+  const syncShotCount = () => {
+    const chks = [...body.querySelectorAll('.ex-shot-chk')];
+    const picked = chks.filter((c) => c.checked).length;
+    const cntEl = body.querySelector('#ex-shot-count');
+    if (cntEl) cntEl.textContent = `已选 ${picked} / ${chks.length} 镜`;
+    const impBtn = actions.querySelector('#ex-import-shots');
+    if (impBtn) {
+      impBtn.disabled = picked === 0;
+      impBtn.textContent = `🎬 导入选中镜头 (${picked})`;
+    }
+  };
+  body.querySelectorAll('.ex-shot-chk').forEach((c) => c.addEventListener('change', syncShotCount));
+  body.querySelector('#ex-shot-all')?.addEventListener('click', () => {
+    body.querySelectorAll('.ex-shot-chk').forEach((c) => { c.checked = true; });
+    syncShotCount();
+  });
+  body.querySelector('#ex-shot-none')?.addEventListener('click', () => {
+    body.querySelectorAll('.ex-shot-chk').forEach((c) => { c.checked = false; });
+    syncShotCount();
+  });
+  actions.querySelector('#ex-import-shots')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const itemIds = [...body.querySelectorAll('.ex-shot-chk:checked')].map((c) => Number(c.value));
+    if (!itemIds.length) return;
+    try {
+      btn.disabled = true;
+      const payload = { item_ids: itemIds };
+      if (store.currentEpisodeId) payload.episode_id = store.currentEpisodeId;
+      const res = await api.extractImportShots(run.id, payload);
+      ex.run = await api.extractRun(run.id);
+      ex.items = await api.extractItems(run.id);
+      ex.error = '';
+      paintEx(root);
+      const created = Array.isArray(res?.created_shot_ids) ? res.created_shot_ids.length : 0;
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { text: `已导入 ${created} 条分镜，可到「分镜表 / 镜头工作台」继续生成关键帧`, kind: 'ok' },
+      }));
+    } catch (err) {
+      ex.error = err.message || '导入镜头失败';
+      paintEx(root);
+    }
   });
   bindExCards(root);
 }
@@ -957,7 +1011,9 @@ function exCard(item, root) {
   return `
     <div class="ex-card">
       <div class="row u-between u-gap-8">
-        <div><span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${escapeHtml(item.kind_label)}</span>
+        <div>${item.kind === 'shot' && item.status === 'pending'
+          ? `<input type="checkbox" class="ex-shot-chk" value="${item.id}" checked aria-label="选中此镜头入库"> `
+          : ''}<span class="chip ${item.kind === 'shot' ? 'amber' : 'blue'}">${escapeHtml(item.kind_label)}</span>
           <b>${escapeHtml(title)}</b>
           ${item.confidence != null ? `<span class="t-desc">把握 ${item.confidence}</span>` : ''}</div>
         <span class="chip ${item.status === 'pending' ? 'gray' : 'green'}">${escapeHtml(item.status_label)}</span>

@@ -10,6 +10,7 @@ import {
   rememberedInstanceId,
 } from '../comfyui.js';
 import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
+import { attachEngineFilter } from '../engine-model-picker.js';
 import { HEALTH_LABEL, jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
 import { closeDetail, openDetail } from '../router.js';
@@ -53,9 +54,15 @@ let pendingTurnaroundJobs = loadTurnaroundPending(); // [{ assetId, jobId, purpo
 let pendingTurnaroundNotice = null; // { assetId, kind, text } 创建后跳转到详情页时展示的三视图提交反馈
 let activeSection = 'basic';
 let activeSectionAssetKey = null;
+let nextSection = null;
+let keepDrawCardAssetId = null; // 生成角色设定集后保持抽卡面板展开，方便连续重抽或再抽新角色
 
 export function setNewAssetKind(kind) {
   newAssetKind = ['character', 'scene', 'prop'].includes(kind) ? kind : 'character';
+}
+
+export function setAssetDetailSection(sec) {
+  nextSection = sec;
 }
 
 const split = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
@@ -73,7 +80,7 @@ async function load(id) {
     api.assetVariants(id),
     store.currentId ? api.assetGenerations(store.currentId, id) : Promise.resolve([]),
     asset.ref_shot_count > 0 ? api.assetImpact(id) : Promise.resolve(null),
-    store.can('job:submit') ? api.providerOptions() : Promise.resolve([]),
+    store.can('job:submit') ? api.providerOptions({ includeUnregistered: true }) : Promise.resolve([]),
   ]);
   // 读失败不演成"没有镜头引用它"：那会让人以为这条资产可以放心删
   const shots = shotsRes.status === 'fulfilled' ? shotsRes.value : [];
@@ -92,12 +99,17 @@ async function load(id) {
   const textOptions = optsRes.status === 'fulfilled'
     ? (optsRes.value || []).filter((o) => o.capability === 'text')
     : [];
+  const imageOptions = optsRes.status === 'fulfilled'
+    ? (optsRes.value || []).filter((o) => o.capability === 'image')
+    : [];
   return { asset, shots, refsError, profile, profileError, variants, variantsError,
-           gens, gensError, impact, textOptions };
+           gens, gensError, impact, textOptions, imageOptions };
 }
 
 export async function renderDetail(id) {
   const isNew = id === 'new';
+  const requestedSection = nextSection;
+  nextSection = null;
   if (isNew) {
     pendingImages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
     pendingImages = [];
@@ -154,6 +166,7 @@ export async function renderDetail(id) {
     activeSection = 'basic';
     activeSectionAssetKey = sectionAssetKey;
   }
+  activeSection = requestedSection ?? activeSection;
   const validSections = isNew ? ['basic', 'refs'] : ['basic', 'refs', 'profile', 'usage'];
   if (!validSections.includes(activeSection)) activeSection = 'basic';
   const refCount = isNew ? pendingImages.length : (a.ref_images || []).length;
@@ -180,6 +193,7 @@ export async function renderDetail(id) {
           : `${a.kind_label} · ${isGlobal ? '全局资产池（各项目共享引用，不属于单个项目）'
              : '本项目资产'} · ${a.ref_images.length} 张参考图 · 被 ${a.ref_shot_count} 条镜头引用`}</p>
         <div class="right">
+          ${!isNew && a.kind === 'character' && canEdit ? '<button type="button" class="btn" id="ad-new-draw" title="保留当前角色，直接开启一张新角色抽卡">✨ 再抽新角色</button>' : ''}
           ${!isNew && canEdit ? '<button class="btn danger" id="ad-del">删除</button>' : ''}
           ${canEdit ? `<button class="btn primary" id="ad-save">${isNew ? '保存并创建' : '保存'}</button>` : ''}
         </div>
@@ -192,9 +206,14 @@ export async function renderDetail(id) {
       <div class="ad-panel" data-ad-panel="basic"${activeSection === 'basic' ? '' : ' hidden'}>
         <div class="card">
             <div class="card-head"><h2>基本信息</h2>
-              <span class="sub">名称在同一范围、同一类型里唯一</span></div>
+              <span class="sub">名称在同一范围、同一类型里唯一</span>
+              ${!isNew && a.kind === 'character' && canEdit && store.can('job:submit') && store.currentId
+                ? `<div class="right"><button type="button" class="btn sm" id="ad-toggle-draw">${keepDrawCardAssetId === a.id ? '收起抽卡面板' : '🎲 抽卡 / 重生设定集'}</button></div>`
+                : ''}
+            </div>
             <div class="card-body">
-              ${isNew && canEdit && store.can('job:submit') && store.currentId ? (() => {
+              ${(isNew || a.kind === 'character') && canEdit && store.can('job:submit') && store.currentId ? (() => {
+                const drawCardHidden = isNew ? (a.kind !== 'character') : (keepDrawCardAssetId !== a.id);
                 const isBadHealth = (o) => ['missing', 'unconfigured', 'unregistered'].includes(o.health_state);
                 const textOpts = data.textOptions || [];
                 const textPref = textOpts.find((o) => o.backend === 'local' && !isBadHealth(o) && (o.health_state === 'ok' || o.validation_state === 'ok'))
@@ -223,10 +242,12 @@ export async function renderDetail(id) {
                     : (o.validation_state === 'ok' ? '（已验证）' : '');
                   return `<option value="${escapeHtml(val)}"${sel}>${tag} · ${escapeHtml(o.adapter_label || o.provider)} / ${escapeHtml(o.model)}${warn}</option>`;
                 }).join('');
-                return `<div class="ad-random-card" id="ad-random-card"${a.kind === 'character' ? '' : ' hidden'}>
+                return `<div class="ad-random-card" id="ad-random-card"${drawCardHidden ? ' hidden' : ''}>
                   <div class="ad-random-row">
-                    <div class="ad-random-title"><b>🎲 随机角色抽卡（两步确认流）</b>
-                      <span class="t-dim">第一步选模型随机生成完整人设，可反复重抽微调；第二步保存角色并异步生成三视图</span></div>
+                    <div class="ad-random-title"><b>${isNew ? '🎲 随机角色抽卡（两步确认流）' : '🎲 角色抽卡与重抽（可继续微调或重新生成）'}</b>
+                      <span class="t-dim">${isNew
+                        ? '第一步选模型随机生成完整人设，可反复重抽微调；第二步保存角色并异步生成三视图'
+                        : '可重骰人设或调整画风/模型后重新生成设定集，也可直接点击「再抽一个新角色」'}</span></div>
                   </div>
                   <div class="ad-random-row">
                     <label class="ad-tv-label">人设文本模型
@@ -262,12 +283,24 @@ export async function renderDetail(id) {
                         <option value="">自动匹配（加载中…）</option>
                       </select>
                     </label>
-                    <select class="ctl sm" id="ad-tv-mode" aria-label="生成模式">
-                      <option value="quad">4 格设定集（封面/三视图/特写/背面）</option>
-                      <option value="single">仅三视图（1 张）</option>
-                    </select>
-                    <button type="button" class="btn primary sm" id="ad-save-tv"${imgOpts.length ? '' : ' disabled'}>🎨 保存并生成设定集</button>
-                    <button type="button" class="btn sm" id="ad-copy-gpt" title="复制适合直接导入平台 4 个标准槽位的 GPT 生图指令">📋 复制 GPT 4图提示词</button>
+                  </div>
+                  <div class="ad-random-row ad-random-actions">
+                    <div class="ad-random-opts">
+                      <select class="ctl sm" id="ad-tv-style" aria-label="生成画风">
+                        <option value="25d"${(store.current?.art_style || '2d') === '25d' ? ' selected' : ''}>2.5D 半写实厚涂</option>
+                        <option value="3d"${(store.current?.art_style || '2d') === '3d' ? ' selected' : ''}>3D 国漫 CG 渲染</option>
+                        <option value="2d"${(store.current?.art_style || '2d') === '2d' ? ' selected' : ''}>2D 日漫赛璐璐</option>
+                      </select>
+                      <select class="ctl sm" id="ad-tv-mode" aria-label="生成模式">
+                        <option value="quad">4 格设定集（封面/三视图/特写/背面）</option>
+                        <option value="single">仅三视图（1 张）</option>
+                      </select>
+                    </div>
+                    <div class="ad-random-btns">
+                      <button type="button" class="btn primary sm" id="ad-save-tv"${imgOpts.length ? '' : ' disabled'}>${isNew ? '🎨 保存并生成设定集' : '🎨 保存并重新生成设定集'}</button>
+                      ${!isNew ? '<button type="button" class="btn sm" id="ad-draw-another" title="保留当前角色，直接新建下一张角色抽卡">✨ 再抽一个新角色</button>' : ''}
+                      <button type="button" class="btn sm" id="ad-copy-gpt" title="复制适合直接导入平台 4 个标准槽位的 GPT 生图指令">📋 复制 GPT 4图提示词</button>
+                    </div>
                   </div>
                   <p class="t-dim ad-random-status" id="ad-rand-status" role="status"></p>
                 </div>`;
@@ -415,7 +448,7 @@ export async function renderDetail(id) {
                       : (j.status === 'failed' || j.status === 'cancelled' ? '✗' : '生成中');
                     return `${j.label} ${tag}`;
                   }).join(' · ');
-                  return `<div class="bar info ad-tv-watch" id="ad-tv-watch" role="status">🎨 正在生成角色设定图（已完成 ${doneCount}/${activeJobs.length}）：${escapeHtml(summaryText)} <a href="#generate/0">去生成中心查看</a></div>`;
+                  return `<div class="bar info ad-tv-watch" id="ad-tv-watch" role="status">🎨 正在生成角色设定图（已完成 ${doneCount}/${activeJobs.length}）：${escapeHtml(summaryText)} <a href="#generate/0">去生成中心查看</a>${canEdit ? ' <button type="button" class="btn sm" data-goto-draw>🎲 返回抽卡重抽</button> <button type="button" class="btn sm" data-new-draw>✨ 再抽新角色</button>' : ''}</div>`;
                 }
                 if (!isNew && pendingTurnaroundNotice && pendingTurnaroundNotice.assetId === a.id) {
                   const notice = pendingTurnaroundNotice;
@@ -746,6 +779,41 @@ export function mountDetail(root, id) {
   });
 
   const randomCard = root.querySelector('#ad-random-card');
+  const toggleDrawBtn = root.querySelector('#ad-toggle-draw');
+  const openNewCharacterDraw = () => {
+    setNewAssetKind('character');
+    openDetail('assets', 'new');
+  };
+  root.querySelector('#ad-new-draw')?.addEventListener('click', openNewCharacterDraw);
+  root.querySelector('#ad-draw-another')?.addEventListener('click', openNewCharacterDraw);
+  root.querySelectorAll('[data-new-draw]').forEach((btn) => {
+    btn.addEventListener('click', openNewCharacterDraw);
+  });
+  toggleDrawBtn?.addEventListener('click', () => {
+    if (!randomCard) return;
+    randomCard.hidden = !randomCard.hidden;
+    keepDrawCardAssetId = randomCard.hidden ? null : a.id;
+    toggleDrawBtn.textContent = randomCard.hidden ? '🎲 抽卡 / 重生设定集' : '收起抽卡面板';
+  });
+  root.querySelectorAll('[data-goto-draw]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      keepDrawCardAssetId = a.id;
+      activeSection = 'basic';
+      root.querySelectorAll('.ad-sec-tab').forEach((t) => {
+        const on = t.dataset.adTab === 'basic';
+        t.classList.toggle('on', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      root.querySelectorAll('.ad-panel').forEach((p) => {
+        p.hidden = p.dataset.adPanel !== 'basic';
+      });
+      if (randomCard) {
+        randomCard.hidden = false;
+        randomCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      if (toggleDrawBtn) toggleDrawBtn.textContent = '收起抽卡面板';
+    });
+  });
   const kindSel = root.querySelector('#ad-kind');
   if (isNew && randomCard && kindSel) {
     kindSel.addEventListener('change', () => {
@@ -958,6 +1026,22 @@ export function mountDetail(root, id) {
   copyGptBtn?.addEventListener('click', handleCopyQuadPrompt);
   copyQuadSavedBtn?.addEventListener('click', handleCopyQuadPrompt);
   const tvModelSel = root.querySelector('#ad-tv-model');
+  attachEngineFilter(root.querySelector('#ad-rand-model'), data.textOptions || [], {
+    storageKey: 'asset_detail_text',
+    healthLabel: HEALTH_LABEL,
+    engineAriaLabel: '人设文本引擎',
+  });
+  attachEngineFilter(tvModelSel, data.imageOptions || [], {
+    storageKey: 'asset_detail_image',
+    healthLabel: HEALTH_LABEL,
+    engineAriaLabel: '生图引擎',
+  });
+  attachEngineFilter(root.querySelector('#ad-ai-model'), data.textOptions || [], {
+    storageKey: 'asset_detail_ai_text',
+    healthLabel: HEALTH_LABEL,
+    engineAriaLabel: '扩写文本引擎',
+    wrapClass: 'emp-pair-grow',
+  });
   const tvTplWrap = root.querySelector('#ad-tv-tpl-wrap');
   const tvTplSel = root.querySelector('#ad-tv-template');
   const tvInstWrap = root.querySelector('#ad-tv-inst-wrap');
@@ -1017,7 +1101,11 @@ export function mountDetail(root, id) {
   void syncComfyCheckpoint();
   tvModeSel?.addEventListener('change', () => {
     if (!saveTvBtn) return;
-    saveTvBtn.textContent = tvModeSel.value === 'single' ? '🎨 保存并生成三视图' : '🎨 保存并生成设定集';
+    if (tvModeSel.value === 'single') {
+      saveTvBtn.textContent = isNew ? '🎨 保存并生成三视图' : '🎨 保存并重新生成三视图';
+    } else {
+      saveTvBtn.textContent = isNew ? '🎨 保存并生成设定集' : '🎨 保存并重新生成设定集';
+    }
   });
   saveTvBtn?.addEventListener('click', async () => {
     const payload = buildAssetPayload();
@@ -1033,22 +1121,35 @@ export function mountDetail(root, id) {
     const jobCount = isQuad ? 4 : 1;
     if (execMode === 'cloud') {
       const go = await confirmDanger({
-        title: isQuad ? '创建角色并提交云端 4 格设定集生成' : '创建角色并提交云端三视图生成',
+        title: isNew
+          ? (isQuad ? '创建角色并提交云端 4 格设定集生成' : '创建角色并提交云端三视图生成')
+          : (isQuad ? '更新角色并重新提交云端 4 格设定集生成' : '更新角色并重新提交云端三视图生成'),
         danger: false,
-        okText: '确认创建并生图',
-        body: `<p>将先创建角色「<b>${escapeHtml(payload.name)}</b>」，并提交 <b>${jobCount} 条</b>生图任务到云端模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b>（按模型中心口径计费）。</p>`,
+        okText: isNew ? '确认创建并生图' : '确认保存并生图',
+        body: `<p>将先${isNew ? '创建' : '保存'}角色「<b>${escapeHtml(payload.name)}</b>」，并提交 <b>${jobCount} 条</b>生图任务到云端模型 <b>${escapeHtml(providerCode)} / ${escapeHtml(modelCode)}</b>（按模型中心口径计费）。</p>`,
       });
       if (!go || !saveTvBtn.isConnected) return;
     }
     saveTvBtn.disabled = true;
     if (saveBtn) saveBtn.disabled = true;
-    if (randStatus) randStatus.textContent = `正在创建角色并提交 ${jobCount} 条生图任务…`;
-    const created = await createNewAsset(payload, saveTvBtn);
-    if (!created) {
+    if (randStatus) randStatus.textContent = `正在${isNew ? '创建' : '保存'}角色并提交 ${jobCount} 条生图任务…`;
+    let targetAsset = null;
+    if (isNew) {
+      targetAsset = await createNewAsset(payload, saveTvBtn);
+    } else {
+      const updated = await run('保存', () => api.updateAsset(a.id, {
+        ...payload,
+        seen_version: a.version || '',
+      }), { btn: saveTvBtn });
+      if (updated) targetAsset = typeof updated === 'object' && updated.id ? updated : { id: a.id };
+    }
+    if (!targetAsset) {
       if (saveTvBtn.isConnected) saveTvBtn.disabled = false;
       if (saveBtn?.isConnected) saveBtn.disabled = false;
       return;
     }
+    const created = targetAsset;
+    keepDrawCardAssetId = created.id;
     const coreDesc = payload.consistency_prompt || payload.summary || payload.name;
     const isLocalImg = execMode === 'local';
     const hasFreshEn = Boolean(randImagePromptEn && payload.consistency_prompt.trim() === randPromptZhSnapshot);
@@ -1075,13 +1176,33 @@ export function mountDetail(root, id) {
     const negThreeView = `${negCommon}, 4 views, 5 views, 6 views, 4koma, comic, crowded, overlapping, floating heads, insets, close-up bubble`;
     const negBackOnly = `${negSingle}, face, eyes, nose, mouth, smile, looking at viewer, looking back, over shoulder, profile, side view, portrait`;
 
+    const tvStyle = root.querySelector('#ad-tv-style')?.value || store.current?.art_style || '2d';
+    const isNon2D = tvStyle === '25d' || tvStyle === '3d';
+    const strip2DStyle = (text) => String(text || '')
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter((s) => s && !/\b(cel[- ]?shad(?:ed|ing)|flat colors?|lineart|clean crisp lineart|2d|anime style)\b/i.test(s)
+        && !/(赛璐璐|平涂|线稿)/.test(s))
+      .join(', ');
+    const styleEn = tvStyle === '3d'
+      ? '3D stylized anime character render, Unreal Engine 5, Octane render, PBR materials, subsurface scattering, volumetric lighting, soft 3D shading, no lineart'
+      : (tvStyle === '25d'
+        ? '2.5D semi-realistic thick-paint anime illustration, rich brushwork, soft dimensional shading, volumetric lighting, no crisp lineart'
+        : 'masterpiece, best quality, 2D anime cel-shaded illustration, consistent anime character design');
+    const styleZh = tvStyle === '3d'
+      ? '3D立体国漫CG渲染，无线稿，次表面散射与体积光影，'
+      : (tvStyle === '25d' ? '2.5D半写实厚涂插画，立体明暗过渡，' : '二次元日漫赛璐璐风格，');
+    const anchorEnCore = isNon2D ? (strip2DStyle(enCore) || enCore) : enCore;
+    const anchorCoreDesc = isNon2D ? (strip2DStyle(coreDesc) || coreDesc) : coreDesc;
+    const anchorSource = isLocalImg && hasFreshEn ? anchorEnCore : anchorCoreDesc;
     const specs = isQuad ? [
       {
         purpose: '封面定妆',
         label: '封面定妆',
         prompt: buildSlotPrompt(
-          'masterpiece, best quality, solo, full body, front view, straight-on, standing pose, looking at viewer, simple white background, clean background, consistent anime character design',
-          '角色正面全身定妆照（封面基准），单人居中，站姿清晰，面向镜头，干净纯白背景，保持五官发型服装配色完全一致：',
+          `${styleEn}, solo, full body, front view, straight-on, standing pose, looking at viewer, simple white background, clean background`,
+          `${styleZh}角色正面全身定妆照（封面基准），单人居中，站姿清晰，面向镜头，干净纯白背景，保持五官发型服装配色完全一致：`,
+          anchorSource,
         ),
         params: isMflux
           ? { width: 576, height: 768 }
@@ -1091,8 +1212,8 @@ export function mountDetail(root, id) {
         purpose: '三视图',
         label: '三视图',
         prompt: buildSlotPrompt(
-          'masterpiece, best quality, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background, consistent character design',
-          '角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+          `${styleEn}, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background`,
+          `${styleZh}角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：`,
         ),
         params: isMflux
           ? { width: 896, height: 512 }
@@ -1102,8 +1223,8 @@ export function mountDetail(root, id) {
         purpose: '面部特写',
         label: '面部特写',
         prompt: buildSlotPrompt(
-          'masterpiece, best quality, solo, close-up portrait, upper body, facing viewer, detailed face and eyes, simple white background, clean background, consistent anime character design',
-          '角色面部与半身特写，单人居中，清晰展现五官、眼神、发饰与表情细节，干净纯白背景，保持设定完全一致：',
+          `${styleEn}, solo, close-up portrait, upper body, facing viewer, detailed face and eyes, simple white background, clean background`,
+          `${styleZh}角色面部与半身特写，单人居中，清晰展现五官、眼神、发饰与表情细节，干净纯白背景，保持设定完全一致：`,
         ),
         params: isMflux
           ? { width: 512, height: 512 }
@@ -1113,8 +1234,8 @@ export function mountDetail(root, id) {
         purpose: '背面细节',
         label: '背面细节',
         prompt: buildSlotPrompt(
-          '(from behind:1.4), (back view:1.4), solo, full body, facing away from viewer, looking away, back of head, showing back of hair and outfit, standing pose, simple white background, clean background',
-          '角色纯背面全身设定图，完全背对镜头不露脸，清晰展现后脑勺发型、背部服装剪裁与随身配饰细节，干净纯白背景：',
+          `${styleEn}, (from behind:1.4), (back view:1.4), solo, full body, facing away from viewer, looking away, back of head, showing back of hair and outfit, standing pose, simple white background, clean background`,
+          `${styleZh}角色纯背面全身设定图，完全背对镜头不露脸，清晰展现后脑勺发型、背部服装剪裁与随身配饰细节，干净纯白背景：`,
           isLocalImg && hasFreshEn ? backEnCore : backCoreDesc,
         ),
         params: isMflux
@@ -1126,8 +1247,8 @@ export function mountDetail(root, id) {
         purpose: '三视图',
         label: '三视图',
         prompt: buildSlotPrompt(
-          'masterpiece, best quality, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background, consistent character design',
-          '角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+          `${styleEn}, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background`,
+          `${styleZh}角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：`,
         ),
         params: isMflux
           ? { width: 896, height: 512 }
@@ -1221,11 +1342,14 @@ export function mountDetail(root, id) {
     if (submittedList.length) {
       saveTurnaroundPending([...pendingTurnaroundJobs.filter((j) => j.assetId !== created.id), ...submittedList]);
       pendingTurnaroundNotice = null;
-      const msg = submittedList.length === specs.length
-        ? `已创建角色「${payload.name}」并排队 ${submittedList.length} 张设定图，完成后将自动填入对应槽位`
-        : `已创建角色「${payload.name}」，已排队 ${submittedList.length}/${specs.length} 张（部分失败：${firstErr?.message || firstErr}）`;
+      const actionVerb = isNew ? '创建' : '更新';
+      const msg = isKontext
+        ? `已${actionVerb}角色「${payload.name}」，正在生成第 1 张正面定妆照，完成后将自动生成其余 3 张`
+        : (submittedList.length === submitSpecs.length
+          ? `已${actionVerb}角色「${payload.name}」并排队 ${submittedList.length} 张设定图，完成后将自动填入对应槽位`
+          : `已${actionVerb}角色「${payload.name}」，已排队 ${submittedList.length}/${submitSpecs.length} 张（部分失败：${firstErr?.message || firstErr}）`);
       window.dispatchEvent(new CustomEvent('app:toast', {
-        detail: { text: msg, kind: submittedList.length === specs.length ? 'ok' : 'err' },
+        detail: { text: msg, kind: submittedList.length === submitSpecs.length ? 'ok' : 'err' },
       }));
     } else {
       saveTurnaroundPending(pendingTurnaroundJobs.filter((j) => j.assetId !== created.id));

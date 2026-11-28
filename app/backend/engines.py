@@ -28,7 +28,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
@@ -64,6 +66,9 @@ _TIMEOUT_SECONDS = 5.0
 # 公开别名：显式探测档的超时只有这一把尺。cloud_probe 原来自己抄了一份 5.0，
 # 两份数字会各自漂移——改了一边没人改另一边，"同一把尺"就成了注释里的谎话。
 PROBE_TIMEOUT_SECONDS = _TIMEOUT_SECONDS
+
+_COMFYUI_PLACEHOLDER = re.compile(r"\{\{[^{}]+\}\}")
+_COMFYUI_MODEL_INPUTS = ("ckpt_name", "unet_name", "lora_name", "vae_name")
 
 # 列表接口用的超时。为什么与手动探测分开：
 # 「打开一页」不该被一台卡住的服务拖住，而「点一下检查连接」是人明确要求
@@ -155,23 +160,33 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
     try:
         headers = (_comfyui_headers(secret_env) if engine == "comfyui" or secret_env else {})
         safenet.check_url(url)
-        request = Request(url, method="GET", headers=headers)
-        # 不跟随重定向：端点是人填的，一次 302 就能把它指去任何地方
-        # （包括云元数据接口）。这里抛的 UnsafeTarget 是 ValueError 子类，
-        # 必须单独接在下面——否则会被当成"连不上"，丢掉"有人在指路"这个信息。
-        with safenet.safe_urlopen(request,
-                                  timeout=timeout or _TIMEOUT_SECONDS) as response:
-            raw = response.read()
     except safenet.UnsafeTarget as exc:
         return {"error": f"{url} 没有发出请求：{exc}", "timed_out": False}
     except ValueError as exc:
         return {"error": str(exc), "timed_out": False}
-    except (URLError, OSError, TimeoutError) as exc:
-        reason = getattr(exc, "reason", exc)
-        timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
-        return {"error": f"{url} 连不上：{reason}", "timed_out": timed_out}
-    except HTTPError as exc:
-        return {"error": f"{url} 返回 HTTP {exc.code}"}
+    raw = b""
+    for attempt in range(3):
+        try:
+            request = Request(url, method="GET", headers=headers)
+            # 不跟随重定向：端点是人填的，一次 302 就能把它指去任何地方
+            # （包括云元数据接口）。这里抛的 UnsafeTarget 是 ValueError 子类，
+            # 必须单独接在下面——否则会被当成"连不上"，丢掉"有人在指路"这个信息。
+            with safenet.safe_urlopen(request,
+                                      timeout=timeout or _TIMEOUT_SECONDS) as response:
+                raw = response.read()
+            break
+        except safenet.UnsafeTarget as exc:
+            return {"error": f"{url} 没有发出请求：{exc}", "timed_out": False}
+        except ValueError as exc:
+            return {"error": str(exc), "timed_out": False}
+        except HTTPError as exc:
+            return {"error": f"{url} 返回 HTTP {exc.code}"}
+        except (URLError, OSError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+            if timed_out or isinstance(reason, ConnectionRefusedError) or attempt >= 2:
+                return {"error": f"{url} 连不上：{reason}", "timed_out": timed_out}
+            time.sleep(0.5)
     try:
         payload = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
@@ -203,6 +218,129 @@ def comfyui_checkpoints(instance_id: int | None = None) -> dict:
         "checkpoints": names,
         "recommended": _comfyui_pick_checkpoint(names) or "",
     }
+
+
+def _fetch_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
+    safenet.check_url(url)
+    request = Request(url, headers=headers, method="GET")
+    with safenet.safe_urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read())
+    if not isinstance(payload, dict):
+        raise ValueError("ComfyUI /object_info 的应答必须是 JSON 对象")
+    return payload
+
+
+def _workflow_strings(workflow: dict) -> Iterator[str]:
+    values = list(workflow.values())
+    while values:
+        value = values.pop()
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            values.extend(value.values())
+        elif isinstance(value, list):
+            values.extend(value)
+
+
+def _comfyui_model_options(node_info: dict, field: str) -> list | None:
+    for group in ("required", "optional"):
+        try:
+            spec = node_info["input"][group][field]
+        except (KeyError, TypeError):
+            continue
+        if isinstance(spec, list) and spec:
+            if isinstance(spec[0], list):
+                return spec[0]
+            if spec[0] == "COMBO" and len(spec) > 1 and isinstance(spec[1], dict):
+                options = spec[1].get("options")
+                if isinstance(options, list):
+                    return options
+    return None
+
+
+def _explicit_comfyui_model(name: str) -> bool:
+    return bool(name.strip() and name != "__AUTO_CHECKPOINT__"
+                and not _COMFYUI_PLACEHOLDER.search(name))
+
+
+def comfyui_preflight(workflow_json: str, instance_id: int | None = None,
+                      checkpoint: str = "") -> dict:
+    """检查 API 格式的工作流节点和已明确指定的模型。"""
+    result: dict = {
+        "ok": False, "endpoint": "", "display_name": "", "node_count": 0,
+        "placeholders": [], "missing_nodes": [], "missing_models": [], "error": "",
+    }
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"{value} 不是有效的 JSON 数字")
+
+    try:
+        workflow = json.loads(workflow_json, parse_constant=reject_constant)
+    except (ValueError, RecursionError) as exc:
+        return {**result, "error": f"ComfyUI workflow_json 不是有效的 JSON：{exc}"}
+    if not isinstance(workflow, dict) or not workflow:
+        return {**result, "error": "ComfyUI workflow_json 必须是非空节点映射对象"}
+    class_types = set()
+    for node_id, node in workflow.items():
+        class_type = node.get("class_type") if isinstance(node, dict) else None
+        if not isinstance(class_type, str) or not class_type.strip():
+            return {**result, "error": f"ComfyUI 节点 {node_id} 缺少有效的 class_type"}
+        class_types.add(class_type)
+
+    result.update(node_count=len(workflow), placeholders=sorted({
+        token for value in _workflow_strings(workflow) for token in _COMFYUI_PLACEHOLDER.findall(value)
+    }))
+    try:
+        instance = resolve_instance("comfyui", instance_id)
+    except EngineInstanceError as exc:
+        return {**result, "error": str(exc)}
+    if instance is None:
+        return {**result, "error": "没有启用中的 ComfyUI 引擎实例"}
+
+    endpoint = instance["endpoint"]
+    result.update(endpoint=endpoint, display_name=instance["display_name"])
+    try:
+        headers = _comfyui_headers(instance["shared_secret_env"])
+        object_info = _fetch_json(f"{endpoint.rstrip('/')}/object_info", headers,
+                                  timeout=_TIMEOUT_SECONDS)
+    except (OSError, HTTPException, ValueError, RecursionError) as exc:
+        reason = str(exc) or type(exc).__name__
+        return {**result, "error": f"查询 ComfyUI /object_info 失败：{reason}"}
+
+    result["missing_nodes"] = sorted(class_types - object_info.keys())
+    checkpoint = checkpoint.strip()
+    override = checkpoint if _explicit_comfyui_model(checkpoint) else ""
+    checkpoints = {override} if override else set()
+    missing_models = set()
+    for node in workflow.values():
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        class_type = node["class_type"]
+        for field in _COMFYUI_MODEL_INPUTS:
+            name = inputs.get(field)
+            if not isinstance(name, str) or not _explicit_comfyui_model(name):
+                continue
+            if field == "ckpt_name":
+                # 执行器会用请求里的 checkpoint 覆盖 CheckpointLoaderSimple 的输入。
+                checkpoints.add(override if override and class_type == "CheckpointLoaderSimple" else name)
+            else:
+                options = _comfyui_model_options(object_info.get(class_type, {}), field)
+                if options is not None and name not in options:
+                    missing_models.add(name)
+
+    if checkpoints:
+        try:
+            names = _comfyui_checkpoints(endpoint, headers, timeout=_TIMEOUT_SECONDS)
+        except (OSError, HTTPException, ValueError) as exc:
+            reason = str(exc) or type(exc).__name__
+            return {**result, "missing_models": sorted(missing_models),
+                    "error": f"查询 ComfyUI 已安装模型失败：{reason}"}
+        missing_models.update(checkpoints.difference(names))
+
+    result["missing_models"] = sorted(missing_models)
+    result["ok"] = not result["missing_nodes"] and not missing_models
+    return result
 
 
 def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,

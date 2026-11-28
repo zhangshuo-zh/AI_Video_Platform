@@ -225,13 +225,13 @@ def available_providers(
         except (OSError, ValueError, KeyError, TypeError):
             cg_status = {}
         if cg_status.get("connected"):
-            cg_key = ("text", "cloud", "chatgpt", "gpt-5.1")
+            cg_key = ("text", "cloud", "chatgpt", "gpt-6.1-terra")
             if cg_key not in seen_keys:
                 seen_keys.add(cg_key)
                 out.append(ProviderOptionOut(
                     capability="text", capability_label=CAPABILITIES["text"],
                     backend="cloud", backend_label=BACKENDS["cloud"],
-                    provider="chatgpt", model="gpt-5.1",
+                    provider="chatgpt", model="gpt-6.1-terra",
                     adapter_label="ChatGPT 套餐",
                     health_state="ok",
                     health_detail="已连接个人 ChatGPT 账号，可直接用于角色抽卡",

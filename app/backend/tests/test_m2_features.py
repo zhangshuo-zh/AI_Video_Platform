@@ -218,6 +218,63 @@ def test_m2_2_import_shots_from_extraction(as_role, people, clean_queue):
         assert len(d2["skipped_item_ids"]) == 2
 
 
+def test_import_shots_filters_item_ids(as_role, fresh_project, clean_queue):
+    uid = as_role.id("editor")
+    project_id = fresh_project()
+    episode_id = episodes.create(project_id, "第1集")["id"]
+    job = job_repo.create({
+        "project_id": project_id, "episode_id": episode_id,
+        "capability": "text", "kind": "text", "execution_mode": "local",
+        "provider_code": "mock", "model_code": "mock-1", "adapter_version": "mock",
+        "prompt_snapshot": "extract", "params": {}, "input_refs": [], "created_by": uid,
+    })
+    claimed = job_repo.claim_next("selective-import", 60)
+    assert claimed is not None and claimed["id"] == job["id"]
+    job_repo.succeed(job["id"], "selective-import", "", [], 5)
+    run = extractions.create_run(
+        project_id=project_id, doc_id=None, job_id=job["id"], doc_title="测试稿",
+        base_version="v1", content_hash="h1", model_code="mock-1",
+        prompt_version="v1", created_by=uid,
+    )
+    run_id = run["id"]
+    extractions.insert_items(run_id, [
+        {"kind": "shot", "payload": {"index": 1, "summary": "未选中的镜头"}, "evidence": {}},
+        {"kind": "shot", "payload": {"index": 2, "summary": "选中的镜头"}, "evidence": {}},
+        {"kind": "character", "payload": {"name": "角色"}, "evidence": {}},
+    ])
+    extractions.set_status(run_id, "done", materialized=True)
+    unselected, selected = extractions.items(run_id, kind="shot")
+    character, = extractions.items(run_id, kind="character")
+
+    url = f"/api/extract/runs/{run_id}/import-shots"
+    with as_role("editor") as c:
+        empty = c.post(url, json={"episode_id": episode_id, "item_ids": []})
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["created_shot_ids"] == []
+        assert shots.list_by_episode(episode_id) == []
+
+        selection = {"episode_id": episode_id, "item_ids": [selected["id"], character["id"], selected["id"]]}
+        imported = c.post(url, json=selection)
+        assert imported.status_code == 200, imported.text
+        shot, = shots.list_by_episode(episode_id)
+        assert imported.json()["created_shot_ids"] == [shot["id"]]
+        assert imported.json()["skipped_item_ids"] == []
+        assert shot["summary"] == "选中的镜头"
+        assert extractions.get_item(selected["id"])["status"] == "accepted"
+        assert extractions.get_item(unselected["id"])["status"] == "pending"
+        assert extractions.get_item(character["id"])["status"] == "pending"
+
+        retry = c.post(url, json=selection)
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["created_shot_ids"] == []
+        assert retry.json()["skipped_item_ids"] == [selected["id"]]
+
+        bulk = c.post(url, json={"episode_id": episode_id, "item_ids": None})
+        assert bulk.status_code == 200, bulk.text
+        assert len(bulk.json()["created_shot_ids"]) == 1
+        assert extractions.get_item(unselected["id"])["status"] == "accepted"
+
+
 def test_m2_3_auto_generate_srt_from_shots(as_role, people):
     """M2.3: 按分镜对白与时长自动生成 `.srt` 字幕，对白音轨优先于分镜摘要。"""
     uid = people["editor"]["id"]

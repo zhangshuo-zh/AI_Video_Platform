@@ -216,6 +216,7 @@ function nodeRows(detail, canSubmit) {
     // 读项目／读集／读剧本这三格，类型名和节点名几乎一样（"读取项目"与"读项目"），
     // 再挂一枚类型 chip 只是噪音；从生成节点往后类型才是有用的信息
     const quietType = ['project_input', 'episode_input', 'document_input'].includes(n.node_type);
+    const reviewJobId = n.review_job_id || n.job_id;
     // 节点失败与作业失败给的是同一张七字段目录：服务端 `pipeline._node_view` 直接把
     // `diagnosis` 挂在节点上带下来，所以这里不再另打一次接口（两处问会问出两份答复）。
     return `<li class="pl-node st-${n.status}">
@@ -230,9 +231,10 @@ function nodeRows(detail, canSubmit) {
           <span class="mono">${escapeHtml(n.node_key)}</span>
           ${deps ? `<span>前置：${escapeHtml(deps)}</span>` : ''}
           ${n.job_id ? `<span>作业 #${n.job_id}${n.job_status ? ' · ' + escapeHtml(publicStatus(n.job_status)) : ''}${n.job_status_label ? `（原词：${escapeHtml(n.job_status_label)}）` : ''}</span>
-            <button class="btn xs" data-go-generate>去生成中心</button>` : ''}
-          ${n.review_id ? `<span>签字 #${n.review_id}</span>
-            <button class="btn xs" data-go-review>去审核</button>` : ''}
+            <button type="button" class="btn xs" data-go-generate="${n.job_id}">去生成中心</button>` : ''}
+          ${n.review_id ? `<span>签字 #${n.review_id}</span>` : ''}
+          ${n.review_id || n.review_job_id || n.status === 'waiting_review'
+            ? `<button type="button" class="btn xs" data-go-review="${reviewJobId || ''}">去审核</button>` : ''}
           ${n.started_at ? `<span class="t-dim">开始 ${escapeHtml(n.started_at)}</span>` : ''}
           ${n.finished_at ? `<span class="t-dim">结束 ${escapeHtml(n.finished_at)}</span>` : ''}
         </div>
@@ -839,10 +841,18 @@ export default {
 
     // 「去生成中心／去审核」只是跳转：看成本、日志、产物与签字都在东家模块
     root.querySelectorAll('[data-go-generate]').forEach((btn) => {
-      btn.addEventListener('click', () => goto('generate', 0));
+      btn.addEventListener('click', () => {
+        const jobId = Number(btn.dataset.goGenerate);
+        if (jobId) gotoEntry({ module: 'generate', sub: 0, job_id: jobId });
+        else goto('generate', 0);
+      });
     });
     root.querySelectorAll('[data-go-review]').forEach((btn) => {
-      btn.addEventListener('click', () => goto('review', 1));
+      btn.addEventListener('click', () => {
+        const jobId = Number(btn.dataset.goReview);
+        if (jobId) gotoEntry({ module: 'review', sub: 1, job_id: jobId });
+        else goto('review', 1);
+      });
     });
 
     const act = async (label, fn, okText) => {

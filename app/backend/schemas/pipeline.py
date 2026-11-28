@@ -48,6 +48,7 @@ class PipelineNodeOut(BaseModel):
     job_status: str | None = None
     job_status_label: str = ""
     review_id: int | None = None
+    review_job_id: int | None = None
     retry_count: int = 0
     # 「这一格现在能不能重试」由服务端判（`pipeline.retry_gate`），界面按它摆钮。
     # 让前端自己按 status==='failed' 猜，就会出现被驳回的审核节点挂着一颗

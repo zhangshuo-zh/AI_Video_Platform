@@ -1,8 +1,8 @@
 """分镜引用、字段整理与视频帧提取的业务逻辑。"""
-import json
 import shutil
 import subprocess
 import uuid
+from pathlib import Path
 
 import jobfiles
 from composition import validators
@@ -157,21 +157,25 @@ def _shot_form_fields(payload) -> dict:
 
 
 def extract_shot_frame(shot_id: int, payload: ShotExtractFrameIn | None, project_id: int) -> ShotExtractFrameOut:
-    """从镜头最新成功视频截取尾帧/首帧存为 PNG 参考图，并可一键填入下一镜首帧槽位。"""
+    """从指定或最新的成功视频作业截取 PNG，可填入镜头的首尾帧槽位。"""
     shot = shots.get(shot_id)
     if shot is None:
         raise ContentOperationError(status_code=404, detail="镜头不存在")
     opts = payload or ShotExtractFrameIn()
-    video_by_shot = job_repo.latest_succeeded_videos_by_shot(int(shot["episode_id"]))
-    video_job = video_by_shot.get(int(shot_id))
-    if video_job is None:
-        raise ContentOperationError(status_code=422, detail="该镜头还没有已完成的视频作业，无法截帧")
-    try:
-        rpaths = json.loads(video_job["result_paths_json"] or "[]")
-    except ValueError:
-        rpaths = []
-    rel = str(rpaths[0]) if rpaths else ""
-    target = jobfiles.resolve_artifact(rel) if rel else None
+    if opts.job_id is None:
+        video_job = job_repo.latest_succeeded_videos_by_shot(int(shot["episode_id"])).get(shot_id)
+        if video_job is None:
+            raise ContentOperationError(status_code=422, detail="该镜头还没有已完成的视频作业，无法截帧")
+        target = jobfiles.artifact_at(video_job["result_paths_json"], 0)
+    else:
+        video_job = job_repo.get(opts.job_id)
+        if (video_job is None or video_job["project_id"] != project_id or video_job["shot_id"] != shot_id
+                or video_job["capability"] != "video" or video_job["status"] != "succeeded"):
+            raise ContentOperationError(status_code=422, detail="指定作业不是该镜头已完成的视频版本")
+        manifest = video_job["result_paths_json"]
+        target = next((jobfiles.resolve_artifact(artifact["path"]) for artifact in jobfiles.artifacts(manifest)
+                       if artifact["exists"] and Path(artifact["path"]).suffix.lower()
+                       in {".mp4", ".webm", ".mov", ".m4v"}), None)
     if target is None:
         raise ContentOperationError(status_code=422, detail="视频产物文件不在磁盘上")
     ffmpeg = shutil.which(FFMPEG_BIN)
@@ -183,7 +187,8 @@ def extract_shot_frame(shot_id: int, payload: ShotExtractFrameIn | None, project
         raise ContentOperationError(status_code=422, detail=f"视频文件不可读：{exc.message}") from exc
     dur_ms = int(info.get("duration_ms") or 0)
     if opts.offset_ms is not None:
-        seek_s = min(max(0.0, opts.offset_ms / 1000.0), max(0.0, (dur_ms - 80) / 1000.0))
+        seek_ms = min(opts.offset_ms, max(0, dur_ms - 80)) if dur_ms else opts.offset_ms
+        seek_s = seek_ms / 1000.0
     elif opts.position == "first":
         seek_s = 0.0
     else:
@@ -202,7 +207,7 @@ def extract_shot_frame(shot_id: int, payload: ShotExtractFrameIn | None, project
         )
         return proc.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0
 
-    if not _run_grab(seek_s) and not _run_grab(0.0):
+    if not _run_grab(seek_s) and (opts.offset_ms is not None or seek_s == 0 or not _run_grab(0.0)):
         raise ContentOperationError(status_code=422, detail="FFmpeg 截帧失败，请检查视频编码是否完整")
 
     frame_path = f"shots/{project_id}/{name}"

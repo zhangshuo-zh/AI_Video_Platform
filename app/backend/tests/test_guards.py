@@ -332,6 +332,7 @@ ROUTES = [
     # 但都能改配置，所以外人一律 403；{m}=0 那条不存在的实例也是先撞权限点。
     ("GET", "/api/engines", None, 403),
     ("GET", "/api/engines/comfyui/checkpoints", None, 200),
+    ("POST", "/api/engines/comfyui/preflight", {"workflow_json": ""}, 200),
     ("GET", "/api/engines/comfyui/instances", None, 200),
     ("POST", "/api/engines",
      {"engine_code": "draw_things", "endpoint": "http://127.0.0.1:7860"}, 403),

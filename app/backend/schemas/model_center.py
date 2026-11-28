@@ -417,6 +417,23 @@ class ComfyUICheckpointsOut(BaseModel):
     error: str = ""
 
 
+class ComfyUIPreflightIn(BaseModel):
+    workflow_json: str
+    instance_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
+    checkpoint: str = ""
+
+
+class ComfyUIPreflightOut(BaseModel):
+    ok: bool
+    endpoint: str
+    display_name: str
+    node_count: int
+    placeholders: list[str]
+    missing_nodes: list[str]
+    missing_models: list[str]
+    error: str
+
+
 class EngineMutationOut(BaseModel):
     model_config = ConfigDict(extra="allow")
 

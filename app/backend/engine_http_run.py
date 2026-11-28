@@ -76,6 +76,36 @@ def _comfyui_pick_checkpoint(names: list[str]) -> str | None:
                 names[0] if names else None)
 
 
+def _safe_read_with_retry(
+    make_request,
+    *,
+    timeout: float,
+    retries: int = 3,
+    delay: float = 0.6,
+    max_bytes: int | None = None,
+) -> bytes:
+    """对 ngrok 等隧道偶发断连（RemoteDisconnected）做短重试；HTTP 4xx/5xx 与安全拦截不重试。"""
+    for attempt in range(retries):
+        try:
+            with safenet.safe_urlopen(make_request(), timeout=timeout) as resp:
+                if max_bytes is None:
+                    return resp.read()
+                buf = bytearray()
+                while chunk := resp.read(min(65536, max_bytes + 1 - len(buf))):
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        break
+                return bytes(buf)
+        except (HTTPError, safenet.UnsafeTarget):
+            raise
+        except (URLError, OSError, HTTPException) as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (ConnectionRefusedError, TimeoutError)) or attempt + 1 >= retries:
+                raise
+            time.sleep(delay)
+    raise RuntimeError("unreachable")
+
+
 def _comfyui_upload_image(endpoint: str, init_path: Path, headers: dict[str, str], timeout: int) -> str:
     boundary = f"----FastVideoComfy{uuid.uuid4().hex}"
     content = init_path.read_bytes()
@@ -88,14 +118,16 @@ def _comfyui_upload_image(endpoint: str, init_path: Path, headers: dict[str, str
     body = head + content + tail
     upload_url = endpoint + "/upload/image"
     safenet.check_url(upload_url)
-    req = Request(
-        upload_url,
-        data=body,
-        method="POST",
-        headers={**headers, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    raw = _safe_read_with_retry(
+        lambda: Request(
+            upload_url,
+            data=body,
+            method="POST",
+            headers={**headers, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        ),
+        timeout=timeout,
     )
-    with safenet.safe_urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8", "replace"))
+    data = json.loads(raw.decode("utf-8", "replace"))
     return str(data.get("name") or init_path.name)
 
 
@@ -193,15 +225,26 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         ensure_ascii=False,
     ).encode("utf-8")
     try:
-        req = Request(
-            prompt_url,
-            data=payload_bytes,
-            method="POST",
-            headers={**headers, "Content-Type": "application/json"},
+        raw = _safe_read_with_retry(
+            lambda: Request(
+                prompt_url,
+                data=payload_bytes,
+                method="POST",
+                headers={**headers, "Content-Type": "application/json"},
+            ),
+            timeout=timeout,
         )
-        with safenet.safe_urlopen(req, timeout=timeout) as resp:
-            submitted = json.loads(resp.read().decode("utf-8", "replace"))
-    except (HTTPError, URLError, OSError, ValueError) as exc:
+        submitted = json.loads(raw.decode("utf-8", "replace"))
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+        except Exception:
+            pass
+        return _finish(receipt_path, ok=False, code="comfyui_submit_failed",
+                       message=f"提交 ComfyUI /prompt 失败：{exc}" + (f"（{detail}）" if detail else ""),
+                       endpoint=endpoint)
+    except (URLError, OSError, HTTPException, ValueError) as exc:
         return _finish(receipt_path, ok=False, code="comfyui_submit_failed",
                        message=f"提交 ComfyUI /prompt 失败：{exc}", endpoint=endpoint)
 
@@ -256,16 +299,15 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         "type": str(image_meta.get("type") or "output"),
     })
     view_url = f"{endpoint}/view?{view_qs}"
-    blob = bytearray()
     limit = imagetypes.MAX_IMAGE_BYTES
     try:
         safenet.check_url(view_url)
-        with safenet.safe_urlopen(Request(view_url, headers=headers), timeout=timeout) as resp:
-            while chunk := resp.read(min(65536, limit + 1 - len(blob))):
-                blob.extend(chunk)
-                if len(blob) > limit:
-                    break
-    except (HTTPError, URLError, OSError, ValueError) as exc:
+        blob = _safe_read_with_retry(
+            lambda: Request(view_url, headers=headers),
+            timeout=timeout,
+            max_bytes=limit,
+        )
+    except (HTTPError, URLError, OSError, HTTPException, ValueError) as exc:
         return _finish(receipt_path, ok=False, code="comfyui_view_failed",
                        message=f"回收 ComfyUI 图像失败：{exc}", prompt_id=prompt_id)
 

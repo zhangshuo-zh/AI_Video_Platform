@@ -412,6 +412,14 @@ def extraction_import_shots(run_id: int, payload, user: dict) -> dict:
             raise extraction.ExtractInvalid("项目中尚无创作单元，请先新建或指定创作单元")
         episode_id = int(ep_rows[0]["id"])
 
+    item_ids = getattr(payload, "item_ids", None)
+    selected_ids = None if item_ids is None else set(item_ids)
+    with transaction():
+        return _import_shot_candidates(run_id, project_id, episode_id, selected_ids, int(user["id"]))
+
+
+def _import_shot_candidates(run_id: int, project_id: int, episode_id: int,
+                            selected_ids: set[int] | None, user_id: int) -> dict:
     visible_assets = assets.list_visible(project_id)
     exact_map: dict[str, int] = {}
     multi_names: list[tuple[str, int]] = []
@@ -431,7 +439,9 @@ def extraction_import_shots(run_id: int, payload, user: dict) -> dict:
     }
     existing_summaries = {str(s["summary"] or "").strip() for s in existing}
 
-    raw_items = list(extraction_runs.items(run_id, kind="shot"))
+    raw_items = extraction_runs.items(run_id, kind="shot")
+    if selected_ids is not None:
+        raw_items = [row for row in raw_items if row["id"] in selected_ids]
 
     def _sort_key(row) -> tuple[int, int]:
         try:
@@ -506,7 +516,7 @@ def extraction_import_shots(run_id: int, payload, user: dict) -> dict:
             camera_move=str(p.get("camera_move") or "").strip()[:40],
         )
         if row["status"] == "pending":
-            extraction_runs.decide(item_id, "accepted", int(user["id"]), None)
+            extraction_runs.decide(item_id, "accepted", user_id, None)
         created_shot_ids.append(int(shot_row["id"]))
         existing_pairs.add((summary, prompt))
         existing_summaries.add(summary)

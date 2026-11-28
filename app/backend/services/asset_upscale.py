@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request
@@ -41,24 +42,29 @@ def _request(url: str, deadline: float, data: bytes | None = None,
     if content_type:
         request_headers["Content-Type"] = content_type
     req = Request(url, data=data, headers=request_headers)
-    try:
-        with safenet.safe_urlopen(req, timeout=_timeout(deadline)) as response:
-            chunks = []
-            size = 0
-            while True:
-                _timeout(deadline)
-                chunk = response.read(min(65536, limit + 1 - size))
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > limit:
-                    raise ContentOperationError(502, "ComfyUI 返回的数据超过大小上限")
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except HTTPError as exc:
-        raise ContentOperationError(502, f"ComfyUI 请求失败（HTTP {exc.code}），请检查模型及节点配置") from exc
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
-        raise ContentOperationError(502, f"ComfyUI 连接失败：{exc}") from exc
+    for attempt in range(3):
+        try:
+            with safenet.safe_urlopen(req, timeout=_timeout(deadline)) as response:
+                chunks = []
+                size = 0
+                while True:
+                    _timeout(deadline)
+                    chunk = response.read(min(65536, limit + 1 - size))
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        raise ContentOperationError(502, "ComfyUI 返回的数据超过大小上限")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except HTTPError as exc:
+            raise ContentOperationError(502, f"ComfyUI 请求失败（HTTP {exc.code}），请检查模型及节点配置") from exc
+        except (URLError, TimeoutError, OSError, HTTPException, ValueError) as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (ConnectionRefusedError, TimeoutError)) or attempt >= 2 or time.monotonic() + 0.5 >= deadline:
+                raise ContentOperationError(502, f"ComfyUI 连接失败：{exc}") from exc
+            time.sleep(0.5)
+    raise ContentOperationError(502, "ComfyUI 连接失败")
 
 
 def _json_request(url: str, deadline: float, data: bytes | None = None,

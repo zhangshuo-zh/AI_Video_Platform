@@ -201,18 +201,58 @@ def create_app() -> FastAPI:
         logger.warning("worker_daemon_start_failed err=%s", type(exc).__name__)
 
     if os.environ.get("FASTVIDEO_AUTO_START_WORKER") == "1":
+        def _pending_queue_count() -> int:
+            try:
+                from db import get_conn
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM job WHERE status IN ('queued', 'starting', 'running', 'cancel_requested')"
+                    ).fetchone()
+                    return int(row[0]) if row else 0
+            except Exception:
+                return -1
+
         def _auto_start_worker() -> None:
             try:
                 import worker_supervisor
                 result = worker_supervisor.start(count=1, only_if_empty=True)
-                if not result["ok"]:
+                if not result.get("ok"):
                     logger.warning("worker_auto_start_failed result=not_started")
+                    print(f"[startup] 受管 Worker 启动未就绪：{result.get('message') or 'unknown'}", flush=True)
+                    return
+                pids = result.get("pids") or []
+                q_cnt = _pending_queue_count()
+                q_note = f"，当前队列活动作业：{q_cnt} 条" if q_cnt >= 0 else ""
+                if pids:
+                    msg = f"[startup] 已启动新受管 Worker（PID: {', '.join(str(p) for p in pids)}）{q_note}"
+                else:
+                    msg = f"[startup] {result.get('message') or '受管 Worker 已在运行'}{q_note}"
+                logger.info("worker_auto_start_ready pids=%s queue=%s", pids, q_cnt)
+                print(msg, flush=True)
             except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:
                 logger.warning("worker_auto_start_failed err=%s", type(exc).__name__)
         try:
             threading.Thread(target=_auto_start_worker, name="worker-auto-start", daemon=True).start()
         except (OSError, RuntimeError) as exc:
             logger.warning("worker_auto_start_thread_failed err=%s", type(exc).__name__)
+
+        def _stop_managed_workers() -> None:
+            try:
+                import worker_supervisor
+                res = worker_supervisor.stop(timeout=4.0)
+                stopped = res.get("stopped") or []
+                q_cnt = _pending_queue_count()
+                q_note = f"；队列待处理/未完作业：{q_cnt} 条" if q_cnt >= 0 else ""
+                if stopped:
+                    msg = f"[shutdown] 已停止受管 Worker（PID: {', '.join(str(p) for p in stopped)}）{q_note}"
+                else:
+                    msg = f"[shutdown] 当前无运行中的受管 Worker{q_note}"
+                logger.info("worker_auto_stop_done stopped=%s queue=%s", stopped, q_cnt)
+                print(msg, flush=True)
+            except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:
+                logger.warning("worker_auto_stop_failed err=%s", type(exc).__name__)
+
+        app.router.add_event_handler("shutdown", _stop_managed_workers)
     return app
 
 

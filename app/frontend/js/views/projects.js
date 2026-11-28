@@ -329,6 +329,16 @@ export default {
                 <span class="pf-hint-inline">1—60 字，前后空格会自动去掉</span>
               </div>
 
+              <label for="np-art-style" class="top">项目画风</label>
+              <div class="pf-ctl">
+                <select id="np-art-style" class="ctl">
+                  <option value="2d">2D 日漫赛璐璐（清晰线稿 + 平涂光影）</option>
+                  <option value="25d">2.5D 半写实厚涂（立体明暗 + 丰富笔触）</option>
+                  <option value="3d">3D 国漫 CG 渲染（无线稿 + PBR/体积光）</option>
+                </select>
+                <span class="pf-hint-inline">决定全项目抽卡、分镜与生图的统一画风，自动规避冲突提示词</span>
+              </div>
+
               <label for="np-tags" class="top">标签</label>
               <div class="pf-ctl">
                 <input id="np-tags" placeholder="逗号分隔，例如 神话,短剧">
@@ -419,6 +429,12 @@ export default {
             <label class="modal-label" for="ed-desc">项目介绍</label>
             <textarea id="ed-desc" class="ctl" rows="4" maxlength="500"
                       placeholder="一两句话说清这个项目做什么、给谁看"></textarea>
+            <label class="modal-label" for="ed-art-style">项目画风</label>
+            <select id="ed-art-style" class="ctl">
+              <option value="2d">2D 日漫赛璐璐（清晰线稿 + 平涂光影）</option>
+              <option value="25d">2.5D 半写实厚涂（立体明暗 + 丰富笔触）</option>
+              <option value="3d">3D 国漫 CG 渲染（无线稿 + PBR/体积光）</option>
+            </select>
             <label class="modal-label" for="ed-tags">标签</label>
             <input id="ed-tags" class="ctl" placeholder="逗号分隔，最多 10 个">
             <p class="modal-meta" id="ed-meta"></p>
@@ -983,7 +999,9 @@ export default {
         npCreate.disabled = true;
         try {
           const created = await api.createProject({
-            name, description: npDesc.value.trim(), tags, member_ids: memberIds,
+            name, description: npDesc.value.trim(),
+            art_style: root.querySelector('#np-art-style')?.value || '2d',
+            tags, member_ids: memberIds,
           });
           await store.load();
           store.currentId = created.id;
@@ -1032,6 +1050,8 @@ export default {
       editingId = id;
       edName.value = p.name;
       edDesc.value = p.description || '';
+      const edArtStyle = root.querySelector('#ed-art-style');
+      if (edArtStyle) edArtStyle.value = p.art_style || '2d';
       edTags.value = p.tags.join(', ');
       // 只读那一行：计数与两个时间都不可改，摆在这里是为了"所有内容一次看全"
       const costText = (p.costs || []).length
@@ -1062,7 +1082,9 @@ export default {
       edSave.disabled = true;
       try {
         await api.updateProject(editingId, {
-          name, description: edDesc.value.trim(), tags,
+          name, description: edDesc.value.trim(),
+          art_style: root.querySelector('#ed-art-style')?.value || '2d',
+          tags,
         });
         await store.load();
         closeEdit();

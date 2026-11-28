@@ -92,13 +92,13 @@ def _is_project_asset_file(target: Path, job) -> bool:
     if not rel.parts:
         return False
     if rel.parts[0] == "shots" and len(rel.parts) >= 3 and rel.parts[1].isdigit():
-        return int(rel.parts[1]) == job.get("project_id")
+        return int(rel.parts[1]) == job["project_id"]
     if not rel.parts[0].isdigit():
         return False
     exists, asset_pid = _asset_project_of(int(rel.parts[0]))
     if not exists:
         return False
-    return asset_pid is None or asset_pid == job.get("project_id")
+    return asset_pid is None or asset_pid == job["project_id"]
 
 
 

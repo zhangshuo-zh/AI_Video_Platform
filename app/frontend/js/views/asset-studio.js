@@ -7,6 +7,7 @@ import {
   rememberedInstanceId,
 } from '../comfyui.js';
 import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl, subChipRow } from '../util.js';
+import { uniqueEnginesFromOptions } from '../engine-model-picker.js';
 import { JOB_ACTIVE, jobTone, publicStatus, validationText } from '../validation.js';
 import { ASSET_KIND_LABELS, unitLabel } from '../enums.js';
 import { WS_LABELS, setWsIndex, takeStudioTarget, workerChip, wsIndex } from './asset-workspaces.js';
@@ -253,10 +254,21 @@ function statusBar() {
 function trackPanel(d, which) {
   const capability = which === 'text' ? 'text' : 'image';
   const list = optionsFor(capability, d[`${which}Track`]);
+  const engines = uniqueEnginesFromOptions(list.map((o) => ({
+    ...o, backend: d[`${which}Track`], adapter_label: o.adapterLabel, health_state: o.state,
+  })));
+  const activeProvider = engines.some((e) => e.provider === d[`${which}Provider`])
+    ? d[`${which}Provider`]
+    : (engines.find((e) => e.hasHealthy)?.provider || engines[0]?.provider || '');
+  const filteredList = activeProvider ? list.filter((o) => o.provider === activeProvider) : list;
   const chosen = chosenOption(which, d);
   const price = chosen ? priceOf(chosen, d[`${which}Model`]) : null;
   const title = capability === 'text' ? '文本模型' : '图像模型';
-  const opts = list.map((o) => {
+  const engineOpts = engines.map((e) => {
+    const mark = e.hasHealthy ? `（${e.count}）` : `（${e.count} · 不可用）`;
+    return `<option value="${escapeHtml(e.provider)}"${e.provider === activeProvider ? ' selected' : ''}>${escapeHtml(e.label)}${escapeHtml(mark)}</option>`;
+  }).join('');
+  const opts = filteredList.map((o) => {
     const mark = o.state === 'ok' ? '' : `（${o.state === 'unconfigured' ? '未配置'
       : o.state === 'unregistered' ? '未登记适配器' : o.state === 'missing' ? '缺条件' : o.state}）`;
     // 健康 ok 但只是"环境齐"，验证徽章必须同屏显示：只看前者会把
@@ -265,7 +277,7 @@ function trackPanel(d, which) {
     return `<option value="${escapeHtml(o.provider)}|${escapeHtml(o.model)}"
       ${o.state === 'ok' ? '' : 'disabled'}
       ${o.provider === d[`${which}Provider`] && o.model === d[`${which}Model`] ? 'selected' : ''}
-      >${escapeHtml(o.label)}${escapeHtml(val)}${mark}</option>`;
+      >${escapeHtml(o.model)}${escapeHtml(val)}${mark}</option>`;
   }).join('');
   const hint = list.length === 0
     ? `<p class="t-desc">${d[`${which}Track`] === 'cloud' ? '云端' : '本地'}这一轨没有${
@@ -305,9 +317,14 @@ function trackPanel(d, which) {
                 data-track="${which}|cloud">云端</button>
         <span class="t-dim">${title}轨道</span>
       </div>
-      <select class="ctl" data-slot="${which}" ${list.length ? '' : 'disabled'}>
-        <option value="">${list.length ? '选择已配置的槽位' : '这一轨没有槽位'}</option>${opts}
-      </select>
+      <div class="emp-pair emp-pair-grow">
+        <select class="ctl emp-engine" data-engine-slot="${which}" aria-label="${title}引擎" ${engines.length ? '' : 'disabled'}>
+          ${engines.length ? engineOpts : '<option value="">无可用引擎</option>'}
+        </select>
+        <select class="ctl" data-slot="${which}" ${filteredList.length ? '' : 'disabled'}>
+          <option value="">${filteredList.length ? '选择模型' : '这一轨没有槽位'}</option>${opts}
+        </select>
+      </div>
       ${hint}${why}${cost}${confirm}
     </div>`;
 }
@@ -1017,6 +1034,21 @@ export default {
       next.targetId = id;
       draft = next;
       refresh();
+    });
+    root.querySelectorAll('[data-engine-slot]').forEach((el) => {
+      el.addEventListener('change', () => {
+        const which = el.dataset.engineSlot;
+        const capability = which === 'text' ? 'text' : 'image';
+        const provider = el.value;
+        const list = optionsFor(capability, d[`${which}Track`]).filter((o) => o.provider === provider);
+        const best = list.find((o) => o.state === 'ok' && o.validation === 'ok')
+          || list.find((o) => o.state === 'ok')
+          || list[0];
+        d[`${which}Provider`] = provider;
+        d[`${which}Model`] = best?.model || '';
+        d[`${which}Params`] = {};
+        refresh();
+      });
     });
     root.querySelectorAll('[data-slot]').forEach((el) => {
       el.addEventListener('change', () => {

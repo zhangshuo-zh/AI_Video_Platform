@@ -18,7 +18,8 @@ import model_center as mc
 from services import model_configuration, model_operations, model_environment
 from deps import require_permission, require_user
 from repositories.engine_instances import engine_instances
-from models import (ComfyUICheckpointsOut, ComfyUIInstanceOut, ConfigChangesOut,
+from models import (ComfyUICheckpointsOut, ComfyUIInstanceOut, ComfyUIPreflightIn,
+                    ComfyUIPreflightOut, ConfigChangesOut,
                     EngineActionOut, EngineInstanceIn, EngineInstancePatch,
                     EngineListOut, EngineMutationOut, EngineProbeOut,
                     EngineProbesOut, ModelCatalogOut, ModelMutationOut,
@@ -190,6 +191,11 @@ def create_engine(payload: EngineInstanceIn,
 def list_comfyui_checkpoints(instance_id: int | None = Query(None, gt=0, le=2**63 - 1),
                             _=Depends(require_user)) -> dict:
     return engines.comfyui_checkpoints(instance_id)
+
+
+@router.post("/engines/comfyui/preflight", response_model=ComfyUIPreflightOut)
+def preflight_comfyui(payload: ComfyUIPreflightIn, _=Depends(require_user)) -> dict:
+    return engines.comfyui_preflight(payload.workflow_json, payload.instance_id, payload.checkpoint)
 
 
 @router.get("/engines/comfyui/instances", response_model=list[ComfyUIInstanceOut])

@@ -13,7 +13,7 @@ import { gotoEntry } from '../goto.js';
 
 
 import { store } from '../store.js';
-import { currentSubTab, getSub, setSub, takeReviewReturn } from '../navstate.js';
+import { currentSubTab, getParam, getSub, setParam, setSub, takeReviewReturn } from '../navstate.js';
 import { bindSubChips, emptyBox, escapeHtml, errorBox, run, skeleton, subChipRow } from '../util.js';
 import { checklistHtml } from './review-checklist.js';
 import { bindActions, renderActions } from './review-actions.js';
@@ -112,7 +112,9 @@ export default {
     let queue = [];
     let err = null;
     try { queue = await api.jobReviews(project.id); } catch (e) { err = e; }
-    if (openJobId && !queue.some((q) => q.job_id === openJobId)) openJobId = null;
+    const linkedJobId = Number(getParam('review')) || null;
+    if (openJobId !== linkedJobId) jobNote = '';
+    openJobId = linkedJobId;
     // 选中的作业一不在这一屏就丢掉：批量签的是「这一批看得见的」，
     // 留着跨项目、跨筛选的幽灵条目会在下一次点「批量通过」时打到不该打的作业
     picked = new Set([...picked].filter((id) => queue.some((q) => q.job_id === id)));
@@ -180,7 +182,11 @@ export default {
     });
     if (!store.current) return;
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
-    bindSubChips(root, (i) => { setSub('review', i); refresh(); });
+    bindSubChips(root, (i) => {
+      setSub('review', i);
+      if (i !== 1) setParam('review', undefined);
+      refresh();
+    });
     if (currentSubTab('review', TABS) === 1) return this.mountJobs(root, refresh);
     if (currentSubTab('review', TABS) === 2) return bindActions(root, refresh);
     root.querySelectorAll('[data-open-review]').forEach((btn) => {
@@ -367,21 +373,22 @@ export default {
     });
     root.querySelectorAll('[data-open-job]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        openJobId = Number(btn.dataset.openJob);
+        setParam('review', Number(btn.dataset.openJob));
         jobNote = '';
         refresh();
       });
     });
     const detail = root.querySelector('#job-review-detail');
-    if (!detail || !openJobId) return;
+    const jobId = openJobId;
+    if (!detail || !jobId) return;
 
     let rev = null;
     let cl = null;
     let err = null;
     try {
-      rev = await api.jobReview(openJobId);
+      rev = await api.jobReview(jobId);
       // 清单读不到不挡审核面：自动项要 ffprobe，慢或坏盘时也该让人签字
-      cl = await api.jobChecklist(openJobId).catch(() => null);
+      cl = await api.jobChecklist(jobId).catch(() => null);
     } catch (e) { err = e; }
     // 详情是异步读的：读回来时人可能已经切走或换了项目，节点不在页面上就别写了
     if (!detail.isConnected) return;
@@ -461,7 +468,7 @@ export default {
       </div>`;
     detail.querySelectorAll('[data-check]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-      const ok = await run('记录清单', () => api.saveJobChecklist(openJobId, {
+      const ok = await run('记录清单', () => api.saveJobChecklist(jobId, {
           items: [{ code: btn.dataset.check, state: btn.dataset.state, note: '' }],
         }), { btn: btn });
         if (ok) refresh();
@@ -472,7 +479,7 @@ export default {
     });
     detail.querySelectorAll('[data-jsign]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-      const ok = await run('签字', () => api.jobReviewSign(openJobId, {
+      const ok = await run('签字', () => api.jobReviewSign(jobId, {
           anchor: btn.dataset.anchor, decision: btn.dataset.jsign, note: jobNote,
         }), { btn: btn });
         if (ok) refresh();

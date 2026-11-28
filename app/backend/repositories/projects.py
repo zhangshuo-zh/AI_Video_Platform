@@ -126,11 +126,12 @@ class ProjectRepository:
             ).fetchone()
 
     def create(self, name: str, description: str, tags: list[str],
-               owner_id: int, member_ids: list[int] | None = None) -> sqlite3.Row:
+               owner_id: int, member_ids: list[int] | None = None,
+               art_style: str = "2d") -> sqlite3.Row:
         with get_conn() as conn:
             cursor = conn.execute(
-                "INSERT INTO project (name, description, owner_id) VALUES (?, ?, ?)",
-                (name, description, owner_id),
+                "INSERT INTO project (name, description, owner_id, art_style) VALUES (?, ?, ?, ?)",
+                (name, description, owner_id, art_style or "2d"),
             )
             project_id = cursor.lastrowid
             conn.executemany(
@@ -163,8 +164,8 @@ class ProjectRepository:
             ).fetchone()
 
     def update(self, project_id: int, name: str, description: str,
-               tags: list[str]) -> sqlite3.Row | None:
-        """名称／介绍／标签一次改完，同一个事务里做完。
+               tags: list[str], art_style: str = "2d") -> sqlite3.Row | None:
+        """名称／介绍／画风／标签一次改完，同一个事务里做完。
 
         拆成三次写会有"名字改了标签没改"的半个状态，界面上看不出来是哪一步断的。
         """
@@ -172,8 +173,8 @@ class ProjectRepository:
             if conn.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone() is None:
                 return None
             conn.execute(
-                "UPDATE project SET name = ?, description = ? WHERE id = ?",
-                (name, description, project_id),
+                "UPDATE project SET name = ?, description = ?, art_style = ? WHERE id = ?",
+                (name, description, art_style or "2d", project_id),
             )
             conn.execute("DELETE FROM project_tag WHERE project_id = ?", (project_id,))
             conn.executemany(

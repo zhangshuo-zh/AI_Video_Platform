@@ -6,7 +6,7 @@ from models import JOB_STATUSES
 from repositories.jobs import jobs as job_repo
 from repositories.pipeline import NODE_ATTENTION, NODE_DONE, NODE_FAILED, NODE_PENDING, NODE_REVIEW, NODE_RUNNING, NODE_SKIPPED, pipeline_repo
 
-from .constants import EVENT_LABELS, NODE_STATUS_LABELS, NODE_TYPE_LABELS, PipelineMissing, RUN_STATUS_LABELS
+from .constants import EVENT_LABELS, NODE_STATUS_LABELS, NODE_TYPE_LABELS, PipelineMissing, REVIEW_NODES, RUN_STATUS_LABELS
 from .gates import retry_gate
 from .graph import _node_map, _snapshot_of
 from .templates import _definition_of
@@ -86,6 +86,14 @@ def node_view(row, by_key: dict, run=None, job=None) -> dict:
         output = json.loads(node["output_json"] or "{}")
     except ValueError:
         output = {}
+    review_job_id = None
+    if node["node_type"] in REVIEW_NODES and node["node_type"] != "human_gate":
+        try:
+            node_input = json.loads(node["input_json"] or "{}")
+            if isinstance(node_input, dict):
+                review_job_id = node_input.get("job_id")
+        except ValueError:
+            pass
     # 没有 run 就没有判定依据（取消位挂在 run 上）——这时宁可不摆钮，
     # 也不给界面一个"看着能点、点了被接口拒"的字段。
     hint = retry_gate(node, run, job) if run is not None else "读不到这条运行，先刷新页面"
@@ -102,6 +110,7 @@ def node_view(row, by_key: dict, run=None, job=None) -> dict:
         "job_status_label": (JOB_STATUSES.get(job["status"], job["status"])
                              if job else ""),
         "review_id": node["review_id"],
+        "review_job_id": review_job_id,
         "retry_count": int(node["retry_count"] or 0),
         "retryable": not hint,
         "retry_hint": hint,

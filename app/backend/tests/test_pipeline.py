@@ -531,7 +531,7 @@ def test_正文改了_旧签字不再算数(mock_route, people, clean_queue):
     assert _nodes(view)["gate"]["status"] == "completed"
 
 
-def test_产物被清理_审核那一档立刻失配(mock_route, people, clean_queue):
+def test_产物被清理_审核那一档立刻失配(mock_route, people, clean_queue, as_role):
     """产物审核的版本令牌是清单摘要：文件没了，旧签字就不再算数。
 
     产线这边**不回溯改判**：节点记的是"当时签过、当时产物在"，那是事实；
@@ -555,12 +555,17 @@ def test_产物被清理_审核那一档立刻失配(mock_route, people, clean_q
     assert nodes[f"check#s{sid}"]["status"] == "completed"
     assert nodes[f"review#s{sid}"]["status"] == "waiting_review"
     keyframe_job = nodes[f"keyframe#s{sid}"]["job_id"]
+    with as_role("editor") as c:
+        response = c.get(f"/api/pipeline/runs/{view['id']}")
+        assert response.status_code == 200
+        assert _nodes(response.json())[f"review#s{sid}"]["review_job_id"] == keyframe_job
 
     _sign_job(keyframe_job, setup, people)
     view = _pump(view["id"])
     nodes = _nodes(view)
     assert nodes[f"review#s{sid}"]["status"] == "completed"
     assert nodes[f"review#s{sid}"]["review_id"]      # 只引用签字行，不抄结论
+    assert nodes[f"review#s{sid}"]["review_job_id"] == keyframe_job
     assert view["status"] == "completed"
 
     rel = json.loads(job_repo.get(keyframe_job)["result_paths_json"])[0]

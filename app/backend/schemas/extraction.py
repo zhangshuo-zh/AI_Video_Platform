@@ -109,6 +109,7 @@ class ExtractionDecisionOut(BaseModel):
 
 class ExtractShotImportIn(BaseModel):
     episode_id: int | None = None
+    item_ids: list[int] | None = None
 
 
 class ExtractShotImportOut(BaseModel):

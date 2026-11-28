@@ -72,7 +72,8 @@ def _write_test_wav(path: Path, seconds: float = 1.0, freq: float = 440.0) -> Pa
 
 
 def _make_approved_video(
-    project_id: int, episode_id: int, shot_id: int, user_id: int, color: str, seconds: float = 1.2
+    project_id: int, episode_id: int, shot_id: int, user_id: int, color: str, seconds: float = 1.2,
+    *, second_color: str | None = None,
 ) -> dict:
     job = job_repo.create({
         "project_id": project_id, "episode_id": episode_id, "shot_id": shot_id,
@@ -85,9 +86,11 @@ def _make_approved_video(
     assert claimed is not None and claimed["id"] == job["id"]
     _, outputs = jobfiles.ensure_dirs(job["id"])
     target = outputs / f"{job['id']}-{color}.mp4"
+    color_change = ["-vf", f"drawbox=c={second_color}:t=fill:enable='gte(t,0.5)'"] if second_color else []
     subprocess.run([
         FFMPEG_BIN, "-hide_banner", "-y", "-f", "lavfi",
         "-i", f"color=c={color}:s=640x360:d={seconds}",
+        *color_change,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24", str(target),
     ], check=True, capture_output=True)
     job_repo.succeed(job["id"], "m3-test-worker", "", [jobfiles.relative(target)], 10)
@@ -98,6 +101,43 @@ def _make_approved_video(
         anchor="artifact", decision="approved", note="ok", user_id=user_id,
     )
     return row
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="本机没有 ffmpeg")
+def test_extract_current_frame_saves_selected_version_without_changing_slots(as_role, people, clean_queue):
+    uid = people["editor"]["id"]
+    pid = project_repo.create(f"截帧_{uuid.uuid4().hex[:6]}", "", [], uid)["id"]
+    eid = episodes.create(pid, "第1集")["id"]
+    shot_id = shots.create(eid, "第一镜", "", 2.0, [])["id"]
+    next_id = shots.create(eid, "第二镜", "", 2.0, [])["id"]
+    shots.set_frame_image(shot_id, last_frame_image="existing-tail.png")
+    shots.set_frame_image(next_id, first_frame_image="existing-first.png")
+    older = _make_approved_video(pid, eid, shot_id, uid, "red", second_color="blue")
+    _make_approved_video(pid, eid, shot_id, uid, "green")
+
+    options = {"offset_ms": 800, "apply_to_next_shot": False, "apply_to_self_last_frame": False}
+    with as_role("editor") as c:
+        default = c.post(f"/api/shots/{shot_id}/extract-frame", json={**options, "offset_ms": 0})
+        assert default.status_code == 200
+        r = c.post(f"/api/shots/{shot_id}/extract-frame", json={**options, "job_id": older["id"]})
+        assert r.status_code == 200
+        frame = r.json()
+        assert frame["next_shot_id"] == next_id
+        assert not frame["applied_to_next_shot"] and not frame["applied_to_self_last_frame"]
+        image = c.get(frame["frame_url"])
+        assert image.status_code == 200
+        assert image.content.startswith(b"\x89PNG")
+        wrong_shot = c.post(f"/api/shots/{next_id}/extract-frame", json={**options, "job_id": older["id"]})
+        assert wrong_shot.status_code == 422
+
+    pixels = subprocess.run([
+        FFMPEG_BIN, "-v", "error", "-i", str(FILES_DIR / frame["frame_path"]),
+        "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+    ], check=True, capture_output=True).stdout
+    red, green, blue = pixels
+    assert red < 30 and green < 30 and blue > 200
+    assert shots.get(shot_id)["last_frame_image"] == "existing-tail.png"
+    assert shots.get(next_id)["first_frame_image"] == "existing-first.png"
 
 
 @pytest.mark.skipif(not _has_ffmpeg(), reason="本机没有 ffmpeg")

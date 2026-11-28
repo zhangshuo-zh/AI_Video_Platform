@@ -9,6 +9,7 @@ import { gotoEntry } from '../goto.js';
 import { checklistHtml } from './review-checklist.js';
 let reviewDraft = null;
 let currentShotData = null;
+let savedFrame = null;
 
 /**
  * 单镜头生产工作台（0037，任务书 §6）。这是本次改造的业务闭环：
@@ -47,7 +48,9 @@ function videoArtifactIndex(job) {
 
 function artifactPreview(job) {
   if (!job || !job.artifacts || !job.artifacts.length) return '<span class="hint">产物不可读或已清理</span>';
-  const index = job.artifacts.findIndex((a) => a.exists && /\.(mp4|webm|mov|m4v|png|jpg|jpeg|webp)$/i.test(a.path));
+  const videoIndex = job.capability === 'video' ? videoArtifactIndex(job) : -1;
+  const index = videoIndex >= 0 ? videoIndex
+    : job.artifacts.findIndex((a) => a.exists && /\.(mp4|webm|mov|m4v|png|jpg|jpeg|webp)$/i.test(a.path));
   if (index < 0) return '<span class="hint">产物不可预览或已清理</span>';
   const name = job.artifacts[index].path.split('/').pop() || '';
   const src = api.jobArtifactUrl(job.job_id, index);
@@ -97,9 +100,32 @@ function fmtMsSec(ms) {
   return `${(Math.max(0, Number(ms) || 0) / 1000).toFixed(2)}s`;
 }
 
+function shotToast(text, kind = 'warn') {
+  window.dispatchEvent(new CustomEvent('app:toast', { detail: { text, kind } }));
+}
+
+function frameCaptureControls(d, player, jobId, suffix = '') {
+  if (!store.can('doc:write')) return '';
+  const saved = savedFrame?.shotId === d.shot_id && savedFrame.player === player && savedFrame.jobId === jobId;
+  return `<div class="row u-gap-6" data-frame-capture="${player}" data-frame-job="${jobId}">
+    <select class="ctl sm" aria-label="当前帧保存位置">
+      <option value="next" ${d.next_shot_id ? '' : 'disabled'}>写进下一镜首帧</option>
+      <option value="self">存为本镜尾帧</option>
+      <option value="save" selected>仅截取保存</option>
+    </select>
+    <button type="button" class="btn xs" id="sw-extract-current${suffix}">📷 截取当前帧</button>
+    ${saved ? `<a class="btn xs" href="${escapeHtml(savedFrame.url)}" download>下载已截帧</a>` : ''}
+  </div>`;
+}
+
+function stageVideoIndex(d) {
+  return d.preview.formal_video ? videoArtifactIndex(d.preview.formal_video) : -1;
+}
+
 function previewStageHtml(d) {
   const s = d.setting;
   const formal = d.preview.formal_video;
+  const videoIndex = stageVideoIndex(d);
   const plannedMs = Math.max(1000, Math.round((Number(s.duration) || 5) * 1000));
   const trimIn = Math.max(0, Number(s.trim_in_ms) || 0);
   const trimOut = Math.max(0, Number(s.trim_out_ms) || 0);
@@ -114,8 +140,9 @@ function previewStageHtml(d) {
         : '暗场监看舞台 · 尚未签字正式视频'}</span>
       <span class="chip blue">${escapeHtml(TRANSITION_LABELS[trans] || trans)}</span>
     </div>
-    ${formal
-      ? `<video id="sw-stage-player" class="wb-spotlight-player" controls preload="metadata" src="${api.jobArtifactUrl(formal.job_id, 0)}"></video>`
+    ${videoIndex >= 0
+      ? `<video id="sw-stage-player" class="wb-spotlight-player" controls preload="metadata" src="${api.jobArtifactUrl(formal.job_id, videoIndex)}"></video>`
+      : formal ? '<div class="wb-spotlight-empty">正式视频文件不可播放。</div>'
       : '<div class="wb-spotlight-empty">还没有签过通过的正式视频，预览区留空——不拿未签字的产物冒充正式结果；下方仍可预设粗剪出入点与镜头转场。</div>'}
     ${formal ? `<div class="kv-grid">
       <div class="kv"><dt>参数快照</dt><dd class="mono t-desc">${escapeHtml(formal.params || '{}')}</dd></div>
@@ -125,10 +152,11 @@ function previewStageHtml(d) {
       <div class="wb-trim-bar">
         <span id="sw-trim-readout">入点 ${fmtMsSec(trimIn)} · 出点 ${trimOut > 0 ? fmtMsSec(trimOut) : '至片尾'}</span>
         ${formal ? `<div class="row u-gap-6">
-          <button type="button" class="btn xs" id="sw-trim-play">▶ 试播剪辑段</button>
+          ${videoIndex >= 0 ? '<button type="button" class="btn xs" id="sw-trim-play">▶ 试播剪辑段</button>' : ''}
           <button type="button" class="btn xs primary" id="sw-extract-tail"
             data-seq="${d.setting.seq}" data-has-next="${d.next_shot_id ? '1' : '0'}"
             title="${d.next_shot_id ? '从正式视频末帧抽帧并写入下一镜首帧槽位' : '已是本集最后一镜，抽帧存为当前镜头尾帧'}">📸 截尾帧给下一镜</button>
+          ${videoIndex >= 0 ? frameCaptureControls(d, 'stage', formal.job_id) : ''}
         </div>` : ''}
       </div>
       <div class="wb-trim-track">
@@ -276,12 +304,30 @@ function audioBlock(d) {
 }
 
 
+function reviewNoteHtml(note) {
+  const marks = /\[(?:v#(\d+)\s+)?(\d+(?:\.\d+)?)s(?:\s*[-–]\s*(\d+(?:\.\d+)?)s)?\]/g;
+  let html = '';
+  let cursor = 0;
+  for (const match of note.matchAll(marks)) {
+    const [token, job, start, end] = match;
+    if (!Number.isFinite(Number(start)) || (end && (!Number.isFinite(Number(end)) || Number(end) <= Number(start)))) continue;
+    html += escapeHtml(note.slice(cursor, match.index));
+    html += `<button type="button" class="chip plain" data-note-play="${start}"
+      ${end ? `data-note-end="${end}"` : ''}${job ? ` data-note-job="${job}" title="视频版本 #${job}"` : ''}>▶ ${start}s${end ? `–${end}s` : ''}</button>`;
+    cursor = match.index + token.length;
+  }
+  return html + escapeHtml(note.slice(cursor));
+}
+
 /** ⑦ 审核这一段：待签作业、就地签字、以及共用的质量清单面板。 */
 function reviewBlock(d, target, checklist, missing) {
   const candidates = [...d.videos.jobs, ...d.keyframes.jobs].filter((job) => job.status === 'succeeded');
   const note = reviewDraft && reviewDraft.jobId === target?.job_id ? reviewDraft.note : '';
   const canSign = store.can('review:sign');
   const sign = target?.sign;
+  const playable = target?.capability === 'video' && videoArtifactIndex(target) >= 0;
+  const history = (d.review.signs || []).filter((item) => item.note
+    && !(item.job_id === target?.job_id && item.signed_at === sign?.signed_at && item.note === sign?.note));
   const rework = ['returned', 'rejected'].includes(sign?.decision) && store.can('job:submit');
   const savedDraft = rework && readReworkDraft(d.project_id, d.episode_id, d.shot_id, target.job_id);
   const sourceUnavailable = target?.rework_of_job_id && target.capability === 'video'
@@ -290,12 +336,14 @@ function reviewBlock(d, target, checklist, missing) {
     ${missing ? '<p class="bar warn">指定版本已不在该镜头，未选择其他版本。</p>' : ''}
     ${candidates.length ? `<label>审核版本 <select class="ctl" id="sw-review-version">
       <option value="" disabled ${target ? '' : 'selected'}>选择一个版本</option>
-      ${candidates.map((j) => `<option value="${j.job_id}" ${target?.job_id === j.job_id ? 'selected' : ''}>
+      ${candidates.map((j) => `<option value="${j.job_id}" ${target?.job_id === j.job_id ? 'selected' : ''}
+        ${j.capability === 'video' && videoArtifactIndex(j) >= 0 ? 'data-playable' : ''}>
         #${j.job_id} · ${j.capability === 'image' ? '关键帧' : '视频'} · ${escapeHtml(j.model)}</option>`).join('')}
     </select></label>` : '<p class="hint">还没有可审核的产物。</p>'}
     ${target ? `<div id="sw-review-target" data-review-job="${target.job_id}">
       <div class="sw-review-preview">${artifactPreview(target)}</div>
-      ${sign?.note ? `<p class="sw-review-note">审核意见 · ${escapeHtml(sign.note)}</p>` : ''}
+      ${playable ? frameCaptureControls(d, 'review', target.job_id, stageVideoIndex(d) >= 0 ? '-review' : '') : ''}
+      ${sign?.note ? `<p class="sw-review-note">审核意见 · ${reviewNoteHtml(sign.note)}</p>` : ''}
       ${sourceUnavailable ? '<p class="hint">返工来源视频不可播放，可继续审核新版。</p>' : ''}
       <div class="actions">
         ${target.capability === 'video' && d.videos.jobs.filter((j) => videoArtifactIndex(j) >= 0).length > 1 ? '<button type="button" class="btn" id="sw-ab-review">对比这一版</button>' : ''}
@@ -305,12 +353,16 @@ function reviewBlock(d, target, checklist, missing) {
       ${canSign ? `<label for="sw-review-note">审核意见</label>
         <textarea class="ctl" id="sw-review-note" maxlength="500" rows="2">${escapeHtml(note)}</textarea>
         <div class="actions">
-          ${target.capability === 'video' ? '<button class="btn xs" type="button" id="sw-note-time">插入当前播放时间</button>' : ''}
+          ${playable ? `<button class="btn xs" type="button" id="sw-note-time">插入当前播放时间</button>
+            <button class="btn xs" type="button" id="sw-note-range">设为起点</button>
+            <span class="hint" id="sw-note-range-status" role="status"></span>` : ''}
           <button class="btn xs primary" data-jsign="approved" ${checklist?.can_approve ? '' : 'disabled'}>通过</button>
           <button class="btn xs" data-jsign="returned">退回</button>
           <button class="btn xs danger" data-jsign="rejected">驳回</button>
         </div>` : ''}
-    </div>` : ''}`;
+    </div>` : ''}
+    ${history.length ? `<details><summary>历史审核意见</summary>${history.map((item) =>
+      `<p class="sw-review-note"><span class="hint">#${item.job_id} · ${escapeHtml(item.signed_by)} · ${escapeHtml(item.signed_at)}</span> ${reviewNoteHtml(item.note)}</p>`).join('')}</details>` : ''}`;
 }
 
 function readyBlock(d) {
@@ -580,23 +632,101 @@ export default {
       go({ module: 'generate', job_id: Number(event.currentTarget.dataset.taskJob) });
     });
     const reviewHost = root.querySelector('#sw-review-target');
+    const reviewVersions = root.querySelector('#sw-review-version');
     const jobId = Number(reviewHost?.dataset.reviewJob);
+    const reviewVideo = reviewHost?.querySelector('video');
+    const stageVideo = root.querySelector('#sw-stage-player');
+    const players = [reviewVideo, stageVideo].filter(Boolean);
+    const segmentEnds = new Map();
+    for (const player of players) {
+      player.addEventListener('timeupdate', () => {
+        const end = segmentEnds.get(player);
+        if (end == null || player.seeking || player.currentTime < end) return;
+        segmentEnds.delete(player);
+        player.pause();
+        player.currentTime = end;
+      });
+      player.addEventListener('ended', () => segmentEnds.delete(player));
+    }
+    const playSegment = (player, start, end) => {
+      if (!player || player.error) {
+        shotToast('当前没有可播放的视频');
+        return;
+      }
+      for (const other of players) {
+        if (other !== player) other.pause();
+      }
+      segmentEnds.set(player, end);
+      player.currentTime = start;
+      player.play().catch((error) => {
+        if (error.name !== 'AbortError' && player.isConnected) shotToast('无法自动播放，请点击视频播放器的播放按钮');
+      });
+    };
+    const playReviewMark = (player, start, end) => {
+      const details = player?.closest('details');
+      if (details) details.open = true;
+      playSegment(player, start, end);
+      player?.scrollIntoView({ block: 'nearest' });
+    };
+    const selectReviewVersion = (version, playback = null) => {
+      setShotEntry({ ...getShotEntry(), shotId: Number(getParam('shot')),
+        focus: 'review', jobId: version, playback });
+      renderView('shot');
+    };
+    root.querySelectorAll('[data-note-play]').forEach((pill) => pill.addEventListener('click', () => {
+      const version = Number(pill.dataset.noteJob);
+      const start = Number(pill.dataset.notePlay);
+      const end = pill.dataset.noteEnd ? Number(pill.dataset.noteEnd) : null;
+      if (version && version !== jobId && reviewVersions?.querySelector(`option[value="${version}"][data-playable]`)) {
+        selectReviewVersion(version, { start, end });
+      } else {
+        playReviewMark(reviewVideo && !reviewVideo.error ? reviewVideo : stageVideo, start, end);
+      }
+    }));
+    if (entry?.playback && entry.shotId === Number(getParam('shot'))) {
+      setShotEntry({ ...getShotEntry(), playback: null });
+      const { start, end } = entry.playback;
+      playSegment(reviewVideo && !reviewVideo.error ? reviewVideo : stageVideo, start, end);
+      requestAnimationFrame(() => {
+        if (reviewVideo?.isConnected) reviewVideo.scrollIntoView({ block: 'nearest' });
+      });
+    }
     const note = reviewHost?.querySelector('#sw-review-note');
     const saveDraft = () => { reviewDraft = { jobId, note: note.value }; };
     note?.addEventListener('input', saveDraft);
-    root.querySelector('#sw-review-version')?.addEventListener('change', (event) => {
-      if (!event.target.value) return;
-      setShotEntry({ ...getShotEntry(), shotId: Number(getParam('shot')),
-        focus: 'review', jobId: Number(event.target.value) });
-      renderView('shot');
+    reviewVersions?.addEventListener('change', (event) => {
+      if (event.target.value) selectReviewVersion(Number(event.target.value));
     });
-    root.querySelector('#sw-note-time')?.addEventListener('click', () => {
-      const video = reviewHost.querySelector('video');
-      if (!video || !note) return;
-      const mark = `[${video.currentTime.toFixed(2)}s] `;
-      note.value = (mark + note.value).slice(0, note.maxLength);
+    const insertMark = (start, end = '') => {
+      const mark = `[v#${jobId} ${start}s${end ? `-${end}s` : ''}] `;
+      if (note.value.length + mark.length > note.maxLength) {
+        shotToast('审核意见空间不足，请缩短后再插入时间标记');
+        return false;
+      }
+      note.setRangeText(mark, 0, 0, 'end');
       saveDraft();
       note.focus();
+      return true;
+    };
+    root.querySelector('#sw-note-time')?.addEventListener('click', () => {
+      insertMark(reviewVideo.currentTime.toFixed(2));
+    });
+    const rangeStatus = root.querySelector('#sw-note-range-status');
+    let rangeStart = null;
+    root.querySelector('#sw-note-range')?.addEventListener('click', (event) => {
+      const button = event.currentTarget;
+      const time = reviewVideo.currentTime.toFixed(2);
+      if (rangeStart === null) {
+        rangeStart = time;
+        button.textContent = '标记区间';
+        rangeStatus.textContent = `起点 ${time}s`;
+      } else if (Number(time) <= Number(rangeStart)) {
+        rangeStatus.textContent = `起点 ${rangeStart}s · 请将播放头移到起点之后`;
+      } else if (insertMark(rangeStart, time)) {
+        rangeStart = null;
+        button.textContent = '设为起点';
+        rangeStatus.textContent = '';
+      }
     });
     reviewHost?.querySelectorAll('[data-check]').forEach((b) => b.addEventListener('click', async () => {
       const ok = await run('记录清单', () => api.saveJobChecklist(jobId, {
@@ -800,6 +930,38 @@ export default {
       });
     });
 
+    root.querySelectorAll('[data-frame-capture]').forEach((controls) => {
+      const btn = controls.querySelector('button');
+      const player = controls.dataset.frameCapture;
+      const video = player === 'stage' ? stageVideo : reviewVideo;
+      btn.addEventListener('click', async () => {
+        if (!video || video.error || !Number.isFinite(video.currentTime)) {
+          shotToast('视频不可读，无法截取当前帧');
+          return;
+        }
+        const shotId = Number(getParam('shot'));
+        const jobId = Number(controls.dataset.frameJob);
+        const target = controls.querySelector('select').value;
+        const offsetMs = Math.round(video.currentTime * 1000);
+        let result;
+        const ok = await run('截取当前帧', async () => {
+          result = await api.extractShotFrame(shotId, {
+            job_id: jobId,
+            offset_ms: offsetMs,
+            apply_to_next_shot: target === 'next',
+            apply_to_self_last_frame: target === 'self',
+          });
+        }, { btn });
+        if (!ok) return;
+        let destination = '已保存 PNG';
+        if (result.applied_to_next_shot) destination = '已写入下一镜首帧';
+        else if (result.applied_to_self_last_frame) destination = '已存为本镜尾帧';
+        else savedFrame = { shotId, player, jobId, url: result.frame_url };
+        shotToast(`已截取 ${fmtMsSec(offsetMs)} 的视频帧，${destination}`, 'ok');
+        if (btn.isConnected && Number(getParam('shot')) === shotId) renderView('shot');
+      });
+    });
+
     root.querySelector('#sw-extract-tail')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       const shotId = Number(getParam('shot'));
@@ -834,10 +996,9 @@ export default {
       const outNum = root.querySelector('#sw-trim-out-num');
       const winEl = root.querySelector('#sw-trim-win');
       const readout = root.querySelector('#sw-trim-readout');
-      const player = root.querySelector('#sw-stage-player');
+      const player = stageVideo;
       const playhead = root.querySelector('#sw-trim-playhead');
       let totalMs = Math.max(1000, Number(scrubber.dataset.plannedMs) || 5000);
-      let stopAtSec = null;
 
       const paintTrimWindow = () => {
         const tin = Math.max(0, Math.round(Number(inNum?.value) || 0));
@@ -896,17 +1057,11 @@ export default {
             playhead.hidden = false;
             playhead.style.left = `${Math.min(100, Math.max(0, (curMs / totalMs) * 100)).toFixed(2)}%`;
           }
-          if (stopAtSec != null && player.currentTime >= stopAtSec) {
-            player.pause();
-            stopAtSec = null;
-          }
         });
         root.querySelector('#sw-trim-play')?.addEventListener('click', () => {
           const tin = Math.max(0, Number(inNum?.value) || 0) / 1000;
           const tout = Math.max(0, Number(outNum?.value) || 0) / 1000;
-          stopAtSec = tout > tin ? tout : null;
-          player.currentTime = tin;
-          player.play().catch(() => {});
+          playSegment(player, tin, tout > tin ? tout : null);
         });
       }
 

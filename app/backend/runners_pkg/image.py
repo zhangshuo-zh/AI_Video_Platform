@@ -223,6 +223,32 @@ def _comfyui_workflow_payload(
 
 
 
+def _apply_project_art_style(prompt_text: str, negative: str, job) -> tuple[str, str]:
+    """按项目 art_style（2d / 25d / 3d）剥离互斥词并补齐画风负向词。"""
+    pid = job["project_id"] if job is not None and "project_id" in job.keys() else None
+    art_style = "2d"
+    if pid is not None:
+        try:
+            from repositories.projects import projects as project_repo
+            proj = project_repo.get(int(pid))
+            if proj is not None and "art_style" in proj.keys() and proj["art_style"]:
+                art_style = str(proj["art_style"])
+        except Exception:
+            pass
+    if art_style in ("25d", "3d"):
+        banned = ("cel-shaded", "cel shaded", "flat colors", "flat color", "clean crisp lineart", "lineart", "2d")
+        parts = [p.strip() for p in prompt_text.replace("，", ",").split(",")]
+        cleaned = [p for p in parts if p and not any(b in p.lower() for b in banned)]
+        if cleaned:
+            prompt_text = ", ".join(cleaned)
+        extra_neg = "2d, lineart, cel-shaded, flat color, sketch"
+        negative = f"{negative}, {extra_neg}" if negative else extra_neg
+    else:
+        extra_neg = "3d render, unreal engine, octane render, photorealistic"
+        negative = f"{negative}, {extra_neg}" if negative else extra_neg
+    return prompt_text, negative
+
+
 def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
     """ComfyUI：把参数注入 API Workflow JSON，经由 engine_http_run 跑 /prompt→/history→/view。"""
     _, endpoint, secret_env = _probe_job_engine(job, "comfyui", "ComfyUI")
@@ -234,9 +260,16 @@ def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
     init_target: Path | None = None
     if init_image:
         init_target = _resolve_input_image(init_image, job, label="参考底图")
+    raw_wf = str(params.get("workflow_json") or "").strip()
+    prompt_text = str(job["prompt_snapshot"] or "")
+    eff_params = dict(params)
+    if not raw_wf:
+        prompt_text, neg = _apply_project_art_style(prompt_text, str(eff_params.get("negative_prompt") or "").strip(), job)
+        if neg:
+            eff_params["negative_prompt"] = neg
     workflow = _comfyui_workflow_payload(
-        str(job["prompt_snapshot"] or ""),
-        params,
+        prompt_text,
+        eff_params,
         init_filename="__UPLOADED_IMAGE__" if init_target is not None else None,
     )
     request: dict = {

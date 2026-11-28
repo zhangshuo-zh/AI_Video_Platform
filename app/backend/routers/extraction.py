@@ -178,7 +178,7 @@ def export_shots(run_id: int,
 def import_extract_shots(run_id: int,
                          payload: ExtractShotImportIn | None = None,
                          user=Depends(require_permission("doc:write"))) -> ExtractShotImportOut:
-    """将文本抽取出的镜头候选一键导入分镜表，并自动按名称匹配资产（幂等防重）。"""
+    """导入选中的镜头候选。未指定 item_ids 时导入整批，并自动匹配资产。"""
     body = payload or ExtractShotImportIn()
     try:
         out = services.extraction_import_shots(run_id, body, user)

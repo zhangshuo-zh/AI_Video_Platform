@@ -240,6 +240,42 @@ def test_providers_available_include_unregistered_自动暴露已配密钥的gem
     expanded = c.get("/api/providers/available", params={"include_unregistered": "true"}).json()
     providers_found = {(o["capability"], o["backend"], o["provider"], o["model"]) for o in expanded}
     assert ("text", "cloud", "gemini", "gemini-4-hydrogen") in providers_found
-    assert ("text", "cloud", "chatgpt", "gpt-5.1") in providers_found
+    assert ("text", "cloud", "chatgpt", "gpt-6.1-terra") in providers_found
+
+
+def test_项目画风锁定与互斥提示词规避(as_role):
+    from repositories.projects import projects as project_repo
+    from runners_pkg.image import _apply_project_art_style
+    from services import asset_random
+
+    c = as_role("admin")
+    created = c.post("/api/projects", json={
+        "name": "3D国漫测试项目",
+        "description": "测试画风",
+        "art_style": "3d",
+    })
+    assert created.status_code == 201, created.text
+    proj = created.json()
+    assert proj["art_style"] == "3d"
+
+    hint = asset_random._seed_hint("赛博剑客", [], art_style="3d")
+    assert "3D 国漫 CG 渲染" in hint and "严禁出现" in hint
+
+    row = project_repo.get(proj["id"])
+    assert row["art_style"] == "3d"
+    prompt, neg = _apply_project_art_style(
+        "cel-shaded flat colors, clean crisp lineart, white hair girl",
+        "",
+        {"project_id": proj["id"]},
+    )
+    assert "cel-shaded" not in prompt and "lineart" not in prompt and "white hair girl" in prompt
+    assert "lineart" in neg and "cel-shaded" in neg
+
+    updated = c.put(f"/api/projects/{proj['id']}", json={
+        "name": "3D国漫测试项目",
+        "description": "改回2.5D",
+        "art_style": "25d",
+    })
+    assert updated.status_code == 200 and updated.json()["art_style"] == "25d"
 
 

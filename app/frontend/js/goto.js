@@ -24,8 +24,8 @@ export function gotoEntry(entry) {
       reviewReturn: entry.reviewReturn, work: entry.work });
   } else if (entry.module === 'assets' && entry.asset_id) {
     setParam('assets', Number(entry.asset_id));
-  } else if (entry.module === 'generate' && entry.job_id) {
-    setParam('generate', Number(entry.job_id));
+  } else if (['generate', 'review'].includes(entry.module) && entry.job_id) {
+    setParam(entry.module, Number(entry.job_id));
   } else if (entry.module === 'generate' && entry.job_status) {
     setParam('generate', null);
     setJobListStatus(entry.job_status);

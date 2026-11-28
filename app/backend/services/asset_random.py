@@ -50,21 +50,40 @@ _ACCENTS = (
 )
 
 
-def _seed_hint(theme: str, existing_names: list[str]) -> str:
+_ART_STYLE_GUIDANCE = {
+    "2d": (
+        "本项目全局画风锁定为【2D 日漫赛璐璐】：使用清晰线稿、赛璐璐平涂或细腻动漫插画风格；"
+        "严禁出现 3D渲染、Unreal Engine、Blender、Octane render、PBR材质、次表面散射、写实摄影等 3D/真人词。"
+    ),
+    "25d": (
+        "本项目全局画风锁定为【2.5D 半写实厚涂】：使用立体明暗过渡、丰富材质笔触的 2.5D 半写实厚涂立绘风格；"
+        "严禁出现 cel-shaded、flat colors、crisp lineart、2D平涂、赛璐璐、黑色描边线稿 等纯 2D 词，"
+        "也不要写硬核写实真人摄影词。"
+    ),
+    "3d": (
+        "本项目全局画风锁定为【3D 国漫 CG 渲染】：使用 UE5 / Octane 3D 动漫渲染、次表面散射皮肤、立体体积光影与 PBR 材质，完全无线稿；"
+        "严禁出现 cel-shaded、flat colors、lineart、2D、赛璐璐、平涂、线稿 等 2D 平面词。"
+    ),
+}
+
+
+def _seed_hint(theme: str, existing_names: list[str], art_style: str = "2d") -> str:
     clean = theme.strip()
     base = clean if clean else f"{secrets.choice(_THEMES)} · {secrets.choice(_ROLES)} · {secrets.choice(_ACCENTS)}"
     avoid = "、".join(existing_names[:20])
     avoid_line = f"\n避免与已有角色重名：{avoid}" if avoid else ""
+    style_rule = _ART_STYLE_GUIDANCE.get(art_style, _ART_STYLE_GUIDANCE["2d"])
     return (
         "你是一位专业动漫角色设定师。请根据灵感随机创作一位辨识度极高的原创角色，只输出严格 JSON 对象，不要输出任何额外说明或 Markdown。\n"
+        f"{style_rule}\n"
         "JSON 字段要求：\n"
         '- "name": 简短好记的角色名（2-12 字）\n'
         '- "summary": 一两句话概括性格、身份与故事感（40-180 字）\n'
         '- "tags": 3-5 个简短标签数组（每个 2-6 字，如 ["赛博朋克", "异瞳", "黑客"]）\n'
         '- "aliases": 1-2 个外号或简称数组\n'
         '- "consistency_prompt": 用于 AI 绘图的跨镜头角色一致性提示词（120-320 字，中文），'
-        "必须按顺序包含：画风质感、脸型五官与瞳色、发型与发色、全身服装层次与配色材质、标志性配饰，以及正面/侧面/背面一致的全身比例特征，不要包含一次性动作或背景。\n"
-        '- "image_prompt_en": 与 consistency_prompt 对应的纯英文生图提示词（50-140 词，英文逗号分隔短语，供 FLUX/SDXL 等英文生图模型使用，必须包含画风、性别/体型、发色发型、瞳色五官、服装配色材质与配饰，不要包含中文或背景）。\n'
+        "必须按顺序包含：符合本项目画风的质感描述、脸型五官与瞳色、发型与发色、全身服装层次与配色材质、标志性配饰，以及正面/侧面/背面一致的全身比例特征，不要包含一次性动作或背景。\n"
+        '- "image_prompt_en": 与 consistency_prompt 对应的纯英文生图提示词（50-140 词，英文逗号分隔短语，供 FLUX/SDXL 等英文生图模型使用，必须严格遵守本项目画风并包含性别/体型、发色发型、瞳色五官、服装配色材质与配饰，不要包含中文或背景）。\n'
         f"创作灵感种子：{base}{avoid_line}"
     )
 
@@ -244,7 +263,7 @@ def _run_chatgpt(user_id: int, project_id: int, instruction: str,
         token = chatgpt_plan.access_token(user_id, timeout=15)
     except (OSError, ValueError, TypeError, KeyError):
         raise _VisionError(424, "ChatGPT 授权不可用", unavailable=True) from None
-    chosen = model or "gpt-5.1"
+    chosen = model or "gpt-6.1-terra"
     metrics: dict = {}
     started = time.monotonic()
     state = "failed"
@@ -322,7 +341,10 @@ def random_character(project_id: int, user_id: int,
         deadline = time.monotonic() + _TOTAL_SECONDS
         existing = [str(r["name"]) for r in assets.list_visible(project_id, kind="character")
                     if r["name"]]
-        instruction = _seed_hint(payload.theme, existing)
+        from repositories.projects import projects as project_repo
+        proj = project_repo.get(project_id)
+        art_style = str(proj["art_style"]) if proj is not None and "art_style" in proj.keys() and proj["art_style"] else "2d"
+        instruction = _seed_hint(payload.theme, existing, art_style=art_style)
         mode = payload.execution_mode
         provider = (payload.provider_code or "").strip().lower()
         model = (payload.model_code or "").strip() or None

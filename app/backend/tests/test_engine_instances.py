@@ -21,6 +21,7 @@ import io
 import json
 from pathlib import Path
 from urllib.error import URLError
+from unittest.mock import Mock
 
 import pytest
 
@@ -614,6 +615,156 @@ def test_ComfyUI模型列表查询失败(as_role, comfyui_instance, monkeypatch,
     assert body["display_name"] == comfyui_instance["display_name"]
     assert body["checkpoints"] == [] and body["recommended"] == ""
     assert error in body["error"]
+
+
+def test_comfyui_preflight_checks_selected_instance(as_role, comfyui_instance, monkeypatch):
+    secret_env = "TEST_COMFYUI_PREFLIGHT_SECRET"
+    monkeypatch.setenv(secret_env, "test-token")
+    engine_instances.update(comfyui_instance["id"], {"shared_secret_env": secret_env})
+    fetch = Mock(return_value={"CheckpointLoaderSimple": {}, "CLIPTextEncode": {}})
+    checkpoints = Mock(return_value=["selected.safetensors"])
+    monkeypatch.setattr(engines, "_fetch_json", fetch)
+    monkeypatch.setattr(engines, "_comfyui_checkpoints", checkpoints)
+    workflow = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "old.safetensors"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "Draw {{prompt}}"}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": [{"value": "{{prompt}} {{style}}"}]}},
+    }
+
+    response = as_role("editor").post("/api/engines/comfyui/preflight", json={
+        "instance_id": comfyui_instance["id"], "workflow_json": json.dumps(workflow),
+        "checkpoint": "selected.safetensors",
+    })
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "ok": True,
+        "endpoint": comfyui_instance["endpoint"],
+        "display_name": comfyui_instance["display_name"],
+        "node_count": 3,
+        "placeholders": ["{{prompt}}", "{{style}}"],
+        "missing_nodes": [],
+        "missing_models": [],
+        "error": "",
+    }
+    headers = {
+        "Authorization": "Bearer test-token", "x-shared-secret": "test-token",
+        "ngrok-skip-browser-warning": "1",
+    }
+    endpoint = comfyui_instance["endpoint"]
+    fetch.assert_called_once_with(f"{endpoint}/object_info", headers, timeout=5)
+    checkpoints.assert_called_once_with(endpoint, headers, timeout=5)
+
+
+def test_comfyui_preflight_reports_missing_nodes_and_models(comfyui_instance, monkeypatch):
+    fetch = Mock(return_value={
+        "CheckpointLoaderSimple": {},
+        "UNETLoader": {"input": {"required": {"unet_name": [["diffusion.safetensors"]]}}},
+        "LoraLoader": {"input": {"optional": {"lora_name": ["COMBO", {"options": []}]}}},
+        "VAELoader": {"input": {"required": {"vae_name": [["ae.safetensors"]]}}},
+    })
+    checkpoints = Mock(return_value=["installed.ckpt"])
+    monkeypatch.setattr(engines, "_fetch_json", fetch)
+    monkeypatch.setattr(engines, "_comfyui_checkpoints", checkpoints)
+    workflow = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "missing.ckpt"}},
+        "2": {"class_type": "UNETLoader", "inputs": {"unet_name": "diffusion.safetensors"}},
+        "3": {"class_type": "LoraLoader", "inputs": {"lora_name": "missing-lora.safetensors"}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": "missing-vae.safetensors"}},
+        "5": {"class_type": "CustomNode"},
+        "6": {"class_type": "CustomNode"},
+        "7": {"class_type": "UNETLoader", "inputs": {"unet_name": "missing-unet.safetensors"}},
+    }
+
+    body = engines.comfyui_preflight(json.dumps(workflow))
+
+    assert body["endpoint"] == comfyui_instance["endpoint"]
+    assert body["ok"] is False
+    assert body["missing_nodes"] == ["CustomNode"]
+    assert body["missing_models"] == [
+        "missing-lora.safetensors", "missing-unet.safetensors", "missing-vae.safetensors", "missing.ckpt",
+    ]
+    assert body["error"] == ""
+    checkpoints.assert_called_once()
+
+
+def test_comfyui_preflight_skips_templated_models(comfyui_instance, monkeypatch):
+    monkeypatch.setattr(engines, "_fetch_json", Mock(return_value={
+        "CheckpointLoaderSimple": {},
+        "LoraLoader": {"input": {"required": {"lora_name": [[]]}}},
+    }))
+    checkpoints = Mock()
+    monkeypatch.setattr(engines, "_comfyui_checkpoints", checkpoints)
+    workflow = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{checkpoint}}"}},
+        "2": {"class_type": "LoraLoader", "inputs": {"lora_name": "loras/{{style}}.safetensors"}},
+        "3": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "__AUTO_CHECKPOINT__"}},
+    }
+
+    body = engines.comfyui_preflight(json.dumps(workflow), comfyui_instance["id"])
+
+    assert body["ok"] is True
+    assert body["placeholders"] == ["{{checkpoint}}", "{{style}}"]
+    assert body["missing_models"] == []
+    checkpoints.assert_not_called()
+
+
+@pytest.mark.parametrize("workflow_json,error", [
+    ("{", "有效的 JSON"),
+    ('{"1": NaN}', "有效的 JSON"),
+    ("[]", "节点映射"),
+    ('{"1": {}}', "class_type"),
+])
+def test_comfyui_preflight_rejects_bad_workflows(as_role, monkeypatch, workflow_json, error):
+    fetch = Mock()
+    monkeypatch.setattr(engines, "_fetch_json", fetch)
+    response = as_role("editor").post("/api/engines/comfyui/preflight", json={"workflow_json": workflow_json})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert error in response.json()["error"]
+    fetch.assert_not_called()
+
+
+def test_comfyui_preflight_reports_unreachable_instance(comfyui_instance, monkeypatch):
+    monkeypatch.setattr(engines, "_fetch_json", Mock(side_effect=URLError("connection refused")))
+    checkpoints = Mock()
+    monkeypatch.setattr(engines, "_comfyui_checkpoints", checkpoints)
+
+    body = engines.comfyui_preflight('{"1":{"class_type":"KSampler"}}',
+                                    comfyui_instance["id"], "model.ckpt")
+
+    assert body["ok"] is False
+    assert body["node_count"] == 1
+    assert body["endpoint"] == comfyui_instance["endpoint"]
+    assert "connection refused" in body["error"]
+    checkpoints.assert_not_called()
+
+
+def test_comfyui_preflight_rejects_unknown_instance(as_role, comfyui_instance, monkeypatch):
+    fetch = Mock()
+    monkeypatch.setattr(engines, "_fetch_json", fetch)
+    response = as_role("editor").post("/api/engines/comfyui/preflight", json={
+        "instance_id": 2**63 - 1, "workflow_json": '{"1":{"class_type":"KSampler"}}',
+    })
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert "不存在" in response.json()["error"]
+    fetch.assert_not_called()
+
+
+def test_comfyui_preflight_reports_checkpoint_lookup_failure(comfyui_instance, monkeypatch):
+    monkeypatch.setattr(engines, "_fetch_json", Mock(return_value={"CheckpointLoaderSimple": {}}))
+    monkeypatch.setattr(engines, "_comfyui_checkpoints", Mock(side_effect=TimeoutError("timed out")))
+    workflow = '{"1":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"model.ckpt"}}}'
+
+    body = engines.comfyui_preflight(workflow, comfyui_instance["id"])
+
+    assert body["ok"] is False
+    assert body["missing_nodes"] == []
+    assert body["missing_models"] == []
+    assert "timed out" in body["error"]
 
 
 def test_启用ComfyUI自动出现在可用生图模型中(as_role, comfyui_instance, register_tier):

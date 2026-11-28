@@ -1,5 +1,6 @@
 import { episodeDrafts, readReworkDraft, reworkDraftKey, reworkPrefill, writeReworkDraft } from '../episode-work.js';
 import { gotoEntry } from '../goto.js';
+import { closeDetail } from '../router.js';
 import { newSubmissionKey, submissionIdentity } from '../submission.js';
 const jobSubmission = submissionIdentity();
 /**
@@ -18,10 +19,11 @@ import {
 } from '../comfyui.js';
 import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney,
          animateRows, skeleton } from '../util.js';
+import { uniqueEnginesFromOptions } from '../engine-model-picker.js';
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
   from '../validation.js';
 import { CAPS, MODES, UNITS, unitLabel } from '../enums.js';
-import { takeJobListStatus, takeJobPrefill } from '../navstate.js';
+import { getParam, takeJobListStatus, takeJobPrefill } from '../navstate.js';
 import { diagnosisHtml } from './diagnosis.js';
 
 // 作业状态的说法与配色在 js/validation.js，能力／运行位置／计费单位在 js/enums.js。
@@ -418,8 +420,11 @@ export default {
               <select id="jm-capability" class="ctl"></select>
               <label for="jm-mode">执行路线</label>
               <select id="jm-mode" class="ctl"></select>
-              <label for="jm-route">槽位</label>
-              <select id="jm-route" class="ctl"></select>
+              <label for="jm-route">引擎 / 模型</label>
+              <div class="emp-pair emp-pair-grow">
+                <select id="jm-engine" class="ctl emp-engine" aria-label="引擎"></select>
+                <select id="jm-route" class="ctl"></select>
+              </div>
               <!-- 预填留痕：路线与槽位刚被"按场景预填"改过时，这一行横跨两列
                    说清是谁改的、从哪条改成哪条、怎么撤销。没有这一行，
                    预填就是"控件自己动了"，人只会以为下拉坏了。 -->
@@ -995,6 +1000,7 @@ export default {
     function closeDrawer() {
       drawer.hidden = true;
       openJobId = null;
+      if (getParam('generate')) closeDetail('generate');
     }
 
     /* ---------- 取消失败重试 ---------- */
@@ -1145,11 +1151,16 @@ export default {
       refreshRouteSelect();
     }
 
-    function refreshRouteSelect() {
+    function refreshRouteSelect(preferredProvider = '') {
       const cap = root.querySelector('#jm-capability').value;
       const mode = root.querySelector('#jm-mode').value;
+      const engineSel = root.querySelector('#jm-engine');
       const route = root.querySelector('#jm-route');
       if (mode === 'default') {
+        if (engineSel) {
+          engineSel.hidden = true;
+          engineSel.innerHTML = '';
+        }
         const cur = currentOf(cap);
         if (!cur) {
           route.innerHTML = '<option value="">没有配置默认轨</option>';
@@ -1158,9 +1169,28 @@ export default {
         }
       } else {
         const opts = optionsFor(cap, mode);
-        route.innerHTML = opts.length
-          ? opts.map((o, i) => `<option value="${i}">${escapeHtml(o.provider)} / ${escapeHtml(o.model)}（${HEALTH_LABEL[o.health_state] || o.health_state}）</option>`).join('')
-          : '<option value="">这一轨没有已启用的槽位</option>';
+        const engines = uniqueEnginesFromOptions(opts);
+        if (engineSel) {
+          engineSel.hidden = engines.length === 0;
+          const prevProvider = preferredProvider || engineSel.value;
+          const activeProvider = engines.some((e) => e.provider === prevProvider)
+            ? prevProvider
+            : (engines.find((e) => e.hasHealthy)?.provider || engines[0]?.provider || '');
+          engineSel.innerHTML = engines.map((e) => {
+            const mark = e.hasHealthy ? `（${e.count}）` : `（${e.count} · 不可用）`;
+            return `<option value="${escapeHtml(e.provider)}"${e.provider === activeProvider ? ' selected' : ''}>${escapeHtml(e.label)}${escapeHtml(mark)}</option>`;
+          }).join('');
+          const filtered = activeProvider
+            ? opts.map((o, i) => ({ o, i })).filter(({ o }) => o.provider === activeProvider)
+            : opts.map((o, i) => ({ o, i }));
+          route.innerHTML = filtered.length
+            ? filtered.map(({ o, i }) => `<option value="${i}">${escapeHtml(o.model)}（${HEALTH_LABEL[o.health_state] || o.health_state}）</option>`).join('')
+            : '<option value="">这一轨没有已启用的槽位</option>';
+        } else {
+          route.innerHTML = opts.length
+            ? opts.map((o, i) => `<option value="${i}">${escapeHtml(o.provider)} / ${escapeHtml(o.model)}（${HEALTH_LABEL[o.health_state] || o.health_state}）</option>`).join('')
+            : '<option value="">这一轨没有已启用的槽位</option>';
+        }
       }
       renderParams();
       renderCostSection();
@@ -1325,6 +1355,55 @@ export default {
         ? `节点：${data.display_name || data.endpoint}`
         : (data.error || '未能拉取 ComfyUI 模型列表');
       target.replaceWith(select);
+
+      const runComfyPreflight = async () => {
+        const wfInput = paramsHost.querySelector('[data-param="workflow_json"]');
+        const rawWf = wfInput?.value?.trim() || '';
+        let badge = paramsHost.querySelector('#jm-comfy-preflight');
+        if (!rawWf) {
+          if (badge) badge.remove();
+          return;
+        }
+        if (!badge) {
+          badge = document.createElement('p');
+          badge.id = 'jm-comfy-preflight';
+          badge.className = 'hint';
+          badge.setAttribute('role', 'status');
+          paramsHost.appendChild(badge);
+        }
+        badge.className = 'hint';
+        badge.textContent = '正在预检 ComfyUI 工作流节点与模型依赖…';
+        try {
+          const curInstId = instSel?.value ? Number(instSel.value) : instId;
+          const curCkpt = paramsHost.querySelector('[data-param="checkpoint"]')?.value || '';
+          const pf = await api.comfyuiPreflight({
+            workflow_json: rawWf,
+            instance_id: curInstId || null,
+            checkpoint: curCkpt,
+          });
+          if (!badge.isConnected) return;
+          if (pf.ok) {
+            const ph = (pf.placeholders || []).length ? ` · 可配占位符：${pf.placeholders.join(', ')}` : '';
+            badge.className = 'bar ok';
+            badge.textContent = `✅ ComfyUI 预检通过（${pf.node_count} 个节点${ph}）`;
+          } else {
+            const parts = [];
+            if (pf.error) parts.push(pf.error);
+            if (pf.missing_nodes?.length) parts.push(`缺节点：${pf.missing_nodes.join(', ')}`);
+            if (pf.missing_models?.length) parts.push(`缺模型：${pf.missing_models.join(', ')}`);
+            badge.className = 'bar warn';
+            badge.textContent = `⚠️ ComfyUI 依赖预检提示：${parts.join('；') || '请检查工作流配置'}`;
+          }
+        } catch (err) {
+          if (!badge.isConnected) return;
+          badge.className = 'bar warn';
+          badge.textContent = `⚠️ 预检请求失败：${err.message || err}`;
+        }
+      };
+      paramsHost.querySelector('[data-param="workflow_json"]')?.addEventListener('change', () => { void runComfyPreflight(); });
+      instSel?.addEventListener('change', () => { void runComfyPreflight(); });
+      select.addEventListener('change', () => { void runComfyPreflight(); });
+      void runComfyPreflight();
     }
 
     /** 清单里登记的官方价；当分辨率/时长等条件命中时优先用那一条。 */
@@ -1428,7 +1507,7 @@ export default {
           && o.provider === p.provider_code && o.model === p.model_code);
         if (option) {
           root.querySelector('#jm-mode').value = option.backend;
-          refreshRouteSelect();
+          refreshRouteSelect(p.provider_code);
           const opts = optionsFor(p.capability, option.backend);
           const idx = opts.findIndex((o) => o.provider === p.provider_code
             && o.model === p.model_code);
@@ -1762,7 +1841,7 @@ export default {
         : { mode: modeSel.value, route: routeSel.value };
       if (!modeChoices(cap).some((c) => c.value === cand.backend)) return false;
       modeSel.value = cand.backend;
-      refreshRouteSelect();
+      refreshRouteSelect(cand.provider);
       const opts = optionsFor(cap, cand.backend);
       const idx = opts.findIndex((o) => o.provider === cand.provider
         && o.model === cand.model_code);
@@ -2496,6 +2575,11 @@ export default {
       if (rework) rework.needsRoute = false;
       refreshRouteSelect();
     });
+    root.querySelector('#jm-engine')?.addEventListener('change', () => {
+      clearScenePrefillTrace();
+      if (rework) rework.needsRoute = false;
+      refreshRouteSelect(root.querySelector('#jm-engine').value);
+    });
     root.querySelector('#jm-route').addEventListener('change', () => {
       clearScenePrefillTrace();
       if (rework) rework.needsRoute = false;
@@ -2558,7 +2642,25 @@ export default {
           errEl.textContent = '导入失败：文件不是有效的 ComfyUI API JSON 对象。';
           return;
         }
-        mergeProfileParamJson({ workflow_json: JSON.stringify(parsed) });
+        const wfStr = JSON.stringify(parsed);
+        mergeProfileParamJson({ workflow_json: wfStr });
+        errEl.textContent = '';
+        try {
+          const pf = await api.comfyuiPreflight({
+            workflow_json: wfStr,
+            checkpoint: root.querySelector('#pf-comfy-ckpt')?.value?.trim() || '',
+          });
+          if (pf.ok) {
+            const ph = (pf.placeholders || []).length ? `，识别占位符：${pf.placeholders.join(', ')}` : '';
+            window.dispatchEvent(new CustomEvent('app:toast', {
+              detail: { text: `已导入工作流（${pf.node_count} 个节点预检通过${ph}）`, kind: 'ok' },
+            }));
+          } else {
+            const parts = [pf.error, pf.missing_nodes?.length ? `缺节点：${pf.missing_nodes.join(', ')}` : '',
+              pf.missing_models?.length ? `缺模型：${pf.missing_models.join(', ')}` : ''].filter(Boolean);
+            errEl.textContent = `工作流已导入，但当前 ComfyUI 实例预检提示：${parts.join('；')}`;
+          }
+        } catch { /* ignore preflight error during offline edit */ }
       } catch {
         errEl.textContent = '导入失败：无法解析所选 JSON 文件。';
       }
@@ -2609,6 +2711,8 @@ export default {
     bindModalDismiss(reconcileModal, closeReconcile);
 
     /* ---------- 首次加载与轮询 ---------- */
+    const linkedJobId = Number(getParam('generate'));
+    if (linkedJobId > 0) openDrawer(linkedJobId);
     (async () => {
       try {
         const [options, current, scenes] = await Promise.all([

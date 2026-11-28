@@ -24,7 +24,7 @@ from .asset_vision_images import _prepare_reference
 from .asset_vision_transport import _VisionError, _remaining, _request
 from .content_operations import ContentOperationError
 
-_DEFAULT_CHATGPT_MODEL = "gpt-5.1"
+_DEFAULT_CHATGPT_MODEL = "gpt-6.1-terra"
 _DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 _DEFAULT_DASHSCOPE_MODEL = "qwen-vl-max-latest"
 _DASHSCOPE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
