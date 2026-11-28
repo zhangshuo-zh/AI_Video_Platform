@@ -88,9 +88,15 @@ export function attachEngineFilter(modelSel, options = [], cfg = {}) {
   const localEngines = engines.filter((e) => e.backend === 'local');
   const cloudEngines = engines.filter((e) => e.backend === 'cloud');
 
+  const shortEngineLabel = (raw) => String(raw || '')
+    .replace(/（(?:官方\s*API|本机模型服务|本地服务|FLUX\.1)）/g, '')
+    .trim();
+
   const engineOptMarkup = (e) => {
-    const suffix = e.hasHealthy ? `（${e.count}）` : `（${e.count} · 不可用）`;
-    return `<option value="${escapeHtml(e.key)}">${escapeHtml(e.label)}${escapeHtml(suffix)}</option>`;
+    const tag = e.backend === 'cloud' ? '云端' : '本地';
+    const name = shortEngineLabel(e.label) || e.provider;
+    const suffix = e.hasHealthy ? ` (${e.count})` : ` (${e.count}·不可用)`;
+    return `<option value="${escapeHtml(e.key)}">${tag} · ${escapeHtml(name)}${escapeHtml(suffix)}</option>`;
   };
 
   const engineSel = document.createElement('select');
