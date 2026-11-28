@@ -1020,7 +1020,8 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
 .ad-random-actions{padding-top:8px;border-top:1px dashed var(--line);justify-content:space-between}
 .ad-random-opts,.ad-random-btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ad-tv-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);white-space:nowrap;flex:1 1 400px;min-width:min(100%,380px)}
-.ad-tv-label:has(#ad-tv-template),.ad-tv-label:has(#ad-tv-instance),.ad-tv-label:has(#ad-tv-checkpoint){flex:0 1 260px;min-width:210px}
+.ad-tv-label:has(#ad-tv-template),.ad-tv-label:has(#ad-tv-instance){flex:0 1 260px;min-width:210px}
+.ad-tv-label:has(#ad-tv-checkpoint){flex:0 1 320px;min-width:240px}
 .ad-tv-label select.ctl{flex:1 1 0;min-width:130px;height:32px}
 .emp-pair{display:inline-flex;align-items:center;gap:8px;flex:1 1 320px;min-width:0;max-width:100%}
 .emp-pair-grow{display:flex;width:100%;flex:1 1 0;min-width:260px}
@@ -4609,6 +4610,7 @@ tbody tr.ag-detail-row,tbody tr.ag-detail-row:hover{background:var(--hover-soft)
 .sw-review-note { white-space: pre-wrap; overflow-wrap: anywhere; }
 .sw-other-sections > summary { cursor: pointer; margin-block: 10px; }
 #sw-review-note { width: 100%; }
+.gen-input-review { grid-column: 2; min-width: 0; }
 .gen-input-review details { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); }
 .gen-input-review summary { cursor: pointer; }
 .gen-input-review dd, .gen-frame { overflow-wrap: anywhere; }
