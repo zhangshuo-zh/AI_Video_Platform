@@ -19,9 +19,9 @@ class JobsCrudMixin:
                     params_json, input_refs_json, status, priority, idempotency_key,
                     user_confirmed_cloud, quantity, unit, unit_price_micros,
                     cost_micros, currency, pricing_snapshot_json, billable_status,
-                    source_version, created_by, rework_of_job_id)
+                    source_version, created_by, rework_of_job_id, engine_instance_id)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',
-                           ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           ?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (data["project_id"], data.get("episode_id"), data.get("shot_id"),
                  data["capability"], data["kind"], data["execution_mode"],
                  data["provider_code"], data["model_code"],
@@ -37,7 +37,8 @@ class JobsCrudMixin:
                  if data.get("pricing_snapshot") else None,
                  data.get("billable_status", "not_billable"),
                  data.get("source_version", ""),
-                 data.get("created_by"), data.get("rework_of_job_id")),
+                 data.get("created_by"), data.get("rework_of_job_id"),
+                 data.get("engine_instance_id")),
             )
             return conn.execute("SELECT * FROM job WHERE id = ?",
                                 (cur.lastrowid,)).fetchone()

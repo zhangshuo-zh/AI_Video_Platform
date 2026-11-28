@@ -116,9 +116,11 @@ class ModelPolicyIn(BaseModel):
     required: list[str] = []
     slot_provider: str = ""
     slot_model: str = ""
+    suggested_mode: str | None = None
     preference: str = "any"
     fallback_provider: str = ""
     fallback_model: str = ""
+    fallback_mode: str | None = None
     resource_limit: dict = {}
     cloud_confirm_required: bool = False
     enabled: bool = False
@@ -293,10 +295,12 @@ class ModelPolicyRowOut(BaseModel):
     required: list[str]
     slot_provider: str
     slot_model: str
+    suggested_mode: Literal["", "local", "cloud"] = ""
     enabled: StrictBool
     preference: str
     fallback_provider: str
     fallback_model: str
+    fallback_mode: Literal["", "local", "cloud"] = ""
     resource_limit: dict[str, Any]
     cloud_confirm_required: StrictBool
 
@@ -361,6 +365,8 @@ class ModelResolveOut(BaseModel):
     required: list[str] | None = None
     slot_provider: str | None = None
     slot_model: str | None = None
+    suggested_mode: Literal["", "local", "cloud"] | None = None
+    fallback_mode: Literal["", "local", "cloud"] | None = None
     enabled: StrictBool | None = None
     cloud_confirm_required: StrictBool | None = None
     preference: str | None = None
@@ -394,6 +400,21 @@ class EngineListOut(BaseModel):
     connection_types: list[str]
     declared_connection_types: list[str]
     service_engines: list[str]
+
+
+class ComfyUIInstanceOut(BaseModel):
+    id: int
+    display_name: str
+    endpoint: str
+
+
+class ComfyUICheckpointsOut(BaseModel):
+    ok: bool
+    endpoint: str = ""
+    display_name: str = ""
+    checkpoints: list[str] = Field(default_factory=list)
+    recommended: str = ""
+    error: str = ""
 
 
 class EngineMutationOut(BaseModel):

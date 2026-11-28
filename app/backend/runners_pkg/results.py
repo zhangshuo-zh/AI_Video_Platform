@@ -70,7 +70,7 @@ def provider_receipt(spec: RunSpec) -> dict:
     keep = {}
     for key in ("ok", "provider", "model", "capability", "request_id",
                 "task_request_id", "task_status", "http_status", "latency_ms",
-                "bytes", "usage", "response_meta", "error"):
+                "bytes", "usage", "response_meta", "error", "checkpoint", "checkpoints"):
         if key in raw:
             keep[key] = raw[key]
     return keep

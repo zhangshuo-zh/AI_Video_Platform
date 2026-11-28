@@ -189,22 +189,29 @@ class ReviewRepository:
             (doc_id,))
 
     # ---------- 产物审核队列（关键帧／镜头视频） ----------
-    def job_queue(self, project_id: int, limit: int = 200) -> list[sqlite3.Row]:
+    def job_queue(self, project_id: int, limit: int | None = None,
+                  episode_id: int | None = None) -> list[sqlite3.Row]:
         """这个项目里"可以被人审"的作业：已成功、是图像或视频、产物清单非空。
 
-        镜头号与集号一次带出来，界面不必为每条作业再问一次创作中心（N+1）。
-        签字另查一次（`signs_for_jobs` 批量），不在这条 SQL 里做子查询——
-        一条作业可能有多件产物、多个锚点的签字，摊平成行反而难读。
+        默认不截断 200 条（避免较早的未签作业被 200 条更新的已签作业挤出列表），
+        同时支持可选 episode_id 筛选与显式 limit 分页。
         """
+        where = f"j.project_id = ? AND {_JOB_QUEUE_WHERE}"
+        args: list = [project_id]
+        if episode_id is not None:
+            where += " AND j.episode_id = ?"
+            args.append(int(episode_id))
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            args.append(max(int(limit), 1))
         with get_conn() as conn:
             return conn.execute(
                 f"""SELECT {_JOB_QUEUE_COLUMNS}
                      {_JOB_QUEUE_FROM}
-                    WHERE j.project_id = ?
-                      AND {_JOB_QUEUE_WHERE}
-                    ORDER BY j.id DESC
-                    LIMIT ?""",
-                (project_id, min(max(limit, 1), 200))).fetchall()
+                    WHERE {where}
+                    ORDER BY j.id DESC{limit_sql}""",
+                args).fetchall()
 
     def job_queue_for_projects(self, project_ids: list[int],
                                limit: int = 200) -> list[sqlite3.Row]:

@@ -77,6 +77,7 @@ def generation_summary(job, ref: AssetGenerationRefs | None = None) -> dict:
         "text_mode_label": TEXT_MODES.get(ref["mode"], ""),
         "capability": job["capability"], "execution_mode": job["execution_mode"],
         "provider_code": job["provider_code"], "model_code": job["model_code"],
+        "engine_instance_id": job["engine_instance_id"],
         "cost_micros": job["cost_micros"] or 0, "currency": job["currency"] or "",
         "billable_status": job["billable_status"],
         "target_asset_id": ref["asset_id"], "target_variant_id": ref["variant_id"],
@@ -169,7 +170,8 @@ def submit_generation(project_id: int, payload, created_by: int | None) -> dict:
     submit = JobSubmitIn(
         project_id=project_id, episode_id=None, shot_id=None, capability=capability,
         execution_mode=payload.execution_mode, provider_code=payload.provider_code,
-        model_code=payload.model_code, prompt=prompt, params=payload.params,
+        model_code=payload.model_code, engine_instance_id=payload.engine_instance_id,
+        prompt=prompt, params=payload.params,
         input_refs=build_refs(operation, payload.target_asset_id,
                               payload.target_variant_id, mode,
                               tuple(field for _label, field in sections)),
@@ -194,7 +196,8 @@ def submit_generation(project_id: int, payload, created_by: int | None) -> dict:
         "sections": [label for label, _field in sections],
         "reused": reused,
         "execution_mode": job["execution_mode"], "provider_code": job["provider_code"],
-        "model_code": job["model_code"], "cost_micros": job["cost_micros"] or 0,
+        "model_code": job["model_code"], "engine_instance_id": job["engine_instance_id"],
+        "cost_micros": job["cost_micros"] or 0,
         "currency": job["currency"] or "", "billable_status": job["billable_status"],
         "target_asset_id": payload.target_asset_id,
         "target_variant_id": payload.target_variant_id,
@@ -213,11 +216,14 @@ def _derived_key(project_id: int, operation: str, mode: str, asset_id: int | Non
     键里放的是**会让人一眼看出不是同一件事**的那几样：给谁做、做什么、按哪档做、
     提示词本身。故意不放时间戳——放了它就等于每次都新键，幂等成了装饰。
     """
-    digest = hashlib.sha1("|".join([
+    intent = [
         prompt, capability, (payload.execution_mode or ""), (payload.provider_code or ""),
         (payload.model_code or ""), json.dumps(payload.params or {}, ensure_ascii=False,
                                                sort_keys=True),
-    ]).encode("utf-8")).hexdigest()[:12]
+    ]
+    if payload.engine_instance_id is not None:
+        intent.append(str(payload.engine_instance_id))
+    digest = hashlib.sha1("|".join(intent).encode("utf-8")).hexdigest()[:12]
     return (f"asset-gen:{project_id}:{operation}:{mode or 'img'}:"
             f"a{asset_id or 0}v{variant_id or 0}:{digest}")
 

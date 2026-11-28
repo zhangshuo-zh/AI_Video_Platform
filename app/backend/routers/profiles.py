@@ -26,40 +26,61 @@ router = APIRouter(prefix="/api", tags=["profiles"])
 _SECRET_KEY = re.compile(
     r"(^|_)(api_?key|access_?key|secret|password|authorization|token)$", re.I)
 _MAX_PARAM_BYTES = 4000
+_MAX_WORKFLOW_PARAM_BYTES = 262144
 
 
 def _check_params(params: dict) -> None:
     if not isinstance(params, dict):
         raise HTTPException(status_code=422, detail="params 必须是一个对象")
+    workflow_json = params.get("workflow_json")
+    if workflow_json is not None and not isinstance(workflow_json, str):
+        raise HTTPException(status_code=422, detail="workflow_json 必须是 JSON 对象字符串")
+    max_bytes = _MAX_WORKFLOW_PARAM_BYTES if workflow_json else _MAX_PARAM_BYTES
     raw = json.dumps(params, ensure_ascii=False)
-    if len(raw.encode("utf-8")) > _MAX_PARAM_BYTES:
-        raise HTTPException(status_code=422, detail="模板参数太大（上限 4KB）")
+    if len(raw.encode("utf-8")) > max_bytes:
+        limit = "256KB" if workflow_json else "4KB"
+        raise HTTPException(status_code=422, detail=f"模板参数太大（上限 {limit}）")
 
-    def walk(value, depth=0):
+    def check_keys(value: dict) -> dict:
+        for key in value:
+            if _SECRET_KEY.search(str(key)):
+                raise HTTPException(status_code=422, detail=f"模板参数里不能放凭据：{key}")
+        return value
+
+    def walk(value, depth=0) -> None:
         if depth > 4:
             raise HTTPException(status_code=422, detail="模板参数嵌套太深")
         if isinstance(value, dict):
-            for key, item in value.items():
-                if _SECRET_KEY.search(str(key)):
-                    raise HTTPException(status_code=422,
-                                        detail=f"模板参数里不能放凭据：{key}")
+            for item in check_keys(value).values():
                 walk(item, depth + 1)
         elif isinstance(value, list):
             for item in value:
                 walk(item, depth + 1)
 
     walk(params)
+    if workflow_json:
+        def reject_constant(value: str) -> None:
+            raise ValueError(f"{value} 不是有效的 JSON 数字")
+
+        try:
+            workflow = json.loads(workflow_json, object_hook=check_keys, parse_constant=reject_constant)
+        except (ValueError, RecursionError) as exc:
+            raise HTTPException(status_code=422,
+                                detail="workflow_json 必须是合法的 JSON 对象字符串") from exc
+        if not isinstance(workflow, dict):
+            raise HTTPException(status_code=422, detail="workflow_json 必须是 JSON 对象字符串")
 
 
-def _adapter(capability: str, provider: str):
-    for mode in ("local", "cloud"):
+def _adapter(capability: str, provider: str, execution_mode: str):
+    for mode in ((execution_mode,) if execution_mode else ("local", "cloud")):
         found = adapters.find(capability, mode, provider)
         if found is not None:
             return found
     return None
 
 
-def _check_route(capability: str, provider: str, model: str, params: dict) -> None:
+def _check_route(capability: str, provider: str, model: str, params: dict,
+                 execution_mode: str) -> None:
     """provider/model 要么都不填（通用模板），要么一起填且必须对得上清单。
 
     参数只在绑定到具体模型时才能校验；不绑定却带参数，等于跳过白名单，
@@ -74,10 +95,11 @@ def _check_route(capability: str, provider: str, model: str, params: dict) -> No
     if not provider or not model:
         raise HTTPException(status_code=422,
                             detail="provider 与模型要么都不填，要么一起填")
-    adapter = _adapter(capability, provider)
+    adapter = _adapter(capability, provider, execution_mode)
     if adapter is None:
+        where = f"在 {execution_mode} 下" if execution_mode else ""
         raise HTTPException(status_code=422,
-                            detail=f"provider「{provider}」没有登记适配器，模板不能绑它")
+                            detail=f"provider「{provider}」{where}没有登记适配器，模板不能绑它")
     errors = adapters.validate_params(adapter, model, params)
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))
@@ -127,7 +149,7 @@ def create_profile(payload: GenerationProfileIn,
         raise HTTPException(status_code=422, detail="模板名不能为空")
     _check_params(payload.params)
     _check_route(payload.capability, payload.provider_code, payload.model_code,
-                 payload.params)
+                 payload.params, payload.execution_mode or "")
     if profiles.name_taken(payload.project_id, payload.capability, name):
         raise HTTPException(status_code=409, detail="这个范围里已经有同名模板")
 
@@ -136,6 +158,7 @@ def create_profile(payload: GenerationProfileIn,
         "capability": payload.capability,
         "provider_code": payload.provider_code.strip(),
         "model_code": payload.model_code.strip(),
+        "execution_mode": payload.execution_mode or "",
         "params": payload.params, "is_default": payload.is_default,
         "created_by": user["id"],
     }))
@@ -153,13 +176,17 @@ def update_profile(profile_id: int, payload: GenerationProfileUpdateIn,
     if not name:
         raise HTTPException(status_code=422, detail="模板名不能为空")
     _check_params(payload.params)
+    mode = payload.execution_mode
+    if mode is None:
+        mode = row["execution_mode"] or ""
     _check_route(row["capability"], row["provider_code"], row["model_code"],
-                 payload.params)
+                 payload.params, mode)
     if profiles.name_taken(row["project_id"], row["capability"], name,
                            exclude_id=profile_id):
         raise HTTPException(status_code=409, detail="这个范围里已经有同名模板")
 
-    updated = profiles.update(profile_id, name, payload.params, payload.is_default)
+    updated = profiles.update(profile_id, name, payload.params, payload.is_default,
+                              execution_mode=payload.execution_mode)
     if updated is None:
         raise HTTPException(status_code=404, detail="模板不存在")
     return GenerationProfileOut.from_row(updated)

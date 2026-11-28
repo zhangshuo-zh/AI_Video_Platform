@@ -44,7 +44,7 @@ def episode_board(project_id: int, episode_id: int, *, include_shot_tasks: bool 
                      note=("、".join(f"{k} {v}" for k, v in sorted(docs.items()))
                            if doc_total else "这一集还没有文档"))]
 
-    # 2) 内容解析：候选没处置完就是"需要处理"；一次都没跑过是"待处理"
+    # 2) 内容解析：区分待处理 / 排队或运行中 / 解析失败 / 成功无候选 / 待处置 / 已处置
     if runs["runs"] == 0:
         parse = _stage("parse", status=PENDING, total=0,
                        note="先有剧本再解析")
@@ -53,6 +53,16 @@ def episode_board(project_id: int, episode_id: int, *, include_shot_tasks: bool 
                        pending=runs["pending"],
                        done=runs["items"] - runs["pending"],
                        note=f"{runs['pending']} 条候选待处置")
+    elif runs.get("active"):
+        parse = _stage("parse", status=DOING, total=runs["items"],
+                       done=runs["items"], note="内容解析任务排队或运行中")
+    elif (runs.get("latest_run_status") in ("failed", "parse_failed")
+          or runs.get("latest_job_status") in ("failed", "cancelled")) and runs["items"] == 0:
+        parse = _stage("parse", status=FAILED, total=0,
+                       note="内容解析失败，请查看作业日志后重试")
+    elif runs["items"] == 0:
+        parse = _stage("parse", status=DONE, total=0,
+                       done=0, note="解析完成，暂未提取到新候选")
     else:
         parse = _stage("parse", status=DONE, total=runs["items"],
                        done=runs["items"], note="候选已全部处置")

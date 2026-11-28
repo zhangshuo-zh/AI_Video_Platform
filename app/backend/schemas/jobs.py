@@ -50,6 +50,7 @@ class JobSubmitIn(BaseModel):
     execution_mode: Literal["local", "cloud"] | None = None
     provider_code: str = Field(default="", max_length=80)
     model_code: str = Field(default="", max_length=120)
+    engine_instance_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     prompt: str = Field(min_length=1, max_length=8000)
     params: dict = {}
     rework_of_job_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
@@ -78,6 +79,7 @@ class JobOut(BaseModel):
     execution_mode_label: str
     provider_code: str
     model_code: str
+    engine_instance_id: int | None = None
     status: str
     status_label: str
     prompt_preview: str
@@ -142,6 +144,7 @@ class JobOut(BaseModel):
             execution_mode=row["execution_mode"],
             execution_mode_label=BACKENDS.get(row["execution_mode"], row["execution_mode"]),
             provider_code=row["provider_code"], model_code=row["model_code"],
+            engine_instance_id=row["engine_instance_id"] if "engine_instance_id" in keys else None,
             status=row["status"],
             status_label=JOB_STATUSES.get(row["status"], row["status"]),
             prompt_preview=prompt[:120],

@@ -52,7 +52,7 @@ export function pagePolicies() {
       if (i.status !== 'available') marks.push(cache.catalog.status_labels[i.status] || i.status);
       if (i.backend === 'cloud') marks.push('云端 · 需确认计费');
       const suffix = marks.length ? `（${marks.join(' · ')}）` : '';
-      return `<option value="${escapeHtml(i.provider)}|${escapeHtml(i.model_code)}">${
+      return `<option value="${escapeHtml(i.backend)}|${escapeHtml(i.provider)}|${escapeHtml(i.model_code)}">${
         escapeHtml(name + suffix)}</option>`;
     }).join('');
 
@@ -77,8 +77,6 @@ export function pagePolicies() {
   const configText = `${totalCount} 个场景 · ${enabledCount} 已就绪 · ${totalCount - enabledCount} 待配置`;
 
   const rows = items.map((p) => {
-    const cur = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
-    const fb = p.fallback_provider ? `${p.fallback_provider}|${p.fallback_model}` : '';
     return `<tr class="policy" data-key="${escapeHtml(p.scene_key)}">
       <td class="policy-scene-cell" title="底层标识：${escapeHtml(p.scene_key)}"><b>${escapeHtml(p.scene_label || p.scene_key)}</b></td>
       <td><span class="chip cap-${escapeHtml(p.capability)}">${escapeHtml(p.capability_label)}</span></td>
@@ -153,7 +151,16 @@ export function mountPolicies(root) {
     const key = tr.dataset.key;
     const p = cache.policies.items.find((x) => x.scene_key === key);
     if (!p) return;
-    tr.querySelector('[data-f="slot"]').value = p.slot_provider ? `${p.slot_provider}|${p.slot_model}` : '';
+    const sel = tr.querySelector('[data-f="slot"]');
+    if (!p.slot_provider) { sel.value = ''; return; }
+    const exact = p.suggested_mode ? `${p.suggested_mode}|${p.slot_provider}|${p.slot_model}` : '';
+    if (exact && [...sel.options].some((o) => o.value === exact)) {
+      sel.value = exact;
+    } else {
+      const suffix = `|${p.slot_provider}|${p.slot_model}`;
+      const match = [...sel.options].find((o) => o.value.endsWith(suffix));
+      sel.value = match ? match.value : '';
+    }
   });
 
   const updateDimming = (sel) => {
@@ -194,14 +201,17 @@ export function mountPolicies(root) {
   root.querySelector('#save-policies').addEventListener('click', async () => {
     const rows = [...root.querySelectorAll('tr.policy')].map((tr) => {
       const p = cache.policies.items.find((x) => x.scene_key === tr.dataset.key);
-      const slot = tr.querySelector('[data-f="slot"]').value.split('|');
+      const rawSlot = tr.querySelector('[data-f="slot"]').value;
+      const slot = rawSlot ? rawSlot.split('|') : [];
       return {
         scene_key: tr.dataset.key, scene_label: p.scene_label, capability: p.capability,
         // 必需能力读勾选框：那一格从只读 chip 放开成可编辑（§5.4 一直教人
         // "从「必需」降下来"，服务端也早会写 required_json，缺的只是入口）。
         required: [...tr.querySelectorAll('[data-req]:checked')].map((c) => c.dataset.req),
-        slot_provider: slot[0] || '', slot_model: slot[1] || '',
+        suggested_mode: slot[0] || '',
+        slot_provider: slot[1] || '', slot_model: slot[2] || '',
         preference: p.preference || 'any',
+        fallback_mode: p.fallback_mode || '',
         fallback_provider: p.fallback_provider || '', fallback_model: p.fallback_model || '',
         resource_limit: p.resource_limit || {},
         cloud_confirm_required: Boolean(p.cloud_confirm_required),

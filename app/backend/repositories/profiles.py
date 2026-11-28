@@ -78,18 +78,19 @@ class ProfileRepository:
             cur = conn.execute(
                 """INSERT INTO generation_profile
                    (project_id, name, capability, provider_code, model_code,
-                    params_json, is_default, created_by)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                    params_json, is_default, created_by, execution_mode)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (data.get("project_id"), data["name"], data["capability"],
                  data.get("provider_code", ""), data.get("model_code", ""),
                  json.dumps(data.get("params", {}), ensure_ascii=False, sort_keys=True),
-                 int(bool(data.get("is_default"))), data.get("created_by")),
+                 int(bool(data.get("is_default"))), data.get("created_by"),
+                 data.get("execution_mode") or ""),
             )
             return conn.execute(_SELECT + " WHERE g.id = ?",
                                 (cur.lastrowid,)).fetchone()
 
     def update(self, profile_id: int, name: str, params: dict,
-               is_default: bool) -> sqlite3.Row | None:
+               is_default: bool, execution_mode: str | None = None) -> sqlite3.Row | None:
         with get_conn() as conn:
             row = conn.execute("SELECT * FROM generation_profile WHERE id = ?",
                                (profile_id,)).fetchone()
@@ -101,10 +102,11 @@ class ProfileRepository:
             conn.execute(
                 """UPDATE generation_profile
                       SET name = ?, params_json = ?, is_default = ?,
+                          execution_mode = COALESCE(?, execution_mode),
                           updated_at = datetime('now','localtime')
                     WHERE id = ?""",
                 (name, json.dumps(params, ensure_ascii=False, sort_keys=True),
-                 int(bool(is_default)), profile_id),
+                 int(bool(is_default)), execution_mode, profile_id),
             )
             return conn.execute(_SELECT + " WHERE g.id = ?", (profile_id,)).fetchone()
 

@@ -77,6 +77,10 @@ function stageTable(board) {
 }
 
 function taskList(board) {
+  if (!board.episode_id && (!board.stages || !board.stages.length)) {
+    return `<div class="card-body"><p class="note flush">
+      <b>还没有选集</b>：先到创作中心建一集或在顶栏选一集，这里才会列出这一集的待办。</p></div>`;
+  }
   const tasks = board.next_tasks || [];
   if (!tasks.length) {
     return `<div class="card-body"><p class="note flush" >

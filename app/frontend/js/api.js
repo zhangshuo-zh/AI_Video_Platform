@@ -308,6 +308,12 @@ export const api = {
   // 后端从 W-B 起就有这五个口子，但界面一直没接——于是 `engines.probe()` 只能对着
   // "还没有登记启用中的引擎实例"这句提示干瞪眼，而人没有办法在界面里加一条端点。
   engines: () => get('/api/engines'),
+  comfyuiInstances: () => get('/api/engines/comfyui/instances'),
+  comfyuiCheckpoints: (instanceId = null) => get(
+    instanceId
+      ? `/api/engines/comfyui/checkpoints?instance_id=${encodeURIComponent(instanceId)}`
+      : '/api/engines/comfyui/checkpoints',
+  ),
   createEngine: (body) => send('POST', '/api/engines', body),
   patchEngine: (id, body) => send('PATCH', `/api/engines/${id}`, body),
   // 撤实例同样带 confirm=1：只删这一行端点登记，应用与权重都不动

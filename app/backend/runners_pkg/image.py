@@ -5,12 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-import engines
 import runtime
-from repositories.engine_instances import engine_instances
 
 from .cloud import _secret_envs
-from .common import _need_runtime
+from .common import _need_runtime, _probe_job_engine
 from .inputs import _resolve_input_image
 from .protocol import ENGINE_HTTP_RUNNER, RunnerUnavailable, RunSpec
 
@@ -179,10 +177,7 @@ def _comfyui_workflow_payload(
 
 def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
     """ComfyUI：把参数注入 API Workflow JSON，经由 engine_http_run 跑 /prompt→/history→/view。"""
-    status = engines.probe("comfyui", fresh=True)
-    if status.state != "ok":
-        raise RunnerUnavailable(f"ComfyUI 现在不能用：{status.detail}")
-    endpoint = status.values.get("endpoint") or ""
+    _, endpoint, secret_env = _probe_job_engine(job, "comfyui", "ComfyUI")
     out = outputs / f"{job['id']}-comfyui.png"
     receipt = outputs / f"{job['id']}-comfyui-receipt.json"
     request_path = outputs / f"{job['id']}-comfyui-request.json"
@@ -207,11 +202,6 @@ def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         "poll_interval": 0.8,
         "poll_timeout": 300,
     }
-    secret_env = status.values.get("shared_secret_env")
-    if secret_env is None:
-        instance = engine_instances.pick("comfyui")
-        if instance is not None and instance["endpoint"] == endpoint:
-            secret_env = instance["shared_secret_env"]
     if secret_env:
         request["secret_env"] = secret_env
     request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -237,14 +227,7 @@ def _comfyui(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
 
 
 def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
-    # 起跑前现查一次（fresh）：worker 可能刚从队列里领到一条几分钟前排的活，
-    # 拿 15 秒缓存里的端点去发请求，会把"换了机器"这件事静默地漏过去。
-    status = engines.probe("draw_things", fresh=True)
-    if status.state != "ok":
-        # unknown（没登记实例）与 missing（登记了但连不上）都由 engines 分好档，
-        # 这里只转述，不再各写一套"不可用"的措辞。
-        raise RunnerUnavailable(f"Draw Things 现在不能用：{status.detail}")
-    endpoint = status.values.get("endpoint") or ""
+    status, endpoint, secret_env = _probe_job_engine(job, "draw_things", "Draw Things")
     out = outputs / f"{job['id']}-draw_things.png"
     receipt = outputs / f"{job['id']}-draw-things-receipt.json"
     request_path = outputs / f"{job['id']}-draw-things-request.json"
@@ -266,6 +249,8 @@ def _draw_things(job, params: dict, outputs: Path, model_code: str) -> RunSpec:
         "endpoint": endpoint, "path": req_path, "body": body,
         "output": str(out), "receipt": str(receipt), "timeout": 600,
     }
+    if secret_env:
+        request["secret_env"] = secret_env
     init_image = str(params.get("init_image") or "").strip()
     if init_image:
         init_target = _resolve_input_image(init_image, job, label="参考底图")

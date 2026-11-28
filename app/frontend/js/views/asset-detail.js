@@ -4,6 +4,11 @@ import { referenceActions, bindReferenceActions } from './asset-reference-action
 import { askFixReferenceImage, askReversePromptApply, assignReferenceSlots, evaluateReferenceImage, prepareSlotUpload, slotsForKind } from './asset-reference-slots.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
+import {
+  checkpointOptionsMarkup, instanceOptionsMarkup, loadComfyCheckpoints,
+  loadComfyInstances, rememberCheckpoint, rememberInstanceId, rememberedCheckpoint,
+  rememberedInstanceId,
+} from '../comfyui.js';
 import { bindModalDismiss, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl } from '../util.js';
 import { HEALTH_LABEL, jobTone, publicStatus } from '../validation.js';
 import { setParam, setSub } from '../navstate.js';
@@ -28,7 +33,23 @@ let cache = null;   // 本次渲染拿到的资产、引用、档案与形态，
 let refs = [];
 let newAssetKind = 'character';
 let pendingImages = [];
-let pendingTurnaroundJobs = []; // [{ assetId, jobId, purpose, label, status, error }] 创建角色后待自动挂入标准槽位的生成作业
+const TURNAROUND_STORAGE_KEY = 'avp.turnaround.pending';
+function loadTurnaroundPending() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(TURNAROUND_STORAGE_KEY) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+function saveTurnaroundPending(list) {
+  pendingTurnaroundJobs = list;
+  try {
+    if (list.length) window.localStorage.setItem(TURNAROUND_STORAGE_KEY, JSON.stringify(list));
+    else window.localStorage.removeItem(TURNAROUND_STORAGE_KEY);
+  } catch { /* ignore storage restrictions */ }
+}
+let pendingTurnaroundJobs = loadTurnaroundPending(); // [{ assetId, jobId, purpose, label, status, imported, importError, error }] 创建角色后待自动挂入标准槽位的生成作业
 let pendingTurnaroundNotice = null; // { assetId, kind, text } 创建后跳转到详情页时展示的三视图提交反馈
 let activeSection = 'basic';
 let activeSectionAssetKey = null;
@@ -224,6 +245,21 @@ export async function renderDetail(id) {
                     <label class="ad-tv-label">生图模型
                       <select class="ctl sm" id="ad-tv-model" aria-label="生图模型">
                         ${imgOptHtml || '<option value="">暂无可用生图模型（请先到模型中心配置）</option>'}
+                      </select>
+                    </label>
+                    <label class="ad-tv-label" id="ad-tv-tpl-wrap" hidden>工作流模板
+                      <select class="ctl sm" id="ad-tv-template" aria-label="生图参数模板">
+                        <option value="">默认参数（不套模板）</option>
+                      </select>
+                    </label>
+                    <label class="ad-tv-label" id="ad-tv-inst-wrap" hidden>节点实例
+                      <select class="ctl sm" id="ad-tv-instance" aria-label="ComfyUI 节点实例">
+                        <option value="">默认启用实例</option>
+                      </select>
+                    </label>
+                    <label class="ad-tv-label" id="ad-tv-ckpt-wrap" hidden>Checkpoint
+                      <select class="ctl sm" id="ad-tv-checkpoint" aria-label="ComfyUI Checkpoint">
+                        <option value="">自动匹配（加载中…）</option>
                       </select>
                     </label>
                     <select class="ctl sm" id="ad-tv-mode" aria-label="生成模式">
@@ -921,6 +957,64 @@ export function mountDetail(root, id) {
   };
   copyGptBtn?.addEventListener('click', handleCopyQuadPrompt);
   copyQuadSavedBtn?.addEventListener('click', handleCopyQuadPrompt);
+  const tvModelSel = root.querySelector('#ad-tv-model');
+  const tvTplWrap = root.querySelector('#ad-tv-tpl-wrap');
+  const tvTplSel = root.querySelector('#ad-tv-template');
+  const tvInstWrap = root.querySelector('#ad-tv-inst-wrap');
+  const tvInstSel = root.querySelector('#ad-tv-instance');
+  const tvCkptWrap = root.querySelector('#ad-tv-ckpt-wrap');
+  const tvCkptSel = root.querySelector('#ad-tv-checkpoint');
+  let cachedImgProfiles = [];
+  const syncTvTemplates = async () => {
+    if (!tvTplWrap || !tvTplSel || !tvModelSel) return;
+    const picked = tvModelSel.value ? tvModelSel.value.split('|') : [];
+    const provider = picked[1] || '';
+    if (!provider || !store.currentId) { tvTplWrap.hidden = true; return; }
+    try {
+      const list = await api.generationProfiles(store.currentId);
+      if (!tvTplSel.isConnected) return;
+      cachedImgProfiles = (Array.isArray(list) ? list : []).filter(
+        (p) => p.capability === 'image' && (!p.provider_code || p.provider_code === provider),
+      );
+      tvTplWrap.hidden = cachedImgProfiles.length === 0;
+      tvTplSel.innerHTML = '<option value="">默认参数（不套模板）</option>'
+        + cachedImgProfiles.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    } catch {
+      tvTplWrap.hidden = true;
+    }
+  };
+  const syncComfyCheckpointsOnly = async () => {
+    if (!tvCkptSel) return;
+    const instId = tvInstSel?.value ? Number(tvInstSel.value) : null;
+    const data = await loadComfyCheckpoints({ instanceId: instId });
+    if (!tvCkptSel.isConnected) return;
+    tvCkptSel.innerHTML = checkpointOptionsMarkup(data, rememberedCheckpoint());
+    tvCkptSel.title = data.ok
+      ? `节点：${data.display_name || data.endpoint}`
+      : (data.error || '未能拉取 ComfyUI 模型列表');
+  };
+  const syncComfyCheckpoint = async () => {
+    if (!tvModelSel || !tvCkptWrap || !tvCkptSel) return;
+    const isComfy = tvModelSel.value === 'local|comfyui|comfyui-workflow';
+    tvCkptWrap.hidden = !isComfy;
+    if (tvInstWrap) tvInstWrap.hidden = !isComfy;
+    void syncTvTemplates();
+    if (!isComfy) return;
+    if (tvInstSel) {
+      const instances = await loadComfyInstances();
+      if (!tvInstSel.isConnected) return;
+      tvInstSel.innerHTML = instanceOptionsMarkup(instances, rememberedInstanceId());
+      if (tvInstWrap) tvInstWrap.hidden = instances.length <= 1;
+    }
+    await syncComfyCheckpointsOnly();
+  };
+  tvModelSel?.addEventListener('change', () => { void syncComfyCheckpoint(); });
+  tvInstSel?.addEventListener('change', () => {
+    rememberInstanceId(tvInstSel.value);
+    void syncComfyCheckpointsOnly();
+  });
+  tvCkptSel?.addEventListener('change', () => { rememberCheckpoint(tvCkptSel.value); });
+  void syncComfyCheckpoint();
   tvModeSel?.addEventListener('change', () => {
     if (!saveTvBtn) return;
     saveTvBtn.textContent = tvModeSel.value === 'single' ? '🎨 保存并生成三视图' : '🎨 保存并生成设定集';
@@ -1031,10 +1125,25 @@ export function mountDetail(root, id) {
     } : null;
 
     const batchStamp = Date.now();
+    const chosenTpl = tvTplSel?.value
+      ? cachedImgProfiles.find((p) => String(p.id) === tvTplSel.value)
+      : null;
+    const tplParams = (chosenTpl?.params && typeof chosenTpl.params === 'object') ? chosenTpl.params : {};
+    const chosenCheckpoint = (providerCode === 'comfyui' && tvCkptSel && !tvCkptWrap?.hidden)
+      ? tvCkptSel.value.trim()
+      : '';
+    const chosenInstanceId = (providerCode === 'comfyui' && tvInstSel?.value)
+      ? Number(tvInstSel.value)
+      : null;
     const submittedList = [];
     let firstErr = null;
     for (let idx = 0; idx < specs.length; idx += 1) {
       const spec = specs[idx];
+      const submitParams = {
+        ...tplParams,
+        ...spec.params,
+        ...(chosenCheckpoint ? { checkpoint: chosenCheckpoint } : {}),
+      };
       try {
         const submitted = await api.assetGenerationSubmit(store.currentId, {
           operation: 'asset_image',
@@ -1043,7 +1152,8 @@ export function mountDetail(root, id) {
           execution_mode: execMode,
           provider_code: providerCode,
           model_code: modelCode,
-          params: spec.params,
+          ...(chosenInstanceId ? { engine_instance_id: chosenInstanceId } : {}),
+          params: submitParams,
           estimate,
           user_confirmed_cloud: execMode === 'cloud',
           idempotency_key: `ad-tv-${created.id}-${idx}-${batchStamp}`,
@@ -1054,6 +1164,8 @@ export function mountDetail(root, id) {
           purpose: spec.purpose,
           label: spec.label,
           status: submitted.status || 'queued',
+          imported: false,
+          importError: '',
           error: '',
         });
       } catch (err) {
@@ -1062,7 +1174,7 @@ export function mountDetail(root, id) {
     }
 
     if (submittedList.length) {
-      pendingTurnaroundJobs = submittedList;
+      saveTurnaroundPending([...pendingTurnaroundJobs.filter((j) => j.assetId !== created.id), ...submittedList]);
       pendingTurnaroundNotice = null;
       const msg = submittedList.length === specs.length
         ? `已创建角色「${payload.name}」并排队 ${submittedList.length} 张设定图，完成后将自动填入对应槽位`
@@ -1071,7 +1183,7 @@ export function mountDetail(root, id) {
         detail: { text: msg, kind: submittedList.length === specs.length ? 'ok' : 'err' },
       }));
     } else {
-      pendingTurnaroundJobs = [];
+      saveTurnaroundPending(pendingTurnaroundJobs.filter((j) => j.assetId !== created.id));
       const errMsg = `角色「${payload.name}」已保存，但设定图任务提交失败：${firstErr?.message || firstErr || '未知错误'}`;
       pendingTurnaroundNotice = { assetId: created.id, kind: 'bad', text: errMsg };
       window.dispatchEvent(new CustomEvent('app:toast', {
@@ -1082,17 +1194,32 @@ export function mountDetail(root, id) {
   });
 
   const activeWatchJobs = !isNew && store.currentId
-    ? pendingTurnaroundJobs.filter((j) => j.assetId === a.id)
+    ? pendingTurnaroundJobs.filter((j) => j.assetId === a.id && !j.imported)
     : [];
   if (activeWatchJobs.length) {
     const watchBar = root.querySelector('#ad-tv-watch');
     const batchIds = new Set(activeWatchJobs.map((j) => j.jobId));
+    const tryImportSlot = async (item) => {
+      const imported = await api.assetImportImage(a.id, { job_id: item.jobId });
+      if (!imported?.path) throw new Error('未返回导入路径');
+      await api.setAssetImagePurpose(a.id, {
+        path: imported.path, variant_id: null, purpose: item.purpose,
+      });
+      if (item.purpose === '面部特写') {
+        await api.setAssetCover(a.id, imported.path).catch(() => {});
+      }
+      item.imported = true;
+      item.importError = '';
+      saveTurnaroundPending(pendingTurnaroundJobs);
+    };
     const renderWatchBar = () => {
       if (!watchBar?.isConnected) return;
-      const doneCount = activeWatchJobs.filter((j) => j.status === 'succeeded').length;
+      const doneCount = activeWatchJobs.filter((j) => j.status === 'succeeded' && j.imported).length;
       const failCount = activeWatchJobs.filter((j) => j.status === 'failed' || j.status === 'cancelled').length;
+      const retryable = activeWatchJobs.filter((j) => j.status === 'succeeded' && !j.imported && j.importError);
       const summaryText = activeWatchJobs.map((j) => {
-        const tag = j.status === 'succeeded' ? '✓'
+        const tag = j.status === 'succeeded'
+          ? (j.imported ? '✓ 已入槽' : (j.importError ? '⚠ 入槽失败' : '待入槽'))
           : (j.status === 'failed' || j.status === 'cancelled' ? '✗' : '生成中');
         return `${j.label} ${tag}`;
       }).join(' · ');
@@ -1101,42 +1228,63 @@ export function mountDetail(root, id) {
         watchBar.textContent = `设定图生成未完成：${activeWatchJobs[0].error || '请前往生成中心查看'}`;
         return;
       }
-      watchBar.className = 'bar info ad-tv-watch';
-      watchBar.innerHTML = `🎨 正在生成角色设定图（已完成 ${doneCount}/${activeWatchJobs.length}）：${escapeHtml(summaryText)} <a href="#generate/0">去生成中心查看</a>`;
+      watchBar.className = retryable.length ? 'bar bad ad-tv-watch' : 'bar info ad-tv-watch';
+      const retryBtnHtml = retryable.length
+        ? ' <button type="button" class="btn xs" id="ad-tv-retry-import">重试补入槽</button>'
+        : '';
+      watchBar.innerHTML = `🎨 角色设定图进度（已入槽 ${doneCount}/${activeWatchJobs.length}）：${escapeHtml(summaryText)}${retryBtnHtml} <a href="#generate/0">去生成中心查看</a>`;
+      watchBar.querySelector('#ad-tv-retry-import')?.addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        for (const item of retryable) {
+          try { await tryImportSlot(item); } catch (err) { item.importError = err?.message || '入槽失败'; }
+        }
+        saveTurnaroundPending(pendingTurnaroundJobs);
+        renderWatchBar();
+        if (activeWatchJobs.every((j) => j.imported || j.status === 'failed' || j.status === 'cancelled')) {
+          saveTurnaroundPending(pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId)));
+          refresh();
+        }
+      });
     };
+    renderWatchBar();
     (async () => {
       for (let i = 0; i < 180; i += 1) {
-        await new Promise((r) => setTimeout(r, 2500));
         if (!root.isConnected || !pendingTurnaroundJobs.some((j) => batchIds.has(j.jobId))) return;
         let importedAny = false;
+        let changed = false;
         for (const item of activeWatchJobs) {
-          if (['succeeded', 'failed', 'cancelled'].includes(item.status)) continue;
+          if (item.imported || item.status === 'failed' || item.status === 'cancelled') continue;
           try {
-            const gen = await api.assetGeneration(store.currentId, item.jobId);
-            if (!root.isConnected || !pendingTurnaroundJobs.some((j) => batchIds.has(j.jobId))) return;
-            item.status = gen.status;
-            if (gen.status === 'succeeded') {
-              const imported = await api.assetImportImage(a.id, { job_id: item.jobId });
-              if (imported?.path) {
-                await api.setAssetImagePurpose(a.id, {
-                  path: imported.path, variant_id: null, purpose: item.purpose,
-                });
-                if (item.purpose === '面部特写') {
-                  await api.setAssetCover(a.id, imported.path).catch(() => {});
-                }
+            if (item.status !== 'succeeded') {
+              const gen = await api.assetGeneration(store.currentId, item.jobId);
+              if (!root.isConnected || !pendingTurnaroundJobs.some((j) => batchIds.has(j.jobId))) return;
+              if (item.status !== gen.status) { item.status = gen.status; changed = true; }
+              if (gen.status === 'failed' || gen.status === 'cancelled') {
+                item.error = gen.error || publicStatus(gen.status);
+                changed = true;
+                continue;
               }
-              importedAny = true;
-            } else if (gen.status === 'failed' || gen.status === 'cancelled') {
-              item.error = gen.error || publicStatus(gen.status);
+            }
+            if (item.status === 'succeeded' && !item.imported) {
+              try {
+                await tryImportSlot(item);
+                importedAny = true;
+                changed = true;
+              } catch (err) {
+                item.importError = err?.message || '入槽失败';
+                changed = true;
+              }
             }
           } catch {
             // 网络抖动时继续下一轮
           }
         }
+        if (changed) saveTurnaroundPending(pendingTurnaroundJobs);
         renderWatchBar();
-        const allSettled = activeWatchJobs.every((j) => ['succeeded', 'failed', 'cancelled'].includes(j.status));
+        const allSettled = activeWatchJobs.every((j) => j.imported || j.status === 'failed' || j.status === 'cancelled');
         if (allSettled) {
-          pendingTurnaroundJobs = pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId));
+          saveTurnaroundPending(pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId)));
           refresh();
           return;
         }
@@ -1144,8 +1292,9 @@ export function mountDetail(root, id) {
           refresh();
           return;
         }
+        await new Promise((r) => setTimeout(r, 2500));
       }
-      pendingTurnaroundJobs = pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId));
+      saveTurnaroundPending(pendingTurnaroundJobs.filter((j) => !batchIds.has(j.jobId)));
     })();
   }
 

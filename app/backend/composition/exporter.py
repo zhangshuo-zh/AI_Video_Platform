@@ -5,11 +5,13 @@ import io
 import json
 import uuid
 import zipfile
+from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
 import jobfiles
 from composition import service as composition_service
 from composition import subtitles
+from composition.timeline import crossfade_overlap_ms
 from composition.validators import resolve_timeline_media
 from repositories.compositions import compositions
 
@@ -28,12 +30,16 @@ def _build_fcpxml(ep_tag: str, shots: list[dict], audio: list[dict],
     spine_items: list[str] = []
     audio_clips_xml: list[str] = []
     offset_ms = 0
+    prev_dur_ms = 0
 
     for idx, s in enumerate(shots):
         res_id = f"r_v{idx + 1}"
         seq = int(s.get("seq") or idx + 1)
         rel_name = xml_escape(s.get("_export_rel") or f"media/{ep_tag}_Shot{seq:03d}.mp4")
         dur_ms = max(100, int(s.get("duration_ms") or 1000))
+        if idx > 0:
+            ov_ms = crossfade_overlap_ms(prev_dur_ms, dur_ms, str(s.get("transition") or "cut"))
+            offset_ms = max(0, offset_ms - ov_ms)
         trim_in_ms = max(0, int(s.get("trim_in_ms") or 0))
         title = xml_escape(f"{ep_tag}_Shot{seq:03d}")
         resources.append(
@@ -47,6 +53,7 @@ def _build_fcpxml(ep_tag: str, shots: list[dict], audio: list[dict],
             f'duration="{_fcpxml_time(dur_ms, fps)}"/>'
         )
         offset_ms += dur_ms
+        prev_dur_ms = dur_ms
 
     for idx, a in enumerate(audio):
         res_id = f"r_a{idx + 1}"
@@ -92,10 +99,15 @@ def _build_jianying_draft(ep_tag: str, shots: list[dict], audio: list[dict],
     audio_segments: list[dict] = []
 
     cursor_us = 0
+    prev_dur_ms = 0
     for idx, s in enumerate(shots):
         seq = int(s.get("seq") or idx + 1)
         rel_name = s.get("_export_rel") or f"media/{ep_tag}_Shot{seq:03d}.mp4"
-        dur_us = max(100, int(s.get("duration_ms") or 1000)) * 1000
+        dur_ms = max(100, int(s.get("duration_ms") or 1000))
+        if idx > 0:
+            ov_ms = crossfade_overlap_ms(prev_dur_ms, dur_ms, str(s.get("transition") or "cut"))
+            cursor_us = max(0, cursor_us - ov_ms * 1000)
+        dur_us = dur_ms * 1000
         trim_in_us = max(0, int(s.get("trim_in_ms") or 0)) * 1000
         mat_id = str(uuid.uuid4())
         materials_videos.append({
@@ -116,6 +128,7 @@ def _build_jianying_draft(ep_tag: str, shots: list[dict], audio: list[dict],
             "transition": str(s.get("transition") or "cut"),
         })
         cursor_us += dur_us
+        prev_dur_ms = dur_ms
 
     for idx, a in enumerate(audio):
         cid = int(a.get("clip_id") or idx + 1)
@@ -177,27 +190,47 @@ def build_export_bundle_zip(composition_id: int) -> tuple[bytes, str]:
     shots = [dict(s) for s in (timeline.get("shots") or [])]
     audio = [dict(a) for a in (timeline.get("audio") or [])]
 
+    missing: list[str] = []
+    shot_sources: list[tuple[dict, Path, str]] = []
+    for idx, shot in enumerate(shots):
+        seq = int(shot.get("seq") or idx + 1)
+        vinfo = shot.get("video") or {}
+        src = resolve_timeline_media(vinfo)
+        suffix = src.suffix if src is not None and src.suffix else ".mp4"
+        export_rel = f"media/{ep_tag}_Shot{seq:03d}{suffix}"
+        shot["_export_rel"] = export_rel
+        if src is None or not src.is_file():
+            ver = vinfo.get("job_id") or vinfo.get("path") or "未知版本"
+            missing.append(f"第 {seq} 镜视频素材缺失（{ver}）")
+        else:
+            shot_sources.append((shot, src, export_rel))
+
+    audio_sources: list[tuple[dict, Path, str]] = []
+    for idx, clip in enumerate(audio):
+        cid = int(clip.get("clip_id") or idx + 1)
+        src = jobfiles.resolve_artifact(str(clip.get("path") or ""))
+        suffix = src.suffix if src is not None and src.suffix else ".wav"
+        kind = str(clip.get("kind") or "audio")
+        export_rel = f"audio/{ep_tag}_Audio{cid:03d}_{kind}{suffix}"
+        clip["_export_rel"] = export_rel
+        if src is None or not src.is_file():
+            ref = clip.get("path") or f"Audio#{cid}"
+            missing.append(f"音轨 #{cid}（{kind}）素材缺失（{ref}）")
+        else:
+            audio_sources.append((clip, src, export_rel))
+
+    if missing:
+        raise composition_service.CompositionInvalid(
+            "导出工程包失败，以下媒体文件缺失：" + "；".join(missing)
+        )
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for idx, shot in enumerate(shots):
-            seq = int(shot.get("seq") or idx + 1)
-            vinfo = shot.get("video") or {}
-            src = resolve_timeline_media(vinfo)
-            suffix = src.suffix if src is not None and src.suffix else ".mp4"
-            export_rel = f"media/{ep_tag}_Shot{seq:03d}{suffix}"
-            shot["_export_rel"] = export_rel
-            if src is not None and src.is_file():
-                zf.write(src, arcname=export_rel)
+        for _shot, src, export_rel in shot_sources:
+            zf.write(src, arcname=export_rel)
 
-        for idx, clip in enumerate(audio):
-            cid = int(clip.get("clip_id") or idx + 1)
-            src = jobfiles.resolve_artifact(str(clip.get("path") or ""))
-            suffix = src.suffix if src is not None and src.suffix else ".wav"
-            kind = str(clip.get("kind") or "audio")
-            export_rel = f"audio/{ep_tag}_Audio{cid:03d}_{kind}{suffix}"
-            clip["_export_rel"] = export_rel
-            if src is not None and src.is_file():
-                zf.write(src, arcname=export_rel)
+        for _clip, src, export_rel in audio_sources:
+            zf.write(src, arcname=export_rel)
 
         srt_rel = f"subtitles/{ep_tag}.srt"
         sub_list = timeline.get("subtitles") or []

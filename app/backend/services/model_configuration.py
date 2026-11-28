@@ -46,7 +46,13 @@ def _item_of(reg_id: int) -> dict:
     return item or {}
 
 
-def _tier_problem(capability: str, provider: str, model_code: str) -> str:
+def _policy_adapter(capability: str, provider: str, mode: str):
+    modes = (mode,) if mode else ("local", "cloud")
+    return next((a for backend in modes
+                 if (a := adapters.find(capability, backend, provider)) is not None), None)
+
+
+def _tier_problem(capability: str, provider: str, model_code: str, mode: str) -> str:
     """这一档能不能被写进策略。空串代表没问题，否则返回一句给人看的话。
 
     三种毛病分开说，因为它们要改的地方不一样：
@@ -56,10 +62,10 @@ def _tier_problem(capability: str, provider: str, model_code: str) -> str:
       * 模型标识不是这一档清单里的 —— 手滑的拼写在这里就挡住，
         不要等到提交作业时才说"候选为空"。
     """
-    adapter = next((a for backend in ("local", "cloud")
-                    if (a := adapters.find(capability, backend, provider)) is not None), None)
+    adapter = _policy_adapter(capability, provider, mode)
     if adapter is None:
-        return f"「{provider}」不在清单里，平台不会替它猜参数"
+        where = f"在 {mode} 下" if mode else ""
+        return f"「{provider}」{where}不在清单里，平台不会替它猜参数"
     if not adapter.models:
         return (f"「{provider}」在清单里只登记了名字、没有模型档："
                 "参数没核过，不能写进策略")
@@ -165,9 +171,11 @@ def policies_payload() -> dict:
             # 界面不自己发明第四份标签名单，与派生标签严格同源。
             "producible": sorted(producible[d["capability"]]),
             "slot_provider": d["slot_provider"], "slot_model": d["slot_model"],
+            "suggested_mode": d.get("suggested_mode") or "",
             "preference": d["preference"],
             "preference_label": POLICY_PREFERENCES.get(d["preference"], d["preference"]),
             "fallback_provider": d["fallback_provider"], "fallback_model": d["fallback_model"],
+            "fallback_mode": d.get("fallback_mode") or "",
             "resource_limit": validations.json_loads(d["resource_limit_json"]),
             "cloud_confirm_required": bool(d["cloud_confirm_required"]),
             "enabled": bool(d["enabled"]), "updated_at": d["updated_at"],
@@ -321,6 +329,22 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict[str, Any]:
                ("scene_key", "slot_provider", "slot_model", "fallback_provider", "fallback_model")})
                for item in payload]
     known = {row["scene_key"]: dict(row) for row in model_center.policies()}
+    normalized = []
+    for item in payload:
+        previous = known.get(item.scene_key, {})
+        updates = {}
+        for mode, provider, model in (
+            ("suggested_mode", "slot_provider", "slot_model"),
+            ("fallback_mode", "fallback_provider", "fallback_model"),
+        ):
+            value = getattr(item, mode)
+            if mode not in item.model_fields_set:
+                same_route = (item.capability, getattr(item, provider), getattr(item, model)) == (
+                    previous.get("capability"), previous.get(provider), previous.get(model))
+                value = previous.get(mode) if same_route else None
+            updates[mode] = (value or "").strip()
+        normalized.append(item.model_copy(update=updates))
+    payload = normalized
     producible = {cap: mc.producible_tags(cap) for cap in CAPABILITIES}
     errors: list[str] = []
     seen: set[str] = set()
@@ -347,18 +371,25 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict[str, Any]:
                             "这一轴的标签全集里（能选的与清单派生的同一份）")
         if item.preference not in POLICY_PREFERENCES:
             errors.append(f"{item.scene_key}：偏好只能是 本地／云端／远程自建／不限")
-        if item.slot_provider:
-            problem = _tier_problem(item.capability, item.slot_provider, item.slot_model)
-            if problem:
-                errors.append(f"{item.scene_key}：建议轨{problem}")
-        if item.slot_provider and item.fallback_provider == item.slot_provider \
-                and item.fallback_model == item.slot_model:
-            errors.append(f"{item.scene_key}：备用轨和建议轨是同一档，等于没有备用")
-        if item.fallback_provider:
-            problem = _tier_problem(item.capability, item.fallback_provider,
-                                    item.fallback_model)
-            if problem:
-                errors.append(f"{item.scene_key}：备用轨{problem}")
+        for label, provider, model, mode in (
+            ("建议轨", item.slot_provider, item.slot_model, item.suggested_mode),
+            ("备用轨", item.fallback_provider, item.fallback_model, item.fallback_mode),
+        ):
+            if mode not in ("", "local", "cloud"):
+                errors.append(f"{item.scene_key}：{label}执行方式只能是 local／cloud 或空串")
+            elif provider:
+                problem = _tier_problem(item.capability, provider, model, mode)
+                if problem:
+                    errors.append(f"{item.scene_key}：{label}{problem}")
+        if item.slot_provider and (item.slot_provider, item.slot_model) == (
+            item.fallback_provider, item.fallback_model
+        ):
+            suggested = _policy_adapter(item.capability, item.slot_provider, item.suggested_mode)
+            fallback = _policy_adapter(item.capability, item.fallback_provider, item.fallback_mode)
+            if item.suggested_mode == item.fallback_mode or (
+                suggested is not None and fallback is not None and suggested.backend == fallback.backend
+            ):
+                errors.append(f"{item.scene_key}：备用轨和建议轨是同一档，等于没有备用")
         if item.enabled and not (item.slot_provider and item.slot_model):
             errors.append(f"{item.scene_key}：要启用就得选一条建议轨，provider 和模型都不能为空")
     if errors:
@@ -374,7 +405,9 @@ def save_policies(payload: list[ModelPolicyIn], user_id: int) -> dict[str, Any]:
             after["scene_label"] = before["scene_label"]
         previous = {key: before[key] for key in after
                     if key not in {"required", "resource_limit", "enabled", "cloud_confirm_required"}}
-        previous.update(required=_retained_required(before["required_json"]),
+        previous.update(suggested_mode=before.get("suggested_mode") or "",
+                        fallback_mode=before.get("fallback_mode") or "",
+                        required=_retained_required(before["required_json"]),
                         resource_limit=validations.json_loads(before["resource_limit_json"]),
                         enabled=bool(before["enabled"]),
                         cloud_confirm_required=bool(before["cloud_confirm_required"]))

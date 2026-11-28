@@ -60,8 +60,8 @@ class JobsRetryMixin:
                         params_json, input_refs_json, status, priority, idempotency_key,
                         retry_of_job_id, attempt, user_confirmed_cloud, quantity, unit,
                         unit_price_micros, cost_micros, currency, pricing_snapshot_json,
-                        billable_status, source_version, created_by)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        billable_status, source_version, created_by, engine_instance_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (original["project_id"], original["episode_id"], original["shot_id"],
                      original["capability"], original["kind"], original["execution_mode"],
                      original["provider_code"], original["model_code"],
@@ -74,7 +74,7 @@ class JobsRetryMixin:
                      original["cost_micros"], original["currency"],
                      original["pricing_snapshot_json"], billable,
                      original["source_version"] if "source_version" in original.keys() else "",
-                     created_by),
+                     created_by, original["engine_instance_id"] if "engine_instance_id" in original.keys() else None),
                 )
             conn.execute(
                 """UPDATE job SET superseded_by_job_id = ?,

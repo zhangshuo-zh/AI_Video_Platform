@@ -18,6 +18,9 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from services.errors import JobInvalid
+from services.jobs_pkg.admission import COMFYUI_ROUTE, resolve_job_route
+
 from schemas.enums import ValidationKind, ValidationState
 
 import adapters
@@ -116,9 +119,20 @@ def available_providers(
     matrix = validation_repo.latest_matrix(
         {(r["capability"], r["backend"], r["provider"], r["model"])
          for r in rows}, by_model=True)
+    registrations = registration_repo.registrations()
+    disabled_keys = {(r["capability"], r["backend"], r["provider"], r["model_code"])
+                     for r in registrations if not r["enabled"]}
+    try:
+        comfy_route = resolve_job_route(*COMFYUI_ROUTE)
+    except JobInvalid:
+        comfy_route = None
+
     out: list[ProviderOptionOut] = []
     for row in rows:
         if not row["enabled"] or not row["provider"].strip() or not row["model"].strip():
+            continue
+        key = _slot_model_key(row)
+        if key in disabled_keys or key == COMFYUI_ROUTE:
             continue
         adapter = adapters.find(row["capability"], row["backend"], row["provider"])
         # 提交弹窗要读这一份，所以同样用列表档超时：一个端点不通不该让弹窗卡住。
@@ -149,16 +163,11 @@ def available_providers(
     #   ① 只列**清单里有适配器**的档——参数白名单在 adapters.py，没有它不能拼命令；
     #   ② 只列**已启用**的登记（`model_registration.enabled`）；
     #   ③ 与槽位重复的不再列一遍（槽位那份已经在上面的循环里，且带槽位级的健康）。
-    slot_keys = {(r["capability"], r["backend"], r["provider"], r["model"])
-                 for r in rows}
+    slot_keys = {(o.capability, o.backend, o.provider, o.model) for o in out}
     extra: list[dict] = []
-    disabled_keys: set[tuple[str, str, str, str]] = set()
-    for reg in registration_repo.registrations():
+    for reg in registrations:
         key = (reg["capability"], reg["backend"], reg["provider"], reg["model_code"])
-        if not reg["enabled"]:
-            disabled_keys.add(key)
-            continue
-        if key in slot_keys:
+        if not reg["enabled"] or key == COMFYUI_ROUTE or key in slot_keys:
             continue
         adapter = adapters.find(reg["capability"], reg["backend"], reg["provider"])
         if adapter is None:
@@ -257,22 +266,23 @@ def available_providers(
                     health_detail="本机 Ollama 实时在线模型",
                     models=[],
                 ))
-        # 4) 启用的 ComfyUI 节点可直接提交工作流，权重由节点提供。
-        comfy_key = ("image", "local", "comfyui", "comfyui-workflow")
-        if comfy_key not in seen_keys and comfy_key not in disabled_keys:
-            comfy_instance = engine_instances.pick("comfyui")
-            comfy_adapter = adapters.find("image", "local", "comfyui")
-            if comfy_instance is not None and comfy_adapter is not None:
-                label = comfy_instance["display_name"] or comfy_instance["endpoint"]
-                out.append(ProviderOptionOut(
-                    capability="image", capability_label=CAPABILITIES["image"],
-                    backend="local", backend_label=BACKENDS["local"],
-                    provider="comfyui", model="comfyui-workflow",
-                    adapter_label=f"ComfyUI（{label}）",
-                    health_state="ok",
-                    health_detail=f"已启用 ComfyUI 节点（{label}），可直接生成参考图",
-                    models=[m.as_dict() for m in comfy_adapter.models],
-                ))
+    if comfy_route is not None:
+        instance = comfy_route["instance"]
+        label = instance["display_name"] or instance["endpoint"]
+        capability, backend, provider, model = COMFYUI_ROUTE
+        option_row = comfy_route["row"]
+        if COMFYUI_ROUTE not in matrix:
+            matrix.update(validation_repo.latest_matrix({COMFYUI_ROUTE}, by_model=True))
+        badge, at = validations.badge(validations.summary_for(
+            option_row, matrix.get(COMFYUI_ROUTE, {})))
+        out.append(ProviderOptionOut(
+            capability=capability, capability_label=CAPABILITIES[capability],
+            backend=backend, backend_label=BACKENDS[backend], provider=provider, model=model,
+            adapter_label=f"ComfyUI（{label}）", health_state="ok",
+            health_detail=f"已启用 ComfyUI 节点（{label}），可直接生成参考图",
+            validation_state=badge, validation_at=at,
+            models=[m.as_dict() for m in comfy_route["adapter"].models],
+        ))
     if ALLOW_MOCK:
         # 演示/自测开关（FASTVIDEO_ALLOW_MOCK=1，生产默认关闭）打开时，给每类能力补一条
         # 身份写明"不执行模型"的假槽位。为什么非要它进这份清单：这台机器上文本轨被

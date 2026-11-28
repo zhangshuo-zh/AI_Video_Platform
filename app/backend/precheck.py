@@ -29,6 +29,7 @@ import shutil
 
 import adapters
 import diskplan
+import engines
 import jobfiles
 import pipeline
 import services
@@ -37,6 +38,8 @@ from composition import subtitles as subtitles_mod
 from composition import timeline as timeline_mod
 from repositories.content import assets, episodes, shots, variants
 from repositories.production import production
+from services.errors import JobInvalid
+from services.jobs_pkg.admission import check_current_engine_model, resolve_job_route
 
 PASS = "通过"
 WARN = "警告"
@@ -195,50 +198,47 @@ def _rollup(items: list[dict]) -> dict:
 
 
 def _model_items(capability: str, execution_mode: str | None,
-                 provider: str = "", model: str = "",
-                 params: dict | None = None,
-                 confirmed_cloud: bool = False) -> tuple[list[dict], dict]:
-    """模型与环境那一组：默认轨、清单、健康、参数白名单、云端计费。
-
-    返回 (清单, 解析出来的路线)。`resolve_provider()` 失败不抛出去——
-    预检的意义就是把异常变成一行可读的阻塞项。
-    """
-    import services as _s
-
+                 provider_code: str | None = None, model_code: str | None = None,
+                 params: dict | None = None, confirmed_cloud: bool = False,
+                 engine_instance_id: int | None = None) -> tuple[list[dict], dict]:
+    """按提交准入解析路线，健康信息只读取本机配置和已有探测结果。"""
     items: list[dict] = []
-    route: dict = {}
     try:
-        route = _s.resolve_provider(capability, execution_mode,
-                                    confirmed_cloud=confirmed_cloud)
-    except _s.NoRoute as exc:
-        items.append(_item("model.route", BLOCK, str(exc), LOCATE["models"]))
-        return items, route
+        route = resolve_job_route(capability, execution_mode, (provider_code or "").strip(),
+                                  (model_code or "").strip(), confirmed_cloud=confirmed_cloud,
+                                  engine_instance_id=engine_instance_id)
+    except JobInvalid as exc:
+        return [_item("model.route", BLOCK, str(exc), LOCATE["models"])], {}
 
-    provider = provider or route["provider"]
-    model = model or route["model"]
-    adapter = adapters.find(capability, route["backend"], provider)
-    if adapter is None:
-        items.append(_item("model.manifest", BLOCK,
-                           f"provider「{provider}」不在清单里，平台不会猜它的参数",
-                           LOCATE["models"]))
-    else:
-        # 预检是**只读、确定性**的（本文件第 1 条纪律）：不发请求、不写状态。
-        # 服务型引擎那一档在 probe_service=False 下返回 unknown + probe_deferred，
-        # 由 `test_read_path_debt.py` 的「预检不发请求」守着。
+    adapter = route["adapter"]
+    instance = route["instance"]
+    if instance is None:
         health = adapters.health(route["row"], probe_service=False)
-        if health["state"] != "ok":
-            items.append(_item("model.health", BLOCK,
-                              f"{adapter.label} 现在不可用：{health['detail']}",
-                              LOCATE["models"]))
+        level = PASS if health["state"] == "ok" else BLOCK
+        detail = health["detail"]
+    elif route["is_comfyui"]:
+        level = PASS
+        detail = f"已启用实例 #{instance['id']}（{instance['display_name'] or instance['endpoint']}）"
+    else:
+        cached = engines.peek(adapter.code, instance["endpoint"])
+        status = cached[0] if cached is not None and cached[1] <= engines.PROBE_TTL_SECONDS else None
+        if status is None:
+            level, detail = WARN, f"实例 #{instance['id']} 已启用，尚无近期连接检查结果"
         else:
-            items.append(_item("model.health", PASS,
-                              f"{adapter.label}：{health['detail']}"))
-        errors = adapters.validate_params(adapter, model, params or {})
-        for err in errors:
-            items.append(_item("model.params", BLOCK, f"参数不成立：{err}",
-                               LOCATE["generate"]))
-        if not errors:
-            items.append(_item("model.params", PASS, "参数在清单白名单内"))
+            level, detail = (PASS if status.state == "ok" else BLOCK), status.detail
+        if adapter.code in engines.MODEL_GATED_ENGINES:
+            try:
+                check_current_engine_model(adapter, route["registration"], status)
+            except JobInvalid as exc:
+                level, detail = BLOCK, str(exc)
+    items.append(_item("model.health", level, f"{adapter.label}：{detail}",
+                       LOCATE["models"] if level != PASS else None))
+
+    errors = adapters.validate_params(adapter, route["model"], params or {})
+    for err in errors:
+        items.append(_item("model.params", BLOCK, f"参数不成立：{err}", LOCATE["generate"]))
+    if not errors:
+        items.append(_item("model.params", PASS, "参数在清单白名单内"))
     if route.get("backend") == "cloud":
         if not confirmed_cloud:
             items.append(_item("cost.cloud", BLOCK,
@@ -254,7 +254,9 @@ def _model_items(capability: str, execution_mode: str | None,
 def shot_precheck(shot_id: int, *, capability: str = "video",
                   execution_mode: str | None = None,
                   params: dict | None = None,
-                  confirmed_cloud: bool = False) -> dict:
+                  confirmed_cloud: bool = False,
+                  provider_code: str | None = None, model_code: str | None = None,
+                  engine_instance_id: int | None = None) -> dict:
     """一镜的生成前预检：内容 → 资产 → 模型 → 环境 → 费用 → 资源。"""
     items: list[dict] = []
     shot = shots.get(shot_id)
@@ -301,9 +303,9 @@ def shot_precheck(shot_id: int, *, capability: str = "video",
                           LOCATE["storyboard"]))
 
     # ③④⑤ 模型 / 环境 / 费用
-    model_items, route = _model_items(capability, execution_mode,
-                                      params=params,
-                                      confirmed_cloud=confirmed_cloud)
+    model_items, route = _model_items(capability, execution_mode, provider_code, model_code,
+                                      params=params, confirmed_cloud=confirmed_cloud,
+                                      engine_instance_id=engine_instance_id)
     items += model_items
 
     # ⑥ 资源：worker 与队列。这两个不阻断——排队是正常的，离线才要提醒
@@ -354,6 +356,8 @@ def shot_precheck(shot_id: int, *, capability: str = "video",
     out["shot_id"] = int(shot_id)
     out["route"] = {k: route.get(k) for k in ("backend", "provider", "model")} \
         if route else {}
+    if route and route["instance"] is not None:
+        out["route"]["engine_instance_id"] = route["instance"]["id"]
     return out
 
 

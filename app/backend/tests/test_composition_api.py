@@ -218,3 +218,32 @@ def test_自动字幕采用成功视频的实际时长(stage):
     path = subtitles.generate_srt_from_shots(stage["project_id"], stage["episode_id"])
     saved = jobfiles.resolve_subtitle(stage["project_id"], path)
     assert saved is not None and saved.read_text() == text
+
+
+def test_导出工程沿用叠化时间码且缺件拦截(stage):
+    from composition.exporter import _build_fcpxml, _build_jianying_draft, build_export_bundle_zip
+    from composition import service as composition_service
+    from repositories.compositions import compositions
+    import jobfiles
+
+    shots = [
+        {"seq": 1, "duration_ms": 4000, "transition": "cut", "video": {"path": "missing/v1.mp4"}},
+        {"seq": 2, "duration_ms": 4000, "transition": "crossfade", "video": {"path": "missing/v2.mp4"}},
+    ]
+    draft = _build_jianying_draft("S01E01", shots, [], "", 1280, 720)
+    assert draft["duration"] == 7_700_000
+    assert draft["tracks"][0]["segments"][1]["target_timerange"]["start"] == 3_700_000
+    fcpxml = _build_fcpxml("S01E01", shots, [], 24, 1280, 720)
+    assert 'duration="185/24s"' in fcpxml  # round(7.7 * 24) = 185
+
+    comp = compositions.create(
+        project_id=stage["project_id"], episode_id=stage["episode_id"],
+        pipeline_run_id=None, version=99,
+        timeline={"shots": shots, "audio": [], "subtitles": []},
+        params={"width": 1280, "height": 720, "fps": 24},
+        job_id=None, created_by=None,
+    )
+    with pytest.raises(composition_service.CompositionInvalid) as exc:
+        build_export_bundle_zip(comp["id"])
+    assert "第 1 镜视频素材缺失" in str(exc.value)
+    assert "第 2 镜视频素材缺失" in str(exc.value)

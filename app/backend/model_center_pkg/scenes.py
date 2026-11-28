@@ -37,6 +37,8 @@ def _resolve(row: dict[str, Any], required: list[str]) -> dict[str, Any]:
         "preference": row["preference"],
         "slot_provider": str(row.get("slot_provider") or ""),
         "slot_model": str(row.get("slot_model") or ""),
+        "suggested_mode": row.get("suggested_mode") or "",
+        "fallback_mode": row.get("fallback_mode") or "",
         "enabled": bool(row["enabled"]),
         "cloud_confirm_required": bool(row["cloud_confirm_required"]),
         "candidates": [], "blockers": [],
@@ -93,8 +95,11 @@ def _resolve(row: dict[str, Any], required: list[str]) -> dict[str, Any]:
             # 只有显示名会认不出来（显示名是可以随便改的）
             out["blockers"].append(f"{label}（{r['model_code']}）：" + "；".join(reasons))
             continue
-        role = "fallback" if (r["provider"] == row["fallback_provider"]
-                              and r["model_code"] == row["fallback_model"]) else "primary"
+        is_fallback = (
+            (r["provider"], r["model_code"]) == (row["fallback_provider"], row["fallback_model"])
+            and out["fallback_mode"] in ("", r["backend"])
+        )
+        role = "fallback" if is_fallback else "primary"
         out["candidates"].append({
             "registration_id": r["registration_id"], "provider": r["provider"],
             "model_code": r["model_code"], "backend": r["backend"],

@@ -578,3 +578,34 @@ def test_跨集资产影响批量加载源依赖且不缓存变更(fresh_project
     assert after["counts"]["stale"] == 12
     subset = production.asset_impact(asset["id"], only_shot_ids={next(iter(expected))})
     assert subset["counts"]["referencing"] == 1
+
+
+def test_先失败后成功不计为失败且解析排队不误报已处置(as_role, fresh_project, clean_queue):
+    from db import get_conn
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    eid = _episode(c, pid)
+    s1 = _shot(c, eid)["id"]
+    j_fail = job_repo.create({"project_id": pid, "episode_id": eid, "shot_id": s1,
+                              "capability": "video", "kind": "video_local",
+                              "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1"})
+    j_ok = job_repo.create({"project_id": pid, "episode_id": eid, "shot_id": s1,
+                            "capability": "video", "kind": "video_local",
+                            "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1"})
+    with get_conn() as conn:
+        conn.execute("UPDATE job SET status = 'failed' WHERE id = ?", (j_fail["id"],))
+        conn.execute("UPDATE job SET status = 'succeeded' WHERE id = ?", (j_ok["id"],))
+    doc = services.create_document(pid, eid, "script", "第1集", "正文", "editor")["row"]
+    j_parse = job_repo.create({"project_id": pid, "episode_id": eid,
+                               "capability": "text", "kind": "text",
+                               "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1"})
+    services.extraction_runs.create_run(
+        project_id=pid, doc_id=doc["id"], job_id=j_parse["id"],
+        doc_title=doc["title"], base_version="v1", content_hash="h1",
+        model_code="mock-1", prompt_version="v1", created_by=None,
+    )
+    board = production.episode_board(pid, eid)
+    stages = {st["key"]: st for st in board["stages"]}
+    assert stages["video"]["done"] == 1 and stages["video"]["failed"] == 0
+    assert stages["parse"]["status"] == "进行中"
+    assert "排队或运行中" in stages["parse"]["note"]

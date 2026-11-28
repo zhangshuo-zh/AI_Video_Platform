@@ -166,6 +166,7 @@ class AssetGenIn(BaseModel):
     execution_mode: Literal["local", "cloud"] | None = None
     provider_code: str = Field(default="", max_length=80)
     model_code: str = Field(default="", max_length=120)
+    engine_instance_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     params: dict = {}
     estimate: JobEstimateIn | None = None
     user_confirmed_cloud: bool = False
@@ -193,6 +194,7 @@ class AssetGenOut(BaseModel):
     execution_mode: str
     provider_code: str
     model_code: str
+    engine_instance_id: int | None = None
     cost_micros: int
     currency: str
     billable_status: str

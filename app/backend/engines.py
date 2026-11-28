@@ -30,12 +30,13 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import safenet
-from engine_http_run import _comfyui_headers
-from repositories.engine_instances import engine_instances
+from engine_http_run import _comfyui_checkpoints, _comfyui_headers, _comfyui_pick_checkpoint
+from repositories.engine_instances import EngineInstanceError, engine_instances
 
 # 这一族引擎的状态来自"打一次本机服务"，不是"看一次文件系统"。
 # 清单与界面都用这个集合判断该走哪条探测路，避免出现第二份名单。
@@ -97,14 +98,28 @@ PROBE_TTL_SECONDS = 15.0
 _PROBE_CACHE: dict[tuple[str, str], tuple[float, EngineStatus]] = {}
 
 
+def resolve_instance(engine_code: str, instance_id: int | None = None):
+    """读取默认启用实例，或严格检查作业绑定的实例。"""
+    if instance_id is None:
+        return engine_instances.pick(engine_code)
+    instance = engine_instances.instance(instance_id)
+    if instance is None:
+        raise EngineInstanceError(f"引擎实例 #{instance_id} 不存在或已删除")
+    if instance["engine_code"] != engine_code:
+        raise EngineInstanceError(f"引擎实例 #{instance_id} 与供应商 {engine_code} 不匹配")
+    if instance["enabled"] != 1:
+        raise EngineInstanceError(f"引擎实例 #{instance_id} 已停用")
+    return instance
+
+
 def resolve_endpoint(engine_code: str) -> str:
     """这一档引擎当前该打哪个地址。没有启用中的实例就返回空串（＝unknown 档）。
 
     只取 `enabled=1` 的第一条，**不轮询、不合并**：第一阶段一个引擎一台服务，
     真要多实例时"选哪台"得变成作业上的显式选择，不能在这里偷偷决定。
     """
-    row = engine_instances.pick(engine_code)
-    return (row["endpoint"] if row is not None else "")
+    row = resolve_instance(engine_code)
+    return row["endpoint"] if row is not None else ""
 
 
 def current_model(endpoint: str) -> tuple[str | None, str | None]:
@@ -138,9 +153,8 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
                          "平台不猜地址"}
     url = endpoint.rstrip("/") + path
     try:
-        headers = _comfyui_headers(secret_env)
-        if headers:
-            safenet.check_url(url)
+        headers = (_comfyui_headers(secret_env) if engine == "comfyui" or secret_env else {})
+        safenet.check_url(url)
         request = Request(url, method="GET", headers=headers)
         # 不跟随重定向：端点是人填的，一次 302 就能把它指去任何地方
         # （包括云元数据接口）。这里抛的 UnsafeTarget 是 ValueError 子类，
@@ -167,8 +181,32 @@ def _get_info_for(endpoint: str, engine_hint: str = "",
     return {"payload": payload}
 
 
+def comfyui_checkpoints(instance_id: int | None = None) -> dict:
+    try:
+        instance = resolve_instance("comfyui", instance_id)
+    except EngineInstanceError as exc:
+        return {"ok": False, "error": str(exc)}
+    if instance is None:
+        return {"ok": False, "error": "没有启用中的 ComfyUI 引擎实例"}
+
+    endpoint = instance["endpoint"]
+    instance_info = {"endpoint": endpoint, "display_name": instance["display_name"]}
+    try:
+        headers = _comfyui_headers(instance["shared_secret_env"])
+        names = _comfyui_checkpoints(endpoint, headers, timeout=_TIMEOUT_SECONDS)
+    except (OSError, HTTPException, ValueError) as exc:
+        reason = str(exc) or type(exc).__name__
+        return {**instance_info, "ok": False, "error": f"查询 ComfyUI 已安装模型失败：{reason}"}
+    return {
+        **instance_info,
+        "ok": True,
+        "checkpoints": names,
+        "recommended": _comfyui_pick_checkpoint(names) or "",
+    }
+
+
 def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,
-          timeout: float | None = None) -> EngineStatus:
+          timeout: float | None = None, instance=None) -> EngineStatus:
     """这一档服务型引擎现在能不能连上、当前选的是哪个权重。
 
     `fresh=True` 表示"人明确要求现查"（手动检查连接、环境检查），绕过短期缓存。
@@ -177,15 +215,11 @@ def probe(engine_code: str, endpoint: str = "", *, fresh: bool = False,
     """
     if engine_code not in SERVICE_ENGINES:
         return EngineStatus("unknown", "这一档不是本机服务型引擎，平台不猜它的状态", {})
-    secret_env = ""
-    if engine_code == "comfyui":
+    if instance is None:
         instance = (engine_instances.find(engine_code, endpoint.rstrip("/"))
-                    if endpoint else engine_instances.pick(engine_code))
-        address = endpoint or (instance["endpoint"] if instance is not None else "")
-        if instance is not None:
-            secret_env = instance["shared_secret_env"]
-    else:
-        address = endpoint or resolve_endpoint(engine_code)
+                    if endpoint else resolve_instance(engine_code))
+    address = instance["endpoint"] if instance is not None else endpoint
+    secret_env = instance["shared_secret_env"] if instance is not None else ""
     if not address:
         # 第三个参数不能省：`EngineStatus` 是 frozen dataclass，`values` 没有默认值。
         # 这一句在 W-B 那天起就没被走到过（那时表里还没有任何引擎会被判成服务型
@@ -237,7 +271,7 @@ def forget_probes() -> None:
 def _probe_now(engine_code: str, address: str,
                timeout: float | None = None, *, secret_env: str = "") -> EngineStatus:
     base = {"endpoint": address}
-    if engine_code == "comfyui":
+    if secret_env:
         base["shared_secret_env"] = secret_env
     info = _get_info_for(address, engine_code, timeout, secret_env=secret_env)
     if info.get("error"):

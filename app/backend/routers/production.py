@@ -107,6 +107,8 @@ def project_production(project_id: int, episode_id: int | None = None,
 def shot_precheck_api(shot_id: int, capability: str = "video",
                       execution_mode: str | None = None,
                       confirmed_cloud: bool = False,
+                      provider_code: str | None = None, model_code: str | None = None,
+                      engine_instance_id: int | None = Query(None, gt=0, le=2**63 - 1),
                       user=Depends(require_permission("job:read"))) -> dict:
     """一镜的生成前预检。参数不在这里收：界面选的那套参数由提交时的白名单兜。
 
@@ -117,7 +119,9 @@ def shot_precheck_api(shot_id: int, capability: str = "video",
     access.ensure_by("shot", shot_id, user, "read", "镜头")
     return precheck.shot_precheck(shot_id, capability=capability,
                                   execution_mode=execution_mode,
-                                  confirmed_cloud=confirmed_cloud)
+                                  confirmed_cloud=confirmed_cloud,
+                                  provider_code=provider_code, model_code=model_code,
+                                  engine_instance_id=engine_instance_id)
 
 
 @router.get("/projects/{project_id}/precheck", response_model=PrecheckOut)

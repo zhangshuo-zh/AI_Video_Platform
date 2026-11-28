@@ -113,11 +113,7 @@ class ProductionRepository:
                 "props": int(row["props"] or 0)}
 
     def extraction_runs(self, episode_id: int) -> dict:
-        """跑过几次抽取、一共出过多少候选、其中多少已经处置完。
-
-        工作台要能区分"没解析过"和"解析过且都处理完"——只看 pending 数做不到，
-        两者都是 0。
-        """
+        """跑过几次抽取、一共出过多少候选、其中多少已经处置完，以及最新解析任务状态。"""
         with get_conn() as conn:
             row = conn.execute(
                 """SELECT COUNT(DISTINCT r.id) AS runs,
@@ -127,8 +123,21 @@ class ProductionRepository:
                      JOIN document d ON d.id = r.doc_id
                      LEFT JOIN extraction_item i ON i.run_id = r.id
                     WHERE d.episode_id = ?""", (episode_id,)).fetchone()
+            latest = conn.execute(
+                """SELECT r.status AS run_status, j.status AS job_status,
+                          SUM(CASE WHEN j.status IN ('queued', 'starting', 'running', 'cancel_requested') THEN 1 ELSE 0 END)
+                              OVER () AS active_jobs
+                     FROM extraction_run r
+                     JOIN document d ON d.id = r.doc_id
+                     JOIN job j ON j.id = r.job_id
+                    WHERE d.episode_id = ?
+                    ORDER BY r.id DESC
+                    LIMIT 1""", (episode_id,)).fetchone()
         return {"runs": int(row["runs"] or 0), "items": int(row["items"] or 0),
-                "pending": int(row["pending"] or 0)}
+                "pending": int(row["pending"] or 0),
+                "active": int(latest["active_jobs"] or 0) if latest is not None else 0,
+                "latest_run_status": str(latest["run_status"]) if latest is not None else "",
+                "latest_job_status": str(latest["job_status"]) if latest is not None else ""}
 
     # ---------- 项目级资产 ----------
 
@@ -209,19 +218,29 @@ class ProductionRepository:
                 "no_refs": int(row["no_refs"] or 0)}
 
     def job_status_by_shot(self, episode_id: int) -> dict[str, dict[str, dict[str, int]]]:
-        """这一集每条镜头的最新作业状态，按能力归堆。
-
-        返回 `{"video": {"succeeded": 9, "failed": 1, ...}, "image": {...}, "text": {...}}`。
-        一次 GROUP BY 拿全，不在 Python 里逐镜查。
-        """
+        """这一集每条镜头每种能力的有效状态：有过成功即保留 succeeded，否则取最新状态。"""
         with get_conn() as conn:
             rows = conn.execute(
-                """SELECT j.capability AS capability, j.status AS status,
-                          COUNT(DISTINCT j.shot_id) AS shots, COUNT(*) AS n
-                     FROM job j
-                     JOIN shot s ON s.id = j.shot_id
-                    WHERE s.episode_id = ?
-                    GROUP BY j.capability, j.status""", (episode_id,)).fetchall()
+                """SELECT capability, eff_status AS status,
+                          COUNT(DISTINCT shot_id) AS shots, SUM(job_cnt) AS n
+                     FROM (
+                         SELECT j.shot_id, j.capability,
+                                COUNT(*) AS job_cnt,
+                                CASE
+                                    WHEN MAX(CASE WHEN j.status = 'succeeded' THEN 1 ELSE 0 END) = 1
+                                    THEN 'succeeded'
+                                    ELSE (
+                                        SELECT j2.status FROM job j2
+                                         WHERE j2.shot_id = j.shot_id AND j2.capability = j.capability
+                                         ORDER BY j2.id DESC LIMIT 1
+                                    )
+                                END AS eff_status
+                           FROM job j
+                           JOIN shot s ON s.id = j.shot_id
+                          WHERE s.episode_id = ?
+                          GROUP BY j.shot_id, j.capability
+                     )
+                    GROUP BY capability, eff_status""", (episode_id,)).fetchall()
         out: dict[str, dict[str, dict[str, int]]] = {}
         for r in rows:
             out.setdefault(r["capability"], {})[r["status"]] = {

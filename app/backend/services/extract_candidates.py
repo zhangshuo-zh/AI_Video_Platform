@@ -398,20 +398,19 @@ def extraction_import_shots(run_id: int, payload, user: dict) -> dict:
     _extract_run_materialize(run)
 
     req_episode_id = getattr(payload, "episode_id", None)
-    if req_episode_id is not None:
+    doc = docs.get(run["doc_id"]) if run["doc_id"] is not None else None
+    if doc is not None and doc["episode_id"] is not None:
+        episode_id = int(doc["episode_id"])
+    elif req_episode_id is not None:
         ep = episodes.get(int(req_episode_id))
         if ep is None or int(ep["project_id"]) != project_id:
             raise extraction.ExtractInvalid("目标创作单元不存在或不属于该项目")
         episode_id = int(ep["id"])
     else:
-        doc = docs.get(run["doc_id"]) if run["doc_id"] is not None else None
-        if doc is not None and doc["episode_id"] is not None:
-            episode_id = int(doc["episode_id"])
-        else:
-            ep_rows = episodes.list_by_project(project_id)
-            if not ep_rows:
-                raise extraction.ExtractInvalid("项目中尚无创作单元，请先新建或指定创作单元")
-            episode_id = int(ep_rows[0]["id"])
+        ep_rows = episodes.list_by_project(project_id)
+        if not ep_rows:
+            raise extraction.ExtractInvalid("项目中尚无创作单元，请先新建或指定创作单元")
+        episode_id = int(ep_rows[0]["id"])
 
     visible_assets = assets.list_visible(project_id)
     exact_map: dict[str, int] = {}

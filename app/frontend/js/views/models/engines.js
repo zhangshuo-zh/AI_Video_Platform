@@ -336,6 +336,8 @@ export function slotCollapsed(r) {
   </tr>`;
 }
 
+let activeEngineTab = 'slots';
+
 export function pageEngines() {
   const manifest = cache.catalog && cache.manifest;
   const providerLists = {};
@@ -397,7 +399,20 @@ export function pageEngines() {
     <td><span class="hint">没有连接检查：平台里没有它的适配器</span></td>
   </tr>`).join('');
 
+  const configuredCount = cache.providers.filter((r) => r.provider).length;
+  const instCount = (cache.engines?.instances || []).length;
+  const engineCount = Object.keys(byCode).length + (cache.catalog.unintegrated_engines || []).length;
+  const engTabs = [
+    { key: 'slots', label: '能力轨', count: configuredCount },
+    { key: 'instances', label: '引擎实例与连接检查', count: instCount },
+    { key: 'catalog', label: '引擎清单', count: engineCount },
+  ];
+
   return `
+  <div class="ad-sec-tabs" role="tablist" aria-label="引擎管理板块切换">
+    ${engTabs.map((t) => `<button type="button" class="ad-sec-tab${activeEngineTab === t.key ? ' on' : ''}" role="tab" aria-selected="${activeEngineTab === t.key ? 'true' : 'false'}" data-eng-tab="${t.key}">${escapeHtml(t.label)} <span class="ad-sec-cnt">${t.count}</span></button>`).join('')}
+  </div>
+  <div data-eng-panel="slots"${activeEngineTab === 'slots' ? '' : ' hidden'}>
   <div class="card" style="margin-bottom:12px">
     <div class="card-head">
       <div style="display:flex;align-items:center">
@@ -446,7 +461,9 @@ export function pageEngines() {
       </table>
     </div>
   </div>
+  </div>
 
+  <div data-eng-panel="catalog"${activeEngineTab === 'catalog' ? '' : ' hidden'}>
   <div class="card">
     <div class="card-head">
       <div style="display:flex;align-items:center">
@@ -459,7 +476,7 @@ export function pageEngines() {
             <ul class="tip-list">
               <li><b>数据来源</b>：代码库 <code>adapters.py</code> 适配器总表，属于事实规格层（只读）。</li>
               <li><b>参数核验状态</b>：标「已核验」代表官方 schema 参数与默认值经代码验证并自动预填；「未核验」仅透传自定义参数。</li>
-              <li><b>只接探测引擎</b>：如 ComfyUI 已支持端点探活与本地启动，因工作流契约未定暂无生成中心提交入口。</li>
+              <li><b>服务型引擎</b>：如 ComfyUI / Draw Things / Ollama 已支持端点探活；其中 ComfyUI 已接通生图工作流执行、节点实例选择与 Checkpoint 选型。</li>
             </ul>
           </span>
         </span>
@@ -480,8 +497,11 @@ export function pageEngines() {
       <tbody>${engineRows}${unintegrated}</tbody>
     </table></div>
   </div>
+  </div>
 
-  ${engineInstancesCard()}`;
+  <div data-eng-panel="instances"${activeEngineTab === 'instances' ? '' : ' hidden'}>
+  ${engineInstancesCard()}
+  </div>`;
 }
 
 /* ================= 工作区 1b · 引擎实例（0040） ================= */
@@ -1311,6 +1331,19 @@ export function engineInstancesCard() {
 
 /* ================= 工作区 1 交互（能力轨，功能原样搬自系统设置） ================= */
 export function mountEngines(root) {
+  root.querySelectorAll('[data-eng-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeEngineTab = btn.dataset.engTab || 'slots';
+      root.querySelectorAll('[data-eng-tab]').forEach((b) => {
+        const on = b.dataset.engTab === activeEngineTab;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      root.querySelectorAll('[data-eng-panel]').forEach((panel) => {
+        panel.hidden = panel.dataset.engPanel !== activeEngineTab;
+      });
+    });
+  });
   const saveBtn = root.querySelector('#save-providers');
   const saveStateChip = root.querySelector('#save-state');
   let rowsCache = cache.providers;

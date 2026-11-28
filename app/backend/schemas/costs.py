@@ -57,6 +57,7 @@ class GenerationProfileIn(BaseModel):
     capability: Literal["text", "image", "video", "tts", "music"]
     provider_code: str = Field(default="", max_length=80)
     model_code: str = Field(default="", max_length=120)
+    execution_mode: Literal["", "local", "cloud"] | None = None
     params: dict = {}
     is_default: bool = False
 
@@ -65,6 +66,7 @@ class GenerationProfileIn(BaseModel):
 
 class GenerationProfileUpdateIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
+    execution_mode: Literal["", "local", "cloud"] | None = None
     params: dict = {}
     is_default: bool = False
 
@@ -80,6 +82,7 @@ class GenerationProfileOut(BaseModel):
     capability_label: str
     provider_code: str
     model_code: str
+    execution_mode: Literal["", "local", "cloud"] = ""
     params: dict
     is_default: bool
     created_at: str
@@ -98,6 +101,7 @@ class GenerationProfileOut(BaseModel):
             name=row["name"], capability=row["capability"],
             capability_label=CAPABILITIES.get(row["capability"], row["capability"]),
             provider_code=row["provider_code"], model_code=row["model_code"],
+            execution_mode=(row["execution_mode"] if "execution_mode" in keys else "") or "",
             params=params if isinstance(params, dict) else {},
             is_default=bool(row["is_default"]),
             created_at=row["created_at"], updated_at=row["updated_at"],

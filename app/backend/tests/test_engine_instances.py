@@ -17,8 +17,10 @@ patch 的是 `engines.probe` 这个**模块属性**：`adapters.health`、`runne
 from __future__ import annotations
 
 import base64
+import io
 import json
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
@@ -26,6 +28,7 @@ import adapters
 import engine_http_run
 import engines
 import runners
+import safenet
 import services
 from repositories.engine_instances import EngineInstanceError, engine_instances
 from repositories.jobs import jobs as job_repo
@@ -171,7 +174,7 @@ def _gate_inputs(monkeypatch, live: str, artifact: str):
     monkeypatch.setattr(engines, "probe", lambda code, endpoint="", **_:  engines.EngineStatus(
         "ok", "在线", {"endpoint": SLOT, "model": live}))
     monkeypatch.setattr(services.registration_repo, "find_registration",
-                        lambda *a, **k: {"artifact_path": artifact})
+                        lambda *a, **k: {"artifact_path": artifact, "enabled": 1})
 
 
 def test_引擎选的与登记不符就拒绝(monkeypatch):
@@ -216,7 +219,7 @@ def test_mflux这类根本不过这道闸门(monkeypatch):
     assert called == []
 
 
-def test_默认轨那条路也过闸门(monkeypatch, as_role, seeded, provider_state):
+def test_默认轨那条路也过闸门(monkeypatch, as_role, seeded, provider_state, request):
     """显式选择与默认轨都要过——只挂一支会留下"没人核对"的缝。
 
     这里走的是默认轨：把 image×local 那一格配成 draw_things，提交时**不带**
@@ -238,6 +241,8 @@ def test_默认轨那条路也过闸门(monkeypatch, as_role, seeded, provider_s
     import services.jobs as services_jobs
     monkeypatch.setattr(services_jobs, "_service_engine_gate", spy)
     _gate_inputs(monkeypatch, "different.ckpt", "wanted.ckpt")
+    instance = engine_instances.create({"engine_code": "draw_things", "endpoint": SLOT})
+    request.addfinalizer(lambda: engine_instances.delete(instance["id"]))
     from repositories.providers import providers
     row = providers.slot("image", "local")
     providers.replace_many([{**dict(row), "provider": "draw_things",
@@ -528,6 +533,89 @@ def comfyui_instance():
         engine_instances.delete(instance["id"])
 
 
+@pytest.mark.parametrize("checkpoints,recommended", [
+    (["base.ckpt", "realistic.safetensors", "custom/Illustrious-v2.safetensors", "pony.safetensors"],
+     "custom/Illustrious-v2.safetensors"),
+    (["base.ckpt", "realistic.safetensors"], "realistic.safetensors"),
+    (["base.ckpt"], "base.ckpt"),
+    ([], ""),
+], ids=["anime-first", "safetensors-fallback", "first-fallback", "empty"])
+def test_ComfyUI模型列表普通用户可读(as_role, comfyui_instance, monkeypatch,
+                                     checkpoints, recommended):
+    secret_env = "TEST_COMFYUI_CHECKPOINT_SECRET"
+    monkeypatch.setenv(secret_env, "test-token")
+    engine_instances.update(comfyui_instance["id"], {"shared_secret_env": secret_env})
+    requests_seen = []
+
+    def open_checkpoints(req, *, timeout):
+        requests_seen.append(req.full_url)
+        assert req.get_method() == "GET"
+        assert timeout == 5
+        headers = {name.lower(): value for name, value in req.header_items()}
+        assert headers["authorization"] == "Bearer test-token"
+        assert headers["x-shared-secret"] == "test-token"
+        assert headers["ngrok-skip-browser-warning"] == "1"
+        payload = {"CheckpointLoaderSimple": {
+            "input": {"required": {"ckpt_name": [checkpoints, {}]}},
+        }}
+        return io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(safenet, "safe_urlopen", open_checkpoints)
+    response = as_role("editor").get("/api/engines/comfyui/checkpoints")
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "endpoint": comfyui_instance["endpoint"],
+        "display_name": comfyui_instance["display_name"],
+        "checkpoints": checkpoints,
+        "recommended": recommended,
+        "error": "",
+    }
+    assert requests_seen == [f"{comfyui_instance['endpoint']}/object_info/CheckpointLoaderSimple"]
+
+
+def test_ComfyUI模型列表无启用实例(as_role, comfyui_instance, monkeypatch):
+    engine_instances.update(comfyui_instance["id"], {"enabled": False})
+
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("没有启用实例时不应查询模型")
+
+    monkeypatch.setattr(safenet, "safe_urlopen", unexpected_request)
+    response = as_role("editor").get("/api/engines/comfyui/checkpoints")
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "endpoint": "",
+        "display_name": "",
+        "checkpoints": [],
+        "recommended": "",
+        "error": "没有启用中的 ComfyUI 引擎实例",
+    }
+
+
+@pytest.mark.parametrize("upstream,error", [
+    (URLError("Connection refused"), "Connection refused"),
+    (TimeoutError("timed out"), "timed out"),
+    (b"not JSON", "不是有效的 JSON"),
+    (b"{}", "缺少 ckpt_name"),
+], ids=["offline", "timeout", "invalid-json", "invalid-structure"])
+def test_ComfyUI模型列表查询失败(as_role, comfyui_instance, monkeypatch, upstream, error):
+    def open_checkpoints(req, *, timeout):
+        if isinstance(upstream, Exception):
+            raise upstream
+        return io.BytesIO(upstream)
+
+    monkeypatch.setattr(safenet, "safe_urlopen", open_checkpoints)
+    response = as_role("editor").get("/api/engines/comfyui/checkpoints")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["endpoint"] == comfyui_instance["endpoint"]
+    assert body["display_name"] == comfyui_instance["display_name"]
+    assert body["checkpoints"] == [] and body["recommended"] == ""
+    assert error in body["error"]
+
+
 def test_启用ComfyUI自动出现在可用生图模型中(as_role, comfyui_instance, register_tier):
     c = as_role("editor")
 
@@ -536,7 +624,7 @@ def test_启用ComfyUI自动出现在可用生图模型中(as_role, comfyui_inst
         assert response.status_code == 200, response.text
         return [o for o in response.json() if o["provider"] == "comfyui"]
 
-    assert options(expanded=False) == []
+    assert options(expanded=False) == options()
     option, = options()
     assert (option["capability"], option["backend"], option["model"]) == (
         "image", "local", "comfyui-workflow",

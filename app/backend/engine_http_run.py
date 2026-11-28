@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import uuid
+from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -48,15 +49,25 @@ def _comfyui_headers(secret_env: str) -> dict[str, str]:
     return headers
 
 
-def _comfyui_pick_checkpoint(endpoint: str, headers: dict[str, str], timeout: int) -> str | None:
-    url = f"{endpoint}/object_info/CheckpointLoaderSimple"
+def _comfyui_checkpoints(endpoint: str, headers: dict[str, str], timeout: float) -> list[str]:
+    url = f"{endpoint.rstrip('/')}/object_info/CheckpointLoaderSimple"
     safenet.check_url(url)
-    with safenet.safe_urlopen(Request(url, headers=headers), timeout=min(timeout, 20)) as resp:
-        data = json.loads(resp.read().decode("utf-8", "replace"))
-    options = data["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+    with safenet.safe_urlopen(Request(url, headers=headers, method="GET"), timeout=timeout) as resp:
+        raw = resp.read()
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("ComfyUI checkpoint 响应不是有效的 JSON") from exc
+    try:
+        options = data["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("ComfyUI checkpoint 响应缺少 ckpt_name 选项") from exc
     if not isinstance(options, list):
         raise ValueError("ComfyUI ckpt_name 选项应为列表")
-    names = [name for name in options if isinstance(name, str) and name.strip()]
+    return [name for name in options if isinstance(name, str) and name.strip()]
+
+
+def _comfyui_pick_checkpoint(names: list[str]) -> str | None:
     anime_keywords = ("animagine", "illustrious", "noobai", "pony", "anime")
     for name in names:
         if any(keyword in name.lower() for keyword in anime_keywords):
@@ -120,28 +131,32 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         return _finish(receipt_path, ok=False, code="secret_env_missing", message=str(exc))
 
     checkpoint = None
+    used_checkpoints: list[str] = []
     for node in workflow.values():
-        if not isinstance(node, dict) or node.get("class_type") != "CheckpointLoaderSimple":
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict):
             continue
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict) or inputs.get("ckpt_name") not in (None, "", "__AUTO_CHECKPOINT__"):
-            continue
-        if checkpoint is None:
-            try:
-                checkpoint = _comfyui_pick_checkpoint(endpoint, headers, timeout)
-            except safenet.UnsafeTarget as exc:
-                return _finish(receipt_path, ok=False, code="unsafe_target", message=str(exc), endpoint=endpoint)
-            except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
-                return _finish(receipt_path, ok=False, code="comfyui_checkpoint_lookup_failed",
-                               message=f"查询 ComfyUI 已安装模型失败：{exc}", endpoint=endpoint)
+        name = inputs.get("ckpt_name")
+        if node.get("class_type") == "CheckpointLoaderSimple" and name in (None, "", "__AUTO_CHECKPOINT__"):
             if checkpoint is None:
-                return _finish(
-                    receipt_path, ok=False, code="comfyui_no_checkpoint",
-                    message="ComfyUI 节点尚未安装生图大模型（models/checkpoints 为空），"
-                            "请先在 Colab 里勾选下载 Animagine XL 3.1 或放入 safetensors 模型",
-                    endpoint=endpoint,
-                )
-        inputs["ckpt_name"] = checkpoint
+                try:
+                    names = _comfyui_checkpoints(endpoint, headers, timeout=min(timeout, 20))
+                    checkpoint = _comfyui_pick_checkpoint(names)
+                except safenet.UnsafeTarget as exc:
+                    return _finish(receipt_path, ok=False, code="unsafe_target", message=str(exc), endpoint=endpoint)
+                except (OSError, HTTPException, ValueError) as exc:
+                    return _finish(receipt_path, ok=False, code="comfyui_checkpoint_lookup_failed",
+                                   message=f"查询 ComfyUI 已安装模型失败：{exc}", endpoint=endpoint)
+                if checkpoint is None:
+                    return _finish(
+                        receipt_path, ok=False, code="comfyui_no_checkpoint",
+                        message="ComfyUI 节点尚未安装生图大模型（models/checkpoints 为空），"
+                                "请先在 Colab 里勾选下载 Animagine XL 3.1 或放入 safetensors 模型",
+                        endpoint=endpoint,
+                    )
+            name = inputs["ckpt_name"] = checkpoint
+        if isinstance(name, str) and name.strip() and name not in used_checkpoints:
+            used_checkpoints.append(name)
 
     init_image = str(request.get("init_image") or "").strip()
     if init_image:
@@ -263,6 +278,8 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         code="",
         message="",
         engine="comfyui",
+        checkpoint=used_checkpoints[0] if used_checkpoints else "",
+        checkpoints=used_checkpoints,
         prompt_id=prompt_id,
         latency_ms=latency_ms,
         bytes=len(blob),
@@ -383,7 +400,7 @@ def main() -> int:
     # 这一步失败不影响作业成败——它是账，不是闸门（闸门在 submit_job）。
     engine_model = ""
     try:
-        with safenet.safe_urlopen(Request(endpoint + "/sdapi/v1/options"),
+        with safenet.safe_urlopen(Request(endpoint + "/sdapi/v1/options", headers=headers),
                                   timeout=10) as resp:
             engine_model = str(json.loads(resp.read().decode("utf-8", "replace"))
                                .get("model") or "")

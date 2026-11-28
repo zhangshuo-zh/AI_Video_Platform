@@ -1,6 +1,11 @@
 import { referenceActions, bindReferenceActions, referenceDialog } from './asset-reference-actions.js';
 import { store } from '../store.js';
 import { api } from '../api.js';
+import {
+  checkpointOptionsMarkup, instanceOptionsMarkup, loadComfyCheckpoints,
+  loadComfyInstances, rememberCheckpoint, rememberInstanceId, rememberedCheckpoint,
+  rememberedInstanceId,
+} from '../comfyui.js';
 import { bindSubChips, confirmDanger, escapeHtml, formatMoney, run, safeOpenUrl, subChipRow } from '../util.js';
 import { JOB_ACTIVE, jobTone, publicStatus, validationText } from '../validation.js';
 import { ASSET_KIND_LABELS, unitLabel } from '../enums.js';
@@ -638,6 +643,17 @@ function imagePanel(d) {
         </div>
         ${refNote}
         ${trackPanel(d, 'image')}
+        <div class="form-grid" style="margin-top:8px">
+          <label for="as-img-template">工作流模板</label>
+          <select id="as-img-template" class="ctl"><option value="">默认参数（不套模板）</option></select>
+        </div>
+        ${d.imageProvider === 'comfyui' ? `
+          <div class="form-grid" style="margin-top:8px">
+            <label id="as-comfy-inst-label" for="as-comfy-instance" hidden>节点实例</label>
+            <select id="as-comfy-instance" class="ctl" hidden></select>
+            <label for="as-comfy-checkpoint">Checkpoint</label>
+            <select id="as-comfy-checkpoint" class="ctl"><option value="">自动匹配（加载中…）</option></select>
+          </div>` : ''}
         ${paramRows(d, 'image')}
         ${variantOpts}
         <div class="as-actions" style="margin-top:10px">
@@ -790,6 +806,8 @@ function patchStatus(root, d) {
 
 /* ---------- 视图 ---------- */
 
+let activeStudioTab = 'text';
+
 export default {
   async render() {
     const project = store.current;
@@ -906,6 +924,12 @@ export default {
       }
     }
 
+    const studioTabs = [
+      { key: 'text', label: '文字设定' },
+      { key: 'image', label: '图像候选', count: (d.candidates || []).length },
+      { key: 'variants', label: VARIANT_LABEL[VARIANT_TYPE[d.kind]] || '形态列表', count: (d.variants || []).length },
+    ];
+
     return `
     <section class="view on">
       <div class="page-head">
@@ -916,8 +940,12 @@ export default {
       ${statusBar()}
       <div id="as-notice">${noticeHtml(d)}</div>
       ${targetPanel(d, list)}
-      <div class="as-cols">${textPanel(d)}${imagePanel(d)}</div>
-      ${variantPanel(d)}
+      <div class="ad-sec-tabs" role="tablist" aria-label="资产创作板块切换">
+        ${studioTabs.map((t) => `<button type="button" class="ad-sec-tab${activeStudioTab === t.key ? ' on' : ''}" role="tab" aria-selected="${activeStudioTab === t.key ? 'true' : 'false'}" data-as-tab="${t.key}">${escapeHtml(t.label)}${typeof t.count === 'number' ? ` <span class="ad-sec-cnt">${t.count}</span>` : ''}</button>`).join('')}
+      </div>
+      <div data-as-panel="text"${activeStudioTab === 'text' ? '' : ' hidden'}>${textPanel(d)}</div>
+      <div data-as-panel="image"${activeStudioTab === 'image' ? '' : ' hidden'}>${imagePanel(d)}</div>
+      <div data-as-panel="variants"${activeStudioTab === 'variants' ? '' : ' hidden'}>${variantPanel(d)}</div>
     </section>`;
   },
 
@@ -930,6 +958,19 @@ export default {
     const alive = (sel) => Boolean(root.querySelector(sel));
 
     stopPoll();
+    root.querySelectorAll('[data-as-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activeStudioTab = btn.dataset.asTab || 'text';
+        root.querySelectorAll('[data-as-tab]').forEach((b) => {
+          const on = b.dataset.asTab === activeStudioTab;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        root.querySelectorAll('[data-as-panel]').forEach((panel) => {
+          panel.hidden = panel.dataset.asPanel !== activeStudioTab;
+        });
+      });
+    });
     root.querySelector('[data-retry]')?.addEventListener('click', refresh);
     // 页头那一排工作区 chip 必须在这里绑：≤860px 时侧栏二级导航整块隐藏，
     // 而这三个工作区各有各的页头——以前只有「资产库」自己画了切换器，
@@ -1033,6 +1074,68 @@ export default {
     root.querySelectorAll('[data-cloud-confirm]').forEach((el) => {
       el.addEventListener('change', () => { d.cloudConfirm = el.checked; });
     });
+    const imgTplSel = root.querySelector('#as-img-template');
+    if (imgTplSel) {
+      void (async () => {
+        try {
+          const list = await api.generationProfiles(project.id);
+          if (!imgTplSel.isConnected) return;
+          const imgList = (Array.isArray(list) ? list : []).filter((p) => p.capability === 'image');
+          imgTplSel.innerHTML = '<option value="">默认参数（不套模板）</option>'
+            + imgList.map((p) => `<option value="${p.id}"${String(d.imageProfileId || '') === String(p.id) ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+          imgTplSel.addEventListener('change', () => {
+            const picked = imgList.find((p) => String(p.id) === imgTplSel.value);
+            d.imageProfileId = picked ? picked.id : null;
+            if (!picked) return;
+            if (picked.provider_code && picked.model_code) {
+              const mode = picked.execution_mode || (optionsFor('image', 'local').some((o) => o.provider === picked.provider_code && o.model === picked.model_code) ? 'local' : 'cloud');
+              d.imageTrack = mode;
+              d.imageProvider = picked.provider_code;
+              d.imageModel = picked.model_code;
+            }
+            d.imageParams = { ...(d.imageParams || {}), ...(picked.params || {}) };
+            refresh();
+          });
+        } catch { /* ignore template load failure */ }
+      })();
+    }
+    if (d.imageProvider === 'comfyui') {
+      const instLabel = root.querySelector('#as-comfy-inst-label');
+      const instSel = root.querySelector('#as-comfy-instance');
+      const ckptSel = root.querySelector('#as-comfy-checkpoint');
+      const syncStudioCheckpoints = async () => {
+        if (!ckptSel) return;
+        const instId = d.imageInstanceId || (instSel?.value ? Number(instSel.value) : null);
+        const data = await loadComfyCheckpoints({ instanceId: instId });
+        if (!ckptSel.isConnected) return;
+        const picked = d.imageParams?.checkpoint ?? rememberedCheckpoint();
+        ckptSel.innerHTML = checkpointOptionsMarkup(data, picked);
+        if (picked) (d.imageParams ||= {}).checkpoint = ckptSel.value;
+      };
+      void (async () => {
+        const instances = await loadComfyInstances();
+        if (!ckptSel?.isConnected) return;
+        if (instSel && instLabel) {
+          instSel.innerHTML = instanceOptionsMarkup(instances, d.imageInstanceId || rememberedInstanceId());
+          const multi = instances.length > 1;
+          instSel.hidden = !multi;
+          instLabel.hidden = !multi;
+          d.imageInstanceId = instSel.value ? Number(instSel.value) : (instances[0]?.id || 0);
+        }
+        await syncStudioCheckpoints();
+      })();
+      instSel?.addEventListener('change', () => {
+        d.imageInstanceId = Number(instSel.value) || 0;
+        rememberInstanceId(instSel.value);
+        void syncStudioCheckpoints();
+      });
+      ckptSel?.addEventListener('change', () => {
+        (d.imageParams ||= {}).checkpoint = ckptSel.value;
+        rememberCheckpoint(ckptSel.value);
+        const advInput = root.querySelector('[data-param="image|checkpoint"]');
+        if (advInput) advInput.value = ckptSel.value;
+      });
+    }
     root.querySelector('[data-sync-consistency]')?.addEventListener('click', () => {
       d.imagePrompt = d.consistency;
       d.dirty = true;
@@ -1124,7 +1227,9 @@ export default {
         target_variant_id: d.imageVariantId || null,
         image_prompt: d.imagePrompt,
         execution_mode: d.imageTrack, provider_code: d.imageProvider,
-        model_code: d.imageModel, params: paramsFor('image', d),
+        model_code: d.imageModel,
+        ...(d.imageProvider === 'comfyui' && d.imageInstanceId > 0 ? { engine_instance_id: d.imageInstanceId } : {}),
+        params: paramsFor('image', d),
         estimate: estimateFor('image', d), user_confirmed_cloud: d.cloudConfirm,
       };
       if (nonce) body.idempotency_key = nonce;

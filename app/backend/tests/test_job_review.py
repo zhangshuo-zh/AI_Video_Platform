@@ -243,3 +243,26 @@ def test_文档签字与产物签字互不串档(as_role, clean_queue, fresh_pro
     # 反过来也成立：那条探针只在 document 档里读得到，作业档一条也没有
     assert len(reviews.signs(reviews.DOCUMENT, jid)) == 1
     assert reviews.signs(reviews.JOB, jid) == []
+
+
+def test_审核队列超过200条时仍保留较早待签作业(as_role, fresh_project, clean_queue):
+    import json
+    from db import get_conn
+    from repositories.jobs import jobs as job_repo
+    c = as_role("editor")
+    pid = fresh_project("editor")
+    created_ids = []
+    for i in range(202):
+        row = job_repo.create({
+            "project_id": pid, "capability": "image", "kind": "image",
+            "execution_mode": "local", "provider_code": "mock", "model_code": "mock-1",
+        })
+        created_ids.append(row["id"])
+    with get_conn() as conn:
+        conn.executemany(
+            "UPDATE job SET status = 'succeeded', result_paths_json = ? WHERE id = ?",
+            [(json.dumps([f"mock/{jid}.png"]), jid) for jid in created_ids],
+        )
+    queue = c.get(f"/api/projects/{pid}/job-reviews").json()
+    assert len(queue) == 202
+    assert created_ids[0] in {item["job_id"] for item in queue}

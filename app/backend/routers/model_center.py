@@ -6,18 +6,19 @@
 所以本文件里没有任何接口会被提交路径自动采用，`/model-policies/resolve`
 返回的候选只是给人看的，返回值里也明写 `auto_switch: false`。
 
-权限全部沿用 `system:config`（18 个权限点之一，不新增）。只有
-`/model-policies/resolve/{scene}` 是登录即可——它和 `/providers/available` 一样是
-"业务页面上的候选池"，不含密钥变量名、不含备注、不含本机路径之外的敏感信息。
+配置接口沿用 `system:config`。`/model-policies/resolve/{scene}` 和
+`/engines/comfyui/checkpoints` 为业务页面提供只读选项，登录即可访问。
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import engine_launch
+import engines
 import model_center as mc
 from services import model_configuration, model_operations, model_environment
 from deps import require_permission, require_user
-from models import (ConfigChangesOut,
+from repositories.engine_instances import engine_instances
+from models import (ComfyUICheckpointsOut, ComfyUIInstanceOut, ConfigChangesOut,
                     EngineActionOut, EngineInstanceIn, EngineInstancePatch,
                     EngineListOut, EngineMutationOut, EngineProbeOut,
                     EngineProbesOut, ModelCatalogOut, ModelMutationOut,
@@ -183,6 +184,19 @@ def list_engines(_=Depends(require_permission("system:config"))) -> dict:
 def create_engine(payload: EngineInstanceIn,
                   user=Depends(require_permission("system:config"))) -> dict:
     return _model_call(model_operations.create_engine, payload, user)
+
+
+@router.get("/engines/comfyui/checkpoints", response_model=ComfyUICheckpointsOut)
+def list_comfyui_checkpoints(instance_id: int | None = Query(None, gt=0, le=2**63 - 1),
+                            _=Depends(require_user)) -> dict:
+    return engines.comfyui_checkpoints(instance_id)
+
+
+@router.get("/engines/comfyui/instances", response_model=list[ComfyUIInstanceOut])
+def list_comfyui_instances(_=Depends(require_user)) -> list[dict]:
+    return [{key: row[key] for key in ("id", "display_name", "endpoint")}
+            for row in engine_instances.instances()
+            if row["engine_code"] == "comfyui" and row["enabled"] == 1]
 
 
 @router.patch("/engines/{instance_id}", response_model=EngineMutationOut)

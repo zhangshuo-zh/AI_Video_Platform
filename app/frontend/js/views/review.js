@@ -117,7 +117,7 @@ export default {
     // 留着跨项目、跨筛选的幽灵条目会在下一次点「批量通过」时打到不该打的作业
     picked = new Set([...picked].filter((id) => queue.some((q) => q.job_id === id)));
     const canSign = store.can('review:sign');
-    const pending = queue.filter((q) => !q.counts.approved).length;
+    const pending = queue.filter((q) => !q.counts.approved && !q.counts.rejected && !q.counts.returned).length;
 
     const rows = queue.map((q) => {
       const where = [q.episode_title, q.shot_seq ? `镜 ${String(q.shot_seq).padStart(2, '0')}` : '']

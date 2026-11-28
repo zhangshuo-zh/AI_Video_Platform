@@ -269,7 +269,8 @@ export default {
               <p class="u-mt-10 row">
                 <a class="btn" id="as-shots-md"
                    href="/api/extract/runs/${runId}/shots.md" download>导出镜头候选 Markdown</a>
-                ${store.can('doc:write') ? '<button type="button" class="btn primary" id="as-import-shots">🎬 一键导入为分镜</button>' : ''}
+                ${store.can('doc:write') ? `<button type="button" class="btn primary" id="as-import-shots">🎬 一键导入为分镜</button>
+                  <span class="t-dim">待导入 ${items.filter((r) => r.kind === 'shot' && r.status === 'pending').length} 条${store.currentEpisode ? ` · 若为项目级抽取将导入「${escapeHtml(store.currentEpisode.title)}」` : ''}</span>` : ''}
               </p>` : ''}
           </div>
         </div>
@@ -377,7 +378,8 @@ export default {
     root.querySelector('#as-import-shots')?.addEventListener('click', async (e) => {
       if (!runId) return;
       const btn = e.currentTarget;
-      const res = await run('一键导入为分镜', () => api.extractImportShots(runId, {}), { btn });
+      const body = store.currentEpisodeId ? { episode_id: store.currentEpisodeId } : {};
+      const res = await run('一键导入为分镜', () => api.extractImportShots(runId, body), { btn });
       if (res) {
         notice = typeof res === 'object' && Array.isArray(res.created_shot_ids)
           ? `已导入第 #${res.episode_id} 集：新建 ${res.created_shot_ids.length} 镜，跳过重复 ${(res.skipped_item_ids || []).length} 条，匹配关联资产 ${res.matched_assets || 0} 次。`

@@ -123,7 +123,7 @@ from .model_center import (
     SecretValueIn, SecretValueOut, SecretValuesOut,
     ModelCatalogOut, ModelStatsOut, ModelProbeOut, ModelMutationOut,
     ModelPoliciesOut, ModelPoliciesSaveOut, ConfigChangesOut, ModelScenesOut, ModelResolveOut,
-    EngineListOut, EngineMutationOut, EngineProbesOut, EngineProbeOut, EngineActionOut,
+    ComfyUICheckpointsOut, ComfyUIInstanceOut, EngineListOut, EngineMutationOut, EngineProbesOut, EngineProbeOut, EngineActionOut,
     AgentOverviewOut, AgentConfigsOut, AgentToolsOut, AgentPlanOptionsOut,
     AgentRunCreateOut, AgentRunListOut, AgentRunDetailOut, AgentPendingOut,
     ChatGPTConnectionOut, ChatGPTModelsOut, ChatGPTDraftOut, ChatGPTAcceptOut, ChatGPTUsageOut
@@ -428,7 +428,7 @@ __all__ = [
     "AssetReversePromptOut", "AssetRandomCharacterIn", "AssetRandomCharacterOut",
     "AudioCapabilitiesOut",
     "AuthProfileOut", "ChatGPTAcceptOut", "ChatGPTConnectionOut", "ChatGPTDraftOut",
-    "ChatGPTModelsOut", "ChatGPTUsageOut", "ConfigChangesOut", "ContextOut",
+    "ChatGPTModelsOut", "ChatGPTUsageOut", "ComfyUICheckpointsOut", "ComfyUIInstanceOut", "ConfigChangesOut", "ContextOut",
     "EngineActionOut", "EngineListOut", "EngineMutationOut", "EngineProbeOut",
     "EngineProbesOut", "ExtractionDecisionOut", "ExtractionOptionsOut",
     "JobChecklistOut", "JobRetryBatchOut", "JobReviewBatchOut",

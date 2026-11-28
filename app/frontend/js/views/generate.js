@@ -12,6 +12,10 @@ const jobSubmission = submissionIdentity();
  */
 import { store } from '../store.js';
 import { api } from '../api.js';
+import {
+  checkpointOptionsMarkup, instanceOptionsMarkup, loadComfyCheckpoints,
+  loadComfyInstances, rememberInstanceId, rememberedInstanceId,
+} from '../comfyui.js';
 import { escapeHtml, run, errorBox, emptyBox, confirmDanger, bindModalDismiss, formatMoney,
          animateRows, skeleton } from '../util.js';
 import { HEALTH_LABEL, JOB_ACTIVE, JOB_FINISHED_BAD, alertLabel, jobLabel, jobTone, publicStatus }
@@ -470,7 +474,16 @@ export default {
                 <label for="pf-route">绑定槽位</label>
                 <select id="pf-route" class="ctl"></select>
                 <label class="top" for="pf-params">参数</label>
-                <textarea id="pf-params" rows="3" spellcheck="false">{}</textarea>
+                <div>
+                  <div id="pf-comfy-tools" class="pf-comfy-tools" hidden>
+                    <select id="pf-comfy-ckpt" class="ctl sm" aria-label="ComfyUI Checkpoint 预设">
+                      <option value="">自动匹配（加载中…）</option>
+                    </select>
+                    <button type="button" class="btn xs" id="pf-comfy-import">导入 ComfyUI API JSON…</button>
+                    <input type="file" id="pf-comfy-file" accept=".json,application/json" hidden>
+                  </div>
+                  <textarea id="pf-params" rows="3" spellcheck="false">{}</textarea>
+                </div>
                 <span class="pf-label">默认</span>
                 <label class="pf-check"><input type="checkbox" id="pf-default"> 同类能力默认用这一套</label>
               </div>
@@ -895,7 +908,7 @@ export default {
           ${kv('关联', [job.episode_id ? `集 ${job.episode_id}` : '',
             job.shot_id ? `镜 ${job.shot_id}` : ''].filter(Boolean).join(' · ') || '—')}
           ${kv('能力', escapeHtml(job.capability_label))}
-          ${kv('执行', `${escapeHtml(job.execution_mode_label)} · ${escapeHtml(job.provider_code)} / ${escapeHtml(job.model_code)}`)}
+          ${kv('执行', `${escapeHtml(job.execution_mode_label)} · ${escapeHtml(job.provider_code)} / ${escapeHtml(job.model_code)}${job.engine_instance_id ? ` · 实例 #${job.engine_instance_id}` : ''}`)}
           ${kv('入队', timeText(job.queued_at))}
           ${kv('开始', timeText(job.started_at))}
           ${kv('结束', timeText(job.finished_at))}
@@ -1269,7 +1282,49 @@ export default {
         || option?.models?.[0] || null;
       const merged = values !== undefined ? values : (pendingPrefillParams || {});
       root.querySelector('#jm-params').innerHTML = paramFields(model, merged || {}, option);
+      if (option?.provider === 'comfyui') {
+        void upgradeComfyCheckpointField(merged?.checkpoint || '');
+      }
       renderReferencePreview();
+    }
+
+    async function upgradeComfyCheckpointField(currentValue = '') {
+      const paramsHost = root.querySelector('#jm-params');
+      const input = paramsHost?.querySelector('[data-param="checkpoint"]');
+      if (!paramsHost || !input) return;
+      const picked = String(currentValue || input.value || '').trim();
+      const instances = await loadComfyInstances();
+      if (!paramsHost.isConnected) return;
+      let instSel = paramsHost.querySelector('#jm-comfy-instance');
+      if (instances.length > 1 && !instSel) {
+        const wrap = document.createElement('label');
+        wrap.className = 'param';
+        wrap.innerHTML = `<span>节点实例</span><select class="ctl" id="jm-comfy-instance">${instanceOptionsMarkup(instances, rememberedInstanceId())}</select>`;
+        paramsHost.querySelector('.param-grid')?.prepend(wrap);
+        instSel = wrap.querySelector('#jm-comfy-instance');
+        instSel?.addEventListener('change', async () => {
+          rememberInstanceId(instSel.value);
+          const curCkpt = paramsHost.querySelector('[data-param="checkpoint"]')?.value || '';
+          const nextData = await loadComfyCheckpoints({ instanceId: Number(instSel.value) || null });
+          const ckptEl = paramsHost.querySelector('[data-param="checkpoint"]');
+          if (ckptEl && ckptEl.tagName === 'SELECT') {
+            ckptEl.innerHTML = checkpointOptionsMarkup(nextData, curCkpt);
+          }
+        });
+      }
+      const instId = instSel?.value ? Number(instSel.value) : (instances[0]?.id || null);
+      const data = await loadComfyCheckpoints({ instanceId: instId });
+      const target = paramsHost.querySelector('[data-param="checkpoint"]');
+      if (!target || !target.isConnected) return;
+      const select = document.createElement('select');
+      select.className = 'ctl';
+      select.dataset.param = 'checkpoint';
+      select.dataset.type = 'str';
+      select.innerHTML = checkpointOptionsMarkup(data, picked);
+      select.title = data.ok
+        ? `节点：${data.display_name || data.endpoint}`
+        : (data.error || '未能拉取 ComfyUI 模型列表');
+      target.replaceWith(select);
     }
 
     /** 清单里登记的官方价；当分辨率/时长等条件命中时优先用那一条。 */
@@ -1914,6 +1969,10 @@ export default {
           body.execution_mode = mode;
           body.provider_code = option.provider;
           body.model_code = option.model;
+          const comfyInstId = Number(root.querySelector('#jm-comfy-instance')?.value || 0);
+          if (option.provider === 'comfyui' && comfyInstId > 0) {
+            body.engine_instance_id = comfyInstId;
+          }
           // 健康不是门禁：本地权重没装也能提交，worker 会以 adapter_not_ready 失败，
           // 这条失败比"界面上不让点"更容易查——但要把话说在前面。
           if (option.health_state !== 'ok') {
@@ -1952,6 +2011,9 @@ export default {
           try {
             const q = { capability };
             if (mode === 'local' || mode === 'cloud') q.execution_mode = mode;
+            if (body.provider_code) q.provider_code = body.provider_code;
+            if (body.model_code) q.model_code = body.model_code;
+            if (body.engine_instance_id) q.engine_instance_id = String(body.engine_instance_id);
             if (isCloud()) q.confirmed_cloud = 'true';
             const check = await api.precheckShot(linked.shotId, q);
             const blockers = (check.items || []).filter((i) => i.level === '阻塞');
@@ -2028,6 +2090,50 @@ export default {
       const opts = optionsFor(cap, null);
       sel.innerHTML = '<option value="">不绑定（参数留空）</option>' + opts.map((o, i) =>
         `<option value="${i}">${escapeHtml(o.backend_label)} · ${escapeHtml(o.provider)} / ${escapeHtml(o.model)}</option>`).join('');
+      void syncProfileComfyTools();
+    }
+
+    async function syncProfileComfyTools() {
+      const tools = root.querySelector('#pf-comfy-tools');
+      const ckptSel = root.querySelector('#pf-comfy-ckpt');
+      if (!tools || !ckptSel) return;
+      const cap = root.querySelector('#pf-capability').value;
+      const idx = root.querySelector('#pf-route').value;
+      const chosen = idx !== '' ? optionsFor(cap, null)[Number(idx)] : null;
+      const show = cap === 'image' && chosen?.provider === 'comfyui';
+      tools.hidden = !show;
+      if (!show) return;
+      let parsed = {};
+      try {
+        const raw = JSON.parse(root.querySelector('#pf-params').value || '{}');
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) parsed = raw;
+      } catch { /* ignore invalid draft json */ }
+      const data = await loadComfyCheckpoints();
+      if (!ckptSel.isConnected) return;
+      ckptSel.innerHTML = checkpointOptionsMarkup(data, parsed.checkpoint || '');
+    }
+
+    function mergeProfileParamJson(patch) {
+      const box = root.querySelector('#pf-params');
+      const errEl = root.querySelector('#pf-error');
+      let obj = {};
+      try {
+        const current = JSON.parse(box.value.trim() || '{}');
+        if (!current || typeof current !== 'object' || Array.isArray(current)) {
+          errEl.textContent = '当前参数框不是合法 JSON 对象，请先修正后再联动写入。';
+          return;
+        }
+        obj = current;
+      } catch {
+        errEl.textContent = '当前参数框不是合法 JSON 对象，请先修正后再联动写入。';
+        return;
+      }
+      errEl.textContent = '';
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === '' || v === null || v === undefined) delete obj[k];
+        else obj[k] = v;
+      }
+      box.value = JSON.stringify(obj, null, 2);
     }
 
     function resetProfileForm() {
@@ -2116,10 +2222,12 @@ export default {
       if (p.provider_code) {
         const opts = optionsFor(p.capability, null);
         const idx = opts.findIndex((o) => o.provider === p.provider_code
-          && o.model === p.model_code);
+          && o.model === p.model_code
+          && (!p.execution_mode || o.backend === p.execution_mode));
         if (idx >= 0) root.querySelector('#pf-route').value = String(idx);
       }
       root.querySelector('#pf-params').value = JSON.stringify(p.params, null, 2);
+      void syncProfileComfyTools();
       root.querySelector('#pf-default').checked = p.is_default;
       root.querySelector('#pf-reset').hidden = false;
       root.querySelector('#pf-name').focus();
@@ -2156,6 +2264,7 @@ export default {
           if (scope !== null) profileProjectId = scope;
           await api.createGenerationProfile({
             project_id: scope, name, capability,
+            execution_mode: option?.backend || '',
             provider_code: option?.provider || '',
             model_code: option?.model || '',
             params, is_default: isDefault,
@@ -2430,6 +2539,30 @@ export default {
     root.querySelector('#pf-reset').addEventListener('click', resetProfileForm);
     root.querySelector('#pf-save').addEventListener('click', saveProfile);
     root.querySelector('#pf-capability').addEventListener('change', refreshProfileRoute);
+    root.querySelector('#pf-route').addEventListener('change', () => { void syncProfileComfyTools(); });
+    root.querySelector('#pf-comfy-ckpt')?.addEventListener('change', (e) => {
+      mergeProfileParamJson({ checkpoint: e.target.value.trim() });
+    });
+    root.querySelector('#pf-comfy-import')?.addEventListener('click', () => {
+      root.querySelector('#pf-comfy-file')?.click();
+    });
+    root.querySelector('#pf-comfy-file')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const errEl = root.querySelector('#pf-error');
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          errEl.textContent = '导入失败：文件不是有效的 ComfyUI API JSON 对象。';
+          return;
+        }
+        mergeProfileParamJson({ workflow_json: JSON.stringify(parsed) });
+      } catch {
+        errEl.textContent = '导入失败：无法解析所选 JSON 文件。';
+      }
+    });
     root.querySelector('#pf-list').addEventListener('click', async (e) => {
       const apply = e.target.closest('[data-pf-apply]');
       if (apply) {

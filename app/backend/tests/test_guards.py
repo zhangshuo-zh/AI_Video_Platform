@@ -327,10 +327,12 @@ ROUTES = [
     # 这一条下发的是"有哪些场景、各要什么能力"，不含建议轨／备用轨——那些仍要 system:config。
     ("GET", "/api/model-policies/scenes", None, 200),
     ("GET", "/api/config-changes", None, 403),
-    # ---------- 引擎实例（0040／W-B；同样全部 system:config） ----------
+    # ---------- 引擎实例（0040／W-B） ----------
     # 这五条是"这一档引擎在哪个端点"的管理面。探测与撤除都不动应用与历史作业，
     # 但都能改配置，所以外人一律 403；{m}=0 那条不存在的实例也是先撞权限点。
     ("GET", "/api/engines", None, 403),
+    ("GET", "/api/engines/comfyui/checkpoints", None, 200),
+    ("GET", "/api/engines/comfyui/instances", None, 200),
     ("POST", "/api/engines",
      {"engine_code": "draw_things", "endpoint": "http://127.0.0.1:7860"}, 403),
     ("PATCH", "/api/engines/{m}", {"note": "越权改"}, 403),

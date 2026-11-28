@@ -117,7 +117,7 @@ function buildNav() {
   });
   nav.innerHTML = groups.map((g) => {
     const body = g.items.map((m) => {
-      const item = `<div class="nav-item" data-v="${m.id}" data-label="${escapeHtml(m.label)}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span><span class="nav-lbl">${m.label}</span></div>`;
+      const item = `<div class="nav-item" data-v="${m.id}" data-label="${escapeHtml(m.label)}" aria-label="${escapeHtml(m.label)}"><span class="nav-ico" aria-hidden="true"><svg><use href="#${m.icon}"/></svg></span><span class="nav-lbl">${m.label}</span></div>`;
       if (!m.subs.length) return item;
       const subs = m.subs
         .map((s, i) => `<span class="sub${i === 0 ? ' on' : ''}"><span class="sub-ico" aria-hidden="true"><svg><use href="#${subIcon(m.id, s)}"/></svg></span>${s}</span>`).join('');

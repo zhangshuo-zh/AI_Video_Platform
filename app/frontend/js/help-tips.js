@@ -80,7 +80,7 @@ export function mountHelpTips(root = document.body) {
   }
   function pointerout(e) {
     const tip = target(e);
-    if (e.pointerType === 'mouse' && tip === active && !tip.contains(e.relatedTarget)) close();
+    if (e.pointerType === 'mouse' && tip && tip === active && !tip.contains(e.relatedTarget)) close();
   }
   function focusout(e) {
     if (active && !active.contains(e.relatedTarget)) close();

@@ -3,6 +3,9 @@
 模板只影响"下一次填表"，不影响已经提交的 Job；
 参数必须过 adapter 白名单；凭据不能塞进模板；全局模板只有管理员能写。
 """
+import json
+
+import pytest
 
 
 def _put_video(c, local=None):
@@ -25,6 +28,72 @@ def _make(c, pid, **kw):
             "params": {"width": 448, "height": 832}, "is_default": False}
     body.update(kw)
     return c.post("/api/generation-profiles", json=body)
+
+
+def _make_comfyui(c, pid, params):
+    return _make(c, pid, name="ComfyUI 工作流预设", capability="image",
+                 provider_code="comfyui", model_code="comfyui-workflow", params=params)
+
+
+def test_ComfyUI长工作流可创建更新并读回(as_role, fresh_project):
+    pid = fresh_project()
+    c = as_role("editor")
+    workflow = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "画" * 2000}}}
+    params = {"workflow_json": json.dumps(workflow, ensure_ascii=False), "steps": 20}
+    assert 4000 < len(json.dumps(params, ensure_ascii=False).encode("utf-8")) <= 262144
+
+    created = _make_comfyui(c, pid, params)
+    assert created.status_code == 201, created.text
+    profile = created.json()
+    assert profile["params"] == params
+
+    params["steps"] = 30
+    updated = c.put(f"/api/generation-profiles/{profile['id']}", json={
+        "name": profile["name"], "params": params,
+    })
+    assert updated.status_code == 200, updated.text
+    rows = c.get("/api/generation-profiles", params={"project_id": pid}).json()
+    assert next(row for row in rows if row["id"] == profile["id"])["params"] == params
+
+
+@pytest.mark.parametrize("workflow_json", ["{", "[]", "null", " ", '{"1": NaN}', {"1": {}}])
+def test_ComfyUI非法工作流不能保存(as_role, fresh_project, workflow_json):
+    response = _make_comfyui(as_role("editor"), fresh_project(), {"workflow_json": workflow_json})
+    assert response.status_code == 422
+    assert "workflow_json" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("params", [
+    {"workflow_json": "{}", "secret": "test"},
+    {"workflow_json": '{"1": {"inputs": {"api_key": "test"}}}'},
+], ids=["secret-in-params", "api-key-in-workflow"])
+def test_ComfyUI工作流模板仍拦截凭据(as_role, fresh_project, params):
+    response = _make_comfyui(as_role("editor"), fresh_project(), params)
+    assert response.status_code == 422
+    assert "不能放凭据" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("extra_params", [{}, {"workflow_json": ""}, {"workflow_json": None}])
+def test_无工作流时模板仍限4000字节(as_role, fresh_project, extra_params):
+    params = {"negative_prompt": "画" * 1400, **extra_params}
+    response = _make_comfyui(as_role("editor"), fresh_project(), params)
+    assert response.status_code == 422
+    assert "上限 4KB" in response.json()["detail"]
+
+
+def test_ComfyUI模板256KB上限按总参数字节计算(as_role, fresh_project):
+    pid = fresh_project()
+    c = as_role("editor")
+    params = {"workflow_json": "{}", "negative_prompt": ""}
+    remaining = 262144 - len(json.dumps(params, ensure_ascii=False).encode("utf-8"))
+    params["workflow_json"] = " " * (remaining - 1) + "{}"
+    params["negative_prompt"] = "x"
+    assert _make_comfyui(c, pid, params).status_code == 201
+
+    params["negative_prompt"] += "x"
+    response = _make_comfyui(c, pid, params)
+    assert response.status_code == 422
+    assert "上限 256KB" in response.json()["detail"]
 
 
 def test_建模板_默认唯一_同名拒绝(as_role, provider_state, fresh_project):

@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import adapters
+import engines
+from repositories.engine_instances import EngineInstanceError
 
 from .protocol import RunnerUnavailable
 
@@ -13,6 +15,24 @@ def _need_runtime(probe) -> None:
         raise RunnerUnavailable(probe.detail)
 
 
+
+
+def _probe_job_engine(job, engine_code: str, label: str) -> tuple[engines.EngineStatus, str, str]:
+    instance_id = job["engine_instance_id"] if "engine_instance_id" in job.keys() else None
+    if instance_id is None:
+        status = engines.probe(engine_code, fresh=True)
+        endpoint = status.values.get("endpoint") or ""
+        secret_env = status.values.get("shared_secret_env") or ""
+    else:
+        try:
+            instance = engines.resolve_instance(engine_code, instance_id)
+        except EngineInstanceError as exc:
+            raise RunnerUnavailable(str(exc)) from exc
+        endpoint, secret_env = instance["endpoint"], instance["shared_secret_env"]
+        status = engines.probe(engine_code, endpoint, fresh=True, instance=instance)
+    if status.state != "ok":
+        raise RunnerUnavailable(f"{label} 现在不能用：{status.detail}")
+    return status, endpoint, secret_env
 
 
 def _spec_default(job, model_code: str, name: str, fallback):

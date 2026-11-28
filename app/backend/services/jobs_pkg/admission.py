@@ -3,7 +3,8 @@ from ..errors import JobInvalid, NoRoute
 from ..providers import resolve_provider
 from db import get_conn
 from repositories.content import shots
-from repositories.engine_instances import engine_instances
+from repositories.engine_instances import EngineInstanceError
+from repositories.providers import providers as provider_repo
 from repositories.jobs import jobs as job_repo
 from repositories.model_center import model_center as registration_repo
 import adapters
@@ -31,7 +32,7 @@ def _intent_of(payload) -> dict:
     # 幂等键在分配 agent_run id 后填入，其余提交内容必须与预校验一致。
     fields = (
         "project_id", "episode_id", "shot_id", "capability", "execution_mode",
-        "provider_code", "model_code", "prompt", "params", "input_refs", "priority",
+        "provider_code", "model_code", "engine_instance_id", "prompt", "params", "input_refs", "priority",
         "estimate", "user_confirmed_cloud", "rework_of_job_id",
     )
     return deepcopy({name: getattr(payload, name, None) for name in fields})
@@ -48,7 +49,63 @@ def job_kind(capability: str, execution_mode: str) -> str:
 
 
 
-def _service_engine_gate(capability: str, mode: str, provider: str, model: str) -> None:
+COMFYUI_ROUTE = ("image", "local", "comfyui", "comfyui-workflow")
+
+
+def resolve_job_route(capability: str, mode: str | None, provider: str = "",
+                      model: str = "", *, confirmed_cloud: bool = False,
+                      engine_instance_id: int | None = None) -> dict:
+    """解析默认槽位或完整显式路线，并校验登记与实例绑定。"""
+    explicit = bool(provider or model)
+    if explicit:
+        if not (mode and provider and model):
+            raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")
+        if capability == "video" and mode == "cloud" and not confirmed_cloud:
+            raise JobInvalid("云端视频要逐镜头确认按供应商计费")
+        adapter = adapters.find(capability, mode, provider)
+        if adapter is None:
+            raise JobInvalid(f"provider「{provider}」没有登记适配器，平台不会猜它的参数")
+        slot = provider_repo.slot(capability, mode)
+        row = {"capability": capability, "backend": mode, "provider": provider, "model": model}
+        if slot is not None and slot["provider"] == provider:
+            row["key_env"] = slot["key_env"]
+        route = {"row": row, "adapter": adapter, "backend": mode,
+                 "provider": provider, "model": model}
+    else:
+        try:
+            route = resolve_provider(capability, mode, confirmed_cloud=confirmed_cloud)
+        except NoRoute as exc:
+            raise JobInvalid(str(exc)) from exc
+        mode, provider, model = route["backend"], route["provider"], route["model"]
+        adapter = route["adapter"]
+
+    is_comfyui = (capability, mode, adapter.code, model) == COMFYUI_ROUTE
+    registration = registration_repo.find_registration(capability, mode, provider, model)
+    if registration is None and adapter.code != provider:
+        registration = registration_repo.find_registration(capability, mode, adapter.code, model)
+    if registration is not None and not registration["enabled"]:
+        raise JobInvalid(f"{provider}/{model} 这条登记已停用（enabled=0）："
+                         "请到模型仓库把它启用")
+    if explicit and registration is None and not is_comfyui:
+        raise JobInvalid(f"{capability} · {mode} 上没有登记 {provider}/{model}。"
+                         "请先在模型中心登记它，或者走默认轨")
+
+    instance = None
+    if adapter.code in engines.SERVICE_ENGINES:
+        try:
+            instance = engines.resolve_instance(adapter.code, engine_instance_id)
+        except EngineInstanceError as exc:
+            raise JobInvalid(str(exc)) from exc
+        if instance is None:
+            raise JobInvalid(f"请先在「引擎实例」中配置并启用 {adapter.label.split('（', 1)[0]} 节点")
+    elif engine_instance_id is not None:
+        raise JobInvalid(f"供应商 {provider} 不支持绑定引擎实例")
+    return {**route, "instance": instance, "is_comfyui": is_comfyui,
+            "registration": registration}
+
+
+def _service_engine_gate(capability: str, mode: str, provider: str, model: str,
+                         instance=None) -> None:
     """第五条闸门（W-B；G1b 已裁＝甲）：服务型引擎的当前模型必须与登记行一致。
 
     为什么非要在这道拦：Draw Things 这类常驻服务**同一时刻只有一个当前模型**，
@@ -71,20 +128,26 @@ def _service_engine_gate(capability: str, mode: str, provider: str, model: str) 
     # 这道闸门要的是**这一刻**的答案：人可能刚在应用里换了模型，15 秒内的旧结论
     # 会让这条作业带着"选中的是 A、引擎跑的是 B"进队列——那正是它存在的原因。
     # 一次提交只问一次，5 秒上限在这里是等得起的（页面那条路有 0.8 秒的列表档）。
-    status = engines.probe(adapter.code, fresh=True)
-    if status.state != "ok":
+    if instance is None:
+        status = engines.probe(adapter.code, fresh=True)
+    else:
+        status = engines.probe(adapter.code, instance["endpoint"], fresh=True, instance=instance)
+    registration = registration_repo.find_registration(capability, mode, adapter.code, model)
+    check_current_engine_model(adapter, registration, status)
+
+
+def check_current_engine_model(adapter, registration, status: engines.EngineStatus | None) -> None:
+    if status is not None and status.state != "ok":
         raise JobInvalid(f"{adapter.label} 现在不能用：{status.detail}")
-    registration = registration_repo.find_registration(capability, mode,
-                                                       adapter.code, model)
     expected = (registration["artifact_path"].strip()
                 if registration is not None else "")
-    live = (status.values.get("model") or "").strip()
+    live = (status.values.get("model") or "").strip() if status is not None else ""
     if not expected:
         raise JobInvalid(
             f"这一档引擎（{adapter.label}）的登记没填「权重路径」，"
             f"平台无法核对引擎当前选的是哪一档（现在自述为 {live or '读不到'}）。"
             "请在模型中心把应用里显示的那个文件名填进登记行的权重路径")
-    if live.lower() != expected.lower():
+    if status is not None and live.lower() != expected.lower():
         raise JobInvalid(
             f"引擎当前选中的是 {live or '（读不到）'}，这条作业登记的是 {expected}。"
             f"平台不代切模型：请在 {adapter.label} 里选中 {expected} 再提交，"
@@ -153,6 +216,8 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
     model = (payload.model_code or "").strip()
     explicit = bool(mode or provider or model)
     adapter_version = adapters.MANIFEST_VERSION
+    requested_instance_id = getattr(payload, "engine_instance_id", None)
+    instance = None
 
     if provider == "mock":
         # 测试/演示专用：不进清单、不执行命令，只在 ALLOW_MOCK 打开时可用
@@ -180,59 +245,21 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
             raise JobInvalid("对口型任务缺少 operation=lip_sync 或 audio_path")
         mode = "local"
         adapter_version = "ffmpeg"
-    elif explicit:
-        if not (mode and provider and model):
-            raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")
-        # 显式那一支不再要求"与 provider_config 槽位逐字相等"（2026-11-07 放开）。
-        #
-        # 原来这条要求把"同能力只能用一档"钉死在了提交契约上：`provider_config`
-        # 是十行固定（5 类能力 × 本地／云端），一格只装一个 provider，所以
-        # Draw Things 与 mflux 只能二选一——想对比两种采样器就得改默认轨再改回来，
-        # 而改默认轨是有后果的动作（`is_default` 是 `resolve_provider()` 的唯一输入）。
-        #
-        # 现在改成"**已登记 ∧ 已启用 ∧ 清单有适配器**"就放行，三件事各有出处：
-        #   * 已登记：`model_registration` 那一行在——这是"这台机器上真有这一档"；
-        #   * 已启用：登记行的 `enabled`——人可以用它把某一档停掉而不撤登记；
-        #   * 清单有适配器：参数白名单在 `adapters.py`，没有它平台不会拼命令。
-        # 槽位仍然决定**不说的时候**走哪条（默认轨唯一来源没变），只是不再
-        # 兼任"允许清单"。`resolve_provider()` 一个字没改。
-        reg = registration_repo.find_registration(capability, mode, provider, model)
-        if reg is None:
-            if (capability, mode, provider, model) == ("image", "local", "comfyui", "comfyui-workflow"):
-                # 工作流档的权重由执行节点提供，启用的引擎实例可作为登记依据。
-                if engine_instances.pick("comfyui") is None:
-                    raise JobInvalid("请先在「引擎实例」中配置并启用 ComfyUI 节点")
-            else:
-                raise JobInvalid(
-                    f"{capability} · {mode} 上没有登记 {provider}/{model}。"
-                    "显式指定只接受「模型仓库」里登记过的档——"
-                    "先在模型中心登记它，或者不传这三件走默认轨")
-        elif not reg["enabled"]:
-            raise JobInvalid(
-                f"{provider}/{model} 这条登记已停用（enabled=0）："
-                "显式指定也走不了停用的档，请到模型仓库把它启用")
-        if capability == "video" and mode == "cloud" and not payload.user_confirmed_cloud:
-            raise JobInvalid("云端视频要逐镜头确认按供应商计费")
-        adapter = adapters.find(capability, mode, provider)
-        if adapter is None:
-            raise JobInvalid(f"provider「{provider}」没有登记适配器，平台不会猜它的参数")
-        errors = adapters.validate_params(adapter, model, payload.params)
-        if errors:
-            raise JobInvalid("；".join(errors))
     else:
-        try:
-            got = resolve_provider(capability, confirmed_cloud=payload.user_confirmed_cloud)
-        except NoRoute as exc:
-            raise JobInvalid(str(exc)) from exc
-        row = got["row"]
-        provider, model, mode = row["provider"], row["model"], row["backend"]
-        errors = adapters.validate_params(got["adapter"], model, payload.params)
+        if explicit and not (mode and provider and model):
+            raise JobInvalid("执行方式、供应商、模型要么都不传（走默认轨），要么三件一起给")
+        route = resolve_job_route(capability, mode, provider, model,
+                                  confirmed_cloud=payload.user_confirmed_cloud,
+                                  engine_instance_id=requested_instance_id)
+        provider, model, mode = route["provider"], route["model"], route["backend"]
+        instance = route["instance"]
+        errors = adapters.validate_params(route["adapter"], model, payload.params)
         if errors:
             raise JobInvalid("；".join(errors))
 
-    # 闸门走的是**两条路都要过**：显式选择与默认轨解析之后都可能是服务型引擎，
-    # 只挂在 explicit 那一支会留一条"默认轨指到 Draw Things 就没人核对"的缝。
-    _service_engine_gate(capability, mode, provider, model)
+    if requested_instance_id is not None and instance is None:
+        raise JobInvalid(f"供应商 {provider} 不支持绑定引擎实例")
+    _service_engine_gate(capability, mode, provider, model, instance)
 
     cost = _cost_of(payload, mode, created_by)
 
@@ -253,6 +280,7 @@ def prepare_job(payload, created_by: int | None) -> PreparedJob:
         "execution_mode": mode,
         "provider_code": provider,
         "model_code": model,
+        "engine_instance_id": instance["id"] if instance is not None else None,
         "adapter_version": adapter_version,
         "prompt_snapshot": payload.prompt,
         "params": payload.params,

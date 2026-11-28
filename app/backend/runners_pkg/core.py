@@ -68,6 +68,9 @@ def build(job, params: dict, outputs: Path) -> RunSpec:
         if not adapter.models:
             raise RunnerUnavailable(f"{provider} 的参数与模型尚未核验，不能执行")
         return _cloud(job, params, outputs, adapter)
+    adapter = adapters.find(capability, mode, provider)
+    if adapter is not None and adapter.code in engines.SERVICE_ENGINES:
+        provider = adapter.code
     if capability == "video" and provider == "fastmetal":
         return _fastmetal(job, params, outputs, model)
     if capability == "video" and provider == "mlx-video":

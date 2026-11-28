@@ -2527,6 +2527,7 @@ table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(4){width:18%}
 .pf-edit{border-top:1px solid var(--line);padding-top:16px}
 .pf-edit h3{font-size:12px;font-weight:650;color:var(--ink-2);margin-bottom:10px}
 .pf-edit .form-grid{max-width:none}
+.pf-comfy-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 
 /* hidden 属性要压过各组件的 display，否则 .chip / .palette 会把它顶掉 */
 [hidden]{display:none !important}

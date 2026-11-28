@@ -244,13 +244,18 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     request_id = (receipt.get("request_id") or None) if receipt else None
     if receipt:
         extra["provider"] = receipt
-        _write(log, "provider 回执：" + json.dumps({
+        receipt_log = {
             "request_id": receipt.get("request_id"),
             "http_status": receipt.get("http_status"),
             "usage": receipt.get("usage"),
             "ok": receipt.get("ok"),
             "error": receipt.get("error"),
-        }, ensure_ascii=False))
+        }
+        if "checkpoint" in receipt:
+            receipt_log["checkpoint"] = receipt["checkpoint"]
+        if "checkpoints" in receipt:
+            receipt_log["checkpoints"] = receipt["checkpoints"]
+        _write(log, "provider 回执：" + json.dumps(receipt_log, ensure_ascii=False))
 
     if return_code != 0:
         err = (receipt.get("error") or {}) if receipt else {}

@@ -53,7 +53,7 @@ def _loads(text: str):
 COPY_FIELDS = (
     "project_id", "episode_id", "shot_id", "capability", "kind", "execution_mode",
     "provider_code", "model_code", "adapter_version", "prompt_snapshot",
-    "params_json", "input_refs_json", "priority", "user_confirmed_cloud",
+    "engine_instance_id", "params_json", "input_refs_json", "priority", "user_confirmed_cloud",
     # 重试继承的是"这次大概是这个价"，不是"上次真的花了这么多"：
     # 原行的金额一律不动；新行的账单状态重新回到待核对。
     "quantity", "unit", "unit_price_micros", "cost_micros", "currency",
