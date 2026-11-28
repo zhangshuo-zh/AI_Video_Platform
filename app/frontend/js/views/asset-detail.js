@@ -1026,17 +1026,17 @@ export function mountDetail(root, id) {
   copyGptBtn?.addEventListener('click', handleCopyQuadPrompt);
   copyQuadSavedBtn?.addEventListener('click', handleCopyQuadPrompt);
   const tvModelSel = root.querySelector('#ad-tv-model');
-  attachEngineFilter(root.querySelector('#ad-rand-model'), data.textOptions || [], {
+  attachEngineFilter(root.querySelector('#ad-rand-model'), cache.textOptions || [], {
     storageKey: 'asset_detail_text',
     healthLabel: HEALTH_LABEL,
     engineAriaLabel: '人设文本引擎',
   });
-  attachEngineFilter(tvModelSel, data.imageOptions || [], {
+  attachEngineFilter(tvModelSel, cache.imageOptions || [], {
     storageKey: 'asset_detail_image',
     healthLabel: HEALTH_LABEL,
     engineAriaLabel: '生图引擎',
   });
-  attachEngineFilter(root.querySelector('#ad-ai-model'), data.textOptions || [], {
+  attachEngineFilter(root.querySelector('#ad-ai-model'), cache.textOptions || [], {
     storageKey: 'asset_detail_ai_text',
     healthLabel: HEALTH_LABEL,
     engineAriaLabel: '扩写文本引擎',
