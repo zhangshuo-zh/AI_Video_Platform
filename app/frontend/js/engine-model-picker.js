@@ -89,7 +89,8 @@ export function attachEngineFilter(modelSel, options = [], cfg = {}) {
   const cloudEngines = engines.filter((e) => e.backend === 'cloud');
 
   const shortEngineLabel = (raw) => String(raw || '')
-    .replace(/（(?:官方\s*API|本机模型服务|本地服务|FLUX\.1)）/g, '')
+    .replace(/（[^）]*）/g, '')
+    .replace(/\([^)]*\)/g, '')
     .trim();
 
   const engineOptMarkup = (e) => {

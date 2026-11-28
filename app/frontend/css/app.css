@@ -1014,16 +1014,17 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
 .ad-random-card[hidden]{display:none}
 .ad-random-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .ad-random-title{display:grid;gap:2px;font-size:12.5px}
-.ad-random-controls{display:flex;align-items:center;gap:8px;flex:1 1 280px;justify-content:flex-end;flex-wrap:wrap}
-.ad-random-controls input.ctl{flex:1 1 200px;min-width:160px;max-width:340px;height:32px}
+.ad-random-controls{display:flex;align-items:center;gap:8px;flex:1 1 320px;min-width:260px;justify-content:flex-end;flex-wrap:wrap}
+.ad-random-controls input.ctl{flex:1 1 180px;min-width:140px;max-width:320px;height:32px}
 .ad-random-tv{padding-top:8px;border-top:1px solid var(--line);justify-content:flex-start}
 .ad-random-actions{padding-top:8px;border-top:1px dashed var(--line);justify-content:space-between}
 .ad-random-opts,.ad-random-btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ad-tv-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);flex:1 1 280px;min-width:0}
+.ad-tv-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);white-space:nowrap;flex:1 1 400px;min-width:min(100%,380px)}
+.ad-tv-label:has(#ad-tv-template),.ad-tv-label:has(#ad-tv-instance),.ad-tv-label:has(#ad-tv-checkpoint){flex:0 1 260px;min-width:210px}
 .ad-tv-label select.ctl{flex:1 1 0;min-width:130px;height:32px}
 .emp-pair{display:inline-flex;align-items:center;gap:8px;flex:1 1 320px;min-width:0;max-width:100%}
 .emp-pair-grow{display:flex;width:100%;flex:1 1 0;min-width:260px}
-.emp-pair>.emp-engine,.emp-pair>.fv-pick:has(.emp-engine){flex:0 0 228px !important;min-width:200px;max-width:260px;width:228px !important}
+.emp-pair>.emp-engine,.emp-pair>.fv-pick:has(.emp-engine){flex:0 0 196px !important;min-width:176px;max-width:220px;width:196px !important}
 .emp-pair>select.ctl:last-child,.emp-pair>.fv-pick:last-child{flex:1 1 180px !important;min-width:140px;width:auto !important}
 .emp-pair>.fv-pick[hidden],.emp-pair>select[hidden]{display:none !important}
 .ad-ai-group>.emp-pair-grow .fv-pick{height:34px !important}
@@ -2406,8 +2407,9 @@ table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(3){width:34%}
 table.tbl-fixed.modal-tbl-4 > thead > tr > th:nth-child(4){width:18%}
 /* 弹窗里的表：长端点/长 detail 必须在格子里折行，否则 tbl-fixed 下会溢出 */
 .modal .tbl-fixed td{word-break:break-word;overflow-wrap:anywhere}
-.gen-form{max-width:none}
-.gen-cost{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);padding:10px 12px;display:grid;gap:8px}
+.gen-form{max-width:none;grid-template-columns:96px minmax(0,1fr)}
+.gen-form>*{min-width:0}
+.gen-cost{border:1px solid var(--line);border-radius:12px;background:var(--panel-2);padding:10px 12px;display:grid;gap:8px;min-width:0;max-width:100%}
 /* 场景候选那一块横跨两列：它长在 form-grid 里（label／控件两列），
    占单列会被压成一条 80px 宽的窄条。 */
 .gen-scene-panel{grid-column:1/-1;border:1px solid var(--line);border-radius:12px;
