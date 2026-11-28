@@ -260,12 +260,16 @@ def _run_spec(job, spec: runners.RunSpec, log, wid: str,
     if return_code != 0:
         err = (receipt.get("error") or {}) if receipt else {}
         if err:
-            raw = str(err.get("code") or "error")
+            if isinstance(err, dict):
+                raw = str(err.get("code") or "error")
+                msg = str(err.get("message") or "供应商返回错误")
+            else:
+                raw = str(err)
+                msg = str(receipt.get("message") or raw)
             if raw.startswith("provider_"):
                 raw = raw[len("provider_"):]
             code = "provider_" + raw
-            raise JobFailure(code, str(err.get("message") or "供应商返回错误"),
-                             return_code, provider_request_id=request_id)
+            raise JobFailure(code, msg, return_code, provider_request_id=request_id)
         tail = _tail(Path(jobfiles.job_dir(job["id"])) / "logs" / "run.log")
         raise JobFailure(
             "adapter_failed",

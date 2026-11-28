@@ -136,8 +136,12 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
         inputs = node.get("inputs") if isinstance(node, dict) else None
         if not isinstance(inputs, dict):
             continue
-        name = inputs.get("ckpt_name")
-        if node.get("class_type") == "CheckpointLoaderSimple" and name in (None, "", "__AUTO_CHECKPOINT__"):
+        ctype = node.get("class_type")
+        if ctype not in ("CheckpointLoaderSimple", "UNETLoader"):
+            continue
+        field = "unet_name" if ctype == "UNETLoader" else "ckpt_name"
+        name = inputs.get(field)
+        if name in (None, "", "__AUTO_CHECKPOINT__"):
             if checkpoint is None:
                 try:
                     names = _comfyui_checkpoints(endpoint, headers, timeout=min(timeout, 20))
@@ -154,7 +158,7 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
                                 "请先在 Colab 里勾选下载 Animagine XL 3.1 或放入 safetensors 模型",
                         endpoint=endpoint,
                     )
-            name = inputs["ckpt_name"] = checkpoint
+            name = inputs[field] = checkpoint
         if isinstance(name, str) and name.strip() and name not in used_checkpoints:
             used_checkpoints.append(name)
 
@@ -218,13 +222,19 @@ def _run_comfyui(request: dict, endpoint: str, out_path: Path, receipt_path: Pat
 
     deadline = time.monotonic() + poll_timeout
     image_meta: dict | None = None
+    consecutive_errors = 0
     while time.monotonic() <= deadline:
         try:
             with safenet.safe_urlopen(Request(history_url, headers=headers), timeout=timeout) as resp:
                 history_raw = json.loads(resp.read().decode("utf-8", "replace"))
+            consecutive_errors = 0
         except (HTTPError, URLError, OSError, ValueError) as exc:
-            return _finish(receipt_path, ok=False, code="comfyui_history_failed",
-                           message=f"查询 ComfyUI /history 失败：{exc}", prompt_id=prompt_id)
+            consecutive_errors += 1
+            if consecutive_errors >= 5 or time.monotonic() + poll_interval > deadline:
+                return _finish(receipt_path, ok=False, code="comfyui_history_failed",
+                               message=f"查询 ComfyUI /history 失败：{exc}", prompt_id=prompt_id)
+            time.sleep(poll_interval)
+            continue
         entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
         if isinstance(entry, dict):
             status_obj = entry.get("status") or {}

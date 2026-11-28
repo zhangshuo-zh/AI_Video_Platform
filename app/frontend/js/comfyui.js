@@ -112,6 +112,8 @@ export function instanceOptionsMarkup(instances, selectedId = '') {
   }).join('');
 }
 
+const KONTEXT_MODEL = 'flux1-dev-kontext_fp8_scaled.safetensors';
+
 export function checkpointOptionsMarkup(data, selected = '') {
   const picked = (selected || '').trim();
   const list = Array.isArray(data?.checkpoints) ? [...data.checkpoints] : [];
@@ -125,5 +127,8 @@ export function checkpointOptionsMarkup(data, selected = '') {
   const rows = list.map((name) => (
     `<option value="${escapeHtml(name)}"${name === picked ? ' selected' : ''}>${escapeHtml(name)}</option>`
   )).join('');
-  return head + rows;
+  const kontextOpt = !list.includes(KONTEXT_MODEL)
+    ? `<option value="${KONTEXT_MODEL}"${picked === KONTEXT_MODEL ? ' selected' : ''}>${KONTEXT_MODEL}（L4 FLUX Kontext 一致性模式）</option>`
+    : '';
+  return head + rows + kontextOpt;
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -53,6 +54,14 @@ DRAW_THINGS_PATH = "/sdapi/v1/txt2img"
 
 
 
+_DEFAULT_COMFYUI_NEGATIVE = (
+    "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, "
+    "fewer digits, cropped, worst quality, low quality, normal quality, "
+    "jpeg artifacts, signature, watermark, username, blurry, multiple views, "
+    "collage, grid, comic"
+)
+
+
 def _comfyui_workflow_payload(
     prompt_text: str,
     params: dict,
@@ -63,11 +72,11 @@ def _comfyui_workflow_payload(
     raw_wf = str(params.get("workflow_json") or "").strip()
     width = int(params.get("width", 1024) or 1024)
     height = int(params.get("height", 1024) or 1024)
-    steps = int(params.get("steps", 20) or 20)
+    steps = int(params.get("steps", 25) or 25)
     cfg = float(7.0 if params.get("cfg") is None else params["cfg"])
-    seed = int(params["seed"]) if params.get("seed") is not None else 42
+    seed = int(params["seed"]) if params.get("seed") is not None else random.randint(1, 2_147_483_647)
     denoise = float(0.75 if params.get("denoise") is None else params["denoise"])
-    negative = str(params.get("negative_prompt") or "").strip()
+    negative = str(params.get("negative_prompt") or "").strip() or _DEFAULT_COMFYUI_NEGATIVE
     checkpoint = str(params.get("checkpoint") or "").strip()
     image_val = init_filename or "__UPLOADED_IMAGE__"
 
@@ -123,6 +132,45 @@ def _comfyui_workflow_payload(
         return injected
 
     ckpt_name = checkpoint or "__AUTO_CHECKPOINT__"
+    if "flux" in ckpt_name.lower() and "kontext" in ckpt_name.lower():
+        flux_steps = int(params.get("steps", 20) or 20)
+        wf_kontext: dict[str, dict] = {
+            "1": {"class_type": "UNETLoader", "inputs": {"unet_name": ckpt_name, "weight_dtype": "fp8_e4m3fn"}},
+            "2": {"class_type": "DualCLIPLoader", "inputs": {
+                "clip_name1": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+                "clip_name2": "clip_l.safetensors",
+                "type": "flux",
+            }},
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}},
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt_text, "clip": ["2", 0]}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 0]}},
+            "6": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["4", 0], "guidance": 2.5}},
+            "10": {"class_type": "EmptySD3LatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
+            "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
+            "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": f"job_{seed}"}},
+        }
+        positive_ref = ["6", 0]
+        if init_filename:
+            wf_kontext["7"] = {"class_type": "LoadImage", "inputs": {"image": image_val}}
+            wf_kontext["8"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["7", 0], "vae": ["3", 0]}}
+            wf_kontext["9"] = {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["6", 0], "latent": ["8", 0]}}
+            positive_ref = ["9", 0]
+        wf_kontext["11"] = {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": positive_ref,
+                "negative": ["5", 0],
+                "latent_image": ["10", 0],
+                "seed": seed,
+                "steps": flux_steps,
+                "cfg": 1.0,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+            },
+        }
+        return wf_kontext
     if init_filename:
         return {
             "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt_name}},
@@ -140,7 +188,7 @@ def _comfyui_workflow_payload(
                     "seed": seed,
                     "steps": steps,
                     "cfg": cfg,
-                    "sampler_name": "euler",
+                    "sampler_name": "euler_ancestral",
                     "scheduler": "normal",
                     "denoise": denoise,
                 },
@@ -163,7 +211,7 @@ def _comfyui_workflow_payload(
                 "seed": seed,
                 "steps": steps,
                 "cfg": cfg,
-                "sampler_name": "euler",
+                "sampler_name": "euler_ancestral",
                 "scheduler": "normal",
                 "denoise": 1.0,
             },

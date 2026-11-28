@@ -1055,58 +1055,83 @@ export function mountDetail(root, id) {
     const enCore = hasFreshEn ? randImagePromptEn : coreDesc;
     const isMflux = providerCode === 'mflux';
 
-    const buildSlotPrompt = (enPrefix, zhPrefix) => {
-      if (isLocalImg && hasFreshEn) return `${enPrefix}, ${enCore}`.slice(0, 1000);
-      if (isLocalImg) return `${enPrefix}, ${coreDesc}`.slice(0, 1000);
-      return `${zhPrefix}${coreDesc}`.slice(0, 1000);
+    const buildSlotPrompt = (enPrefix, zhPrefix, sourceText = null) => {
+      const enText = sourceText ?? enCore;
+      const rawText = sourceText ?? coreDesc;
+      if (isLocalImg && hasFreshEn) return `${enPrefix}, ${enText}`.slice(0, 1000);
+      if (isLocalImg) return `${enPrefix}, ${rawText}`.slice(0, 1000);
+      return `${zhPrefix}${rawText}`.slice(0, 1000);
     };
+    const stripFacialTraits = (text) => String(text || '')
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter((s) => s && !/\b(face|eyes?|brows?|eyebrows?|nose|mouth|smile|smiling|expression|looking at viewer|gaze|pupils?|lips)\b/i.test(s)
+        && !/(五官|眼神|微笑|表情|面向镜头|眉毛|眼睛|鼻|嘴)/.test(s))
+      .join(', ');
+    const backEnCore = stripFacialTraits(enCore) || enCore;
+    const backCoreDesc = stripFacialTraits(coreDesc) || coreDesc;
+    const negCommon = 'lowres, bad anatomy, bad hands, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, blurry, text';
+    const negSingle = `${negCommon}, multiple views, character sheet, grid, collage, comic, small portraits, insets, border, split screen`;
+    const negThreeView = `${negCommon}, 4 views, 5 views, 6 views, 4koma, comic, crowded, overlapping, floating heads, insets, close-up bubble`;
+    const negBackOnly = `${negSingle}, face, eyes, nose, mouth, smile, looking at viewer, looking back, over shoulder, profile, side view, portrait`;
 
     const specs = isQuad ? [
       {
         purpose: '封面定妆',
         label: '封面定妆',
         prompt: buildSlotPrompt(
-          'full body front view portrait, standing pose, looking at viewer, clean solid white background, consistent anime character design',
-          '角色正面全身定妆照（封面基准），站姿清晰，面向镜头，干净纯白背景，保持五官发型服装配色完全一致：',
+          'masterpiece, best quality, solo, full body, front view, straight-on, standing pose, looking at viewer, simple white background, clean background, consistent anime character design',
+          '角色正面全身定妆照（封面基准），单人居中，站姿清晰，面向镜头，干净纯白背景，保持五官发型服装配色完全一致：',
         ),
-        params: isMflux ? { width: 576, height: 768 } : { width: 768, height: 1024 },
+        params: isMflux
+          ? { width: 576, height: 768 }
+          : { width: 768, height: 1024, ...(providerCode === 'comfyui' ? { negative_prompt: negSingle } : {}) },
       },
       {
         purpose: '三视图',
         label: '三视图',
         prompt: buildSlotPrompt(
-          'anime character turnaround sheet, front view, side view, back view, full body standing pose, clean solid white background, consistent character design',
-          '角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+          'masterpiece, best quality, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background, consistent character design',
+          '角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
         ),
-        params: isMflux ? { width: 896, height: 512 } : { width: 1344, height: 768 },
+        params: isMflux
+          ? { width: 896, height: 512 }
+          : { width: 1344, height: 768, ...(providerCode === 'comfyui' ? { negative_prompt: negThreeView } : {}) },
       },
       {
         purpose: '面部特写',
         label: '面部特写',
         prompt: buildSlotPrompt(
-          'close-up face and upper body portrait, clear facial features, eyes, hair accessories and expression, clean solid white background, consistent anime character design',
-          '角色面部与半身特写，清晰展现五官、眼神、发饰与表情细节，干净纯白背景，保持设定完全一致：',
+          'masterpiece, best quality, solo, close-up portrait, upper body, facing viewer, detailed face and eyes, simple white background, clean background, consistent anime character design',
+          '角色面部与半身特写，单人居中，清晰展现五官、眼神、发饰与表情细节，干净纯白背景，保持设定完全一致：',
         ),
-        params: isMflux ? { width: 512, height: 512 } : { width: 768, height: 768 },
+        params: isMflux
+          ? { width: 512, height: 512 }
+          : { width: 768, height: 768, ...(providerCode === 'comfyui' ? { negative_prompt: `${negSingle}, full body` } : {}) },
       },
       {
         purpose: '背面细节',
         label: '背面细节',
         prompt: buildSlotPrompt(
-          'full body back view, showing back of hair, back of outfit and accessories, standing pose, clean solid white background, consistent anime character design',
-          '角色背面全身设定图，清晰展现背部发型、服装剪裁与随身配饰细节，干净纯白背景，保持设定完全一致：',
+          '(from behind:1.4), (back view:1.4), solo, full body, facing away from viewer, looking away, back of head, showing back of hair and outfit, standing pose, simple white background, clean background',
+          '角色纯背面全身设定图，完全背对镜头不露脸，清晰展现后脑勺发型、背部服装剪裁与随身配饰细节，干净纯白背景：',
+          isLocalImg && hasFreshEn ? backEnCore : backCoreDesc,
         ),
-        params: isMflux ? { width: 576, height: 768 } : { width: 768, height: 1024 },
+        params: isMflux
+          ? { width: 576, height: 768 }
+          : { width: 768, height: 1024, ...(providerCode === 'comfyui' ? { negative_prompt: negBackOnly } : {}) },
       },
     ] : [
       {
         purpose: '三视图',
         label: '三视图',
         prompt: buildSlotPrompt(
-          'anime character turnaround sheet, front view, side view, back view, full body standing pose, clean solid white background, consistent character design',
-          '角色三视图设定稿（正面、侧面、背面），全身像，站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
+          'masterpiece, best quality, character turnaround sheet, multiple views, 3views, front view, side view, back view, three full body views side by side, standing pose, simple white background, clean background, consistent character design',
+          '角色三视图设定稿（严格仅正面、侧面、背面三个全身像并排），站姿清晰，干净纯白背景，保持五官发型服装配色完全一致：',
         ),
-        params: isMflux ? { width: 896, height: 512 } : { width: 1344, height: 768 },
+        params: isMflux
+          ? { width: 896, height: 512 }
+          : { width: 1344, height: 768, ...(providerCode === 'comfyui' ? { negative_prompt: negThreeView } : {}) },
       },
     ];
 
@@ -1135,10 +1160,29 @@ export function mountDetail(root, id) {
     const chosenInstanceId = (providerCode === 'comfyui' && tvInstSel?.value)
       ? Number(tvInstSel.value)
       : null;
+    const isKontext = providerCode === 'comfyui'
+      && /flux/i.test(chosenCheckpoint)
+      && /kontext/i.test(chosenCheckpoint);
+    const submitSpecs = isKontext ? [specs[0]] : specs;
+    const followupSpecs = isKontext ? specs.slice(1).map((sp) => ({
+      purpose: sp.purpose,
+      label: sp.label,
+      prompt: sp.purpose === '面部特写'
+        ? 'Keep the exact same character, face, hair, eye accessory, and outfit from the reference image; generate a close-up upper body portrait facing viewer on a clean solid white background'
+        : (sp.purpose === '背面细节'
+          ? 'Keep the exact same character, hair color, outfit, and accessories from the reference image; show her full body strictly from behind, facing away from viewer, back of head visible, no face visible, clean solid white background'
+          : 'Keep the exact same character, outfit, hair, and accessories from the reference image; generate a clean character turnaround sheet with exactly 3 full-body views side by side (front view, side profile view, back view) on a clean solid white background'),
+      params: { ...tplParams, ...sp.params, ...(chosenCheckpoint ? { checkpoint: chosenCheckpoint } : {}) },
+      execution_mode: execMode,
+      provider_code: providerCode,
+      model_code: modelCode,
+      ...(chosenInstanceId ? { engine_instance_id: chosenInstanceId } : {}),
+      estimate,
+    })) : [];
     const submittedList = [];
     let firstErr = null;
-    for (let idx = 0; idx < specs.length; idx += 1) {
-      const spec = specs[idx];
+    for (let idx = 0; idx < submitSpecs.length; idx += 1) {
+      const spec = submitSpecs[idx];
       const submitParams = {
         ...tplParams,
         ...spec.params,
@@ -1167,6 +1211,7 @@ export function mountDetail(root, id) {
           imported: false,
           importError: '',
           error: '',
+          ...(idx === 0 && followupSpecs.length ? { followupSpecs } : {}),
         });
       } catch (err) {
         if (!firstErr) firstErr = err;
@@ -1210,6 +1255,39 @@ export function mountDetail(root, id) {
       }
       item.imported = true;
       item.importError = '';
+      if (Array.isArray(item.followupSpecs) && item.followupSpecs.length) {
+        const followups = item.followupSpecs;
+        delete item.followupSpecs;
+        const stamp = Date.now();
+        for (let fi = 0; fi < followups.length; fi += 1) {
+          const fu = followups[fi];
+          try {
+            const sub = await api.assetGenerationSubmit(store.currentId, {
+              operation: 'asset_image',
+              target_asset_id: a.id,
+              image_prompt: fu.prompt,
+              execution_mode: fu.execution_mode,
+              provider_code: fu.provider_code,
+              model_code: fu.model_code,
+              ...(fu.engine_instance_id ? { engine_instance_id: fu.engine_instance_id } : {}),
+              params: { ...fu.params, image: imported.path },
+              estimate: fu.estimate || null,
+              user_confirmed_cloud: fu.execution_mode === 'cloud',
+              idempotency_key: `ad-tv-fu-${a.id}-${fi}-${stamp}`,
+            });
+            pendingTurnaroundJobs.push({
+              assetId: a.id,
+              jobId: sub.job_id,
+              purpose: fu.purpose,
+              label: fu.label,
+              status: sub.status || 'queued',
+              imported: false,
+              importError: '',
+              error: '',
+            });
+          } catch { /* ignore individual followup submit error */ }
+        }
+      }
       saveTurnaroundPending(pendingTurnaroundJobs);
     };
     const renderWatchBar = () => {
