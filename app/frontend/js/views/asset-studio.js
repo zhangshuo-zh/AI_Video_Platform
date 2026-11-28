@@ -106,7 +106,7 @@ function newDraft(kind = 'character') {
     textTrack: 'local', textProvider: '', textModel: '', textInstruction: '',
     textMode: 'full', textTargetField: '', sourceExcerpt: '', textParams: {},
     imageTrack: 'local', imageProvider: '', imageModel: '',
-    imagePrompt: '', imageVariantId: 0, imageParams: {},
+    imagePrompt: '', imageVariantId: 0, imageParams: {}, imageProfileId: null,
     cloudConfirm: false,
     textJob: null, imageJob: null,
     preview: null, candidates: null, jobMeta: null, candidateReview: null, imageHistory: null, variants: [],
@@ -280,20 +280,15 @@ function trackPanel(d, which) {
       >${escapeHtml(o.model)}${escapeHtml(val)}${mark}</option>`;
   }).join('');
   const hint = list.length === 0
-    ? `<p class="t-desc">${d[`${which}Track`] === 'cloud' ? '云端' : '本地'}这一轨没有${
-        title}槽位。到模型中心 · 引擎管理里配一条；配好之前提交钮是灰的，
-        平台不会替你换一条轨发出去。</p>`
-    : `<p class="t-desc">${d[`${which}Track`] === 'cloud'
-        ? '云端：提交前展示清单登记的单价，并要单独勾一次计费确认。'
-        : '本地：不计云端费用；运行时缺条件时这条作业会被明确拒绝，不会自己转云端。'}</p>`;
-  // 选中那档的两句话：验证到什么程度、健康为什么不行。
-  // 只讲事实与下一步，不解释状态码。
+    ? `<p class="t-desc">${d[`${which}Track`] === 'cloud' ? '云端' : '本地'}这一轨暂无${title}，请到「模型中心」配置。</p>`
+    : `<p class="t-dim" title="${d[`${which}Track`] === 'cloud'
+        ? '云端：提交前展示清单登记的单价，并需勾选计费确认。'
+        : '本地：不计云端费用；运行时缺条件会被明确拒绝，不会自动转云端。'}">${d[`${which}Track`] === 'cloud'
+        ? '云端计费 · 提交前核对单价'
+        : '本地执行 · 不计云端费用'}</p>`;
   const why = chosen
-    ? `<p class="t-dim">这一档：健康 ${chosen.state}｜验证 ${validationText(chosen.validation)}`
-      + `${chosen.validationAt ? `（${escapeHtml(chosen.validationAt)}）` : ''}`
-      + `${chosen.validation === 'never' || chosen.validation === 'env_check'
-        ? '——还没有真实产出过东西，第一次跑建议先拿最短的一条试试。' : ''}</p>`
-    : (list.length ? '<p class="t-dim">还没选槽位；上面灰掉的那些不可选，原因写在括号里。</p>' : '');
+    ? `<p class="t-dim">状态：<span class="chip ${chosen.state === 'ok' ? 'green' : 'amber'}">${escapeHtml(chosen.state)}</span> · ${escapeHtml(validationText(chosen.validation))}${chosen.validationAt ? `（${escapeHtml(chosen.validationAt)}）` : ''}</p>`
+    : (list.length ? '<p class="t-dim">请选择可用模型槽位。</p>' : '');
   const cost = d[`${which}Track`] === 'cloud'
     ? (price
       ? `<p class="t-dim">单价 ${fmtMoney(price.amount_micros, price.currency)}`
@@ -971,6 +966,10 @@ export default {
     if (!project) return;
     const d = ensureDraft();
     const refresh = () => window.dispatchEvent(new CustomEvent('app:refresh'));
+    const clearImageProfile = () => {
+      d.imageProfileId = null;
+      d.cloudConfirm = false;
+    };
     // 判活问的是"本视图自己渲染出来的那一格还在不在"，不是 body 里有没有 root
     const alive = (sel) => Boolean(root.querySelector(sel));
 
@@ -1006,6 +1005,7 @@ export default {
         d[`${which}Provider`] = '';
         d[`${which}Model`] = '';
         d[`${which}Params`] = {};
+        if (which === 'image') clearImageProfile();
         refresh();
       });
     });
@@ -1047,6 +1047,7 @@ export default {
         d[`${which}Provider`] = provider;
         d[`${which}Model`] = best?.model || '';
         d[`${which}Params`] = {};
+        if (which === 'image') clearImageProfile();
         refresh();
       });
     });
@@ -1057,6 +1058,7 @@ export default {
         d[`${which}Provider`] = provider;
         d[`${which}Model`] = model;
         d[`${which}Params`] = {};
+        if (which === 'image') clearImageProfile();
         refresh();
       });
     });
@@ -1117,15 +1119,24 @@ export default {
             + imgList.map((p) => `<option value="${p.id}"${String(d.imageProfileId || '') === String(p.id) ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
           imgTplSel.addEventListener('change', () => {
             const picked = imgList.find((p) => String(p.id) === imgTplSel.value);
-            d.imageProfileId = picked ? picked.id : null;
-            if (!picked) return;
-            if (picked.provider_code && picked.model_code) {
-              const mode = picked.execution_mode || (optionsFor('image', 'local').some((o) => o.provider === picked.provider_code && o.model === picked.model_code) ? 'local' : 'cloud');
-              d.imageTrack = mode;
-              d.imageProvider = picked.provider_code;
-              d.imageModel = picked.model_code;
+            if (picked?.provider_code && picked.model_code) {
+              const slots = lastOptions.filter((o) => o.capability === 'image'
+                && (!picked.execution_mode || o.backend === picked.execution_mode)
+                && o.provider === picked.provider_code && o.model === picked.model_code);
+              const slot = slots.find((o) => o.backend === 'local') || slots[0];
+              if (!slot) {
+                d.notice = '模板绑定的图像槽位当前不可用，请先恢复该槽位。';
+                refresh();
+                return;
+              }
+              d.imageTrack = slot.backend;
+              d.imageProvider = slot.provider;
+              d.imageModel = slot.model;
             }
-            d.imageParams = { ...(d.imageParams || {}), ...(picked.params || {}) };
+            clearImageProfile();
+            d.imageProfileId = picked?.id ?? null;
+            d.imageParams = { ...picked?.params };
+            d.notice = '';
             refresh();
           });
         } catch { /* ignore template load failure */ }
@@ -1135,11 +1146,13 @@ export default {
       const instLabel = root.querySelector('#as-comfy-inst-label');
       const instSel = root.querySelector('#as-comfy-instance');
       const ckptSel = root.querySelector('#as-comfy-checkpoint');
+      let checkpointRequest = 0;
       const syncStudioCheckpoints = async () => {
         if (!ckptSel) return;
+        const request = ++checkpointRequest;
         const instId = d.imageInstanceId || (instSel?.value ? Number(instSel.value) : null);
         const data = await loadComfyCheckpoints({ instanceId: instId });
-        if (!ckptSel.isConnected) return;
+        if (!ckptSel.isConnected || request !== checkpointRequest) return;
         const picked = d.imageParams?.checkpoint ?? rememberedCheckpoint();
         ckptSel.innerHTML = checkpointOptionsMarkup(data, picked);
         if (picked) (d.imageParams ||= {}).checkpoint = ckptSel.value;
@@ -1549,6 +1562,7 @@ function bindCandidateReview(root, d) {
         d.imageVariantId = d.candidates.variant_id || 0;
         d.imagePrompt = job.prompt_snapshot;
         d.imageParams = { ...job.params };
+        d.imageProfileId = null;
         d.cloudConfirm = false;
         d.dirty = true;
         d.notice = '已填回该候选所属作业的参数和提示词，可调整后点「换一批」。';

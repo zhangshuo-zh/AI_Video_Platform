@@ -975,8 +975,8 @@ html:not([data-theme-mode])[data-theme="night"] [data-theme-toggle] .i-moon{disp
 .cold .view.on{animation:none}
 
 /* ---------- 通用块 ---------- */
-.page-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:20px}
-.page-head h1{font-size:var(--fs-title);font-weight:680;letter-spacing:-.024em;line-height:1.15}
+.page-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.page-head h1{font-size:var(--fs-title);font-weight:680;letter-spacing:-.024em;line-height:1.15;white-space:nowrap;flex-shrink:0}
 .page-head p{font-size:12.5px;color:var(--ink-2);margin-bottom:2px}
 /* .right 里现在可能有三枚工作区 chip 加一颗按钮（资产中心三个工作区都是这个形状），
    380px 下不换行就会把整页撑出横向滚动条（实测溢出 46px）。
@@ -2382,7 +2382,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:12px 0}
 .gen-params{min-width:0}
 .param-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px}
 .param{display:grid;gap:4px;font-size:11px;color:var(--ink-3);min-width:0}
-.param input.ctl{width:100%;padding:4px 8px;font-size:12px}
+.param input.ctl,.param select.ctl{width:100%;height:32px;min-height:32px;padding:4px 8px;font-size:12px;box-sizing:border-box}
 .param input[type="checkbox"]{justify-self:start}
 .param i{font-style:normal;font-size:10.5px;color:var(--ink-3);opacity:.85}
 .pf-check{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}

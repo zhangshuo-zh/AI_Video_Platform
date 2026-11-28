@@ -211,10 +211,15 @@ export function enhanceSelect(sel) {
     // 先按宽度与方位摆好再量高度：放不下时向上翻。
     const r = btn.getBoundingClientRect();
     const gutter = 8;
-    // 下拉列表宽度严格与触发按钮等宽锁定，绝不向外扩宽突起；超长内容统一走单行截断与悬停全称
-    const width = Math.min(Math.round(r.width), document.documentElement.clientWidth - 2 * gutter);
-    list.style.minWidth = list.style.width = list.style.maxWidth = `${width}px`;
-    list.style.left = `${Math.max(gutter, Math.min(r.left, document.documentElement.clientWidth - gutter - width))}px`;
+    // 列表至少与触发按钮等宽；遇到长模型名（如 ComfyUI Checkpoint）可适当放宽到 440px，避免在菜单里也被截断
+    const maxAllowed = document.documentElement.clientWidth - 2 * gutter;
+    const minW = Math.min(Math.round(r.width), maxAllowed);
+    const maxW = Math.max(minW, Math.min(440, maxAllowed));
+    list.style.minWidth = `${minW}px`;
+    list.style.width = 'max-content';
+    list.style.maxWidth = `${maxW}px`;
+    const actualW = Math.min(maxW, Math.max(minW, Math.round(list.getBoundingClientRect().width)));
+    list.style.left = `${Math.max(gutter, Math.min(r.left, document.documentElement.clientWidth - gutter - actualW))}px`;
     list.style.maxHeight = '';
     const below = window.innerHeight - r.bottom - gutter - 4;
     const above = r.top - gutter - 4;
